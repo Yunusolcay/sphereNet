@@ -1,0 +1,22 @@
+# Build outputs
+bin/
+obj/
+
+# Visual Studio
+.vs/
+
+# Publish
+publish/
+wiki/
+
+# Game data (local)
+/save/
+/scripts/
+/oldSphere/
+
+# Claude Code
+.claude/
+
+# Other
+*.user
+system_rules.md

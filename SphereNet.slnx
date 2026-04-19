@@ -1,0 +1,20 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SphereNet.Core/SphereNet.Core.csproj" />
+    <Project Path="src/SphereNet.Network/SphereNet.Network.csproj" />
+    <Project Path="src/SphereNet.Scripting/SphereNet.Scripting.csproj" />
+    <Project Path="src/SphereNet.Game/SphereNet.Game.csproj" />
+    <Project Path="src/SphereNet.MapData/SphereNet.MapData.csproj" />
+    <Project Path="src/SphereNet.Persistence/SphereNet.Persistence.csproj" />
+    <Project Path="src/SphereNet.Server/SphereNet.Server.csproj" />
+    <Project Path="src/SphereNet.Tests/SphereNet.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SphereNet.Core.Tests/SphereNet.Core.Tests.csproj" />
+    <Project Path="tests/SphereNet.Game.Tests/SphereNet.Game.Tests.csproj" />
+    <Project Path="tests/SphereNet.MapData.Tests/SphereNet.MapData.Tests.csproj" />
+    <Project Path="tests/SphereNet.Network.Tests/SphereNet.Network.Tests.csproj" />
+    <Project Path="tests/SphereNet.Persistence.Tests/SphereNet.Persistence.Tests.csproj" />
+    <Project Path="tests/SphereNet.Scripting.Tests/SphereNet.Scripting.Tests.csproj" />
+  </Folder>
+</Solution>

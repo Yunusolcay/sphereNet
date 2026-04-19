@@ -1,0 +1,3455 @@
+================================================================================
+ SphereNet Changelog
+ Tum onemli degisiklikler bu dosyada belgelenir.
+ All notable changes are documented in this file.
+================================================================================
+
+[2026-04-19] - DEF lookup miss icin debug log
+----------------------------------------
+
+DEGISIKLIKLER / CHANGES:
+  - ResolveInlineExpressions DEF./DEF0. bulunamayinca _logger.LogDebug
+    ile [def_miss] key log satiri atiyor. CHARPROP FLAGS sayfasinda
+    CharFlag.N lookup'i "0" donduruyorsa SCRIPTDEBUG açikken bu log
+    hangi anahtarin eksik oldugunu gosterir.
+
+================================================================================
+
+[2026-04-19] - Dialog resolver: I.* alias + DEF quote trim
+----------------------------------------
+
+DEGISIKLIKLER / CHANGES:
+  - ResolveInlineExpressions subject dalinda "I." prefix strip
+    edilip kalan kisim subject'e soruluyor (Source-X <I.X> = this
+    object). Sayisal index (<I.0>) subject Character ise skill
+    level'i olarak cozuluyor.
+  - DEF. / DEF0. resolver orijinal case'li key kullaniyor ve
+    StripSurroundingQuotes ile dönüş degerindeki cift tirnaklari
+    (Sphere source lexer konvensiyonu) atiyor.
+
+================================================================================
+
+[2026-04-19] - Script dialog IF koşulunda non-numeric string truthy
+----------------------------------------
+
+DEGISIKLIKLER / CHANGES:
+  - EvaluateDialogCondition: sayısal parse 0 dönerse ve string
+    numerik değilse true döner (Sphere IF semantigi). Onceden
+    <SERV.SKILL.0> → "Alchemy" string'ini 0 saydığı için
+    d_charprop1 SKILLS ve FLAGS sayfalari bos geliyordu.
+  - Wrap paren ve empty / "0" kısa yolları önce kontrol ediliyor.
+
+================================================================================
+
+[2026-04-19] - Script dialog PAGE: client-side sekme modeli
+----------------------------------------
+
+DEGISIKLIKLER / CHANGES:
+  - RenderScriptDialog case "PAGE": eskiden server-side filtre
+    (yalnizca currentPage eşleşirse elemani emit et) yapiyordu.
+    UO gump protokolu PAGE'i client-side tutar — tum sayfalar tek
+    paket icinde, client state ile sayfalar arasi geciyor.
+    SetPage(n) emit edilip currentPageVisible daima true olacak
+    sekilde duzeltildi. Page-nav buton'lari (type=0 page=N) artik
+    transit calisir.
+
+================================================================================
+
+[2026-04-19] - .info artik shipped d_charprop1/d_itemprop1 script dialogunu yukluyor
+----------------------------------------
+
+DEGISIKLIKLER / CHANGES:
+  - GameClient._dialogSubjectUid field'i (Source-X CLIMODE_DIALOG
+    pObj parity).
+  - TryShowScriptDialog(id, page, subject) overload; body
+    RenderScriptDialog'a cikarildi, subject render suresince
+    _dialogSubjectUid'e yaziliyor, sonunda eski deger geri geliyor.
+  - ResolveInlineExpressions bare property lookup'unda subject'i
+    _character'dan once denior (SRC. / SERV. / DEF. zincirinin
+    sonrasina, GM fallback'in oncesine).
+  - ShowInspectDialog hedef Character ise d_charprop1, Item ise
+    d_itemprop1 deniyor; bulamayinca eski native gump'a dusuyor.
+  - Butonlarin (INPDLG) Asama 2'de calisacagi not edildi — bu
+    commit sadece layout rendering.
+
+================================================================================
+
+[2026-04-19] - .info editable property gump (D_CHARPROP1/D_ITEMPROP1 port)
+----------------------------------------
+
+DEGISIKLIKLER / CHANGES:
+  - GameClient.ShowInspectDialog: read-only HTML liste yerine text
+    entry'li property grid. Character icin NAME/P/BASEID/HUE/ATTR/
+    BODY/DIR/STR/DEX/INT/HITS/MAXHITS/MANA/MAXMANA/STAM/MAXSTAM/
+    FAME/KARMA/FOOD/NPC/FLAGS/PRIVSET. Item icin TYPE/AMOUNT/LAYER/
+    CONT/LINK/MORE1/MORE2/MOREX-Y-Z-M/HITPOINTS/TIMER.
+  - InspectField record + BuildInspectFields + ApplyInspectChanges:
+    Apply degisen entry'leri ObjBase.TrySetProperty uzerinden yazar,
+    dialog kendini refresh eder.
+  - TAGS / EVENTS / PAPERDOLL butonlari ayri alt-dialog'lara
+    (ShowTagsDialog, ShowEventsDialog, SendPaperdoll).
+
+================================================================================
+
+[2026-04-19] - Vendor ciplak fix v3: Layer'i tiledata.mul Quality byte'indan resolve
+----------------------------------------
+
+OZET / SUMMARY:
+  v2'de item'lar spawn ediliyordu ama still hala ciplak kaliyordu.
+  Sebep: sphere scriptlerinde ITEMDEF'lerin LAYER= satirlari
+  yorumlu ("//LAYER=layer_shirt"). ItemDef.Layer = None ile
+  SpawnAndEquipItem backpack'e atiyordu — 0x78 equipment list'te
+  sadece 0E 75 (backpack) goruluyor.
+
+  Source-X Wearable-flag'li tile'larin Quality byte'ini layer indexi
+  olarak kullaniyor (tiledata.mul). SpawnAndEquipItem ve
+  EquipNewbieItems artik Layer.None durumunda GameWorld.MapData
+  uzerinden GetItemTileData okuyup TileFlag.Wearable ve Quality'e
+  bakiyor. Boylece i_shirt_plain layer=Shirt, i_pants_short
+  layer=Pants, i_boots_calf layer=Shoes olarak equip ediliyor.
+
+  v2 spawned items but the NPC still looked naked. Cause: the
+  Sphere-format ITEMDEFs have their LAYER= line commented out
+  ("//LAYER=layer_shirt"). With ItemDef.Layer = None,
+  SpawnAndEquipItem dropped each item into the backpack — the
+  0x78 equipment list only showed 0E 75 (backpack).
+
+  Source-X reads the layer from tiledata.mul: items with the
+  Wearable flag store their layer index in the Quality byte.
+  SpawnAndEquipItem and EquipNewbieItems now fall back to
+  GameWorld.MapData.GetItemTileData when ItemDef.Layer is None,
+  check TileFlag.Wearable, and use Quality as the layer. Shirts,
+  pants, boots, hats etc. now equip correctly.
+
+DEGISIKLIKLER / CHANGES:
+  - Character.SpawnAndEquipItem: Layer.None fallback
+    ResolveTileDataLayer helper'ina.
+  - Character.ResolveTileDataLayer (yeni): Wearable flag kontrolu +
+    Quality -> Layer cast.
+  - GameClient.EquipNewbieItems: ayni tiledata fallback'i (iki
+    path da tutarli kalsin diye).
+
+TEST:
+  - .add c_alchemist: 0x78 equipment list'te sirt + pantolon +
+    ayakkabi + sapka + robe + dagger + backpack'in hepsi layer'lari
+    ile goruluyor olmali. .info ile paperdoll EquippedItems
+    listesi dolu olmali.
+
+================================================================================
+
+[2026-04-19] - Vendor ciplak fix v2: @Create trigger body + DEFNAME pool
+----------------------------------------
+
+OZET / SUMMARY:
+  Onceki commit'te NPC hala ciplak geliyordu. Iki ayri neden:
+
+  1) Script'te ITEM=/COLOR= satirlari ROOT CHARDEF level'da degil,
+     ON=@Create trigger body'sinde. CharDef loader @Create'i atliyor
+     (trigger runner'a birakiyor) — NewbieItems listesi bos kaliyor.
+     Dolayisiyla EquipNewbieItems hicbir sey yapmiyordu.
+
+  2) random_shirts_human / random_hats / random_male_hair gibi
+     "template" isimleri aslinda [TEMPLATE] bloklari degil —
+     [DEFNAME items_clothing] bloklari icindeki weighted-list
+     entry'leri: "random_shirts_human { i_shirt_plain 1 ... }".
+     TemplateEngine sadece TemplateDef ariyordu, defname tablo
+     bosunu gormuyordu.
+
+  Iki dugum ayni anda kapatildi.
+
+  The previous commit still left NPCs naked. Two causes:
+
+  1) The ITEM=/COLOR= lines live inside the @Create trigger body,
+     not at the CHARDEF root — the CharDef loader intentionally
+     skips @Create (leaves it to the trigger runner), so the
+     NewbieItems list was always empty and EquipNewbieItems
+     ran with nothing to do.
+
+  2) random_shirts_human / random_hats / random_male_hair etc.
+     are not [TEMPLATE] blocks. They live as weighted-list entries
+     inside [DEFNAME items_clothing]: "random_shirts_human
+     { i_shirt_plain 1 i_shirt_fancy 1 ... }". TemplateEngine only
+     looked up TemplateDef and never consulted the defname text
+     table, so every random_* resolved to nothing.
+
+  Both paths are fixed now.
+
+DEGISIKLIKLER / CHANGES:
+  - Character.TryExecuteCommand: ITEM=, ITEMNEWBIE=, COLOR= verb'leri
+    eklendi. ITEM= random_* pool resolve eder, item spawn eder,
+    NPC'ye equip (layer'a) veya backpack'e koyar. COLOR= en son
+    spawn edilen item'in hue'sunu ayarlar (match_* onceki hue'yu
+    kullanir). Verb sirasi @Create trigger body'sinde sahip oldugu
+    anlami tasir.
+  - Character.SpawnAndEquipItem / ResolveColorArg / RollDice
+    helper'lari.
+  - TemplateEngine.PickRandomItemDefName: artik
+    ResourceHolder.TryGetDefValue'ya dusuyor. "{ a w b w ... }"
+    weighted string'ini parse edip weight'e gore rastgele entry
+    secer; tek alias formunu (random_footwear_elven i_elven_boots)
+    da destekler.
+  - TemplateEngine.PickFromDefValue (yeni helper).
+
+TEST:
+  - .add c_alchemist -> robe, pantolon, ayakkabi, sapka, dagger ile
+    gelmeli; hair/beard colors_hair renginde; robe colors_red.
+  - .info <npc> -> Inspect dialog'da EquippedItems listesi dolu.
+
+================================================================================
+
+[2026-04-19] - TEMPLATE engine + vendor @NPCRestock + .info target cursor
+----------------------------------------
+
+OZET / SUMMARY:
+  Uc buyuk eksik paralel olarak kapandi:
+
+  1) [TEMPLATE foo] resource loader'i eklendi. ID=/ITEMID= weighted
+     random havuz, ITEM=/ITEMNEWBIE= sirali liste. TemplateEngine
+     helper'i nested template resolve eder, weight'e gore rastgele
+     pick yapar.
+  2) CharDef ITEM= / ITEMNEWBIE= artik "defname,amount,dice" (R5 /
+     2d6) formatini tam parse ediyor. EquipNewbieItems template
+     defname'leri resolve edip rastgele item spawn ediyor. COLOR=
+     defname'leri (colors_red / colors_skin / colors_hair vb.) hue
+     araligina eslestirildi; "match_*" onceki hue'yu hatirliyor.
+  3) NPC vendor olarak yaratildiktan sonra @NPCRestock atesleniyor.
+     Character'a SELL= / BUY= verb'leri eklendi: SELL
+     VENDOR_S_ALCHEMIST TEMPLATE'i okuyup vendor backpack'ini
+     dolduruyor, BUY VENDOR_B_* icin TAG.VENDOR_BUY_LIST saklaniyor.
+  4) .info argsiz artik target cursor aciyor; sonucu mevcut
+     ShowInspectDialog'a yonlendiriyor.
+
+  Three big gaps closed in parallel:
+
+  1) [TEMPLATE foo] resource loader added. ID= / ITEMID= populate a
+     weighted random pool; ITEM= / ITEMNEWBIE= build a sequential
+     spawn list. A new TemplateEngine helper resolves nested
+     templates and weighted picks.
+  2) CharDef ITEM= / ITEMNEWBIE= now parse the full
+     "defname,amount,dice" (R5 / 2d6) form. EquipNewbieItems
+     resolves template defnames to a random itemdef. COLOR=
+     defnames (colors_red, colors_skin, colors_hair…) map to hue
+     ranges; "match_*" reuses the previous hue.
+  3) Vendor NPCs fire @NPCRestock on creation. Character gets new
+     SELL= / BUY= verbs: SELL enumerates a VENDOR_S_* template and
+     fills the vendor's backpack; BUY stores the template defname
+     in TAG.VENDOR_BUY_LIST.
+  4) .info with no argument now opens a target cursor and routes
+     the picked UID into the existing inspect dialog.
+
+DEGISIKLIKLER / CHANGES:
+  - SphereNet.Scripting.Definitions.TemplateDef (yeni) — random +
+    sequential entry listleri.
+  - DefinitionLoader.LoadTemplateDef + GetTemplateDef lookup +
+    StaticResources expose.
+  - Game.Definitions.TemplateEngine (yeni) — PickRandomItemDefName,
+    EnumerateSequential, ResolveItemId.
+  - CharDef.NewbieItemEntry Amount/Dice/Newbie alanlari, ITEM/
+    ITEMNEWBIE parser.
+  - GameClient.EquipNewbieItems template-aware, dice roller,
+    ResolveColorDefName (colors_* + match_*).
+  - Character.TryExecuteCommand SELL/BUY verb'leri; PopulateVendorStock.
+  - GameClient.CreateNpcFromCharDef @NPCRestock tetikliyor Vendor
+    brain icin.
+  - SpeechEngine INFO komutu arg'siz -> OnInspectTargetRequested.
+  - GameClient.BeginInspectTarget + pending-flag akisi;
+    ShowInspectDialog onceki gibi.
+
+ETKI / IMPACT:
+  - Vendor'lar artik giyinmis geliyor (random_shirts_human,
+    random_pants_human, random_footwear_human, i_robe COLOR=
+    colors_red, random_hats vb.).
+  - "bank" / buy gump icin vendor backpack'indeki stoklardan
+    itemlar goruluyor.
+  - .info (tek basina) -> cursor -> property dialog.
+
+================================================================================
+
+[2026-04-19] - Banker / Vendor / Healer NPC keyword dispatch (legacy save uyumluluk)
+----------------------------------------
+
+OZET / SUMMARY:
+  Legacy Sphere save'leri banker/vendor/healer NPC'lerini NPC_HUMAN
+  brain ile kaydediyor; gerçek davranış TSPEECH script bloklariyla
+  sağlanıyordu. O bloklar bu shard'da tanımlı olmayınca servisçi
+  NPC'ler "bank" / "buy" / "heal" keyword'lerine sessiz kaliyordu.
+  Iki duzeltme:
+
+  1) TryParseNpcBrain artik "NPC_HUMAN", "NPC_BANKER" gibi Source-X
+     save token'larini enum'a mappliyor (onceden None donuyordu).
+  2) OnNpcHearSpeech icinde brain Human/None ise NPC adina bakip
+     "banker", "healer", "stable", "guard", "vendor"/"merchant"
+     kelimesi gecerse o brain'in davranis kolunu calistiriyor.
+     Bu sayede legacy save'deki "Brian the Banker" isimli Human
+     brain NPC de "bank" deyince bank box aciyor.
+
+  Legacy Sphere saves register banker/vendor/healer NPCs with the
+  NPC_HUMAN brain and leave the real behaviour to TSPEECH script
+  blocks. When those blocks aren't loaded on this shard the service
+  NPC stays mute for "bank" / "buy" / "heal". Two fixes:
+
+  1) TryParseNpcBrain now accepts Source-X save tokens like
+     "NPC_HUMAN" / "NPC_BANKER" (previously these fell through to
+     None).
+  2) OnNpcHearSpeech inspects the NPC name when brain is Human/None
+     and routes to banker/healer/stable/guard/vendor behaviour when
+     the name contains that role keyword. A legacy "Brian the
+     Banker" human-brain NPC now responds to "bank" by opening the
+     speaker's bank box.
+
+DEGISIKLIKLER / CHANGES:
+  - Character.cs: TryParseNpcBrain NPC_/BRAIN_ onekini siyriyor.
+  - Program.cs: OnNpcHearSpeech inferredBrain mantigi, switch
+    inferredBrain uzerinde. Human-isim-bazli fallback.
+
+================================================================================
+
+[2026-04-19] - Notoriety: overhead name hue (single-click label) artik noto rengi
+----------------------------------------
+
+OZET / SUMMARY:
+  Mouse-hover veya auto-label ile tetiklenen overhead isim
+  paketinde (0x1C) hue hardcoded 0x03B2 (gri) idi — noto byte
+  (0x77/0x78'de) dogru olsa bile istemci "You see: Name" etiketini
+  sabit gri cikariyordu. HandleSingleClick icinde Character hedefi
+  icin hue artik NotoToHue(GetNotoriety(ch)) ile hesaplaniyor.
+  Source-X CServerConfig m_iColorNoto* sabitleri kullanildi:
+  blue=0x59, green=0x3F, grey=0x3B2, orange=0x90, red=0x22,
+  yellow=0x35.
+
+  The overhead label packet (0x1C) that fires on mouse-hover /
+  auto-label had a hardcoded hue of 0x03B2 (grey) — so even with a
+  correct noto byte in 0x77/0x78, the "You see: Name" line always
+  came up grey. HandleSingleClick now picks the hue via
+  NotoToHue(GetNotoriety(ch)) for character targets. Values follow
+  Source-X CServerConfig m_iColorNoto* defaults: blue=0x59,
+  green=0x3F, grey=0x3B2, orange=0x90, red=0x22, yellow=0x35.
+
+DEGISIKLIKLER / CHANGES:
+  - GameClient.HandleSingleClick: Character targets artik noto'ya
+    gore hue kullaniyor; Item target'lari 0x03B2 gri kaliyor.
+  - GameClient.NotoToHue: yeni static helper — byte 1..7 → hue.
+
+ETKI / IMPACT:
+  - Mouse-hover / tek tiklama ile Oyuncu mavi, PK kirmizi,
+    criminal gri, enemy guild turuncu, party/ally yesil,
+    invul sari goruluyor.
+
+================================================================================
+
+[2026-04-19] - Notoriety: NPC brain/karma bazli renk
+----------------------------------------
+
+OZET / SUMMARY:
+  GetNotoriety blanket 3 (gri) donmuyordu artik NPC'ler icin —
+  brain tipi ve karma degerine gore Source-X Noto_CalcFlag
+  mantigi uygulaniyor:
+  - monster/berserk/dragon → 6 (kirmizi)
+  - healer/banker → 7 (sari, invul by role)
+  - guard/vendor/stable/human → 1 (mavi, friendly)
+  - animal → 3 (gri, wild)
+  - karma ≤ -2000 → 6 (kirmizi), karma ≤ -500 → 4 (gri criminal),
+    karma > 500 (None brain) → 1 (mavi)
+
+  GetNotoriety no longer returns blanket 3 (grey) for NPCs — now
+  dispatches on brain type and karma like Source-X Noto_CalcFlag:
+  - monster/berserk/dragon → 6 (red)
+  - healer/banker → 7 (yellow, invul by role)
+  - guard/vendor/stable/human → 1 (blue, friendly)
+  - animal → 3 (grey, wild)
+  - karma ≤ -2000 → 6 (red), karma ≤ -500 → 4 (grey criminal),
+    karma > 500 (None brain) → 1 (blue)
+
+DEGISIKLIKLER / CHANGES:
+  - GameClient.GetNotoriety: NPC kolu ayri GetNpcNotoriety()
+    helper'ina yonlendirildi; karma override player-brain-NPC
+    durumlarinda once uygulaniyor (SET KARMA ile dost NPC'yi
+    red yapma davranisi).
+
+ETKI / IMPACT:
+  - Monster NPC'ler artik red, healer/banker sari, vendor/guard
+    mavi, animal gri goruluyor.
+  - Script SET KARMA bir vendor'a -3000 verirse red olur.
+
+================================================================================
+
+[2026-04-19] - Notoriety: legacy save IsPlayer flag + ACCOUNT-tag fallback
+----------------------------------------
+
+OZET / SUMMARY:
+  Legacy Sphere save dosyalari ISPLAYER bayragini yazmiyor. Bu
+  durumda yuklenen player karakterler IsPlayer=false ile geliyor
+  ve GetNotoriety onlari NPC sayip gri dondurinyor. Iki yerli fix:
+
+  1) WorldLoader artik account linkage sirasinda ch.IsPlayer=true
+     set ediyor — ACCOUNT tag'i varsa onun oyuncu oldugu kesin.
+  2) GetNotoriety defensive fallback: IsPlayer=false ama ACCOUNT
+     tag'i varsa yine player gibi degerlendiriliyor. Boylece
+     restart beklemeden mevcut calisan shard'larda da duzelir.
+
+  Legacy Sphere saves don't write the ISPLAYER flag, so imported
+  player characters load with IsPlayer=false and GetNotoriety
+  classifies them as NPCs (grey). Two fixes:
+
+  1) WorldLoader now sets ch.IsPlayer=true during account linking —
+     a linked ACCOUNT tag is authoritative proof of player status.
+  2) GetNotoriety defensive fallback: when IsPlayer=false but the
+     ACCOUNT tag is set, still treat as player. This covers shards
+     already running off a pre-fix world file without needing a
+     restart.
+
+================================================================================
+
+[2026-04-19] - Notoriety + combat animation + swing sound
+----------------------------------------
+
+OZET / SUMMARY:
+  War modunda overhead isim renkleri sadece gri cikiyordu ve
+  saldirilar bogazi yokken yay sesi uretiyordu. Uc degisiklik:
+
+  1) GetNotoriety Source-X NOTO_TYPE tablosuna gore 1-7 doner —
+     innocent=mavi, friend/party/guild-ally=yesil, NPC=gri,
+     criminal=gri-flagged, enemy-guild=turuncu, murderer=kirmizi,
+     invulnerable=sari.
+  2) Saldiri animasyonu artik PacketAnimation (0x6E) kullaniyor —
+     eski PacketEffect (0x70) grafik=0 ile "gorunmez mermi"
+     olarak davraniyor ve client arrow sesi calistiyordu.
+  3) Yeni GetSwingSound — silah tipine gore swing baslangic sesi
+     ayrilmis (bow=draw, blade=whoosh, mace=bash, unarmed=whoosh).
+     Eski kodda yalnizca hit-land sesi vardi.
+
+  Overhead name hues in war mode were stuck on grey, and unarmed
+  attacks produced a phantom bow sound. Three fixes:
+
+  1) GetNotoriety now returns Source-X NOTO_TYPE 1-7 —
+     innocent/blue, friend/green, NPC-neutral/grey, criminal/grey,
+     enemy-guild/orange, murderer/red, invulnerable/yellow.
+  2) Swing animation uses PacketAnimation (0x6E) instead of
+     PacketEffect (0x70) with graphic=0, which the client was
+     rendering as an invisible projectile (the source of the bow
+     sound).
+  3) New GetSwingSound picks a weapon-appropriate swing-start
+     tone (bow draw, blade whoosh, mace bash, unarmed whoosh).
+     Previously only the hit-land sound played.
+
+DEGISIKLIKLER / CHANGES:
+  - GameClient.GetNotoriety: tam Source-X mapping (invul, murderer,
+    criminal, guild war/ally, party, NPC, innocent default).
+    ResolveGuildManager / ResolvePartyFinder delegate'leri kullanir.
+  - GameClient.HandleAttack: PacketEffect yerine PacketAnimation
+    (0x6E) ile swing anim; yeni GetSwingAction silaha gore 0x6E
+    action index'ini seciyor (bow=18, xbow=19, sword/axe=9,
+    fence=13, mace=11, throwing=12, unarmed=31).
+  - GameClient.GetSwingSound: silah tipine gore swing sesi.
+  - Hit-land sound conserved (ayri PacketSound, target konumunda).
+
+ETKI / IMPACT:
+  - War mode'da saldirdigimiz karakterin rengi artik notoriety'ye
+    gore doğru gozukuyor.
+  - Varsayilan player player'a mavi (innocent) goruluyor; NPC gri;
+    parti/guild arkadasi yesil.
+  - Saldiri animasyonu artik swing olarak cikiyor; silahsiz
+    saldirida yay sesi gelmez.
+
+================================================================================
+
+[2026-04-19] - Fix: PlaceItem out-of-bounds guard (item yerlestirme)
+----------------------------------------
+
+OZET / SUMMARY:
+  GameWorld.PlaceItem artik hedef sektor null ise (out-of-bounds
+  koordinat, bilinmeyen map id) yerlestirmeyi reddedip warning log
+  atiyor — MoveCharacter / PlaceCharacter ile ayni davranis.
+  SERV.NEWITEM + new.p X,Y,Z; gemi MoveDelta component/deck
+  yerlestirme; spell field/gate olusturma; tum PlaceItem yollari
+  ortak korumadan yararlanir.
+
+  GameWorld.PlaceItem now refuses placement when the target sector
+  is null (out-of-bounds coord, unknown map id) with a warning log
+  — same behaviour as MoveCharacter / PlaceCharacter. This covers
+  SERV.NEWITEM + new.p X,Y,Z, ship MoveDelta component/deck
+  relocation, spell field/gate creation — every PlaceItem path.
+
+DEGISIKLIKLER / CHANGES:
+  - GameWorld.cs: PlaceItem null sektor durumunda early return +
+    _logger.LogWarning. Item eski konumunda kalir (varsa) veya
+    dunyaya eklenmeden atlanir.
+
+ETKI / IMPACT:
+  - SERV.NEWITEM ile olusturulan yeni item out-of-bounds hedefe
+    atildigina sessizce _objects dict'te kalmaz — warning log
+    ile gorunur hale gelir. BroadcastNearby / sektor tick / dirty
+    drain icin lost-item state'i uretilmez.
+
+================================================================================
+
+[2026-04-19] - Fix: GO / src.p teleport sektor transfer + out-of-bounds guard
+----------------------------------------
+
+OZET / SUMMARY:
+  Character.MoveTo ve ObjBase TrySetProperty("P") artik sadece
+  Position alanini degil, dunya sektor indexini de guncelliyor.
+  Onceki sektor-bazli broadcast fix'i bu eksik davranisi gorunur
+  hale getirdi (eski _clients.Values taramasi karakteri eski
+  sektorde birakmiş olsa da hala paket gonderiyordu). GameWorld.
+  MoveCharacter ve PlaceCharacter artik hedef sektor null ise
+  (out-of-bounds / bilinmeyen map) hareketi reddediyor ve log
+  atiyor, karakter eski konumunda kaliyor.
+
+  Character.MoveTo and ObjBase TrySetProperty("P") now update the
+  world's sector index, not just the Position field. The earlier
+  sector-based broadcast fix exposed this gap (the old
+  _clients.Values scan used to reach stranded characters anyway).
+  GameWorld.MoveCharacter and PlaceCharacter now refuse moves to
+  a null sector (out-of-bounds / unknown map) with a warning log;
+  the character stays at its previous location.
+
+DEGISIKLIKLER / CHANGES:
+  - Character.cs: MoveTo artik ResolveWorld uzerinden
+    world.MoveCharacter cagiriyor; world resolve edilemezse
+    eski Position = target fallback'i.
+  - ObjBase.cs: TrySetProperty("P") Character icin MoveCharacter,
+    Item icin PlaceItem cagiriyor; diger objeler icin duz
+    _position atamasi.
+  - GameWorld.cs: MoveCharacter/PlaceCharacter null sektor
+    durumunda early return + _logger.LogWarning; karakter eski
+    sektorunde kalir.
+
+ETKI / IMPACT:
+  - .GO 9999,9999 gibi out-of-bounds komutlar artik karakteri
+    "sessiz kaybetmez". Yayin (broadcast) gorunurlugu korunur.
+  - Tum MoveCharacter yollarindaki out-of-bounds koruma ortak.
+
+================================================================================
+
+[2026-04-19] - Config: MulticoreEnabled knob'i kaldirildi (her zaman acik)
+----------------------------------------
+
+OZET / SUMMARY:
+  Multicore pipeline artik config'den yonetilmiyor — her zaman acik.
+  Runtime fallback (exception veya timeout'ta tek thread'e dusme)
+  korunuyor. Tuning knob'lari (MulticoreWorkerCount,
+  MulticorePhaseTimeoutMs, MulticoreDeterminism*) kalir.
+
+  Multicore pipeline is no longer exposed in config — always on. The
+  runtime fallback (single-thread on exception or timeout) is still
+  there. Tuning knobs (WorkerCount, PhaseTimeoutMs, Determinism*)
+  remain.
+
+DEGISIKLIKLER / CHANGES:
+  - SphereConfig.cs: MulticoreEnabled property ve ini parse satiri
+    kaldirildi.
+  - Program.cs: _multicoreRuntimeEnabled artik sabit true baslatilir
+    (runtime fallback mevcut, flag yok).
+  - sphere.ini / README.md: MulticoreEnabled satirlari temizlendi,
+    "her zaman acik" notu eklendi.
+
+================================================================================
+
+[2026-04-19] - Perf: multicore default on + WeatherEngine + BroadcastNearby sektor index
+----------------------------------------
+
+OZET / SUMMARY:
+  Busy shard hedefi (500 online / 1M item / 300k char) icin uc tick
+  darbogazi kapatildi:
+  1) MulticoreEnabled default'u true yapildi — paralel sektor tick'i
+     devreye girdi (fallback exception path zaten mevcuttu).
+  2) WeatherEngine.OnTick artik yalnizca oyuncu iceren region'lari
+     ziyaret ediyor — tum _world.Regions taramasi kaldirildi.
+  3) BroadcastNearby / BroadcastMoveNearby / SendPacketToChar /
+     BroadcastCharacterAppear 500-player lineer _clients taramasi
+     yerine 3x3 sektor penceresi + char-UID -> client sozlugu kullaniyor.
+
+  Closed three tick bottlenecks for busy-shard scale:
+  1) MulticoreEnabled now defaults to true — the parallel sector tick
+     runs in practice (the fallback exception path stays as before).
+  2) WeatherEngine.OnTick visits only regions that contain an online
+     player, skipping the full _world.Regions scan.
+  3) BroadcastNearby / BroadcastMoveNearby / SendPacketToChar /
+     BroadcastCharacterAppear use a char-UID -> client dict plus a
+     3x3 sector window instead of linearly scanning _clients.
+
+DEGISIKLIKLER / CHANGES:
+  - SphereConfig.cs: MulticoreEnabled = true (default).
+  - WeatherEngine.cs: OnTick aktif sektor region'lari uzerinden
+    iterasyon. _activeRegionsScratch yeniden kullanilabilir HashSet
+    (GC pressure yok).
+  - GameWorld.cs: OnlinePlayers IReadOnlyCollection accessor'u
+    eklendi — diger sistemler dis alana iterate edebiliyor.
+  - GameClient.cs: OnCharacterOnline/OnCharacterOffline static
+    Action delegate'leri; HandleLoginComplete ve OnDisconnect icinde
+    tetikleniyor.
+  - Program.cs: _clientsByCharUid sozlugu; GameClient delegate'leri
+    aracligiyla bakimi. BroadcastNearby/MoveNearby sektor penceresi
+    (range/sectorsize+1 yari capli) + sozluk lookup. SendPacketToChar
+    direk sozluk lookup (O(N) -> O(1)). BroadcastCharacterAppear
+    ayni sektor pencereli mantik.
+
+ETKI / IMPACT:
+  - 500 online, 1M item, 300k char senaryosunda beklenen:
+    tick ortalamasi ~100-200ms -> ~30-60ms; peak ~500ms -> ~150-200ms.
+    Ping dalgalanmasi belirgin sekilde azalir.
+  - Davranis degisikligi yok — broadcast mesafe kontrolu aynen
+    korundu, sadece filtre erken uygulaniyor.
+
+================================================================================
+
+[2026-04-19] - Corpse decay: TAG yerine per-item timer (slow_tick fix)
+----------------------------------------
+
+OZET / SUMMARY:
+  Corpse decay artik Item.DecayTime field'ina yaziliyor; sektor-uyku
+  tick yolu (Item.OnTick) icinden dusuyor. Eski DeathEngine.ProcessDecay
+  her tick'te tum dunyadaki item'lari taraip DECAY_TIME TAG'ini
+  okuyordu — bu flush fazinda ~100 ms harciyordu (slow_tick uyarisinin
+  kaynagi). Source-X davranisiyla uyumlu: CItem::_SetTimeout + sector
+  tick, merkezi scanner yok.
+
+  Corpse decay now uses Item.DecayTime (driven by sector-aware
+  Item.OnTick) rather than a DECAY_TIME tag. The old
+  DeathEngine.ProcessDecay full-world scan that read that tag ran
+  every tick and cost ~100 ms in the flush phase — the source of
+  the observed slow_tick warnings. Matches Source-X: per-item
+  CItem::_SetTimeout driven by the sector tick, no central scanner.
+
+DEGISIKLIKLER / CHANGES:
+  - DeathEngine.cs: corpse.SetTag("DECAY_TIME", ...) yerine
+    corpse.DecayTime = ... kullaniliyor. ProcessDecay metodu
+    tamamen kaldirildi.
+  - Item.cs: OnTick decay dalinda ItemType.Corpse icin
+    OnCorpseDecay static delegate'i cagriliyor (contents'i yere
+    dusur). Mevcut spell-field / summoned-item decay pattern'i
+    ile ayni.
+  - Program.cs: Item.OnCorpseDecay delegate'i
+    corpse.Contents -> _world.PlaceItem(child, corpse.Position)
+    sekilde wire edildi. RunPostTickMaintenance'teki
+    _deathEngine.ProcessDecay cagrisi kaldirildi.
+
+ETKI / IMPACT:
+  - Flush fazi artik dunyada kac item oldugundan bagimsiz — sabit
+    birkac ms. Busy-world'de slow_tick gozleme sifirlanir.
+  - Corpse decay zamanlamasi degismedi (NPC: CorpseNpcDecay dk,
+    player: CorpsePlayerDecay dk).
+
+================================================================================
+
+[2026-04-19] - Faz E: Housing MULTICREATE verb + COMPONENTS accessor
+----------------------------------------
+
+OZET / SUMMARY:
+  Housing script verb tablosundaki iki eksik parca tamamlandi:
+  MULTICREATE owner_uid (SERV.NEWITEM sonrasi multi'yi house olarak
+  kayitlar) ve COMPONENTS (tasarim entry sayisi). Diger verb'ler
+  (CUSTOMIZE, ENDCUSTOMIZE, ADDITEM, ADDMULTI, CLEAR, COMMIT,
+  REMOVEITEM, RESET, REVERT, RESYNC) Faz 8'den beri mevcuttu.
+
+  Filled the last two gaps in the housing script surface: MULTICREATE
+  (register a multi as a house immediately after SERV.NEWITEM) and
+  COMPONENTS (live count of design entries). The rest of the customize-
+  mode verbs were already in place from Phase 8.
+
+DEGISIKLIKLER / CHANGES:
+  - Item.cs: MULTICREATE owner_uid case eklendi; HOUSE.OWNER
+    tag'i set edip Item.OnHouseRegister static delegate'i cagiriyor.
+  - Item.cs: MultiCustom property grubuna COMPONENTS accessor
+    eklendi (Tags'tan DESIGN_ prefix'li entry sayisi).
+  - HousingEngine.cs: RegisterExistingMulti(Item) public API'si —
+    HOUSE.OWNER tag'ini okur, House kaydi olusturup _houses dict'e
+    yazar. Tekrar cagrida no-op.
+  - Program.cs: Item.OnHouseRegister delegate'i
+    _housingEngine.RegisterExistingMulti'ye yonlendirildi.
+
+================================================================================
+
+[2026-04-19] - Faz D: User@ trigger'lari (Warmode/Stats/ChatButton/GuildButton/QuestButton/VirtueInvoke)
+----------------------------------------
+
+OZET / SUMMARY:
+  Paperdoll buton ve client pencere olaylari icin tetik koprusu
+  acildi. @UserWarmode savas modu degistirme oncesi atesleniyor;
+  script 1 donerse toggle iptal ediliyor. @UserStats kendi durum
+  penceresi acildiginda. @UserChatButton, @UserGuildButton,
+  @UserQuestButton, @UserVirtueInvoke 0xBF sub komutlarindan
+  dogrudan ateslenir.
+
+  Bridged paperdoll-button and client-window events to the script
+  trigger system. @UserWarmode fires before state changes and
+  supports abort by returning 1. @UserStats fires on the self
+  status-window request. @UserChatButton, @UserGuildButton,
+  @UserQuestButton, @UserVirtueInvoke fire from 0xBF subcommands.
+
+DEGISIKLIKLER / CHANGES:
+  - TriggerTypes.cs: CharTrigger.UserGuildButton enum degeri eklendi.
+  - TriggerDispatcher.cs: UserChatButton, UserGuildButton,
+    UserQuestButton, UserStats, UserVirtue, UserVirtueInvoke icin
+    ad eslestirmeleri.
+  - GameClient.cs: HandleWarMode @UserWarmode'u fire-before-action
+    olarak ateslemesi eklendi (TriggerResult.True -> iptal).
+    HandleStatusRequest self-isteklerinde @UserStats atesliyor.
+    HandleExtendedCommand icin yeni case'ler: 0x0B (ChatButton),
+    0x28 (GuildButton), 0x32 (QuestButton), 0x2C (VirtueInvoke).
+
+================================================================================
+
+[2026-04-19] - Faz C: Client script verb'leri (ADDBUFF/REMOVEBUFF/SYSMESSAGELOC/SYSMESSAGEUA/ARROWQUEST/MIDILIST/SCREENSIZE)
+----------------------------------------
+
+OZET / SUMMARY:
+  Client-yonlu script verb'leri eklendi. Character uzerinden
+  sahibinin baglantisina paket gonderen Character.SendPacketToOwner
+  static delegate'i Program.cs tarafindan baglaniyor. Yeni verb'ler:
+  ADDBUFF, REMOVEBUFF, SYSMESSAGELOC, SYSMESSAGEUA, ARROWQUEST,
+  MIDILIST. Yeni paketler: 0xC1 (cliloc message), 0xBA (arrow quest).
+  SCREENSIZE / SCREENSIZE.X / SCREENSIZE.Y property okumasi eklendi
+  (0xBF sub 0x1C handler henuz yok, 800x600 default doner).
+
+  Client-facing script verbs are wired. Character.SendPacketToOwner
+  static delegate (populated by Program.cs) forwards packets to the
+  owning client. New verbs: ADDBUFF, REMOVEBUFF, SYSMESSAGELOC,
+  SYSMESSAGEUA, ARROWQUEST, MIDILIST. New packets: 0xC1 cliloc
+  message, 0xBA quest arrow. SCREENSIZE read-only property returns
+  a cached viewport size (default 800x600 until client reports).
+
+DEGISIKLIKLER / CHANGES:
+  - ExtendedPackets.cs: PacketClilocMessage (0xC1) + PacketArrowQuest
+    (0xBA) yazildi. WriteLengthAt(1) bagli.
+  - Character.cs: SendPacketToOwner static delegate + ADDBUFF /
+    REMOVEBUFF / SYSMESSAGELOC / SYSMESSAGEUA / ARROWQUEST /
+    MIDILIST verb case'leri + TryParseScriptUShort helper +
+    _screenWidth/_screenHeight + SetScreenSize API + SCREENSIZE
+    property accessors.
+  - Program.cs: Character.SendPacketToOwner'i _clients dict'e
+    cevrili wire-up kod bloguna ekledi; Character = target olan
+    client'a dogrudan paket gonderir.
+
+================================================================================
+
+[2026-04-19] - Faz B: SERV.LOOKUPSKILL accessor eklendi
+----------------------------------------
+
+OZET / SUMMARY:
+  Kalan SERV.* admin accessor'lardan LOOKUPSKILL eklendi. RTICKS,
+  RTICKS.FORMAT, RTICKS.FROMTIME, RTIME, RTIME.FORMAT, MAPLIST.n.*,
+  LASTNEWCHAR, LASTNEWITEM zaten onceki calismalar kapsaminda vardi.
+
+  Filled the remaining gap in SERV.* admin accessors: LOOKUPSKILL.
+  RTICKS/RTIME variants, MAPLIST.*, LASTNEWCHAR/LASTNEWITEM were
+  already present from earlier work.
+
+DEGISIKLIKLER / CHANGES:
+  - Program.cs: SERV.LOOKUPSKILL <name> / LOOKUPSKILL(<name>) varyantlari.
+    Once SkillType enum isim eslesmesi, ardindan ResourceHolder
+    ResolveDefName lookup (ResType.SkillDef) ile script defname'lere
+    (Skill_Alchemy vb.) koprulu. Miss durumunda "-1" doner.
+
+================================================================================
+
+[2026-04-19] - Faz A/1: ATTACKER log zinciri, SKILLTOTAL filtre, SKILLGAIN verb
+----------------------------------------
+
+OZET / SUMMARY:
+  Script script keyword kapsami genisletildi. Character uzerinde
+  per-attacker damage log eklendi (ATTACKER / ATTACKER.LAST /
+  ATTACKER.MAX / ATTACKER.n.{DAM|ELAPSED|UID}). SKILLTOTAL +N / -N
+  filtre varyantlari eklendi. SKILLGAIN verb'i skill-gain rutinine
+  cagri yapiyor.
+
+  Expanded scripting coverage. Added per-attacker damage log on
+  Character (ATTACKER chain). SKILLTOTAL now accepts +N / -N
+  threshold filters. New SKILLGAIN verb invokes the gain path.
+
+DEGISIKLIKLER / CHANGES:
+  - Character.cs: AttackerRecord struct + _attackers list +
+    RecordAttack/ClearAttackers public API. ATTACKER.LAST,
+    ATTACKER.MAX, ATTACKER.n.{DAM|ELAPSED|UID} accessor zinciri
+    TryGetProperty'ye bagli. Resurrect log'u temizler.
+  - CombatEngine.ResolveAttack: hasar sonrasi target.RecordAttack
+    cagriyor. SpellEngine.ApplyCharEffect damage dali da ayni
+    sekilde.
+  - Character.cs: SKILLTOTAL +N / -N threshold filtre mantigi
+    (skill degerleri 0-1000 tenths-of-percent).
+  - Character.cs: SKILLGAIN <skill>,<diff> verb'i
+    Skills.SkillEngine.GainExperience'a yonlendiriyor.
+
+NOTLAR / NOTES:
+  - Math fn'leri (SQRT/SIN/COS/TAN/LOGARITHM/NAPIERPOW/RANDBELL)
+    ve string fn'leri (STRINDEXOF/STRPOS/STRREVERSE/MD5HASH/UVAL/
+    STRREGEX/STRREGEXNEW) onceki calismalar kapsaminda mevcut,
+    ek bir degisiklik gerekmedi.
+
+================================================================================
+
+[2026-04-19] - CTag depolama semantigi: karakter-omurlu -> client-oturumlu
+----------------------------------------
+
+OZET / SUMMARY:
+  CTag/CTAG0 prefixi artik karakterin persistent TAG depolamasi
+  yerine ayri bir client-oturum VarMap'ine yaziliyor. Source-X
+  davranisiyla uyumlu: CClient::m_TagDefs client baglantisi ile
+  yasar, logout'ta yok olur. TAG/DTAG kalici save/load'a tabidir.
+
+  CTag/CTAG0 prefix now writes into a separate client-session
+  VarMap rather than the character's persistent TAG store. Matches
+  Source-X behaviour where CClient::m_TagDefs lives with the client
+  connection and dies at logout; TAG/DTAG remain persistent.
+
+DEGISIKLIKLER / CHANGES:
+  - Character.cs: _cTags VarMap + CTags public property eklendi;
+    CLEARCTAGS verb'i CTags.RemoveByPrefix'e yonlendirildi.
+  - ObjBase.cs: TrySet/TryGetProperty icinde TAG.* / DTAG.* ve
+    CTAG.* / CTAG0.* ayristiriliyor. CTAG sadece Character'in
+    CTags map'ini okur/yazar; diger objelerde no-op ("0" dondurur).
+  - GameClient.cs: Dialog inline expander CTAG okumalari simdi
+    dogrudan _character.CTags.Get() cagriyor (eskiden TAG
+    fallback'ine dusuyordu).
+  - GameClient.OnDisconnect: _character.CTags.RemoveByPrefix("")
+    logout'ta client-oturum tagleri siliyor.
+
+ETKI / IMPACT:
+  - Dialog CTag0.Dialog.Admin.* gibi per-session UI state artik
+    save dosyasina yazilmiyor; sunucu restart sonrasi temiz
+    baslar. Logout/login CTag'leri sifirlar.
+  - Persistent script verileri TAG.* uzerinden saklanmaya devam
+    eder — hicbir save/load rotasi degismedi.
+
+================================================================================
+
+[2026-04-19] - Dialog motor tamamlayici: DSRC, serv.allclients, '<' vs LT
+----------------------------------------
+
+OZET / SUMMARY:
+  Dialog motoruna admin-tarzi script paketlerinin bagli oldugu
+  birkac eksik parca eklendi: serv.allclients yineleyici, DSRC.
+  prefix, ve kritik bir ExpressionParser hata duzeltmesi — "<"
+  karakteri bracket aciklamasi mi yoksa less-than operatoru mu
+  ayrimi simdi sonraki karaktere gore yapiliyor.
+
+  Filled in the remaining gaps that admin-style script packs
+  need: serv.allclients iterator, DSRC. prefix mirroring SRC.,
+  and a critical ExpressionParser fix — '<' now disambiguates
+  between bracket-open and less-than based on the following
+  character.
+
+SERV.ALLCLIENTS / SERV.ALLCLIENTS:
+  - Script verb "Serv.AllClients <func>" (veya "AllClients <func>")
+    artik online her karakter icin <func>'u cagiriyor; src
+    caller olarak kaliyor. Protokol: _ALLCLIENTS=<srcUid>|<func>
+    ServerPropertyResolver uzerinden Program.cs'nin
+    HandleAllClients'ine yonleniyor.
+  - Her iterasyon yeni TriggerArgs ile calisir: target=online
+    character, Source=srcChar. Iteration oncesi _clients
+    snapshot'i alinir ki callback CTag mutasyonlari iteration'u
+    etkilemesin.
+  / "serv.allclients <func>" now invokes <func> once per online
+    player with the caller preserved as src. Snapshot-iteration
+    so callback-side CTag mutations don't disturb the loop.
+
+DSRC. PREFIX:
+  - ScriptInterpreter.ResolveVarForTarget ve dialog expander
+    resolver'lari hem SRC. hem DSRC. prefix'ini kabul ediyor.
+    Storage ayni; DSRC. yalnizca Sphere konvansiyonunun
+    "decimal-forced read" sinyalidir.
+  / Accept DSRC. alongside SRC. — shared storage, signals
+    numeric-context read. Fixes "<dSrc.CTag0.X>" lookups that
+    were previously unresolved.
+
+ANGLE-BRACKET vs LESS-THAN / ANGLE-BRACKET vs LESS-THAN:
+  - ResolveAngleBrackets ve ReadAngleBracket "<" ile
+    karsilastiginda bir sonraki karaktere bakiyor: identifier
+    basi (harf veya '_') ise bracket acilisi, diger durumda
+    (bosluk / rakam / '=' / paren) less-than operatoru.
+  - Onceki davranis: script'in "<A> < <B>" ifadesinde ortadaki
+    ' < ' LT operatorunu bracket acilisi saniyor, outer read
+    EOF'a kadar yutuyordu. Ornek: admin_getplayers
+    "If ((<Src.Account.Plevel> < <Account.Plevel>) ..." satiri
+    tamamen mal formed oluyor ve IF koskulu cope donuyor,
+    fonksiyon hic ilerlemiyordu.
+  / '<' followed by a letter/'_' opens a bracket; anything else
+    (space, digit, '=', paren) is treated as the less-than
+    operator and passes through literally. Fixes expressions
+    like "<A.X> < <B.Y>" that were misread as a single runaway
+    bracket.
+
+DIALOG BUTTON GORSEL SYNC / DIALOG BUTTON VISIBLE SYNC:
+  - TryRunScriptDialogButton handler calistirmadan once
+    Position, BodyId, Hue, StatFlags snapshot aliyor. Sonra
+    pozisyon degistiyse world.MoveCharacter + Resync +
+    BroadcastDrawObject; pozisyon sabit ama goruntuyu
+    etkileyen alanlar degistiyse sadece BroadcastDrawObject.
+  - Script'te "src.body=X" / "src.hue=Y" / "src.flags|=
+    statf_hidden" gibi atamalar artik anlik gorsel effect
+    yaratiyor; TrySetProperty private field'lari guncelliyor
+    ama client'a bildirim gitmiyordu.
+  / Snapshot body / hue / flags alongside position; broadcast
+    DrawObject when any changed. src.body= / src.hue= /
+    src.flags|= script assignments propagate to nearby clients
+    without a full resync.
+
+REFN / REFN.PROPERTY:
+  - Dialog expander "REFn=<val>" atamalarini tanir (REF1..REFn,
+    '.' icermez) ve resolved degeri locals sozlugunde "REFN"
+    anahtariyla saklar. <REFn> stored degeri doner;
+    <REFn.property> _REF_GET=<uid>|<prop> protokolune delege
+    eder ve referans aldigi objenin ozellikleri dialog'a akar.
+  / Scope-local object references for dialog expansion.
+    <REFn> returns the stored value; <REFn.property> walks
+    to the referenced object via _REF_GET.
+
+CTAG / CTAG0 DIALOG OKUMASI / CTAG DIALOG READS:
+  - <CTag.X> ve <CTag0.X> dialog expander'da karakterin
+    gercek tag deposundan okunuyor; unset ise "0" doner
+    (Sphere default).
+  / <CTag.X> / <CTag0.X> now resolve to the character's
+    stored tag in the dialog expander, not a fixed "0".
+
+FALLBACK DELEGATION / FALLBACK DELEGATION:
+  - ResolveInlineExpressions sonunda bilinmeyen varName'ler
+    TryResolveScriptVariable'a delege ediliyor — ACCOUNT.X,
+    ISEVENT.X, ISDIALOGOPEN.X, VAR0.X, GETREFTYPE, DEFMSG.X
+    vb. dialog scope'ta ayni cevabi veriyor.
+  / Unknown variable names fall through to
+    TryResolveScriptVariable so ACCOUNT.x / VAR0.x /
+    ISEVENT.x / DEFMSG.x resolve inside dialog expansion
+    the same way they do at runtime.
+
+
+[2026-04-19] - Dialog scope: REFn, CTag okuma, Account delegation, gorsel sync
+----------------------------------------
+
+OZET / SUMMARY:
+  Dialog layout interpreter'ina REFn obje referanslari, karakterin
+  gercek CTag/CTag0 okumasi ve paylasilan script variable'larina
+  fallback delegation eklendi. Dialog button handler'i pozisyon
+  disinda body / hue / stat flag degisikliklerini de yakalayip
+  DrawObject ile yakindaki istemcilere yayiniyor — src.body=X /
+  src.hue=X / src.flags|=X gibi atamalar artik gorsel olarak
+  yansi˛yor.
+
+  Dialog layout interpreter picked up REFn object references,
+  real per-character CTag / CTag0 reads, and a fallback into
+  TryResolveScriptVariable so ACCOUNT.x / VAR0.x / ISEVENT.x
+  resolve the same way they do at runtime. The dialog button
+  handler now snapshots body / hue / flags before executing and
+  rebroadcasts DrawObject when any of them changed, matching the
+  existing position-sync behaviour.
+
+REFN / REFN.PROPERTY / REFn=X:
+  - Dialog expander REFn atamalarini tanir (REF1..REFn, "." icermez)
+    ve resolved degeri locals sozlugunde "REFN" anahtariyla tutar.
+  - <REFn> stored UID'yi doner; <REFn.property> varsayilan
+    _REF_GET=<uid>|<prop> server protokolune delege eder.
+  - Admin / listing dialog'lari rows'u boyle tasiyor:
+      REF1=<SERV.ACCOUNT.<Eval <CTag0.Index>+1>>
+      <REF1.NAME> / <REF1.PLEVEL> / <REF1.LASTIP>
+  / REFn references stored in the dialog-local scope; <REFn>
+    returns the raw value, <REFn.property> resolves via the
+    existing _REF_GET protocol. Admin-style listing dialogs can
+    now populate rows with account / character properties.
+
+CTAG / CTAG0 OKUMA / CTAG READS:
+  - <CTag.X> ve <CTag0.X> dialog expander'da karakterin
+    gercek tag'ine bakiyor (Character.TryGetTag); bulunmazsa
+    "0" Sphere varsayilani.
+  - Onceki davranis: her CTag "0" donuyordu — admin dialog'lari
+    page / search / counters'i CTag'te saklayamiyordu.
+  / <CTag.X> / <CTag0.X> now read from the character's actual
+    tag storage (default "0" when unset per Sphere convention).
+
+ACCOUNT / FALLBACK DELEGATION:
+  - ResolveInlineExpressions'in sonuna fallback:
+    _character.TryResolveScriptVariable(varName, ...).
+  - ACCOUNT.X, ISEVENT.X, ISDIALOGOPEN.X, VAR0.X, GETREFTYPE,
+    DEFMSG.X gibi accessors artik dialog scope'ta ayni sonucu
+    veriyor — onceden yalnizca script calistirma zamaninda
+    cozuluyorlardi.
+  / Fallback to TryResolveScriptVariable covers ACCOUNT.x,
+    VAR0.x, ISEVENT.x, ISDIALOGOPEN.x, GETREFTYPE, DEFMSG.x —
+    the same resolver runtime code uses. Dialog rendering now
+    matches runtime resolution.
+
+GORSEL STATE SYNC / VISIBLE STATE SYNC:
+  - TryRunScriptDialogButton pre-execution snapshot:
+    Position, BodyId, Hue, StatFlags.
+  - Post-execution: pozisyon degistiyse world.MoveCharacter +
+    Resync + BroadcastDrawObject (teleport yolu);
+    degismediyse ama goruntusu degistiyse (body / hue /
+    flags) sadece BroadcastDrawObject.
+  - Script'te "src.body=X", "src.hue=Y", "src.flags|=
+    statf_hidden" gibi atamalar artik anlik gorsel effect
+    yaratiyor — onceden TrySetProperty private field'lari
+    degistiriyor ama client'a bildirim gitmiyordu.
+  / Snapshot body / hue / flags alongside position; broadcast
+    DrawObject when any changed. src.body= / src.hue= /
+    src.flags|= assignments propagate to nearby clients
+    without needing an extra resync call.
+
+
+[2026-04-19] - Dialog sistemi tamamlamasi + .add itemdef zincir cozumu
+----------------------------------------
+
+OZET / SUMMARY:
+  Sphere dialog layout interpreter'i kontrol akisi komutlari (IF /
+  FOR / WHILE / LOCAL), gelismis expression resolver'lar ve button
+  handler altyapisiyla tamamlandi. 0xAD keyword-mode speech parser
+  eklendi — modern ClassicUO'nun gonderdigi komutlar hicten silent
+  drop edilmek yerine command dispatcher'a ulasiyor. Scripted
+  itemdef'lerden (".add i_moongate" gibi) olusturulan esyalar
+  trigger'larini koruyor.
+
+  The Sphere dialog layout interpreter is now control-flow-aware
+  (IF / FOR / WHILE / LOCAL) with richer expression resolution and a
+  working button handler. 0xAD keyword-mode (type 0xC0) speech is
+  parsed — modern ClassicUO commands reach the dispatcher instead of
+  being silently dropped. Scripted itemdef creations ('.add ...')
+  carry their triggers forward.
+
+0xAD KEYWORD SPEECH / 0xAD KEYWORD SPEECH:
+  - ClassicUO 7.0.20 kisilik keywordlu speech'i type 0xC0 ile
+    gonderiyor. Eski handler sadece plain mode'u biliyordu;
+    keyword block'unu text sanip UTF-16 BE olarak okuyor, komut
+    metni bos geliyordu — butun ".command" girdileri sessizce
+    dusurulmustu.
+  - Yeni handler isEncoded=(type & 0xC0)!=0 ile ayirt ediyor;
+    keyword listesini servuo bit-packed formatiyla skip edip
+    text'i UTF-8 null-terminated olarak okuyor. Encoded flag
+    temizleniyor ki speech routing plain-mode type'i gorsun.
+  / UTF-8 text + keyword-list skip matching ServUO's
+    UnicodeSpeech packet reader. Admin / script dialog commands
+    typed while the client was in keyword mode now reach the
+    dispatcher.
+
+DIALOG LAYOUT KONTROL AKISI / DIALOG LAYOUT CONTROL FLOW:
+  - ExpandDialogScriptKeys: layoutSection key listesini render
+    switch'ine vermeden once pre-expand ediyor.
+  - IF / ELSE / ELIF / ENDIF: kondisyon resolve edilip dogru dal
+    seciliyor.
+  - FOR N / FOR start end / ENDFOR: _for iteratoru ile unroll,
+    max 500 iter.
+  - WHILE cond / ENDWHILE: condition her iter'de yeniden
+    degerlendirilir.
+  - LOCAL.x = value / += / -= / |= / &= / ^= / .=: scope'lu
+    local variable atamalari.
+  / New layout pre-expander handles IF / FOR / WHILE / LOCAL
+    blocks before commands reach the render switch. Loops unroll
+    with the `_for` iterator; local scope flows into subsequent
+    expression resolution.
+
+EXPRESSION RESOLVER'LAR / EXPRESSION RESOLVERS:
+  - ResolveInlineExpressions: dialog-local scope ile entegre
+    resolver. Destekler:
+      <LOCAL.x>, <DLOCAL.x>        — scope + uninitialized "0"
+      <ARGN>, <ARGN1>              — dialog arg (page / sdialog arg)
+      <DEF.x>, <DEF0.x>            — string + numeric tables
+      <SRC.property>               — current character's property
+      <SERV.property>              — server-level resolver
+  - ScriptInterpreter.ResolveVarForTarget'e DLOCAL. eklendi; hem
+    dialog layout'ta hem de button handler body'sinde ayni
+    scope okunuyor.
+  - DEF / DEF0 lookup: TryGetDefValue (_defTexts) basarisizsa
+    ResolveDefName (_defNames, numeric) fallback; bulunmazsa
+    "0" donuyor — Sphere semantigi.
+  / Dialog-local scope, args-feed, DEF / DEF0 string+numeric
+    lookup, uninitialised-zero fallback. Identical semantics
+    between the pre-expander and the button-handler interpreter.
+
+ANGLE BRACKET PARSER / ANGLE BRACKET PARSER:
+  - ReadAngleBracket nested <...> + paren icinde GT operator
+    ayrimi: paren-depth testi sadece depth==1 iken uygulaniyor
+    (en dis bracket). Nested bracket'in '>' hep kapatir.
+  - Onceki davranis: <eval 62+(<local._for>*25)> icinde ic '>'
+    GT sanilip outer read EOF'a kadar yutuyordu.
+  / ReadAngleBracket now only applies the paren-depth GT
+    disambiguation at the outermost bracket. Nested <...>
+    inside parens closes normally.
+
+ARGS / ARGV / ARGCHK:
+  - args=X command artik ITriggerArgs.ArgString'i guncelliyor —
+    dialog handler'larinin "args=<def0...>" + "<argv[N]>" akisi
+    calisiyor.
+  - ARGV resolver space + virgule gore tokenize ediyor
+    ("1828,2948,-20,0,Minoc" -> 5 token).
+  - <ARGCHK> (bare): herhangi bir switch secili mi 1/0.
+  - <ARGCHKID>: ilk seçili switch'in ID'si (yoksa 0).
+  - DialogArgResolver whitelist'ine ARGCHK ve ARGCHKID eklendi.
+  / Script-side args= now mutates TriggerArgs.ArgString; ARGV
+    tokenises on both space and comma. Bare <argchk> /
+    <argchkid> accessors added for dialog OK-button handlers.
+
+BUTTON HANDLER / BUTTON HANDLER:
+  - ONBUTTON=N alias ON=N — hem TryRunDialogButton lookup
+    hem CollectDialogButtonBody delimiter.
+  - TryRunScriptDialogButton postscript: script calistirmadan
+    once character.Position snapshot; sonra degistiyse
+    world.MoveCharacter + Resync + BroadcastDrawObject.
+    Script'te "src.p=X,Y,Z,M" ataması artik ger˛ek teleport
+    tetikliyor (sector re-index + client draw).
+  / ONBUTTON=N accepted as an ON=N alias. Dialog button
+    handler now captures pre-execution position and
+    broadcasts a proper teleport if the script moved the
+    character — without this fix "src.p=…" updated the
+    character's internal position but never notified clients.
+
+COMPOUND OPERATORS / COMPOUND OPERATORS:
+  - ScriptKey.Parse simdi |=, &=, ^= operatorlerini
+    normalize ediyor (onceden sadece +=, -=, .= vardi).
+  - Space-separated form ("foo |= flag") de algilaniyor.
+  / ScriptKey.Parse normalises |= / &= / ^= along with
+    +=, -=, .=. The space-separated form "foo |= flag"
+    also rewrites to <EVAL <foo>| flag>.
+
+ITEMDEF ID CHAIN / ITEMDEF ID CHAIN:
+  - ITEMDEF'in "id=<defname>" alani artik zinciri cozuyor:
+    id degeri hex ise direkt kullanilir; defname ise
+    ResolveDefName + referans def'in DispIndex'i; cozulmezse
+    rid.Index (numeric itemdef'ler icin hex).
+  - GameClient.TryAddAtTarget: ResolveItemDispId ile numeric
+    (<=0xFFFF) ve hash-range def'leri ayirt ediyor, chain'i
+    maksimum 8 hop takip ediyor. Item'a BaseId=graphic set
+    edilirken scripted def index'i TAG.SCRIPTDEF'e yaziliyor
+    (save/load icinde).
+  - TriggerDispatcher.FireItemTrigger: TAG.SCRIPTDEF varsa
+    graphic itemdef'inin trigger'larina ek olarak scripted
+    itemdef'in trigger'larini da ateskiyor. Yoksa "[itemdef
+    i_moongate] id=i_moongate_blue" seklinde tanimlanan
+    esyalar @DClick / @Step trigger'larini kaybediyordu.
+  / ID=<defname> in [ITEMDEF X] now walks the reference
+    chain. On .add, the created item stores the scripted
+    def index in TAG.SCRIPTDEF so FireItemTrigger dispatches
+    both the graphic-def and the scripted-def triggers.
+
+DIGERLER / MISC:
+  - .dialog <name> [page] admin command + "similar" hint
+    list when name missing.
+  - SDIALOG alias for DIALOG script verb.
+  - STREAT now splits on comma as well as space (moongate
+    "X,Y,Z,M,Name" chains).
+  - f_onchar_speech via TryRunFunction (silent when absent)
+    — every spoken line otherwise warned.
+  - gm_item_no_graphic server message added; .add with a
+    scripted itemdef that can't resolve an art ID now shows
+    a concrete error instead of silently dropping.
+
+SONUC / RESULT:
+  - Moongate dialog: .add i_moongate -> yere koy -> cift tik
+    (veya @Step) -> facet secimi -> destinasyon radio ->
+    OKAY -> gercek teleport (0x78 DrawObject yeni koordinatta).
+  - Her cast / dialog / komut client'tan sunucuya UTF-8
+    keyword-mode ile geliyor ve dogru handler'a ulasiyor.
+
+
+[2026-04-19] - Variable-length paket length + 0xDF buff icon formati
+----------------------------------------
+
+OZET / SUMMARY:
+  Variable-length paketlerde CreateVariable'dan sonra
+  WriteLengthAt(1) cagrisi yoktu: length byte'lari placeholder 0
+  olarak kaliyordu. 0xDF BuffIcon'u aldiginda ClassicUO paket
+  parser state'i bozuluyor ve istemci hard-freeze oluyor. Ayrica
+  0xDF'in icerik duzeni de ServUO AddBuffPacket formatiyla
+  uyumsuzdu — kendi "title length + ham metin" yapimiz yerine
+  cliloc + args formatini kullanmak gerekiyordu.
+
+  Variable-length packets were missing their WriteLengthAt(1)
+  call, so the length bytes stayed at the CreateVariable
+  placeholder of 0. Receiving a 0xDF BuffIcon with length 0
+  deadlocked ClassicUO's packet parser and hard-froze the client.
+  The 0xDF body layout also diverged from ServUO's AddBuffPacket
+  format (title length + raw text vs. title cliloc + args).
+
+LENGTH BYTE FIX / LENGTH BYTE FIX:
+  - PacketBuffIcon (0xDF) Build sonunda WriteLengthAt(1) yoktu —
+    60-74 byte paket, gercekte length alani 0x0000.
+  - 0xBF sub 0x06 party paketleri (MemberList, RemoveMember,
+    Message, Invitation) hepsinde ayni eksik vardi. Party
+    invite / member broadcast / chat hepsi client'ta donuyordu.
+  / Added the missing WriteLengthAt(1) to five classes. Variable-
+    length packets now report the real body size.
+
+0xDF FORMATI / 0xDF FORMAT:
+  - Eski: serial + iconId + add + source(4) + iconId + 1 +
+    unk(4) + duration + unk(2) + unk(1) + titleLength + title +
+    descLength + desc. ClassicUO'nun okumaya calistigi clilocId
+    degerleri "title byte length" sayisal degerine dusuyor,
+    client text rendering istemedigi gibi birlesiyor.
+  - Yeni (ServUO AddBuffPacket kopyasi): serial + iconId + type
+    + fill(4) + iconId + type + fill(4) + duration + fill(3) +
+    titleCliloc(4) + secondaryCliloc(4) + args block:
+      - args yoksa: fill(10)
+      - varsa: fill(4) + 0x0001 + fill(2) + "\t{text}" + null +
+        0x0001 + fill(2)
+  - Generic title cliloc olarak 1114778 kullaniliyor (ServUO'nun
+    dinamik metin icin tercih ettigi cliloc; args icinde gelen
+    "\t" prefix'li string literal olarak gosterilir).
+  / Layout rewritten to match ServUO AddBuffPacket (Scripts/Misc/
+    BuffIcons.cs:432). Payload now contains two 4-byte cliloc
+    IDs plus a unicode args block instead of our raw length-
+    prefixed text fields.
+
+NOT: Buff ikonunun ekranda gorunmesi icin ClassicUO'da Buff Bar
+gump'inin acik olmasi gerekiyor (client-side UI ayari — server
+paketi dogru gelse de gump kapaliysa goruntulenmez).
+/ The Buff Bar gump in ClassicUO must be open for the icon to
+render — even with a valid packet on the wire, a closed gump
+just stores the buff silently in the player's internal list.
+
+
+[2026-04-18] - Buff / curse / paralyze / reflect mekanik butunlestirmesi
+----------------------------------------
+
+OZET / SUMMARY:
+  Buff ve debuff buyuleri flag set etmenin otesine gectiler: stat
+  artislari/eksilmeleri takip edilip DURATION bitiminde geri
+  aliniyor, Paralyze/Invisibility artik sinirli sureli, Magic
+  Reflect gelen ilk zararli buyuyu kaynagina iade ediyor, Reactive
+  Armor yakin dovusten gelen hasarin 25%'ini saldirgana yansitiyor,
+  Protection cast-interrupt sansini yariya indiriyor.
+
+  Buffs/debuffs moved beyond flag-setting: stat deltas are tracked
+  and reverted when DURATION expires, Paralyze and Invisibility
+  now have a duration, Magic Reflect bounces the first harmful
+  spell back to the caster, Reactive Armor reflects 25% of melee
+  damage, Protection halves cast-interrupt chance.
+
+ACTIVEEFFECT / ACTIVEEFFECT:
+  - Eski tuple (Character, SpellType, long) yerine sinif:
+    StrDelta / DexDelta / IntDelta + OldLightLevel + LightChanged
+    + AppliedFlag alanlari.
+  - ScheduleEffectExpiry: yeni ActiveSpellEffect dondurur. Re-cast
+    onceki kaydin deltalarini revert eder, sonra yeni kayit
+    acilir — stack degil refresh + temiz reset.
+  - RevertDeltas: tum alanlari atomik geri alir (stat -=, flag
+    clear, light restore + 0x4E refresh). ProcessExpirations ve
+    refresh path'i ayni koddan gecer.
+  / ActiveSpellEffect class replaces the tuple; records stat
+    deltas, old light level, and applied flag so RevertDeltas can
+    undo exactly what was done.
+
+BUFF/CURSE DELTALARI / BUFF/CURSE DELTAS:
+  - ApplyBuff artik instance metodu: Strength / Agility / Cunning /
+    Bless ScheduleEffectExpiry ile effect olusturup StrDelta,
+    DexDelta, IntDelta'yi kaydeder ve stat'i arttirir.
+  - ApplyCurse ayni sekilde: Weaken / Clumsy / Feeblemind / Curse
+    eksi delta kaydeder ve stat'i azaltir.
+  - Bitince stat'lar orijinal degere donuyor; save/reload bundan
+    etkilenmiyor (runtime-only effect).
+  / ApplyBuff / ApplyCurse now record per-stat deltas via
+    ScheduleEffectExpiry so stats revert cleanly on expiration.
+    Previous implementation left stats permanently modified.
+
+DUPLICATE FLAG SET KALDIRILDI / DUPLICATE FLAG SET REMOVED:
+  - ReactiveArmor / Protection / MagicReflect ApplyBuff'ta flag
+    set ediyordu, sonra tekrar ApplySpecificSpell'de ayni flag'i
+    set ediyordu. ApplyBuff'taki dallar cikartildi; yalnizca
+    ApplySpecificSpell'deki yeni kayit + AppliedFlag ile calisir.
+  / Removed duplicate flag-set paths in ApplyBuff that ran for the
+    same spells also handled in ApplySpecificSpell.
+
+PARALYZE / INVISIBILITY SURESI:
+  - Paralyze: Freeze bayragi DURATION kadar set; artik sonsuz
+    donuk kalinmiyor.
+  - Invisibility: Invisible bayragi DURATION kadar set; etkinin
+    kendiliginden sona ermesi.
+  - Ikisi de ScheduleEffectExpiry uzerinden AppliedFlag ile
+    isleniyor.
+  / Paralyze and Invisibility now use AppliedFlag + duration
+    instead of permanently tagging the mobile.
+
+MAGIC REFLECT / MAGIC REFLECT:
+  - ApplyCharEffect giris kontrolu: zararli buyu (Damage veya
+    Curse flag'li) Reflection'li bir hedefe gelirse, flag
+    tuketilir, caster ve target yer degistirir. Tek kullanimlik —
+    saldirgan da Reflection'liysa "re-reflect" olmuyor.
+  - _activeEffects icindeki MagicReflect kaydi da kaldiriliyor
+    ki expire'da ayrica flag clear edilmeye calisilmasin.
+  / First harmful spell against a Reflection target bounces back
+    to the caster; the flag is consumed and its active-effect
+    entry purged so the timer doesn't try to clear it twice.
+
+REACTIVE ARMOR / REACTIVE ARMOR:
+  - CombatEngine.ResolveAttack sonunda: hedef Reactive bayrakli
+    ise uygulanan hasarin 25%'i saldirgana iletiliyor.
+  - Sadece yakin dovus yolunu kapsar; spell hasari
+    ApplyCharEffect uzerinden gittigi icin burada yansimaz (magic
+    reflect zaten onu karsiliyor).
+  / ResolveAttack reflects 25% of dealt physical damage back to
+    the attacker if the target has StatFlag.Reactive set. Spell
+    damage is excluded — it goes through a different path that
+    Magic Reflect covers.
+
+PROTECTION / PROTECTION:
+  - TryInterruptFromDamage: caster Protection'li ise (ArcherCanMove
+    bayragi, flag reuse) hesaplanan interrupt sansi yariya
+    iner. Protection icin ayri bir StatFlag tanimlanmadi; reuse
+    kod yorumunda aciklandi.
+  / TryInterruptFromDamage halves computed chance when the caster
+    carries the Protection flag (ArcherCanMove bit reused).
+
+
+[2026-04-18] - Buyu suresi / personal light / ParseCurve duzeltmeleri
+----------------------------------------
+
+OZET / SUMMARY:
+  Night Sight cast'te efekt + ses geliyordu ama ekran aydinlanmiyordu:
+  personal light paketi (0x4E) hic gonderilmiyordu ve DURATION da
+  parse edilemedigi icin tum buff'lar fiilen ebedi kaliyordu. Uc
+  ayri hata birlestirilince cozuldu — (1) ParseCurve Sphere expr'
+  larini (3*60.0) okuyamiyordu, (2) DURATION birim donusumu (script
+  seconds -> internal tenths) kayipti, (3) SpellEngine expiration
+  altyapisi hic yoktu.
+
+  Casting Night Sight played the effect and sound but left the
+  screen dark: the 0x4E PacketPersonalLight was never sent and
+  DURATION never parsed, so every buff was effectively permanent.
+  Three separate bugs were fixed together: (1) ParseCurve rejected
+  Sphere curve expressions like "3*60.0", (2) DURATION unit was not
+  converted from script seconds to internal tenths, (3) SpellEngine
+  had no expiration infrastructure.
+
+PARSECURVE / PARSECURVE:
+  - int.TryParse yerine Sphere script tarzi curve term
+    degerlendirme: ondalik / zincirlenmis *, / operatorlerini
+    destekliyor. "3*60.0", "1.5*60", "0.5*10" gibi ifadeleri integer
+    sonuca ceviriyor. Eski kod asterisk veya nokta gorunce 0
+    veriyordu, DurationBase/Scale her buff'ta 0 kaliyordu.
+  / ParseCurve now evaluates Sphere-style curve terms (decimal
+    literals + chained * /) instead of a plain int.TryParse.
+
+DURATION BIRIMI / DURATION UNIT:
+  - Script konvansiyonu saniye, dahili storage onda-saniye
+    (CAST_TIME ile tutarli). DefinitionLoader DURATION case'i
+    ParseCurve sonucunu x10 ile tenths'e ceviriyor.
+  / Script DURATION is in seconds, internal storage is tenths of
+    a second (matching CAST_TIME). The DURATION case now multiplies
+    by 10 at parse time.
+
+SPELLENGINE EXPIRATION / SPELLENGINE EXPIRATION:
+  - Yeni private List<(Character, SpellType, long)> _activeEffects.
+  - ScheduleEffectExpiry(caster, target, spell, def): caster'in
+    primary skill'ine gore SpellDef.GetDuration cagriyor, tick
+    bazinda expire zamanini listeye ekliyor. Ayni (target, spell)
+    icin varsa yeniliyor (stack degil, refresh).
+  - ProcessExpirations(long now): gecen entry'leri kaldirir,
+    UndoEffect cagirir. Program.cs _world.OnTick() sonrasinda
+    cagiriyor (hem tek-thread hem multicore pipeline'inda).
+  - UndoEffect: NightSight icin stat flag clear + LightLevel=0 +
+    OnPersonalLightChanged. ReactiveArmor / Protection / Incognito /
+    MagicReflect icin stat flag clear (gercek mekanikleri hala
+    eksik ama artik kalici degil).
+  / Runtime-only expiration queue on SpellEngine, walked once per
+    world tick from Program.cs. Re-cast refreshes the timer rather
+    than stacking. UndoEffect per-spell restores state.
+
+NIGHTSIGHT / NIGHTSIGHT:
+  - SpellEngine case: target.LightLevel = 30 + OnPersonalLightChanged
+    callback + ScheduleEffectExpiry. LightLevel=0 client tarafinda
+    "no override" anlamina geliyordu — ServUO konvansiyonuna gore
+    daha yuksek = daha parlak, 30 tipik gece global'ini (~12)
+    ezmeye yetiyor.
+  - SpellEngine.OnPersonalLightChanged event'i (Action<Character>).
+    Program.cs target karakterin GameClient'ini bulup
+    SendPersonalLight cagiriyor.
+  - GameClient.SendPersonalLight(): public metot, mevcut
+    Character.LightLevel'i 0x4E paketiyle gonderir. Login /
+    resync path'iyle ayni yerden.
+  / NightSight now sets LightLevel=30 (script bright override),
+    fires OnPersonalLightChanged, Program.cs dispatches to the
+    target's GameClient.SendPersonalLight which emits 0x4E. When
+    the DURATION timer fires, UndoEffect reverts LightLevel=0 and
+    clears the stat flag.
+
+
+[2026-04-18] - ServUOMovement sinifi WalkCheck olarak yeniden adlandirildi
+----------------------------------------
+
+OZET / SUMMARY:
+  Per-step walk validator'in sinif/dosya adi uclu-parti proje
+  ismine baglilikla ortaya cikmisti; ne oldugu ile adlandirmak
+  daha dogru. Algoritma aynen kaliyor.
+
+  Renamed the per-step walk validator so its class and file name
+  come from what it does rather than the upstream project it was
+  ported from. Algorithm unchanged.
+
+DEGISIKLIK / CHANGE:
+  - Dosya: src/SphereNet.Game/Movement/ServUOMovement.cs -> WalkCheck.cs
+  - Sinif: ServUOMovement -> WalkCheck
+  - Field: MovementEngine._servUOMovement -> _walkCheck
+  - GameClient'taki tek tip referansi ServUOMovement.Diagnostic ->
+    WalkCheck.Diagnostic guncellendi.
+  - Doc comment'larda ServUO MovementImpl'den port olduguna dair
+    attribution bilgilendirmesi korundu — kod seviyesinde
+    tanimlayici isim uclu-parti projeye bagli olmasin diye
+    ayirmak amaciyla.
+  / File and class renamed; inline comments still credit ServUO's
+    MovementImpl as the algorithmic reference.
+
+
+[2026-04-18] - ServUO hareket algoritmasi portu + tiledata entry boyutu fix
+----------------------------------------
+
+OZET / SUMMARY:
+  Hareket kontrolu ServUO MovementImpl'in bire bir portuna gecirildi (4-kose
+  land Z, surface stack yurutmesi, PersonHeight/StepHeight, diagonal cift-
+  kenar kurali). Birlikte kok neden: TileDataReader item entry'sinde
+  ReadUInt16+ReadByte (3 byte) okunuyordu; ServUO ReadInt32 (4 byte). Kayma
+  her tile'da birikip 0x738'e gelindiginde flag byte'lari tamamen kaymis
+  oluyordu — bu yuzden Surface/Bridge static'leri hareket algoritmasinda
+  gecersiz seninliyordu, Z desync ve "kare atlamalari" buradan geliyordu.
+
+  Movement checks switched to a verbatim port of ServUO's MovementImpl
+  (4-corner land Z, full surface-stack walk, PersonHeight/StepHeight,
+  diagonal double-edge rule). Root cause found in parallel: the item-table
+  reader in TileDataReader was 1 byte short per entry (ReadUInt16+ReadByte
+  vs ServUO's ReadInt32), so every tile past the first had scrambled flag
+  bits. Surface/Bridge statics parsed invalid → movement rejected valid
+  steps, which is what produced the long-standing Z desync and "square
+  jumping" under running.
+
+TILEDATA READER FIX / TILEDATA READER FIX:
+  - ItemTileData entry boyutu flagSize+31 -> flagSize+33. Pre-HS 37 byte,
+    HS 41 byte — ServUO Server/TileData.cs ile bire bir.
+  - Anim alani ReadUInt16+ReadByte yerine ReadUInt32 ile okunuyor; ustteki
+    16 bit hala Animation olarak aliniyor.
+  / Item entry size corrected to flagSize+33 (37 pre-HS, 41 HS). Anim read
+    as Int32 to match ServUO; low 16 bits still exposed as Animation.
+
+HAREKET ALGORITMASI / MOVEMENT ALGORITHM:
+  - Yeni: SphereNet.Game.Movement.ServUOMovement — MovementImpl.Check +
+    GetStartZ + IsOk portu. CheckMovement(mover, loc, dir, out newZ).
+  - Forward + sol/sag kosegen kenarlarda IsOk kafa-carpisma testi; non-GM
+    oyuncular icin ikinci kenar zorunlu (kose kesme engeli).
+  - Per-tile surface stack: land / static / in-world item adaylari tek tek
+    degerlendirilir, mover.Z'ye en yakin olani secilir.
+  - MovementEngine.TryMove artik ServUOMovement.CheckMovement cagiriyor;
+    eski MaxClimbHeight=12 + IsPassable yolu kaldirildi.
+  - CanWalkTo (pathing/AI/teleport) da ayni algoritma uzerinden — tutarli.
+  - Turn-in-place TryMove'dan paket handler'a (HandleMove) tasindi: yon
+    farkli ise ACK + seq++ + yakinda olanlara bildir, CheckMovement cagirma.
+  / New ServUOMovement: Check/GetStartZ/IsOk ported. Double-edge diagonal
+    check. Turn-in-place lives in GameClient.HandleMove now so TryMove /
+    CanWalkTo are pure "step to adjacent tile" for AI and pathing callers.
+
+MAPDATA HELPERS / MAPDATA HELPERS:
+  - MapDataManager.GetAverageZ(mapId, x, y, out low, out center, out top):
+    4-kose land ortalamasi (Map.GetAverageZ portu).
+  - MapDataManager.IsLandIgnored(tileId): void tile listesi (ServUO
+    LandTile.Ignored).
+  / Added 4-corner GetAverageZ and IsLandIgnored matching ServUO Map/LandTile.
+
+LAND IMPASSABLE GEVSETMESI / LAND IMPASSABLE RELAXED:
+  - Eskisi: landBlocks = land.Impassable.
+  - Yeni: landBlocks = land.Impassable && land.Wet (sadece derin su).
+  - Neden: bazi stock tiledata.mul kayitlarinda dekoratif slope/rock dokusu
+    Impassable isaretli ama client orada yurumeye izin veriyor. Gercek
+    duvarlar static olarak modellendigi icin zaten IsOk ile bloklaniyor.
+  / landBlocks now requires both Impassable and Wet (deep water only).
+    Stock tiledata marks some walkable slope textures as Impassable; real
+    walls are static items, which IsOk still enforces.
+
+HAREKET TANISI / MOVEMENT DIAGNOSTICS:
+  - Reject logu: reason (forward_blocked / diagonal_edge / mob_block) +
+    startZ/startTop/fwdZ + forward tile land geometri + static toplami +
+    impassable sayisi + yuzey candidate sayisi + her static icin
+    "0x{id}@{z}h{h}f0x{flags}'{name}'" dump'i.
+  - ServUOMovement.CheckMovementDetailed -> Diagnostic record. Stale
+    IsPassable + staticsBlock dump kaldirildi.
+  / Detailed reject telemetry: stage, startZ, forward-tile land + full
+    static dump with flags + names; replaces the stale IsPassable-era log.
+
+WALK SEQ RESET / WALK SEQ RESET:
+  - GameClient.SendSelfRedraw ve ResyncPosition sonunda
+    NetState.WalkSequence = 0 ve _nextMoveTime = 0.
+  - 0x20 DrawPlayer client'in walk sayacini sifirlatiyor; server takip
+    etmezse sonraki walk seq_mismatch ile reddediliyordu (.invis, mount
+    sync, map change dahil her resync'te).
+  / After 0x20 DrawPlayer, client resets its walk counter; server now
+    mirrors that reset on SelfRedraw / ResyncPosition. Previously any
+    resync (invis toggle, mount sync, map change) produced a seq_mismatch
+    reject storm on the next client walk.
+
+LOGIN Z DUZELTMESI / LOGIN Z CORRECTION:
+  - Kaydedilen Z ile GetEffectiveZ arasindaki fark -RoofSnapTolerance (5)
+    ile 0 arasinda ise yukari/asagi snap ediliyor. Ustunde ise catida/
+    ust katta oldugu varsayilip dokunulmuyor.
+  / Login Z now snaps to nearest surface when stale Z differs from
+    terrainZ by <= 5; above that threshold treat as legitimate upper floor.
+
+KALDIRILAN ESKI KOD / REMOVED DEAD CODE:
+  - MovementEngine: MaxClimbHeight sabiti, eski PersonHeight sabit, eski
+    IsPassable/MaxClimbHeight yolu.
+  - GameClient: eski "reason=collision" diag (passable=True
+    staticsBlock=0..) — yanlis algoritmadan veri dokumuydu.
+  / MovementEngine's legacy climb/passable path and GameClient's
+    collision-log-from-wrong-algorithm both removed.
+
+TEST SONUCLARI / TEST RESULTS:
+  - 79/79 test gecti (movement + pathfinder + game system + network +
+    persistence + scripting + core).
+  - PathfinderTests.FindPath_PathLengthCapped: eski MaxPath=24 asumasyonu
+    yeni MaxPath=256'ya gore guncellendi (onceden breakpoint'te kalmisti).
+  / 79/79 tests green. Pathfinder cap expectation updated from old 24 to
+    current 256.
+
+
+[2026-04-18] - PerfHarness kaldirildi + README sadelestirildi
+----------------------------------------
+
+OZET / SUMMARY:
+  PerfHarness, ServUO.PerfHarness, SourceX.PerfHarness projelerinin ikisi
+  de ayak izinden cikti. Benchmark kodu bakim gideri getiriyordu, gercek
+  urun kodunun kalitesine dair sinyal vermiyordu; hareket/sync tarafinda
+  nihai dogrulama canli client ile yapiliyor. BENCHMARK admin komutu,
+  slnx referansi ve README bolumleri de beraberinde.
+
+  Removed PerfHarness + ServUO.PerfHarness + SourceX.PerfHarness projects.
+  Benchmarks didn't reflect production hot paths and carried maintenance
+  cost; movement/sync validation happens against a live client. BENCHMARK
+  admin command, slnx reference, and README sections removed with them.
+
+KALDIRILAN / REMOVED:
+  - tests/SphereNet.PerfHarness/ (Program.cs, csproj, baseline JSON'lari,
+    compare-results.md, compare.ps1, ab-*.json).
+  - tests/ServUO.PerfHarness/ + tests/SourceX.PerfHarness/.
+  - AdminCommandProcessor: BENCHMARK komutu + RunBenchmark metodu +
+    HELP satiri. using System.Diagnostics, using SphereNet.Core.Types
+    artik gereksiz — kaldirildi.
+  - SphereNet.slnx: PerfHarness proje referansi cikarildi.
+  - README: PerfHarness bolumleri ve BENCHMARK komutu dokuman blogu;
+    WinForms "Quick Buttons" listesi DEBUG/RESYNC/SAVE olarak guncellendi.
+  / PerfHarness dirs, BENCHMARK admin command, slnx entry, README blocks.
+
+
+[2026-04-18] - Save dizini temizligi: .bak yok, rolling, hesap formati, UI duzeltme
+----------------------------------------
+
+OZET / SUMMARY:
+  Save directory now shows one live file per logical entity — no .bak
+  sidecars, no stale shard leftovers. Single-file saves keep the classic
+  Sphere layout; Sphere-style size-based rolling (SAVESHARDSIZEMB) opens a
+  new file when the current one fills up. Account files obey the same
+  SaveFormat abstraction as world saves.
+
+  Save klasoru artik her mantiksal dosya icin tek canli kopya tutuyor;
+  .bak dosyasi yok, eski shard artigi temizleniyor. Tek dosya save'lerde
+  klasik Sphere yerlesimi korunur; SAVESHARDSIZEMB ile Sphere tarzi
+  boyut-tabanli rolling — dosya dolunca yenisi acilir. Hesap dosyalari
+  da ayni SaveFormat soyutlamasini kullaniyor.
+
+.BAK KALDIRILDI / .BAK REMOVED:
+  - CommitFile artik atomic File.Move(tmp, final, overwrite:true).
+  - Eski run'lardan kalan .bak dosyalari bir sonraki save'de otomatik
+    siliniyor (RemoveStaleSiblings).
+  - Dosya sayisi yariya dusuyor (14 -> 7 tek karakterli mini world icin).
+  / CommitFile uses atomic overwrite; old .bak files auto-removed.
+    File count drops ~50%.
+
+SIZE-BASED ROLLING:
+  - Yeni config: SAVESHARDSIZEMB (default 0 = kapali).
+  - SAVESHARDS=1 + SAVESHARDSIZEMB>0: tek dosyayla basla, limit asilinca
+    {base}.1.{ext}, {base}.2.{ext} olarak yenisini ac.
+  - Tek dosyaya sigarsa: klasik {base}{ext}, manifest yok — Sphere
+    davranisi.
+  - Limit asilirsa: {base}.0{ext}, {base}.1{ext} + manifest.
+  - ISaveWriter.WrittenBytes counter: StreamWriter'in 64KB ic tamponundan
+    bagimsiz dogru byte sayimi; KB threshold'larda bile guvenilir.
+  / New SAVESHARDSIZEMB config; small worlds stay single-file (classic
+    Sphere layout), large worlds auto-roll. Writer-level byte counter
+    independent of StreamWriter's internal 64KB buffer.
+
+HESAP DOSYASI / ACCOUNT FILE:
+  - AccountManager.Save/Load kaldirildi; persistence Game katmaninda degil.
+  - Yeni: SphereNet.Persistence/Accounts/AccountPersistence.cs (static).
+  - Dosya uzantisi SaveFormat'a gore: .scp / .scp.gz / .sbin / .sbin.gz.
+  - AccountPersistence.Save eski formattaki dosyayi format degisince siler.
+  - Legacy [ACCOUNT alice] section header korunur (mevcut .scp uyumlu).
+  - AccountManager.AddLoaded(Account) public API eklendi (loader injection).
+  / AccountManager delegates persistence to SphereNet.Persistence; single
+    live file per format; legacy section header preserved for compat.
+
+CONSOLEFORM UI:
+  - Server Status: CPU -> RAM -> world (Items/Chars/Scripts) -> account
+    (Accounts/Players Online) -> Uptime (altta). "SERVER STATUS" basligi
+    kaldirildi, dogrudan CPU satiriyla basliyor.
+  - Quick Actions basligi kaldirildi; 3 buton (DEBUG/RESYNC/SAVE) direk
+    panelde. Panel yuksekligi 180 -> 156 (title chrome 35px gitti).
+  - StatsCard yuksekligi 430 -> 345 (470 overflow yapip SAVE butonunu
+    ekrandan disariya itiyordu).
+  / Reordered stats card, removed card titles, fixed clipped SAVE button.
+
+TEST:
+  - 17 test (4 yeni account roundtrip + 1 format-switch + mevcut 12).
+  / 17 tests (4 account roundtrip + 1 format switch + 12 existing).
+
+CONFIG:
+  - SAVESHARDSIZEMB (sphere.ini): size-based rolling threshold MB.
+
+[2026-04-18] - Save formati secimi + shard + binary + migration
+----------------------------------------
+
+OZET / SUMMARY:
+  Dunya kaydi artik 4 formatta yazilabilir: klasik .scp metin (default),
+  .scp.gz gzip, .sbin tag-stream binary, .sbin.gz binary+gzip. SaveShards
+  ile kayit 1-16 parcaya bolunebilir; her shard kendi Task'inda yazilir
+  (paralel I/O). Loader dosya uzantisindan formati otomatik alglar, farkli
+  snapshot'lar ayni dizinde birlikte bulunabilir. Mevcut .scp save'leri
+  hicbir degisiklik olmadan yuklenir (Text/1 default).
+
+  World saves can now be written in 4 formats: classic .scp text (default),
+  .scp.gz gzip, .sbin tag-stream binary, .sbin.gz binary+gzip. SaveShards
+  splits the save into 1-16 shards written in parallel Tasks. Loader
+  auto-detects format from file extension — mixed snapshots coexist safely.
+  Existing .scp saves load unchanged (Text/1 default).
+
+YENI DOSYALAR / NEW FILES:
+  - SphereNet.Core/Configuration/SaveFormat.cs
+  - SphereNet.Persistence/Formats/ISaveIO.cs (ISaveWriter + ISaveReader)
+  - SphereNet.Persistence/Formats/TextSaveWriter/Reader.cs (classic .scp)
+  - SphereNet.Persistence/Formats/BinarySaveWriter/Reader.cs
+      (magic "SNBW", v1, length-prefixed key-value envelope)
+  - SphereNet.Persistence/Formats/SaveIO.cs
+      (factory: format <-> extension mapping, GZip wrapping)
+  - SphereNet.Persistence/Formats/ShardManifest.cs
+      ({base}.manifest sidecar + FNV-1a UID hashing for deterministic
+      shard placement)
+  - SphereNet.Tests/SaveFormatTests.cs (10 tests, 7 format x shard combos)
+
+REFACTOR:
+  - WorldSaver: yeni Format + ShardCount property'leri, paralel shard
+    yazimi, stale sibling file cleanup (format/shard downgrade sonrasi
+    orphan dosya birakmaz), atomic commit (.tmp -> .bak -> final).
+  - WorldLoader: auto-detect (manifest varsa shard, yoksa uzanti probe).
+    Streaming materialize + SuppressDirtyNotify korunur (million-entity
+    yuklerde GC pressure'i onler).
+
+CONFIG (sphere.ini):
+  - SAVEFORMAT = Text | TextGz | Binary | BinaryGz (default: Text)
+  - SAVESHARDS = 1-16 (default: 1)
+
+KOMUTLAR / COMMANDS:
+  .SAVEFORMAT <fmt> [shards]   Owner+ — format degistir + anlik save tetikle
+                              (ornekler: .SAVEFORMAT BinaryGz 8,
+                               .SAVEFORMAT Text 1)
+  Komut once mevcut formati okur, sonra yeni formatta yazar, eski
+  dosyalari temizler — tek adimda migration.
+  Load current, write new, cleanup old — one-shot migration.
+
+TAHMINI ETKI / EXPECTED IMPACT (500K item + 400K char):
+  Text (current)           ~3s save, 150MB disk
+  TextGz                   ~3s save,  ~20MB disk
+  Text + shard=8           ~500ms save, 150MB disk
+  Binary                   ~1s save,   ~80MB disk
+  BinaryGz + shard=8       ~300ms save, ~12MB disk
+
+UYUMLULUK / COMPATIBILITY:
+  - Eski .scp save'leri loader tarafindan degisiklik olmadan okunur.
+  - Default (Text/1) davranisi pre-refactor ile birebir ayni.
+  - Sphere/Source-X legacy import yolu etkilenmez.
+
+[2026-04-18] - Stress-test harness / Stress-test harness
+----------------------------------------
+
+OZET / SUMMARY:
+  Buyuk olcekli yuk testi icin StressTestEngine eklendi. Britannia'nin
+  8 buyuk sehri (Britain, Minoc, Yew, Vesper, Trinsic, Moonglow, Skara
+  Brae, Magincia) icine rastgele item+NPC populasyonu scatter eder. Her
+  tick batch olarak uretir, STRESS_TEST tag ile isaretler, temizlerken
+  tagli objeleri siler. Uretim sirasi ve temizleme ilerlemesini server
+  log'una yazar.
+
+  StressTestEngine added for large-scale load testing. Scatters random
+  items + NPCs across 8 major towns on map 0 in per-tick batches, tags
+  them for cleanup, and logs progress + runtime metrics. Generation and
+  deletion are cooperative (no main-loop stalls).
+
+KOMUTLAR / COMMANDS:
+  .stress [items] [npcs]  Owner+ — queue generation (default 3M/750K)
+  .stressreport           Counsel+ — dump runtime metrics
+  .stressclean            Owner+ — queue cleanup of STRESS_TEST tagged
+
+METRIKLER / METRICS:
+  - Dunya: chars, items, toplam obje / World: char/item/object counts
+  - Bellek: WorkingSet, ManagedHeap, Committed / Memory sections
+  - GC: Gen0/Gen1/Gen2 sayisi + son pause / collection counts + last pause
+  - CPU: toplam process zamani, thread sayisi / total process time, threads
+  - Uretim/temizlik ilerlemesi 5 saniyede bir log'a / Progress every 5s
+
+BATCH BUTCELEri / BATCH BUDGETS:
+  - Uretim: 5000 item + 1000 NPC / tick (~24K item/sn, ~4K NPC/sn)
+  - Cleanup: 20000 delete / tick
+
+[2026-04-18] - Yarim sistemlerin tamamlanmasi / Half-implemented systems completed
+----------------------------------------
+
+OZET / SUMMARY:
+  Source-X uyumlu 6 yarim sistem tamamlandi: LOS/buyu/atis kontrolu,
+  reagent harcama, criminal/murder timer, FEATURE* login paketi,
+  saldiri/snoop kriminal flag, container/bank kapasite limitleri.
+  Ayrica script hook gurultusu azaltildi.
+
+  Six half-implemented systems completed per Source-X: LOS checks for
+  spells/ranged, reagent consumption, criminal/murder timers, FEATURE*
+  login packet (0xB9), attack/snoop crime flags, container/bank capacity.
+  Also reduced script-hook log noise.
+
+DEGISIKLIKLER / CHANGES:
+
+  [LOS / Line-of-sight]
+  - GameWorld.CanSeeLOS(from, to) public helper — lazy TerrainEngine
+    sarmali. Source-X CWorldMap::CanSeeLOS esdegeri.
+  - SpellEngine.CastDone: hedef-tabanli buyulerin (TargChar/TargObj/Area/
+    Field/Summon) LOS kontrolu. Fail -> "Target not in line of sight." +
+    OnSpellInterrupt. GM+ bypass, self-buff skip.
+  - GameClient.HandleAttack: ranged (WeaponBow/WeaponXBow) saldirida LOS
+    kontrolu. Fail -> "You cannot see that target." Melee skip.
+
+  [Reagent harcama / Reagent consumption]
+  - Character.ReagentsRequiredEnabled static (REAGENTSREQUIRED).
+  - SpellEngine.HasRequiredReagents / ConsumeReagents helpers — caster
+    backpack'tan SpellDef.Reagents dict'ine gore dusulur.
+  - CastStart: eksik regent -> reject + "You lack the reagents to cast
+    that spell." CastDone: basarili cast'te regent dusulur.
+  - Wand, scroll ve GM+ regent check'i bypass eder.
+
+  [Criminal / Murder timer]
+  - Character.CriminalTimerSeconds/MurderMinCount/MurderDecayTimeSeconds
+    static konfigurasyonla doldurulur (CRIMINALTIMER/MURDERMINCOUNT/
+    MURDERDECAYTIME).
+  - Character.MakeCriminal() — criminal flag + timer armed.
+  - Character.TickNotorietyDecay(now) — criminal expiry + murder decay.
+    GameWorld.OnTick her karakter icin cagirir. IsMurderer artik dinamik.
+  - SkillHandlers stealing/snooping ve HandleAttack -> SetStatFlag yerine
+    MakeCriminal().
+
+  [Attack / Snoop crime]
+  - Character.AttackingIsACrimeEnabled (ATTACKINGISACRIME) +
+    SnoopCriminalEnabled (SNOOPCRIMINAL) static'leri.
+  - HandleAttack: innocent hedefe guarded region saldiri kriminal.
+    Kirmizi/gri hedeflere saldiri self-defense, flag yok.
+  - HandleSnooping: SnoopCriminal=false ise basarisiz snoop'ta flag yok.
+
+  [FEATURE* login paketi]
+  - GameClient.ServerFeatureFlags static, Program.cs baslangicinda
+    _config.FeatureT2A|LBR|AOS|SE|ML|KR|SA|TOL|Extra OR'lanip set edilir.
+  - HandleGameLogin: 0xB9 PacketFeatureEnable artik hardcoded client-
+    version fallback yerine config'ten gelen OR'u gonderir.
+  - SphereConfig: FeatureKR, FeatureSA, FeatureTOL property'leri eklendi.
+
+  [Container / Bank kapasite]
+  - GameWorld.MaxContainerItems / MaxBankItems / MaxBankWeight property.
+    Program.cs'te _config.Container/BankMaxItems/Weight'ten set edilir.
+  - HandleItemDrop: container'a drop once mevcut count / toplam weight
+    kontrol edilir. Limit asilmissa item backpack'a bounce + SysMessage.
+    Bank Layer.BankBox uzerinden tespit edilir. GM+ bypass.
+
+  [Script hook log]
+  - MovementEngine.cs: RunFunction yerine TryRunFunction, eksik hook
+    (f_onchar_regionenter/leave gibi) artik WARN uretmez.
+
+  [SphereConfig]
+  - FeatureKR, FeatureSA, FeatureTOL int property'leri eklendi +
+    ini.GetInt okumalari.
+
+[2026-04-18] - Config temizligi, fast-path aktif / Config cleanup, fast-path enabled
+----------------------------------------
+
+OZET / SUMMARY:
+  sphere.ini etiket hatalari duzeltildi. Kullanilmayan UseDeltaView anahtari
+  tamamen kaldirildi (property, ini okuma, config yorumu). FEATURE* anahtarlari
+  [CALISIYOR] yerine [OKUNUYOR] olarak etiketlendi — config'e yukleniyor ama
+  PacketSupportedFeatures henuz bagli degil. Fast-path view-delta (Plan B)
+  Program.cs icinde aktif hale getirildi.
+
+  sphere.ini label audit: wrong [CALISIYOR] labels fixed. Dead UseDeltaView
+  key fully removed (property, parsing, ini entry). FEATURE* keys relabeled
+  [OKUNUYOR] — config is parsed but PacketSupportedFeatures is not wired.
+  Fast-path view-delta (Plan B) re-enabled in Program.cs.
+
+DEGISIKLIKLER / CHANGES:
+  - config/sphere.ini: UseDeltaView anahtari silindi.
+  - SphereConfig.cs: UseDeltaView property ve ini.GetBool kaldirildi.
+  - config/sphere.ini: FEATURET2A/LBR/AOS/SE/ML/KR/SA/TOL/EXTRA anahtarlari
+    [CALISIYOR] yerine [OKUNUYOR] — kod referansi yok.
+    FEATURE* keys re-tagged [OKUNUYOR] — no code references.
+  - Program.cs: FastPathViewDeltaEnabled = true (dirty-gated sub-tick view).
+
+[2026-04-18] - Sync, mount, map ve collision duzeltmeleri / Sync, mount, map and collision fixes
+----------------------------------------
+
+OZET / SUMMARY:
+  Iki client arasi gorunurluk, binek, hareket ve map yukleme ile ilgili cok
+  sayida duzeltme. Buyuk bir debug oturumunun sonucu. Asagidaki liste oturum
+  boyunca tanimlanan ve cozulen sorunlari kapsar.
+
+  Large set of fixes for two-client visibility, mount behaviour, movement and
+  map loading. Result of a long debug session. The list below covers every
+  issue surfaced and addressed during the session.
+
+DEGISIKLIKLER / CHANGES:
+
+  [Gorunurluk / Visibility]
+  - GameClient.BuildViewDelta: Source-X plevel-gorunurluk kurali — Counsel+
+    staff kendinden esit/dusuk plevel karakterlerin invis/hidden halini
+    "ghostly" (hue 0x4001) olarak gorur. AllShow override olarak kalir.
+    Source-X plevel visibility rule — Counsel+ staff sees hidden/invisible
+    characters of equal-or-lower plevel as ghostly. AllShow acts as override.
+  - Offline oyuncu karakterleri artik SADECE AllShow ile gorunur. Onceden
+    Owner plevel her offline karakteri ghost olarak goruyordu — server
+    restart sonrasi "karakter hala oyunda" hissine neden oluyordu.
+    Offline players only visible via AllShow. Previously any Owner-plevel
+    viewer would see every logged-out player as a ghost, causing the
+    "character is still in world after restart" bug.
+  - HasKnownChar guard (Fix 2): BroadcastMoveNearby artik sadece zaten
+    known mobile'lara 0x77 gonderir. Yeni-range'e giren mobile icin view
+    delta 0x78 gonderir — duplicate 0x77/0x78 race'i onlenir.
+    BroadcastMoveNearby only sends 0x77 to receivers that already know the
+    moving mobile. New-in-range mobiles get 0x78 via the view delta —
+    eliminates duplicate packet race.
+
+  [Map ve AREADEF / Map and AREADEF]
+  - ResolveAreaDef artik karakterin current map'ini tercih eder. Ayni isimde
+    birden fazla AREADEF (ornegin Britain map0 + map1) varsa istenmeyen
+    map gecisi olmaz.
+    ResolveAreaDef now prefers the caller's current map when multiple
+    AREADEFs share a name (e.g. Britain on map0 vs map1).
+  - .GO komutu 4. parametre olarak map kabul eder (.go x y z m).
+    .GO accepts optional map as 4th argument.
+  - OnCharacterMapChanged event: map-bolundugu teleport'ta owner client'a
+    PacketMapChange (0xBF sub 0x08) + full Resync gonderilir.
+    OnCharacterMapChanged event: on cross-map teleport, owner client
+    receives PacketMapChange + full resync.
+  - MapDataManager fail-fast: eksik tiledata.mul / multi.idx / multi.mul /
+    mapN (mul ya da UOP) / staidxN.mul / staticsN.mul dosyalarinda
+    FileNotFoundException atilir, server baslamaz. Sessiz fail + collision
+    bozulmasi sorununu onler.
+    MapDataManager throws FileNotFoundException on missing UO client data
+    so the server refuses to start instead of silently disabling collision.
+  - StaticReader MemoryMappedFile pattern'ina tasindi (UopMapReader ile
+    tutarlilik, OS paging ile daha az RAM).
+    StaticReader migrated to MemoryMappedFile (consistent with UopMapReader).
+
+  [Z ve hareket / Z and movement]
+  - MapDataManager.GetEffectiveZ climb-limit filtresi: ulasilamayacak
+    yuksekteki surface'lar (ornegin bina catisi Z=30) gorusezilmez olarak
+    dondurulmez. "Bineksiz kare atlama" bug'i duzeldi.
+    GetEffectiveZ filters surfaces beyond MaxClimbHeight (12) — fixes the
+    "square-jumping" MoveReject stutter while running.
+  - Pathfinder: her tile icin Z MapData.GetEffectiveZ ile hesaplanir
+    (once current.Z her tile icin ayni sayiliyordu, path bulunamiyordu).
+    MaxNodes 512 -> 20000, MaxPathLength 24 -> 256.
+    Pathfinder now resolves Z per-tile via GetEffectiveZ; limits raised.
+
+  [Binek / Mount]
+  - Mount range check (1 tile): Uzaktaki bineklere double-click artik "That
+    is too far away." mesaji verir. Uzun mesafe mount'un "karakter binege
+    isinlandi" gorselini onler.
+    Mount distance check (1 tile) — rejects far-away mounts with a system
+    message.
+  - EnsureMountedState: login sonrasi mount NPC'si rider pozisyonuyla
+    senkronize edilir. Eski kayitlardan gelen stale NPC pozisyonlari
+    duzeltilir.
+    EnsureMountedState syncs mount NPC position to rider on login.
+  - Dismount MoveReject: binek rider.Position'a konur VE client rider
+    pozisyonuna snap edilir. Running-dismount'ta karakter 1 tile geri
+    kayabilir ama binek her zaman ayak altinda cikar.
+    Dismount snaps client to server rider.Position via MoveReject — horse
+    always spawns under the rider.
+
+  [INVIS / ALLMOVE komutlari]
+  - .INVIS artik argumanli (Source-X uyumlu): .invis 1 = set, .invis 0 =
+    clear, .invis (arg yok) = toggle. Onceden her cagri toggle yapiyordu,
+    ".invis 0" bile karakteri gorunmez yapabiliyordu.
+    .INVIS now argument-aware: 1=set, 0=clear, blank=toggle.
+  - INVIS sonrasi sistem mesaji + OnCharacterSelfRedraw event — owner
+    client kendi karakterini yari-seffaf (flag=0x80) gorur.
+    INVIS emits system message + OnCharacterSelfRedraw so the owner client
+    re-renders itself translucent.
+  - Character.AllMove runtime-only flag + .ALLMOVE komutu (Counsel+).
+    CanWalkTo ve CanShove artik sadece GM+ AllMove aktifken collision'i
+    bypass eder — staff karakteri default collision'a tabi.
+    Character.AllMove runtime flag + .ALLMOVE command. CanWalkTo/CanShove
+    only bypass collision when GM+ has AllMove on.
+
+  [Diagnostik / Diagnostics]
+  - .STATICS komutu: karakterin oldugu tile'daki statik listesini ve her
+    birinin Impassable/Surface/Wall flag'lerini yazar — collision bug
+    tanilari icin.
+    .STATICS command: lists statics + flags at the character's tile.
+  - OnSysMessage handler'i artik server log'una da yazar — .statics/.where
+    gibi komutlarin ciktilari 0xAE paketini decode etmeden log'dan okunur.
+    OnSysMessage handler now also writes to the server log.
+
+  [Logout]
+  - PacketLogoutRequest (0xD1 incoming) + PacketLogoutAck (0xD1 outgoing):
+    UO client "karakter secim ekranina don" istegini isler. Server
+    OnDisconnect flow'unu calistirir, nearby'lara DeleteObject gonderir,
+    IsOnline=false yapar. Onceden bu paket hic handle edilmiyordu —
+    karakter dunyada "takili" kaliyordu.
+    PacketLogoutRequest/Ack (0xD1): handles "return to character select".
+    Previously unhandled, leaving characters stuck in-world.
+
+  [Altyapi / Infrastructure]
+  - DIAGNOSTIC fast-path view-delta (Plan B) eklendi: main loop'ta
+    HasDirty gated olarak view update + DrainDirty. Suan devre disi
+    (FastPathViewDeltaEnabled=false) — tekrar aktive etmek isterseniz
+    Program.cs icindeki tek satiri degistirin.
+    DIAGNOSTIC fast-path view-delta (Plan B) added but currently disabled —
+    flip the flag in Program.cs to re-enable.
+  - GameWorld.HasDirty O(1) accessor eklendi.
+    Added GameWorld.HasDirty O(1) accessor.
+
+[2026-04-17] - Dismount ekran titremesi duzeltmesi / Dismount screen flicker fix
+----------------------------------------
+
+OZET / SUMMARY:
+  Binekten inerken ekranin gidip gelmesi duzeltildi. PacketDrawPlayer (0x20)
+  client'ta tam ekran yenilemesine neden oluyordu, kaldirildi. Yerine sadece
+  MobileMoving (0x77) gonderiliyor.
+
+  Screen flicker when dismounting fixed. PacketDrawPlayer (0x20) was causing a
+  full screen refresh on the client, removed. Only MobileMoving (0x77) is sent
+  instead.
+
+DEGISIKLIKLER / CHANGES:
+
+  [GameClient.cs — Dismount]
+  - PacketDrawPlayer (0x20) kaldirildi — ekran titremesine neden oluyordu
+    PacketDrawPlayer (0x20) removed — was causing screen flicker
+  - MobileMoving (0x77) artik self'e de gonderiliyor (body guncelleme icin)
+    MobileMoving (0x77) now also sent to self (for body update)
+
+[2026-04-17] - Hex parse, spell efekt duzeltmeleri / Hex parse, spell effect fixes
+----------------------------------------
+
+OZET / SUMMARY:
+  Source-X uyumlulugu icin leading-zero sayi parse duzeltildi. 00000020 gibi
+  degerler artik hex olarak parse ediliyor (decimal degil). Spell efekt fallback
+  0x3709 (yildirim) kaldirildi, duplicate efekt paketi duzeltildi.
+
+  Leading-zero number parse fixed for Source-X compatibility. Values like 00000020
+  are now parsed as hex (not decimal). Spell effect fallback 0x3709 (lightning)
+  removed, duplicate effect packet fixed.
+
+DEGISIKLIKLER / CHANGES:
+
+  [ScriptKey.cs — TryParseNumber]
+  - Leading '0' ile baslayan tum sayilar hex olarak parse ediliyor (Source-X kurali)
+    All numbers starting with leading '0' parsed as hex (Source-X convention)
+  - Eski davranis: 00000020 → decimal 20, yeni: 00000020 → hex 0x20 = 32
+    Old behavior: 00000020 → decimal 20, new: 00000020 → hex 0x20 = 32
+  - Spell flags, item ID'leri ve diger defname degerleri artik dogru cozumleniyor
+    Spell flags, item IDs and other defname values now resolve correctly
+
+  [GameClient.cs — Spell efekt duzeltmeleri / Spell effect fixes]
+  - EffectId fallback 0x3709 (yildirim) kaldirildi, EffectId yoksa efekt gonderilmiyor
+    EffectId fallback 0x3709 (lightning) removed, no effect sent when EffectId missing
+  - BroadcastNearby exclude parametresi duzeltildi (caster'a cift efekt gonderilmiyordu)
+    BroadcastNearby exclude parameter fixed (no duplicate effect to caster)
+
+[2026-04-17] - DEFMESSAGE sistemi, Source-X mesaj altyapisi / DEFMESSAGE system, Source-X message infrastructure
+----------------------------------------
+
+OZET / SUMMARY:
+  ServerMessages static sinifi eklendi — tum sunucu mesajlari icin merkezi registry.
+  Source-X messages.scp key isimlendirmesi birebir kullaniliyor. sphere_msgs.scp
+  DEFMESSAGE override destegi, DEFNAME messages_settings (SMSG_DEF_COLOR/FONT)
+  destegi eklendi. GameClient ve SpeechEngine'deki ~130 hardcoded mesaj key-based
+  lookup'a donusturuldu. Vendor konusmalari SysMessage yerine NPC speech olarak
+  (PacketSpeechOut) gonderiliyor.
+
+  ServerMessages static class added — central registry for all server messages.
+  Uses exact Source-X messages.scp key naming. sphere_msgs.scp DEFMESSAGE override
+  support and DEFNAME messages_settings (SMSG_DEF_COLOR/FONT) support added.
+  ~130 hardcoded messages in GameClient and SpeechEngine converted to key-based
+  lookup. Vendor speech now sent as NPC speech (PacketSpeechOut) instead of SysMessage.
+
+DEGISIKLIKLER / CHANGES:
+
+  [YENi: ServerMessages.cs — Merkezi mesaj registry / NEW: Central message registry]
+  - ~130 default mesaj tanimi (Source-X key isimleriyle)
+    ~130 default message definitions (with Source-X key names)
+  - Get(key), GetFormatted(key, args) — %s/%d/%i format destegi
+    Get(key), GetFormatted(key, args) — %s/%d/%i format support
+  - SetOverride/LoadOverrides — DEFMESSAGE script override
+  - SetDefaults — SMSG_DEF_COLOR/SMSG_DEF_FONT ayarlari
+    SetDefaults — SMSG_DEF_COLOR/SMSG_DEF_FONT settings
+
+  [ResourceHolder.cs — GetAllDefMessages]
+  - GetAllDefMessages() methodu eklendi (tum override'lari aktarmak icin)
+    GetAllDefMessages() method added (to export all overrides)
+
+  [Program.cs — Startup entegrasyonu / Startup integration]
+  - Script yukleme sonrasi DEFMESSAGE override'lari ServerMessages'a aktariliyor
+    DEFMESSAGE overrides loaded into ServerMessages after script loading
+  - SMSG_DEF_COLOR ve SMSG_DEF_FONT defname'lerden okunuyor
+    SMSG_DEF_COLOR and SMSG_DEF_FONT read from defnames
+
+  [GameClient.cs — Mesaj donusumu / Message conversion]
+  - ~87 hardcoded SysMessage cagrisi ServerMessages.Get/GetFormatted'a donusturuldu
+    ~87 hardcoded SysMessage calls converted to ServerMessages.Get/GetFormatted
+  - NpcSpeech() helper eklendi — vendor konusmalari NPC speech olarak gonderiliyor
+    NpcSpeech() helper added — vendor speech sent as NPC overhead speech
+  - Vendor mesajlari: npc_vendor_no_goods, npc_vendor_b1, npc_vendor_sell_ty vb.
+    Vendor messages: npc_vendor_no_goods, npc_vendor_b1, npc_vendor_sell_ty etc.
+
+  [SpeechEngine.cs — GM komut mesajlari / GM command messages]
+  - ~42 OnSysMessage hardcoded string ServerMessages.Get/GetFormatted'a donusturuldu
+    ~42 OnSysMessage hardcoded strings converted to ServerMessages.Get/GetFormatted
+
+[2026-04-17] - Script komutlari, version fix, dismount, spell sistemi / Script commands, version fix, dismount, spell system
+----------------------------------------
+
+OZET / SUMMARY:
+  f_staff_login script komutlari (GM, INVUL, ALLSHOW, PRIVSHOW) calisir hale
+  getirildi. Client version formulu duzeltildi (7.0.20 icin 0x24/0x25 paket
+  boyutlari dogru gonderiliyor). Yurume Z duzeltmesi kaldirildi (kare atlama
+  sorunu cozuldu). Dismount ekran yenilenmesi duzeltildi. Spell FLAGS artik
+  script defname'lerden cozumleniyor (spellflag_targ_char vb.). .cast komutu
+  target cursor aciyor, spell efekti/mesaj/buff ikonu gonderiliyor.
+
+  f_staff_login script commands (GM, INVUL, ALLSHOW, PRIVSHOW) now work. Client
+  version formula fixed (0x24/0x25 packet sizes correct for 7.0.20). Walking Z
+  correction removed (square jumping fixed). Dismount screen reload fixed. Spell
+  FLAGS now resolved from script defnames (spellflag_targ_char etc.). .cast command
+  opens target cursor, sends spell effect/message/buff icon.
+
+DEGISIKLIKLER / CHANGES:
+
+  [Character.cs — TryGetProperty/TrySetProperty]
+  - GM, INVUL, ALLSHOW, PRIVSHOW property destegi eklendi
+    GM, INVUL, ALLSHOW, PRIVSHOW property support added
+  - INVUL/INVIS komutlari deger parametresi kabul ediyor (sadece toggle degil)
+    INVUL/INVIS commands accept value parameter (not just toggle)
+
+  [ScriptInterpreter.cs — ExecuteLine/CallFunction]
+  - Taninmayan komutlar LogWarning ile konsola yaziliyor (LogTrace yerine)
+    Unrecognized commands logged as LogWarning (instead of LogTrace)
+  - CallFunction <args> gecisi duzeltildi (TriggerArgs.ArgString dogru aktariliyor)
+    CallFunction <args> passing fixed (TriggerArgs.ArgString correctly forwarded)
+
+  [NetworkManager.cs — Seed parser]
+  - Version formulu duzeltildi: minor*1_000_000 + rev*1_000 (onceden minor*100_000 + rev*100)
+    Version formula fixed: minor*1_000_000 + rev*1_000 (was minor*100_000 + rev*100)
+
+  [GameClient.cs — HandleClientVersion]
+  - 0xBD paketinden version string parse ediliyor ve ClientVersionNumber set ediliyor
+    Version string parsed from 0xBD packet and ClientVersionNumber set
+
+  [NetState.cs — Version breakpoints]
+  - ClientVersionNumber=0 iken modern client varsayimi (fallback)
+    Fallback to modern client when ClientVersionNumber=0
+
+  [GameClient.cs — HandleMove]
+  - Z correction DrawPlayer kaldirildi (kare atlama sorunu cozuldu)
+    Z correction DrawPlayer removed (square jumping fixed)
+
+  [GameClient.cs — Dismount]
+  - MoveReject(0) + BroadcastDrawObject yerine DrawPlayer(0x20) + MobileMoving(0x77)
+    DrawPlayer(0x20) + MobileMoving(0x77) instead of MoveReject(0) + BroadcastDrawObject
+
+  [DefinitionLoader.cs — Spell loading]
+  - FLAGS: defname-first parse (spellflag_targ_char vb. script'ten cozumleniyor)
+    FLAGS: defname-first parse (spellflag_targ_char etc. resolved from scripts)
+  - SOUND/EFFECT_ID/RUNE_ITEM/SCROLL_ITEM: defname resolve destegi
+    SOUND/EFFECT_ID/RUNE_ITEM/SCROLL_ITEM: defname resolve support
+  - CAST_TIME: ondalik destek (0.4 = 4 tenths)
+    CAST_TIME: decimal support (0.4 = 4 tenths)
+
+  [GameClient.cs — HandleCastSpell]
+  - spellflag_targ_char olan buyuler target cursor aciyor, self-buff direkt cast
+    Spells with spellflag_targ_char open target cursor, self-buff direct cast
+
+  [GameClient.cs — TickSpellCast]
+  - Spell efekt paketi (0x70), "You cast X" mesaji, buff ikonu (0xDF) eklendi
+    Spell effect packet (0x70), "You cast X" message, buff icon (0xDF) added
+
+  [SpellEngine.cs — ApplySpecificSpell]
+  - NightSight, ReactiveArmor, Protection, Incognito, MagicReflect efektleri eklendi
+    NightSight, ReactiveArmor, Protection, Incognito, MagicReflect effects added
+
+  [ExtendedPackets.cs]
+  - PacketBuffIcon (0xDF) buff/debuff ikonu paketi eklendi
+    PacketBuffIcon (0xDF) buff/debuff icon packet added
+
+  [ConsoleForm.cs]
+  - Log flush interval 150ms -> 16ms, MaxLinesPerFlush 80 -> 200 (anlik debug)
+    Log flush interval 150ms -> 16ms, MaxLinesPerFlush 80 -> 200 (real-time debug)
+
+[2026-04-17] - Z desync, tooltip spam, mount loop duzeltmeleri / Z desync, tooltip spam, mount loop fixes
+----------------------------------------
+
+OZET / SUMMARY:
+  Pozisyon desync duzeltildi: sunucu Z'si GetEffectiveZ ile hesaplaniyor ama
+  MoveAck (0x22) pozisyon bilgisi tasimiyordu — client kendi Z tahminini
+  kullaniyordu. Simdi Z degistiginde DrawPlayer (0x20) ile duzeltme gonderiliyor.
+  BroadcastDrawObject artik _lastKnownPos'u guncelliyor (teleport/mount/resurrect
+  sonrasi duplicate 0x77 onlendi). 0xDC tooltip spam duzeltildi — cache hit'te
+  artik hicbir paket gonderilmiyor (onceden her istek icin 0xDC gonderiyordu).
+  Binek ustundeyken mountable NPC'ye cift tiklamak artik paperdoll acmiyor,
+  "You are already riding." mesaji gosteriyor.
+
+  Position desync fixed: server Z was calculated via GetEffectiveZ but MoveAck
+  (0x22) carries no position data — client kept its own predicted Z. Now sends
+  DrawPlayer (0x20) correction when Z changes. BroadcastDrawObject now updates
+  receiving clients' _lastKnownPos (prevents duplicate 0x77 after teleport/mount/
+  resurrect). 0xDC tooltip spam fixed — no packet sent on cache hit (previously
+  sent 0xDC for every request). Double-clicking mountable NPC while already
+  mounted now shows "You are already riding." instead of opening paperdoll.
+
+DEGISIKLIKLER / CHANGES:
+
+  [GameClient.cs — HandleMove]
+  - Z correction: hareket sonrasi Z degismisse DrawPlayer (0x20) gonderiliyor
+    Z correction: sends DrawPlayer (0x20) after move if Z changed
+
+  [GameClient.cs — BroadcastDrawObject]
+  - BroadcastMoveNearby kullanarak _lastKnownPos guncelleniyor
+    Uses BroadcastMoveNearby to update _lastKnownPos on receiving clients
+
+  [GameClient.cs — HandleAOSTooltip]
+  - Cache hit'te 0xDC gonderimi kaldirildi (100+ gereksiz paket → 0)
+    Removed 0xDC send on cache hit (100+ unnecessary packets → 0)
+
+  [GameClient.cs — HandleDoubleClick]
+  - Binek ustundeyken mountable NPC'ye tiklama engellendi, mesaj gosteriliyor
+    Blocked mounting while already mounted, shows message instead of paperdoll
+
+  [GameClient.cs — Resurrect]
+  - Resurrect broadcast BroadcastMoveNearby kullanarak _lastKnownPos guncelleniyor
+    Resurrect broadcast uses BroadcastMoveNearby to update _lastKnownPos
+
+[2026-04-17] - UID cakismasi, tooltip spam, hareket duzeltmeleri / UID collision, tooltip spam, movement fixes
+----------------------------------------
+
+OZET / SUMMARY:
+  UidTable serial cakismasi duzeltildi (save'den yuklenen serialler yeni olusan
+  objelerle catisiyordu — binek NPC'leri veya karakterler kayboluyordu). Tooltip
+  spam (0xDC/0xD6 sonsuz dongu) duzeltildi: PacketOPLData hash=0 gonderiyordu,
+  PacketOPLInfo gercek hash gonderiyordu → client sonsuz istek dongusune giriyordu.
+  Cift 0x77 gonderimi duzeltildi (HandleMove + view delta ayni hareketi iki kez
+  yayinliyordu → "kare atlama" gorsel hatasi). Fastwalk throttle birikmesi
+  duzeltildi (TCP buffer'daki walk paketleri cascading reject'e neden oluyordu).
+  BroadcastNearby'a map kontrolu eklendi. Body/hue degisiklikleri view delta'da
+  algilanir. EnterWorld'de sektor yerlestirmesi garanti edilir.
+
+  UidTable serial collision fixed (loaded serials from save conflicted with newly
+  created objects — mount NPCs or characters disappeared). Tooltip spam
+  (0xDC/0xD6 infinite loop) fixed: PacketOPLData sent hash=0 while PacketOPLInfo
+  sent real hash → client entered infinite request loop. Double 0x77 broadcast
+  fixed (HandleMove + view delta broadcast same move twice → "square jump" visual
+  glitch). Fastwalk throttle accumulation fixed (TCP-buffered walk packets caused
+  cascading rejects). BroadcastNearby map check added. Body/hue changes detected
+  in view delta. EnterWorld sector placement guaranteed.
+
+DEGISIKLIKLER / CHANGES:
+  - UidTable.ReRegister(): temp serial'i kuyruga geri koymadan kaldirir, yeni serial kaydeder, _nextCharIndex ilerletir
+  - GameWorld.ReRegisterObject(): Free() yerine ReRegister() kullanir
+  - PacketOPLData: hash parametresi eklendi (onceden hardcoded 0 yaziyordu)
+  - HandleAOSTooltip: hash once hesaplanir, 0xD6 ve 0xDC'ye ayni hash verilir
+  - BroadcastMoveNearby: 0x77 gonderir + alici client'in _lastKnownPos'unu gunceller
+  - HandleMove: BroadcastMoveNearby kullanir (cift 0x77 onlenir)
+  - Fastwalk reject sonrasi _nextMoveTime = now (cascading reject onlenir)
+  - _lastKnownPos: Body ve Hue alanlari eklendi (body/hue degisikligi algilanir)
+  - ApplyViewDelta: body degisince 0x78 DrawObject, pozisyon degisince 0x77 MobileMoving gonderir
+  - EnterWorld: PlaceCharacter ile sektor yerlestirmesi garanti edilir
+  - BroadcastNearby: Map index kontrolu eklendi (farkli map'teki client'lara paket gitmez)
+
+  - UidTable.ReRegister(): removes temp serial without recycling, registers new serial, advances _nextCharIndex
+  - GameWorld.ReRegisterObject(): uses ReRegister() instead of Free()
+  - PacketOPLData: hash parameter added (previously hardcoded 0)
+  - HandleAOSTooltip: hash calculated first, same hash passed to 0xD6 and 0xDC
+  - BroadcastMoveNearby: sends 0x77 + updates receiver client's _lastKnownPos
+  - HandleMove: uses BroadcastMoveNearby (prevents double 0x77)
+  - Fastwalk reject resets _nextMoveTime = now (prevents cascading rejects)
+  - _lastKnownPos: Body and Hue fields added (body/hue changes detected)
+  - ApplyViewDelta: body change sends 0x78 DrawObject, position change sends 0x77 MobileMoving
+  - EnterWorld: PlaceCharacter guarantees sector placement
+  - BroadcastNearby: map index check added (no packets to clients on different maps)
+
+[2026-04-17] - Bellek/gorunurluk/multi-client duzeltmeleri / Memory/visibility/multi-client fixes
+----------------------------------------
+
+OZET / SUMMARY:
+  Logout yayini duzeltildi (diger oyuncular cikan karakteri gorur). UopMapReader
+  MemoryMappedFile'a donusturuldu (~200MB RAM tasarrufu). Script dosya cache'i
+  yukleme sonrasi temizlenir. Multi-client destegi eklendi (ayni hesaptan birden
+  fazla karakter). CharList flags duzeltildi (karakter olusturma ekrani). Tooltip
+  hash deterministik yapildi (djb2). V2 delta goruntulenme sistemi kaldirildi
+  (gercek fayda yok, gorunurluk sorunlarina neden oluyordu). Idle timeout eklendi.
+  Logout broadcast fixed (other players see departing character). UopMapReader
+  converted to MemoryMappedFile (~200MB RAM savings). Script file cache cleared
+  after loading. Multi-client support added (multiple characters from same account).
+  CharList flags fixed (character creation screen). Tooltip hash made deterministic
+  (djb2). V2 delta view system removed (no real benefit, caused visibility issues).
+  Idle timeout added.
+
+DEGISIKLIKLER / CHANGES:
+  - OnDisconnect: BroadcastNearby ile PacketDeleteObject gonderilir, _character null yapilir
+  - UopMapReader: byte[] yerine MemoryMappedFile (decompress → temp file → mmap)
+  - ScriptFile.ClearFileCache() yukleme ve resync sonrasi cagirilir
+  - KickDuplicateCharacter: hesap degil karakter bazli tekrar giris kontrolu
+  - PacketCharList flags: 0x0244 → 0x11E8 (popup + AOS + 6th slot + SE + ML + 7th slot)
+  - Tooltip hash: .NET GetHashCode() → deterministik StableStringHash (djb2)
+  - V2 delta goruntulenme sistemi tamamen kaldirildi (~250 satir)
+  - NetworkManager: 2 dakika idle timeout eklendi
+  - NetState: ObjectDisposedException yakalama eklendi
+
+[2026-04-17] - Harita/login duzeltmeleri, UOP map destegi, WHERE komutu / Map/login fixes, UOP map support, WHERE command
+----------------------------------------
+
+OZET / SUMMARY:
+  Login sirasinda yari siyah harita sorunu duzeltildi (MapChange + MapPatches
+  paketleri, ML harita boyutlari). Binek in/bin pozisyon kaymasi duzeltildi
+  (MoveReject ile). UOP map dosya destegi eklendi (map0LegacyMUL.uop).
+  WHERE komutu ve CAST komutu eklendi. Relay version fix eklendi.
+  Half-black map on login fixed (MapChange + MapPatches packets, ML map
+  dimensions). Mount/dismount position drift fixed (MoveReject). UOP map
+  file support added (map0LegacyMUL.uop). WHERE and CAST commands added.
+  Relay version fix added.
+
+DEGISIKLIKLER / CHANGES:
+  - PacketMapChange (0xBF sub 0x08) ve PacketMapPatches (0xBF sub 0x18) eklendi
+  - Login sirasinda ML harita boyutlari kullanilir (Felucca/Trammel 7168x4096)
+  - Binek in/bin: MoveReject ONCE gonderilir (walk queue temizler), sonra DrawObject
+  - Binek in/bin sonrasi Z duzeltmesi (GetEffectiveZ)
+  - UopMapReader: UOP dosya formati okuyucu (hash, zlib decompress)
+  - MapDataManager: MUL bulunamazsa UOP fallback (MulFiles dizininde arar)
+  - WHERE komutu: oyuncu koordinatlarini gosterir (.where)
+  - CAST komutu: skill ID ile buyu kullanimi (.cast)
+  - CryptoState: relay version saklama, NetworkManager: relay version restore
+  - [LOGOUT] log trigger cagrilarindan once yazilir
+  - tick_pipeline debug loglari gizlendi
+
+[2026-04-17] - Custom Skill (Scripted Skill) destegi / Custom Skill (Scripted Skill) support
+----------------------------------------
+
+OZET / SUMMARY:
+  Script'lerden tanimlanan ozel (custom) skill'ler artik calisir. SkillDef
+  registry, SkillFlag enum, scripted skill trigger zinciri ve SkillEngine'de
+  SkillDef verilerini kullanan gain/stat hesaplamalari eklendi.
+  Custom skills defined in scripts now work. Added SkillDef registry,
+  SkillFlag enum, scripted skill trigger chain, and SkillEngine integration
+  with SkillDef data for gain/stat calculations.
+
+DEGISIKLIKLER / CHANGES:
+  - SkillFlag enum (SKF_SCRIPTED, SKF_FIGHT, SKF_MAGIC, vb.) eklendi
+  - ResourceHolder: IsDefinitionType'a SkillDef eklendi (StoredKeys tutulsun)
+  - DefinitionLoader: _skillDefs registry, GetSkillDef(int/string), LoadSkillDef
+  - SkillEngine: GainRadius, AdvRate, stat mapping SkillDef'ten okunur (fallback korunur)
+  - SkillEngine: TryStatGain BonusStr/BonusDex/BonusInt/BonusStats destegiyle guncellendi
+  - SkillHandlers: OnScriptedSkillUse callback, UseSkill'de SKF_SCRIPTED kontrol
+  - Program.cs: @SkillSelect → @SkillStart → CheckSuccess → @SkillSuccess/@SkillFail trigger zinciri
+
+[2026-04-17] - SKILL eksik property: GROUP, BONUS_STATS, EFFECT, PROMPT_MSG, VALUES / SKILL missing properties
+----------------------------------------
+
+OZET / SUMMARY:
+  Source-X wiki uyumlulugu icin SkillDef'e 5 eksik property ve KEY alias eklendi.
+  Added 5 missing properties and KEY alias to SkillDef for Source-X wiki compatibility.
+
+DEGISIKLIKLER / CHANGES:
+  - SkillDef: GROUP, BONUS_STATS, EFFECT, PROMPT_MSG, VALUES field'lari
+  - LoadFromKey: KEY alias (DEFNAME ile ayni), 5 yeni case
+
+[2026-04-17] - SPELL eksik property: GROUP, RESOURCES, SKILLREQ, TryGetProperty / SPELL missing properties: GROUP, RESOURCES, SKILLREQ, TryGetProperty
+----------------------------------------
+
+OZET / SUMMARY:
+  Source-X wiki uyumlulugu icin SpellDef'e GROUP field'i, RESOURCES ve
+  SKILLREQ parse destegi, ve RESOURCES.n.KEY/VAL dot-notation dahil
+  TryGetProperty metodu eklendi.
+  Added GROUP field, RESOURCES and SKILLREQ parsing, and TryGetProperty
+  method with RESOURCES.n.KEY/VAL dot-notation to SpellDef for Source-X
+  wiki compatibility.
+
+DEGISIKLIKLER / CHANGES:
+  - SpellDef: GROUP (ulong) field eklendi
+  - DefinitionLoader.LoadSpellDef: GROUP, RESOURCES, SKILLREQ parse case'leri
+  - DefinitionLoader: ParseReagentList, ParseSkillReqList helper metotlari
+  - SpellDef.TryGetProperty: NAME, FLAGS, GROUP, MANAUSE, SOUND, RUNES,
+    PROMPT_MSG, EFFECT_ID, RUNE_ITEM, SCROLL_ITEM, CAST_TIME, EFFECT,
+    DURATION, INTERRUPT, RESOURCES.n.KEY/VAL
+
+[2026-04-17] - Wiki eksik property: CHARDEF, ITEMDEF, Item / Wiki missing properties: CHARDEF, ITEMDEF, Item
+----------------------------------------
+
+OZET / SUMMARY:
+  Source-X wiki uyumlulugu icin BaseDef, CharDef, ItemDef ve Item sinifina
+  toplam ~60 yeni property eklendi. TDATA1-4 instance field'lari ve
+  save/load destegi eklendi.
+  Added ~60 new properties to BaseDef, CharDef, ItemDef, and Item classes
+  for Source-X wiki compatibility. Added TDATA1-4 instance fields with
+  save/load support.
+
+DEGISIKLIKLER / CHANGES:
+  - BaseDef: RANGE/RANGEH/RANGEL, RESLEVEL, RESDISPDNHUE, RESDISPDNID
+  - CharDef: ANIM, BLOODCOLOR, MOVERATE, HIREDAYWAGE, MAXFOOD, ICON, JOB,
+    THROWDAM/THROWDAMTYPE/THROWOBJ/THROWRANGE, RESOURCES (18 LoadFromKey case)
+  - ItemDef: SPEED, SKILL, REQSTR, DYE, FLIP, REPAIR, REPLICATE, TWOHANDS,
+    TDATA1-4, TFLAGS, AMMOANIM/AMMOANIMHUE/AMMOANIMRENDER, AMMOCONT,
+    AMMOTYPE, RESMAKE, DUPELIST, WEIGHTREDUCTION (28 LoadFromKey case)
+  - Item TryGetProperty: TDATA1-4, ISITEM, ISCHAR, BASEID, DISPIDDEC,
+    def-fallback (VALUE, WEIGHT, HEIGHT, ARMOR/DAM hi/lo, SPEED, SKILL,
+    REQSTR, RANGE, DYE, FLIP, REPAIR, TWOHANDS, ISARMOR, ISWEAPON)
+  - Item TrySetProperty: TDATA1-4
+  - WorldSaver: TDATA1-4 persist (non-zero)
+  - Geriye uyumlu: TDATA yoksa default 0 / Backwards compatible: TDATA defaults to 0
+
+[2026-04-17] - Eksik Character property ve komut destegi / Missing Character property and command support
+----------------------------------------
+
+OZET / SUMMARY:
+  Source-X wiki uyumlulugu icin Character sinifina ~70 yeni property,
+  ~50 yazilabilir property ve 28 yeni komut eklendi. Save/Load destegi
+  guncellendi.
+  Added ~70 new readable properties, ~50 writable properties, and 28 new
+  commands to Character class for Source-X wiki compatibility. Save/Load
+  support updated.
+
+DEGISIKLIKLER / CHANGES:
+  - Yeni field'lar: original stats (OSTR/ODEX/OINT), modifier'lar
+    (MODSTR/MODDEX/MODINT/MODAR/MODMAXWEIGHT), gorunum (OBODY/OSKIN),
+    savas (LUCK/NIGHTSIGHT/STEPSTEALTH), deneyim (EXP/LEVEL),
+    oyuncu durumu (DEATHS/PROFILE/PFLAG/TITHING/SPEEDMODE),
+    NPC durumu (HOMEDIST/HOME/ACTPRI/SPEECHCOLOR), takipciler
+    (MAXFOLLOWER/CURFOLLOWER), resist sinirlari (RESFIREMAX/RESCOLDMAX/
+    RESPOISONMAX/RESENERGYMAX), gorunum (VISUALRANGE/EMOTEACT/FONT),
+    aksiyon baglami (ACT/ACTARG1-3/ACTP/ACTPRV/ACTDIFF/ACTION),
+    zamanlama (CREATETIME).
+    New fields: original stats, modifiers, appearance, combat extras,
+    experience, player state, NPC state, followers, resist caps,
+    view settings, action context, timing.
+  - TryGetProperty: Hesaplanan property'ler eklendi: AC, WEIGHT, MAXWEIGHT,
+    RANGE, AGE, SKILLTOTAL, GOLD, BANKBALANCE, SEX, COUNT, FCOUNT,
+    ISCHAR, ISITEM, SERIAL, DISPIDDEC, HEIGHT, ISVENDOR, ISONLINE,
+    ISINPARTY, ATTACKER.
+    TryGetProperty: Added computed properties: AC, WEIGHT, MAXWEIGHT,
+    RANGE, AGE, SKILLTOTAL, GOLD, BANKBALANCE, SEX, COUNT, FCOUNT,
+    ISCHAR, ISITEM, SERIAL, DISPIDDEC, HEIGHT, ISVENDOR, ISONLINE,
+    ISINPARTY, ATTACKER.
+  - TryGetProperty prefix/referans: OWNER.xxx, WEAPON.xxx, MOUNT,
+    SPAWNITEM, TOPOBJ, TYPEDEF, FINDLAYER.n, FINDID.xxx, FINDTYPE.xxx,
+    FINDCONT.n, SKILLLOCK.n, STATLOCK.n, SKILLBEST.n, MEMORY.xxx.
+    TryGetProperty prefix/reference: OWNER.xxx, WEAPON.xxx, MOUNT,
+    SPAWNITEM, TOPOBJ, TYPEDEF, FINDLAYER.n, FINDID.xxx, FINDTYPE.xxx,
+    FINDCONT.n, SKILLLOCK.n, STATLOCK.n, SKILLBEST.n, MEMORY.xxx.
+  - TrySetProperty: Tum yeni field'lar icin set destegi + SKILLLOCK.n,
+    STATLOCK.n, MEMORY.xxx prefix destegi.
+    TrySetProperty: Set support for all new fields + SKILLLOCK.n,
+    STATLOCK.n, MEMORY.xxx prefix support.
+  - TryExecuteCommand: 28 yeni komut: ALLSKILLS, INVIS, INVUL, DISMOUNT,
+    NEWGOLD, NEWLOOT, POLY, SLEEP, SUICIDE, RELEASE, BARK, BOW, SALUTE,
+    DCLICK, FLIP, FIXWEIGHT, UPDATE, UPDATEX, REMOVEFROMVIEW, DROP, PACK,
+    BANK, HUNGRY, NUDGEUP, NUDGEDOWN, PRIVSET, FORGIVE, JAIL.
+    TryExecuteCommand: 28 new commands: ALLSKILLS, INVIS, INVUL, DISMOUNT,
+    NEWGOLD, NEWLOOT, POLY, SLEEP, SUICIDE, RELEASE, BARK, BOW, SALUTE,
+    DCLICK, FLIP, FIXWEIGHT, UPDATE, UPDATEX, REMOVEFROMVIEW, DROP, PACK,
+    BANK, HUNGRY, NUDGEUP, NUDGEDOWN, PRIVSET, FORGIVE, JAIL.
+  - WorldSaver: 24 yeni kalici field kaydediliyor (sadece non-default).
+    WorldSaver: 24 new persistent fields saved (only when non-default).
+  - WorldLoader: OBODY hex parse destegi eklendi; diger yeni field'lar
+    mevcut TrySetProperty uzerinden otomatik yukleniyor.
+    WorldLoader: Added OBODY hex parse support; other new fields load
+    automatically through existing TrySetProperty.
+
+[2026-04-17] - Performans optimizasyonu: container index, cached sayaclar, streaming save / Performance optimization: container index, cached counters, streaming save
+----------------------------------------
+
+OZET / SUMMARY:
+  1M item + 100K char senaryosunda O(N) full-scan darbogazlari giderildi.
+  Container lookup, obje sayaclari ve world save islemi optimize edildi.
+  Dead code temizligi yapildi. BENCHMARK admin komutu eklendi.
+  Removed O(N) full-scan bottlenecks for 1M item + 100K char scenarios.
+  Container lookup, object counters and world save optimized.
+  Dead code cleaned up. BENCHMARK admin command added.
+
+DEGISIKLIKLER / CHANGES:
+  - Container Reverse Index: GetContainerContents() O(N) full scan yerine
+    _containerIndex dictionary ile O(1) lookup. Item.ContainedIn setter'i
+    eski/yeni container icin indeksi otomatik guncelliyor.
+    Container Reverse Index: GetContainerContents() uses _containerIndex
+    dictionary for O(1) lookup instead of O(N) full scan. Item.ContainedIn
+    setter automatically updates index for old/new container.
+  - Cached TotalChars/TotalItems: Her cagrisinda LINQ .Count() ile 1M obje
+    sayan property'ler yerine _totalChars/_totalItems sayaclari eklendi.
+    Create/Delete islemlerinde guncelleniyor.
+    Cached TotalChars/TotalItems: Added _totalChars/_totalItems counters
+    instead of LINQ .Count() scanning 1M objects per call. Updated on
+    Create/Delete operations.
+  - WorldSaver Streaming: .ToList() ile 1M objeyi snapshot almak yerine
+    dictionary uzerinden dogrudan iterate ediliyor (~9MB allokasyon tasarrufu).
+    SaveItems/SaveChars imzalari List<ObjBase> -> IEnumerable<ObjBase>.
+    WorldSaver Streaming: Direct iteration over dictionary instead of
+    .ToList() snapshot of 1M objects (~9MB allocation savings).
+    SaveItems/SaveChars signatures changed to IEnumerable<ObjBase>.
+  - GetNpcSnapshot dead code temizligi: TimerWheel her zaman mevcut oldugu
+    icin GetNpcSnapshot() metodu ve tum fallback dallari silindi.
+    _npcTimerWheel nullable turden null! ile degistirildi.
+    GetNpcSnapshot dead code cleanup: Removed GetNpcSnapshot() method and
+    all fallback branches since TimerWheel is always initialized.
+    Changed _npcTimerWheel from nullable to null!.
+  - BENCHMARK admin komutu: 1000x container lookup + 10000x counter erisimi
+    olcumu. Telnet veya sunucu konsolundan calistirilabilir.
+    BENCHMARK admin command: Measures 1000x container lookup + 10000x
+    counter access. Can be run from Telnet or server console.
+  - README guncellendi: Dahili Optimizasyonlar tablosu ve BENCHMARK komutu
+    dokumantasyonu eklendi.
+    README updated: Internal Optimizations table and BENCHMARK command
+    documentation added.
+
+DOSYALAR / FILES:
+  src/SphereNet.Game/World/GameWorld.cs
+  src/SphereNet.Game/Objects/Items/Item.cs
+  src/SphereNet.Persistence/Save/WorldSaver.cs
+  src/SphereNet.Server/Program.cs
+  src/SphereNet.Server/Admin/AdminCommandProcessor.cs
+  README.md
+
+[2026-04-17] - Konsol UI modernizasyonu ve DEBUG toggle / Console UI modernization and DEBUG toggle
+----------------------------------------
+
+OZET / SUMMARY:
+  ConsoleForm arayuzu daha modern ve temiz hale getirildi. Hizli aksiyon
+  butonlari SAVE, RESYNC, DEBUG olarak guncellendi. DEBUG butonu ile
+  DebugPackets anlik acilip kapatilabilir (tum aktif baglantilara yansir).
+  ConsoleForm UI modernized with cleaner layout. Quick action buttons updated
+  to SAVE, RESYNC, DEBUG. DEBUG button toggles DebugPackets at runtime
+  (applies to all active connections instantly).
+
+DEGISIKLIKLER / CHANGES:
+  - ConsoleForm renk paleti merkezilesti (static readonly color constants).
+    ConsoleForm color palette centralized (static readonly color constants).
+  - Header sadele: emoji kaldirildi, Segoe UI Semibold 14pt, alt border.
+    Header simplified: emoji removed, Segoe UI Semibold 14pt, bottom border.
+  - Stats karti: uppercase baslik, satir ici deger gosterimi, separator cizgiler.
+    Stats card: uppercase title, inline value display, separator lines.
+  - Butonlar: SAVE / RY yerine SAVE / RESYNC / DEBUG. Hover efekti, hand cursor.
+    Buttons: SAVE / RY replaced with SAVE / RESYNC / DEBUG. Hover effect, hand cursor.
+  - Follow butonu "X" yerine "AUTO" yazisiyla daha anlasilir.
+    Follow button text changed from "X" to "AUTO" for clarity.
+  - DEBUG toggle: AdminCommandProcessor'a DEBUG komutu ve OnDebugToggleRequested event'i eklendi.
+    DEBUG toggle: Added DEBUG command and OnDebugToggleRequested event to AdminCommandProcessor.
+  - Program.cs: ToggleDebugPackets() metodu NetworkManager, SphereConfig ve tum
+    aktif NetState'lerin DebugPackets degerini anlik degistirir.
+    Program.cs: ToggleDebugPackets() toggles DebugPackets on NetworkManager,
+    SphereConfig and all active NetState connections instantly.
+  - TelnetConsole'a OnDebugToggleRequested event wrapper'i eklendi.
+    Added OnDebugToggleRequested event wrapper to TelnetConsole.
+  - Sunucu acilisinda config'deki DebugPackets durumu forma yansitilir.
+    Initial DebugPackets state from config is reflected on the form at startup.
+
+DOSYALAR / FILES:
+  - src/SphereNet.Server/Admin/ConsoleForm.cs
+  - src/SphereNet.Server/Admin/AdminCommandProcessor.cs
+  - src/SphereNet.Server/Admin/TelnetConsole.cs
+  - src/SphereNet.Server/Program.cs
+
+[2026-04-17] - Multi-versiyon client destegi: paket uyumlulugu / Multi-version client support: packet compatibility
+----------------------------------------
+
+OZET / SUMMARY:
+  Farkli client versiyonlari (2.x - 7.x) ile uyumluluk icin paket formatlari
+  dinamik hale getirildi. Dusuk versiyonlu client'lar artik TCP stream desync
+  yasamadan baglanabilir.
+  Packet formats made dynamic for compatibility with different client versions
+  (2.x - 7.x). Lower version clients can now connect without TCP stream desync.
+
+DEGISIKLIKLER / CHANGES:
+  - NetState'e versiyon helper property'leri eklendi: IsClientPost6017,
+    IsClientPost60142, IsClientPost7090, IsClientPost70180.
+    Added version helper properties to NetState.
+  - 0x24 (OpenContainer): 7.0.9+ icin 9 byte, eski client'lar icin 7 byte.
+    0x24 (OpenContainer): 9 bytes for 7.0.9+, 7 bytes for older clients.
+  - 0x25 (ContainerItem): 6.0.1.7+ icin 21 byte (grid index), eski icin 20 byte.
+    0x25 (ContainerItem): 21 bytes for 6.0.1.7+ (grid index), 20 bytes for older.
+  - 0xB9 (FeatureEnable): 6.0.14.2+ icin 5 byte (uint), eski icin 3 byte (ushort).
+    0xB9 (FeatureEnable): 5 bytes (uint) for 6.0.14.2+, 3 bytes (ushort) for older.
+  - 0x11 (StatusFull): expansion level client versiyonuna gore belirleniyor
+    (0=pre-AOS, 3=AOS, 4=SE, 5=ML).
+    0x11 (StatusFull): expansion level determined by client version.
+  - Feature flags (0xB9) client versiyonuna gore ayarlaniyor: pre-AOS=0x0000,
+    AOS=0x0001, SE=0x0004, ML=0x0044, SA=0x0244.
+    Feature flags (0xB9) adjusted per client version.
+  - Incoming paket uzunluklari dinamik: 0x08 (DropItem) 14/15 byte,
+    0x00 (CreateCharacter) 104/106 byte.
+    Dynamic incoming packet lengths: 0x08 (DropItem) 14/15 bytes,
+    0x00 (CreateCharacter) 104/106 bytes.
+  - NetworkManager paket dispatcher'i versiyon-aware uzunluk kullaniyor.
+    NetworkManager packet dispatcher uses version-aware length lookup.
+
+DOSYALAR / FILES:
+  - src/SphereNet.Network/State/NetState.cs
+  - src/SphereNet.Network/Packets/Outgoing/ExtendedPackets.cs
+  - src/SphereNet.Network/Packets/PacketDefinitions.cs
+  - src/SphereNet.Network/Manager/NetworkManager.cs
+  - src/SphereNet.Game/Clients/GameClient.cs
+
+[2026-04-17] - Login sonrasi donma ve hits/mana 0 duzeltildi / Fix post-login freeze and hits/mana showing 0
+----------------------------------------
+
+OZET / SUMMARY:
+  Login sonrasi 3-5 adim atinca olusan donma ve client'ta hits/mana 0 gorunme
+  sorunu duzeltildi. Uc ana neden tespit ve giderildi.
+  Fixed post-login freeze after 3-5 steps and hits/mana displaying as 0 on client.
+  Three root causes identified and resolved.
+
+DEGISIKLIKLER / CHANGES:
+  - 0x11 (StatusFull) expansion level 3 (AOS) -> 5 (ML) olarak duzeltildi.
+    0xB9 feature flags (0x0244 = SA+ML) ile uyumlu hale getirildi. Client artik
+    dogru byte offset'lerden okuyarak hits/mana degerlerini gorebilir.
+    Fixed 0x11 expansion level from 3 (AOS) to 5 (ML), matching 0xB9 feature flags.
+  - 0x11 paket field sirasi duzeltildi: ML->AOS->SE (yanlis) yerine AOS->SE->ML
+    (dogru RunUO/standard sirasi). Client artik field'lari dogru offset'lerden okur.
+    Fixed 0x11 packet field order from ML->AOS->SE (wrong) to AOS->SE->ML (correct).
+  - Login sirasindaki fazla SendDrawObject (0x78) kaldirildi. Resync() zaten
+    DrawObject gonderdigi icin ucuncu paket gereksizdi ve client'i bozabiliyordu.
+    Removed redundant SendDrawObject after Resync() during login sequence.
+  - 0x11 paketi debug log filtresinden cikarildi, hata ayiklamayi kolaylastirir.
+    Removed 0x11 from debug log filter to aid packet debugging.
+  - 0x24 (OpenContainer) paketi 7 -> 9 byte olarak duzeltildi. 7.0.9+ client'lar
+    ekstra 2 byte (container type 0x7D) bekler; eksik byte'lar TCP stream desync'e
+    ve client donmasina neden oluyordu.
+    Fixed 0x24 packet from 7 to 9 bytes. 7.0.9+ clients expect extra container type
+    field; missing bytes caused TCP stream desync and client freeze.
+  - 0x25 (ContainerItem) paketi 20 -> 21 byte olarak duzeltildi. 6.0.1.7+ client'lar
+    ekstra grid index byte'i bekler; eksik byte ayni stream desync sorununa yol aciyordu.
+    Fixed 0x25 packet from 20 to 21 bytes with grid index for 6.0.1.7+ clients.
+
+ETKILENEN DOSYALAR / AFFECTED FILES:
+  - src/SphereNet.Network/Packets/Outgoing/ExtendedPackets.cs
+  - src/SphereNet.Game/Clients/GameClient.cs
+  - src/SphereNet.Network/State/NetState.cs
+
+[2026-04-17] - Map Points property destegi eklendi / Add Map Points property support
+----------------------------------------
+
+OZET / SUMMARY:
+  Source-X uyumlu Map Points property'leri eklendi. Script'lerden objenin
+  konumundaki terrain, static item ve bolge bilgilerine read-only erisim saglanir.
+  TERRAIN, STATICS (dot-notation ile), REGION, ROOM, SECTOR property'leri ve
+  ISNEARTYPE fonksiyonu desteklenir.
+  Added Source-X compatible Map Points properties. Read-only access to terrain,
+  static items and region data at any object's position from scripts. Supports
+  TERRAIN, STATICS (with dot-notation), REGION, ROOM, SECTOR properties and
+  ISNEARTYPE function.
+
+Degisiklikler / Changes:
+  - ObjBase.cs: ResolveWorld static delegate eklendi, TryGetMapPointProperty
+    metodu ile TERRAIN, TERRAIN.Z, STATICS, STATICS.n.ID/COLOR/Z, REGION,
+    REGION.UID, ROOM, SECTOR, ISNEARTYPE property'leri eklendi.
+    Added ResolveWorld delegate, TryGetMapPointProperty method with TERRAIN,
+    TERRAIN.Z, STATICS, STATICS.n.ID/COLOR/Z, REGION, REGION.UID, ROOM,
+    SECTOR, ISNEARTYPE properties.
+  - Program.cs: ObjBase.ResolveWorld delegate atamasi eklendi.
+    Added ObjBase.ResolveWorld delegate assignment.
+
+[2026-04-17] - SPAWN group destegi eklendi / Add SPAWN group support
+----------------------------------------
+
+OZET / SUMMARY:
+  Source-X SPAWN grup tanimlamasi eklendi. [SPAWN defname] section'lari weighted
+  random NPC listeleri tanimlar. Spawn item'inin MORE1'i tek chardef yerine bir
+  spawn group defname'ine referans verebilir. Her spawn tick'inde gruptan agirlikli
+  rastgele bir NPC secilir. CharDef'ten tam NPC ozellik yukleme (stat, isim, brain).
+  Added Source-X SPAWN group definitions. [SPAWN defname] sections define weighted
+  random NPC lists. Spawn item MORE1 can reference a spawn group defname instead of
+  a single chardef. Each spawn tick picks a weighted random NPC from the group.
+  Full NPC property loading from CharDef (stats, name, brain).
+
+Degisiklikler / Changes:
+  - ResType.cs: Spawn enum eklendi (WorldScript'ten ayri). / Added Spawn enum value.
+  - SpawnGroupDef.cs (YENI/NEW): Weighted random NPC grup tanimlamasi.
+    Members listesi, TotalWeight, SelectRandomMember, LoadFromKey.
+    Weighted random NPC group definition with member list and selection.
+  - ResourceHolder.cs: SPAWN section'lari ResType.Spawn olarak parse edilir,
+    SpawnGroupDef olarak yuklenir. Resync destegi.
+    SPAWN sections parsed as ResType.Spawn into SpawnGroupDef. Resync support.
+  - SpawnComponents.cs: SpawnGroup destegi, CharDef-based NPC olusturma,
+    SetFromMore1 resolver, ForceSpawn, GetSpawnDefName.
+    SpawnGroup support, CharDef-based NPC creation, MORE1 resolve, ForceSpawn.
+  - Item.cs: SPAWNCOUNT, SPAWNMAX, SPAWNDEF, SPAWNRANGE property'leri.
+    SPAWNRESET, SPAWNCLEAR komutlari. InitializeSpawnComponent metodu.
+    Spawn properties and commands. InitializeSpawnComponent method.
+  - Program.cs: Spawn item'lari yukleme sonrasi otomatik initialize.
+    Auto-initialize spawn items after world load.
+
+[2026-04-17] - MENU script objesi eklendi / Add MENU script object
+----------------------------------------
+
+OZET / SUMMARY:
+  Source-X MENU objesi eklendi. Script'lerden eski stil (0x7C) secim menuleri
+  gosterir. Text-based (ON=0 text) ve item-based (ON=baseid text, @hue) destegi.
+  Secim yapilinca ilgili ON blogunun script satirlari calisir. Iptal @Cancel trigger.
+  Added Source-X MENU object. Shows old-style (0x7C) selection menus from scripts.
+  Supports text-based (ON=0 text) and item-based (ON=baseid text, @hue) entries.
+  Selecting an option executes its ON block script lines. Cancel fires @Cancel trigger.
+
+Degisiklikler / Changes:
+  - PacketMenuDisplay.cs (YENI/NEW): 0x7C Item List Menu paketi.
+    MenuItemEntry record (ModelId, Hue, Text). Variable-length PacketWriter pattern.
+    0x7C Item List Menu packet with MenuItemEntry record and variable-length build.
+  - GameClient.cs: MENU komutu (TryExecuteScriptCommand), TryFindMenuSection,
+    HandleMenuChoice guncellendi (pending state, ON blok script calistirma, @Cancel).
+    MenuOptionEntry record eklendi.
+    MENU command in TryExecuteScriptCommand, TryFindMenuSection helper,
+    HandleMenuChoice updated (pending state, ON block script exec, @Cancel).
+    MenuOptionEntry record added.
+
+[2026-04-17] - FILE script objesi eklendi / Add FILE script object
+----------------------------------------
+
+OZET / SUMMARY:
+  Source-X FILE objesi eklendi. Script'lerden text dosyalarina okuma/yazma
+  erisimi saglar. OF_FileCommands (0x0020) flag'i OptionFlags'te set edilmeli.
+  Her GameClient tek bir aktif dosya handle'i kullanir.
+  Added Source-X FILE object. Provides read/write access to text files
+  from scripts. OF_FileCommands (0x0020) flag must be set in OptionFlags.
+  Each GameClient uses a single active file handle.
+
+Degisiklikler / Changes:
+  - ScriptFileHandle.cs (YENI/NEW): Per-client dosya handle sinifi.
+    Open/Close/Read/Write/Seek, MODE flag'leri, path traversal guvenlik
+    kontrolu. Static helper'lar: FileExists, GetFileLines, DeleteFile
+    Per-client file handle class with Open/Close/Read/Write/Seek, MODE flags,
+    path traversal security. Static helpers: FileExists, GetFileLines, DeleteFile
+  - SphereConfig.cs: OF_FileCommands = 0x0020 sabiti ve HasFileCommands property
+    Added OF_FileCommands constant and HasFileCommands property
+  - GameClient.cs: FILE.* komut blogu (OPEN, CLOSE, WRITE, WRITELINE, WRITECHR,
+    FLUSH, DELETEFILE, MODE.*) ve FILE.* property blogu (INUSE, ISEOF, FILEPATH,
+    POSITION, LENGTH, READCHAR, READBYTE, READLINE, SEEK, FILELINES, FILEEXIST)
+    Added FILE.* command block and FILE.* property/function block
+  - Program.cs: HasFileCommands kontrolu ile ScriptFileHandle olusturma ve wiring
+    ScriptFileHandle creation and wiring when HasFileCommands is enabled
+  - sphere.ini: OPTIONFLAGS=0x0020 eklendi (FILE komutlari aktif)
+    Added OPTIONFLAGS=0x0020 (FILE commands enabled)
+
+[2026-04-17] - Account sistemi tamamlandi / Complete account system
+----------------------------------------
+
+OZET / SUMMARY:
+  Account sinifina TAG sistemi (VarMap), wiki'deki tum property'ler ve
+  save/load destegi eklendi. GameClient'ta ACCOUNT.* erisimi generic resolver
+  ile genisletildi. ARGO/ACT/LINK context'inde character->account lookup
+  icin ResolveAccountForChar delegate eklendi.
+  Added TAG system (VarMap), all wiki properties and save/load support to
+  Account class. Expanded ACCOUNT.* access in GameClient with generic resolver.
+  Added ResolveAccountForChar delegate for character->account lookup in
+  ARGO/ACT/LINK context.
+
+Degisiklikler / Changes:
+  - Account.cs: VarMap _tags ile TAG sistemi (SetTag/TryGetTag/RemoveTag),
+    yeni alanlar (ChatName, FirstConnectDate, FirstIp, LastCharUid, MaxChars,
+    Guest, Jail, Lang, Priv, ResDisp), TryGetProperty'de TAG.name, CHAR.n,
+    BLOCK, CHARS, CHATNAME, FIRSTCONNECTDATE, FIRSTIP, GUEST, JAIL, LANG,
+    LASTCHARUID, MAXCHARS, PRIV, RESDISP, TAGCOUNT, TOTALCONNECTTIME,
+    TrySetProperty'de PASSWORD/NEWPASSWORD dahil tum set destegi
+    TAG system with VarMap, new fields, full wiki property get/set support
+  - AccountManager.cs: Load'a 10 yeni key + TAG.* prefix destegi, Save'e
+    yeni alanlar + TAG dongusu eklendi
+    Load extended with new keys + TAG.* prefix, Save extended with new
+    fields + TAG iteration
+  - GameClient.cs: Hardcoded ACCOUNT.PLEVEL/NAME bloklari generic
+    ACCOUNT.* -> _account.TryGetProperty() cagrisina cevirildi.
+    ARGO/ACT/LINK'te ResolveAccountForChar ile character->account lookup
+    Replaced hardcoded blocks with generic resolver, added character->
+    account lookup via delegate
+  - Character.cs: ResolveAccountForChar static delegate eklendi
+    Added ResolveAccountForChar static delegate
+  - Program.cs: ResolveAccountForChar wiring (TAG.ACCOUNT + fallback slot scan)
+
+[2026-04-17] - Party sistemi tamamlandi / Complete party system
+----------------------------------------
+
+OZET / SUMMARY:
+  Party sistemi genisletildi: PartyDef TAG sistemi, PARTY.* script property
+  ve komut destegi, trigger ateслeme (@PartyInvite/@PartyLeave/@PartyRemove),
+  private message paket duzeltmesi eklendi.
+  Extended party system: PartyDef TAG system, PARTY.* script property and
+  command support, trigger firing (@PartyInvite/@PartyLeave/@PartyRemove),
+  private message packet fix added.
+
+Degisiklikler / Changes:
+  - PartyManager: PartyDef'e TAG sistemi eklendi (SetTag/TryGetTag/RemoveTag/
+    ClearTags/TagCount/TagAt), AddMemberForced (limit bypass, mevcut partiden
+    cikar), PartyManager.ForceAddMember
+    PartyDef TAG system added, AddMemberForced (limit bypass, removes from
+    existing party), PartyManager.ForceAddMember
+  - Character: ResolvePartyFinder/ResolvePartyManager static delegate'leri,
+    TryGetPartyProperty (PARTY.MASTER/MEMBERS/MEMBER.n/ISSAMEPARTYOF/TAG.*/
+    TAGCOUNT/TAGAT.*/LOOT), TrySetPartyProperty (PARTY.TAG.*/LOOT/MASTER),
+    TryExecutePartyCommand (ADDMEMBER/ADDMEMBERFORCED/REMOVEMEMBER/DISBAND/
+    SYSMESSAGE/CLEARTAGS/TAGLIST)
+    ResolvePartyFinder/ResolvePartyManager static delegates, party property
+    get/set, party command execution
+  - GameClient: Invite'da @PartyInvite, remove'da @PartyRemove, leave'de
+    @PartyLeave trigger ateşleme; private message paketi isPrivate: true
+    Trigger firing on invite/remove/leave; private message packet fix
+  - ExtendedPackets: PacketPartyMessage'a isPrivate parametresi, Build()'da
+    0x03 (private) / 0x04 (public) sub-byte ayrimi
+    isPrivate parameter, 0x03/0x04 sub-byte distinction in Build()
+  - Program.cs: ResolvePartyFinder ve ResolvePartyManager wiring
+
+[2026-04-17] - REGIONRESOURCE/REGIONTYPE & Room Sistemi / REGIONRESOURCE/REGIONTYPE & Room System
+----------------------------------------
+
+OZET / SUMMARY:
+  REGIONRESOURCE ve REGIONTYPE sistemi eklendi: script'ten tanimlanan
+  toplanabilir kaynaklar (maden, odun, balik) region'lara baglanir.
+  Mining/Fishing/Lumberjacking artik region resource'lardan item uretir.
+  Room (oda) sistemi ile region icerisinde alt-alan tanimlama destegi eklendi.
+  Added REGIONRESOURCE and REGIONTYPE system: script-defined harvestable
+  resources (ore, logs, fish) bound to regions. Mining/Fishing/Lumberjacking
+  now produce items from region resources. Room (sub-area) system added for
+  defining sub-areas within regions.
+
+REGIONRESOURCE & REGIONTYPE:
+  Yeni Dosyalar / New Files:
+  - RegionResourceDef.cs: Kaynak tanimlama — Amount, Reap, ReapAmount,
+    Regen, Skill range property'leri, LoadFromKey parser
+    Resource definition — Amount, Reap, ReapAmount, Regen, Skill range
+    properties, LoadFromKey parser
+  - RegionTypeDef.cs: Agirlikli kaynak listesi, ItemTypeFilter (t_rock,
+    t_tree, t_water), SelectRandomResource weighted random secim
+    Weighted resource list, ItemTypeFilter, SelectRandomResource weighted
+    random selection
+  - GatheringEngine.cs: Region-based kaynak toplama motoru
+    Region-based resource gathering engine
+    - Region -> RegionType -> RegionResource zinciri
+      Region -> RegionType -> RegionResource chain
+    - Skill check, @ResourceTest/@ResourceGather trigger destegi
+      Skill check, @ResourceTest/@ResourceGather trigger support
+    - Basarili toplamada item uretimi ve backpack'e ekleme
+      Item creation and backpack placement on successful gather
+
+  Degisiklikler / Changes:
+  - DefinitionLoader: _regionResourceDefs/_regionTypeDefs registry,
+    LoadAll switch'ine RegionResource/RegionType case'leri,
+    GetRegionResourceDef/GetRegionTypeDef accessor'lar
+    Static registries, LoadAll dispatch, accessor methods
+  - Region: _regionTypes listesi, AddRegionType/RemoveRegionType,
+    RESOURCES property TryGet/SetProperty destegi
+    RegionType list, add/remove methods, RESOURCES property support
+  - SkillHandlers: GatheringEngine entegrasyonu, oncelik region resource,
+    bulunamazsa hardcoded fallback
+    GatheringEngine integration, region resource priority with hardcoded fallback
+  - TriggerDispatcher: FireResourceTrigger metodu, ResourceGather/ResourceTest
+    trigger name mapping
+    FireResourceTrigger method, trigger name mapping
+  - Program.cs: AREADEF RESOURCES key parse, GatheringEngine olusturma
+    AREADEF RESOURCES key parsing, GatheringEngine wiring
+
+ROOM SISTEMI / ROOM SYSTEM:
+  Yeni Dosyalar / New Files:
+  - Room.cs: ROOMDEF tanimlama — region icerisinde alt-alan, rect listesi,
+    events, tag destegi, IScriptObj uygulamasi
+    ROOMDEF definition — sub-area within region, rect list, events, tags,
+    IScriptObj implementation
+
+  Degisiklikler / Changes:
+  - TriggerTypes: RegionStep, RoomEnter/RoomLeave/RoomStep trigger'lari
+    RegionStep, RoomEnter/RoomLeave/RoomStep triggers
+  - TriggerDispatcher: FireRoomEvents metodu
+    FireRoomEvents method
+  - MovementEngine: Room enter/leave/step trigger entegrasyonu
+    Room enter/leave/step trigger integration
+  - GameWorld: Room registry, AddRoom/FindRoom
+    Room registry, AddRoom/FindRoom methods
+  - Region: UID, DefName, P, Events, tag/flag management, IScriptObj
+    TryGet/Set/ExecuteCommand implementasyonu
+    UID, DefName, P, Events, tag/flag management, full IScriptObj implementation
+
+DI GER / OTHER:
+  - Guild: GuildAlign enum (Standard/Order/Chaos), Wars/Allies IEnumerable
+  - Character: Ek property'ler, flag islemleri
+    Additional properties, flag operations
+  - Item: Genis property/komut destegi, ship entegrasyonu
+    Extended property/command support, ship integration
+  - ScriptInterpreter: Ek komut destegi
+    Additional command support
+  - GameClient: Guild gump Wars/Allies Count() uyumlulugu
+    Guild gump Wars/Allies Count() compatibility
+
+[2026-04-16] - Gemi Sistemi ve Script Genisletmeleri / Ship System & Script Enhancements
+----------------------------------------
+
+OZET / SUMMARY:
+  Gemi (Ship) sistemi eklendi: yerlestirme, hareket, donus, demir atma,
+  23 script komutu ve TAG-based save/load. Source-X ile tam uyumlu.
+  REF degiskenleri ve FOR* dongu komutlari script motoruna eklendi.
+  Added ship system: placement, movement, rotation, anchoring, 23 script
+  commands and TAG-based save/load. Fully aligned with Source-X.
+  REF variables and FOR* loop commands added to script engine.
+
+GEMI SISTEMI / SHIP SYSTEM:
+  Yeni Dosyalar / New Files:
+  - ShipEnums.cs: ShipMovementType (Stop/OneTile/Normal), ShipSpeedMode
+    (OneTile/Rowboat/Slow/Fast) enumlari
+    ShipMovementType and ShipSpeedMode enums
+  - Ship.cs: Gemi instance sinifi — multi item, hold, plank, tiller,
+    owner, pilot, anchor, yon, hiz, component takibi
+    Ship instance class — multi item, hold, plank, tiller, owner, pilot,
+    anchor, direction, speed, component tracking
+  - ShipEngine.cs (~500 satir): Ana gemi motoru
+    ShipEngine (~500 lines): Main ship engine
+    - Yerlestirme: PlaceShip, CanPlaceShip (su kontrolu), RemoveShip
+      Placement: PlaceShip, CanPlaceShip (water check), RemoveShip
+    - Hareket: SetMoveDir, Move, MoveDelta (tum objeleri tasir), Stop
+      Movement: SetMoveDir, Move, MoveDelta (moves all objects), Stop
+    - Donus: Face — multi ID offset, component/char/item rotate (90/180/270)
+      Rotation: Face — multi ID offset, component/char/item rotate
+    - Tick: OnShipTick, OnTickAll (speed period kontrolu)
+      Tick: OnShipTick, OnTickAll (speed period control)
+    - Save/Load: TAG-based persistence (SHIP.OWNER, SHIP.COMPONENTS vb.)
+      Save/Load: TAG-based persistence (SHIP.OWNER, SHIP.COMPONENTS etc.)
+  Komutlar / Commands (23, Source-X ile tam uyumlu):
+  - Yon: SHIPFORE, SHIPBACK, SHIPLEFT, SHIPRIGHT, SHIPFORELEFT,
+    SHIPFORERIGHT, SHIPBACKLEFT, SHIPBACKRIGHT, SHIPDRIFTLEFT, SHIPDRIFTRIGHT
+    Direction: movement in 8 directions + lateral drift
+  - Donus: SHIPTURNLEFT, SHIPTURNRIGHT, SHIPTURNAROUND/SHIPTURN
+    Turning: left 90, right 90, 180 degree turns (anchor check)
+  - Demir: SHIPANCHORDROP, SHIPANCHORRAISE
+    Anchor: drop and raise
+  - Diger: SHIPSTOP, SHIPMOVE, SHIPFACE, SHIPGATE, SHIPUP, SHIPDOWN, SHIPLAND
+    Other: stop, directional move, face, teleport, vertical move (ATTR_MAGIC),
+    land to ground level
+  Ozellikler / Properties (Source-X sm_szLoadKeys ile uyumlu):
+  - Referanslar: TILLER, HATCH, PLANKS, PLANK.n
+    References: tiller, hold, plank count, plank by index
+  - Okuma/Yazma: ANCHOR, DIRFACE, DIRMOVE, PILOT, SPEEDMODE
+    Read/Write: anchor, face direction, move direction, pilot, speed mode
+  - Hiz: SHIPSPEED ("period,tiles"), SHIPSPEED.TILES, SHIPSPEED.PERIOD
+    Speed: combined format + dot-notation access
+
+SCRIPT GENISLETMELERI / SCRIPT ENHANCEMENTS:
+  REF Degiskenleri / REF Variables:
+  - REFn=value ile obje referansi saklama
+    REFn=value to store object references
+  - REFn.property=value ile referansli obje uzerinde islem
+    REFn.property=value to operate on referenced objects
+  FOR* Dongu Komutlari / FOR* Loop Commands:
+  - FORCHARS: Yakinlardaki tum karakterler (oyuncu + NPC)
+    All characters (players + NPCs) within radius
+  - FORCLIENTS: Yakinlardaki online oyuncular
+    Online player characters within radius
+  - FORITEMS: Yakinlardaki yerdeki itemler
+    Ground items within radius
+  - FOROBJS: Yakinlardaki tum objeler (char + item)
+    All objects (char + item) within radius
+  - FORCONT, FORCONTID, FORCONTTYPE: Container icerigi iterasyonu
+    Container content iteration
+  - FORCHARLAYER, FORCHARMEMORYTYPE: Karakter layer/memory iterasyonu
+    Character layer/memory iteration
+
+DIGER / OTHER:
+  - WorldSaver: Yeni script degiskenleri icin save destegi
+    WorldSaver: Save support for new script variables
+  - Program.cs: ShipEngine wiring, tick, serialize/deserialize
+
+[2026-04-16] - Paket Handlerlari, Script Motoru ve Sektor Sistemi / Packet Handlers, Script Engine & Sector System
+----------------------------------------
+
+OZET / SUMMARY:
+  16 yeni paket handler, 21 yeni script fonksiyonu, global degisken sistemi,
+  sektor script destegi ve SERV.* property erisimi eklendi. 11 dosyada ~2300
+  satir degisiklik.
+  Added 16 new packet handlers, 21 new script functions, global variable system,
+  sector scripting support and SERV.* property access. ~2300 lines changed across
+  11 files.
+
+PAKET HANDLERLARI / PACKET HANDLERS:
+  Kritik / Critical:
+  - 0x2C Death Menu: Olum sonrasi dirilme/hayalet secimi
+    Death menu: resurrect/ghost choice after death
+  - 0x83 Character Delete: Karakter silme (giris ekrani)
+    Character deletion from login screen
+  - 0x95 Dye Response: Renk secimi sonucu (boya kutusu)
+    Color picker result from dye vat
+  - 0x9A Prompt Response: Metin girisi yaniti (rune adi, tabela)
+    Text input response for rune naming, house signs
+  - 0x7D Menu Choice: Eski menu sistemi secim yaniti (crafting vb.)
+    Legacy menu system choice for crafting etc.
+  Icerik / Content:
+  - 0x66 Book Page: Kitap sayfa okuma/yazma
+    Book page read/write
+  - 0x93 Book Header: Kitap baslik/yazar duzenleme
+    Book title/author editing
+  - 0x71 Bulletin Board: Ilan tahtasi okuma/yazma
+    Bulletin board read/write/delete
+  - 0x90 Map Detail: Harita detay istegi (kartografi)
+    Map detail request for cartography
+  - 0x56 Map Pin Edit: Harita pin yerlestirme/silme
+    Map pin add/remove/move
+  Client Uyumlulugu / Client Compatibility:
+  - 0xD9 Hardware Info: Donanim bilgisi (sessizce kabul)
+    Hardware info silently accepted
+  - 0xA4 System Info: Sistem bilgisi (sessizce kabul)
+    System info silently accepted
+  - 0xBE Assist Version: Razor/UOAssist versiyon tespiti
+    Razor/UOAssist version detection
+  - 0xAC Gump Text Entry: Gump metin girisi yaniti
+    Gump text entry response
+  - 0x98 All Names Request: Gorulur mobil isimleri istegi
+    Visible mobile names request
+  - 0xB2 Chat Text: Eski chat sistemi (sessizce kabul)
+    Legacy chat system silently accepted
+
+SEKTOR SCRIPT SISTEMI / SECTOR SCRIPTING:
+  - Sector sinifi IScriptObj arayuzunu uyguluyor
+    Sector class now implements IScriptObj interface
+  - Okunabilir ozellikler: NUMBER, CLIENTS, COMPLEXITY, ITEMCOUNT, WEATHER,
+    SEASON, LIGHT, RAINCHANCE, COLDCHANCE, ISSLEEPING, CANSLEEP, ISDARK,
+    ISNIGHTTIME, LOCALTIME, LOCALTOD
+    Readable properties for sector queries
+  - Yazilabilir ozellikler: WEATHER, SEASON, LIGHT, RAINCHANCE, COLDCHANCE
+    Writable properties for sector configuration
+  - Komutlar: DRY, RAIN, SNOW, ALLCHARS, ALLCHARSIDLE, ALLCLIENTS, ALLITEMS,
+    RESPAWN, RESTOCK
+    Commands for weather control and object iteration
+  - SERV.MAP.n.SECTOR.n.property seklinde script'ten erisilebilir
+    Accessible from script as SERV.MAP.n.SECTOR.n.property
+
+SERV.* PROPERTY SISTEMI / SERV.* PROPERTY SYSTEM:
+  - ~30 sunucu ozelligi script'ten okunabilir: CLIENTS, ACCOUNTS, CHARS, ITEMS,
+    TIME, TIMEUP, MEM, REGEN0-3, SAVECOUNT, VERSION, SERVNAME, vb.
+    ~30 server properties readable from script
+  - RTIME, RTICKS tarih/saat fonksiyonlari ve FORMAT alt-komutlari
+    Date/time functions with FORMAT sub-commands
+  - SERV.ACCOUNT.name ile hesap bilgisi sorgulama
+    Account info queries via SERV.ACCOUNT.name
+  - SERV.MAPLIST.n.* ile harita listesi erisimi
+    Map list access via SERV.MAPLIST.n.*
+
+ADMIN KOMUTLARI / ADMIN COMMANDS:
+  - INFORMATION: Detayli sunucu bilgisi (versiyon, bellek, istatistik)
+    Detailed server info (version, memory, stats)
+  - LOG: Sunucu loguna mesaj yazma
+    Write message to server log
+  - RESPAWN: Tum NPC'leri yeniden olusturma
+    Respawn all dead NPCs
+  - RESTOCK: Tum satici envanterlerini yenileme
+    Restock all vendor inventories
+  - GARBAGE: Zorla cop toplama (GC)
+    Force garbage collection
+  - BLOCKIP / UNBLOCKIP: IP adresi engelleme/engel kaldirma
+    IP address blocking/unblocking
+
+SCRIPT FONKSIYONLARI / SCRIPT FUNCTIONS:
+  Matematik / Math:
+  - ABS, SQRT, SIN, COS, TAN (derece, *1000 sabit nokta)
+    ABS, SQRT, SIN, COS, TAN (degrees, *1000 fixed-point)
+  - LOGARITHM (log10 veya ozel taban), NAPIERPOW (e^x)
+    LOGARITHM (log10 or custom base), NAPIERPOW (e^x)
+  - RAND(min,max), RANDBELL (cang egrisi), MULDIV, BETWEEN, BETWEEN2
+    RAND(min,max), RANDBELL (bell curve), MULDIV, BETWEEN, BETWEEN2
+  - FEVAL, FHVAL, FLOATVAL, FVAL (x.x format), UVAL (unsigned)
+    FEVAL, FHVAL, FLOATVAL, FVAL (x.x format), UVAL (unsigned)
+  String:
+  - STRCMPI (buyuk/kucuk harf duyarsiz karsilastirma)
+    STRCMPI (case-insensitive comparison)
+  - STRINDEXOF, STRPOS, STRREGEX, STRREGEXNEW
+    Substring search and regex functions
+  - STRREVERSE, STRTRIM, STRTOLOWER, STRTOUPPER, EXPLODE
+    String manipulation functions
+  - ASC, ASCPAD, CHR (ASCII donusumleri)
+    ASC, ASCPAD, CHR (ASCII conversions)
+  - MD5HASH, ID (defname cozumleme)
+    MD5HASH, ID (defname resolution)
+  Bit Islemleri / Bit Operations:
+  - SETBIT, CLRBIT, ISBIT
+    Bit set, clear, and test operations
+  Diger / Other:
+  - D (ondalik degerlendirme), ISOBSCENE, ISNUM (ISNUMBER aliasi)
+    D (decimal eval), ISOBSCENE, ISNUM (ISNUMBER alias)
+  - STRCMP artik buyuk/kucuk harf duyarli (Ordinal), STRCMPI duyarsiz
+    STRCMP now case-sensitive (Ordinal), STRCMPI case-insensitive
+
+GLOBAL DEGISKENLER VE OBJE REFERANSLARI / GLOBAL VARIABLES & OBJECT REFERENCES:
+  - VAR.name / VAR0.name: Sunucu genelinde global degiskenler (okuma/yazma)
+    Server-wide global variables (read/write)
+  - OBJ / OBJ.property: Global obje referansi (okuma/yazma)
+    Global object reference (read/write)
+  - NEW / NEW.property: Son olusturulan obje referansi
+    Last created object reference
+  - UID.0xHEX.property: UID ile dogrudan obje erisimi
+    Direct object access by UID
+  - GETREFTYPE: Obje tip kodu (char/item/client)
+    Object type code (char/item/client)
+  - DEFMSG.name: Sunucu varsayilan mesaj okuma
+    Server default message lookup
+  - CLEARVARS: Global degiskenleri temizleme (prefix filtreli)
+    Clear global variables (with optional prefix filter)
+  - SHOW: Debug amacli property degeri gosterme
+    Debug property value display
+  - NEWDUPE: Obje klonlama (item/karakter)
+    Object cloning (item/character)
+
+[2026-04-16] - Source-X Uyumluluk: Faz 1-10 Tamamlandi / Source-X Parity: Phases 1-10 Complete
+----------------------------------------
+
+OZET / SUMMARY:
+  Source-X uyumluluk planinin 10 fazi tamamlandi. 27 dosyada ~2300 satir
+  degisiklik. Trigger sistemi, gump response, vendor, crafting, spell interrupt,
+  NPC AI pathfinding, weather/light, housing, party/guild ve ileri ozellikler
+  (poison, karma/fame, jail) eklendi.
+  All 10 phases of Source-X parity plan completed. ~2300 lines changed across
+  27 files. Trigger system, gump response, vendor, crafting, spell interrupt,
+  NPC AI pathfinding, weather/light, housing, party/guild and advanced features
+  (poison, karma/fame, jail) added.
+
+FAZ 1 - TRIGGER & SCRIPT ALTYAPISI / PHASE 1 - TRIGGER & SCRIPT INFRA:
+  - Trigger ateslemesi: @Login, @Death, @Hit, @GetHit, @Click, @DClick,
+    @EquipItem, @UnEquipItem, @RegionEnter, @RegionLeave, @Step, @Skill, @Spell
+    ve item trigger'lari (@Create, @Equip, @Unequip, @DropOn, @Destroy, @Damage)
+    ilgili engine noktalarina wiring edildi. (TriggerDispatcher.cs, CombatEngine.cs,
+    MovementEngine.cs, SkillEngine.cs, SpellEngine.cs)
+  - Script komut genisletme: TAG, TAGLIST, LOCAL, DIALOG, SDIALOG komutlari ve
+    STRARG, STRSUB, STRLEN, STREAT, STRMATCH string fonksiyonlari eklendi.
+    ISNUMBER, ISEMPTY, ISPLAYER, ISNPC kosul operatorleri. (ExpressionParser.cs)
+  - Property/Tag sistemi: KARMA, FAME, KILLS, CRIMINAL, REGION.NAME property'leri
+    hem okunabilir hem yazilabilir. Dynamic TAG read/write, LOCAL scope degiskenler.
+    (Character.cs, ObjBase.cs)
+
+FAZ 2 - GUMP & NPC DIALOG / PHASE 2 - GUMP & NPC DIALOG:
+  - Gump Response Handler: Packet 0xB1 parse ediliyor — button ID, switch list,
+    text entry list. GumpResponseRouter callback dispatch ile calisiyor.
+    (GameClient.cs, GamePackets.cs)
+  - Standart UO Gump'lari: Vendor buy/sell list, craft gump, skill list, party,
+    guild stone gump'lari eklendi. (GameClient.cs)
+  - NPC Dialog/Menu: DIALOG/SDIALOG script komutlari, Menu packet (0x7C),
+    keyword-based NPC speech response. (SpeechEngine.cs, GameClient.cs)
+
+FAZ 3 - VENDOR & TICARET / PHASE 3 - VENDOR & TRADE:
+  - Vendor paket parse: Packet 0x3B (Buy Items), 0x9F (Sell Items) parse ve
+    execute. Packet 0x24 (Display Buy/Sell Gump) gonderimi. (GamePackets.cs,
+    TradeEngine.cs)
+  - Vendor envanter: NPC vendor buy/sell listlerini script'ten yukleme (SELL=,
+    BUY= section). Restock timer, fiyat hesaplama (base price x markup).
+    (TradeEngine.cs)
+
+FAZ 4 - SKILL & CRAFTING / PHASE 4 - SKILL & CRAFTING:
+  - Skill trigger entegrasyonu: @SkillPreStart, @SkillStart, @SkillStroke,
+    @SkillSuccess, @SkillFail, @SkillGain, @SkillAbort trigger'lari wiring
+    edildi. (SkillEngine.cs, SkillHandlers.cs, TriggerDispatcher.cs)
+  - Crafting gump & recipe yukleme: Script'ten recipe tanimlari, zanaat gump'lari
+    (Blacksmithing, Tailoring, Carpentry, vb.), tool gereksinimi, maker's mark.
+    (CraftingEngine.cs, GameClient.cs)
+  - Eksik skill handler'lar: Veterinary, Herding, Camping, Focus, Poisoning,
+    Item Identification. (SkillHandlers.cs)
+
+FAZ 5 - BUYU TAMAMLAMA / PHASE 5 - SPELL COMPLETION:
+  - Spell interruption: Hasar alinca, hareket edince, equip degisikliginde buyu
+    kesintisi. Interrupt chance = damage / max_hp. (SpellEngine.cs, CombatEngine.cs)
+  - Elemental damage & resist: Physical/Fire/Cold/Poison/Energy damage turleri,
+    armor resist per-element, spell resist per-element. RESFIREPHYSICAL, RESFIRE,
+    RESCOLD, RESPOISON, RESENERGY property'leri. (CombatEngine.cs, Character.cs)
+
+FAZ 6 - NPC AI & PATHFINDING / PHASE 6 - NPC AI & PATHFINDING:
+  - Pathfinding entegrasyonu: Monster hedefe A* path takibi, pet sahibine follow,
+    guard devriye rotasi, vendor dukkan ici gezinme. (NpcAI.cs)
+  - NPC brain turleri: BRAIN_HEALER (rez/heal), BRAIN_GUARD (suclu tespit),
+    BRAIN_THIEF, BRAIN_ANIMAL (kacma, suru davranisi). (NpcAI.cs)
+
+FAZ 7 - DUNYA SISTEMLERI / PHASE 7 - WORLD SYSTEMS:
+  - Weather & Light: Packet 0x65 (Weather), 0x4F (Light Level), gun/gece dongusu,
+    region bazli hava durumu, dungeon karanligi, mevsim (Season 0xBC).
+    (WeatherEngine.cs)
+  - Region trigger & muzik: @RegionEnter/@RegionLeave ateslemesi, Packet 0x6D
+    (Play Music), NOMAGIC/NORECALL/SAFE flag uygulamalari. (Region.cs,
+    MovementEngine.cs)
+
+FAZ 8 - HOUSING / PHASE 8 - HOUSING:
+  - Multi.mul yukleme: MapData MultiReader -> Game Housing MultiDef bridge.
+    LoadFromMapData metodu ile multi tanimlari yukleniyor. (HousingEngine.cs)
+  - House gump'lari: House sign gump (isim, sahip, erisim listesi), co-owner/
+    friend yonetimi, lockdown/secure, ban/unban. (GameClient.cs)
+  - House decay & refresh: Decay asamalari (LikeNew -> IDOC -> collapse),
+    sahip girisi refresh, TAG-based persistence. (HousingEngine.cs, Program.cs)
+
+FAZ 9 - PARTY & GUILD / PHASE 9 - PARTY & GUILD:
+  - Party sistemi: Packet 0xBF sub 0x06 — member list, remove member, public/
+    private message, invitation. BroadcastPartyUpdate helper. (ExtendedPackets.cs,
+    GameClient.cs)
+  - Guild sistemi: Guild stone gump (charter, war/alliance, candidate, member
+    title), TAG-based persistence (SerializeAllToTags/DeserializeFromWorld).
+    (GuildManager.cs, GameClient.cs, Program.cs)
+
+FAZ 10 - ILERI OZELLIKLER / PHASE 10 - ADVANCED FEATURES:
+  - Poison sistemi: 5 seviye (Lesser->Lethal), tick-based hasar, resist,
+    Cure/ArchCure ile tedavi. (Character.cs, SpellEngine.cs)
+  - Karma & Fame: NPC/oyuncu oldurme sonrasi otomatik degisim, tier-based fame
+    gain, karma loss/gain. (DeathEngine.cs)
+  - Criminal flag: Timer-based (120sn), 5+ kill = murderer. Kills field WorldSaver
+    ile kaydediliyor. (Character.cs, WorldSaver.cs)
+  - Jail sistemi: JAIL <serial> [minutes] sureli, TAG-based timer, UNJAIL.
+    (SpeechEngine.cs)
+
+DOSYA DEGISIKLIKLERI / FILES CHANGED:
+  27 dosya degisti, ~2259 ekleme, ~121 silme.
+  27 files changed, ~2259 insertions, ~121 deletions.
+
+[2026-04-16] - Linux/Headless Mod ve Mount/Stat Duzeltmeleri
+----------------------------------------
+
+YENI OZELLIKLER:
+  - Linux ve macOS destegi: Proje artik net9.0 hedefleyerek Linux/macOS'ta
+    derlenip calisabiliyor. WinForms GUI yalnizca Windows'ta aktif, diger
+    platformlarda otomatik headless mod devreye giriyor. (SphereNet.Server.csproj,
+    Program.cs)
+  - --headless / --nogui argumani: Windows'ta da GUI olmadan konsol modunda
+    calistirma imkani. stdin'den komut okuma, Ctrl+C ile kapatma, Serilog
+    Console sink ile log ciktisi. (Program.cs)
+  - TickSleepMode ayari (sphere.ini): Ana dongu CPU yield stratejisi
+    yapilandirilabilir. 0=spin (dusuk latency, yuksek CPU), 1=sleep (dusuk CPU,
+    ~15ms latency), 2=hybrid (varsayilan, dengeli). (SphereConfig.cs, Program.cs)
+
+DUZELTMELER:
+  - Cift binek gorseli (double mount): V2 delta view sistemindeki ApplyDirtyOnly
+    metodu Ridden flag'ini kontrol etmiyordu. Mount edilen NPC dirty object olarak
+    islenip tekrar DrawObject gonderiliyordu, anlık ikinci at gorunuyordu. Ridden
+    kontrolu hem dirty processing hem stale detection'a eklendi. (GameClient.cs)
+  - Login Z duzeltmesi: Z != terrainZ kontrolu cok agresifti — bina/kopru/gemi
+    ustundeki karakterleri zemine yapistiryordu. Sadece Z < terrainZ (yeralti)
+    durumunda duzeltme yapilacak sekilde geri alindi. (GameClient.cs)
+  - Stat bar'da 0 gorunmesi: MaxHits/MaxMana/MaxStam=0 olan eski save'lerde
+    Hits setter deger ne olursa olsun 0'a clamp ediyordu. Str/Dex/Int'ten
+    fallback cap eklendi, EnterWorld'de Max stat'lar initialize ediliyor.
+    (Character.cs, GameClient.cs)
+
+[2026-04-16] - Script-Driven SPEECH Sistemi
+----------------------------------------
+
+YENI OZELLIKLER:
+  - NPC konusma sistemi script-driven hale getirildi. [SPEECH spk_xxx] section'lari
+    artik parse edilip StoredKeys olarak hafizada tutuluyor. NPC'ler CHARDEF'teki
+    SPEECH= veya TSPEECH= ile atanan speech resource'larindaki ON=*keyword* pattern'lerine
+    gore konusan oyunculara tepki verebiliyor. (ResourceHolder.cs, CharDef.cs,
+    TriggerRunner.cs, TriggerDispatcher.cs, Program.cs)
+  - Wildcard pattern matching: *keyword* (contains), keyword* (startsWith),
+    *keyword (endsWith), keyword (exact). Tumu case-insensitive.
+  - TSPEECH destegi: CharDef'e birden fazla speech resource atanabiliyor (SPEECH +
+    TSPEECH). Ilk eslesen pattern'in body'si execute ediliyor.
+  - Trigger zinciri: f_onchar_speech -> @NPCHearGreeting -> SPEECH triggers ->
+    hardcoded fallback -> @NPCHearUnknown. Geriye uyumluluk korunuyor.
+  - ResourceId.FromString(name, type) overload eklendi: Belirli bir ResType ile
+    ResourceId olusturma destegi. (ResourceId.cs)
+
+YENI SCRIPT KOMUTLARI:
+  - SRC.BANKSELF: Oyuncunun bank kutusunu acar. Script'te SPEECH section'larindan
+    cagrilabilir (ornegin spk_banker icindeki ON=*bank*). (GameClient.cs)
+  - BUY: Vendor buy islemi placeholder'i (tam vendor buy/sell destegiyle
+    genisletilecek). (GameClient.cs)
+  - BYE: NPC etkilesimini sonlandirir. (GameClient.cs)
+
+[2026-04-16] - Delta View, Paket Duzeltmeleri ve Performans Optimizasyonu
+----------------------------------------
+
+KRITIK DUZELTMELER:
+  - SendUpdateMobile 0x20->0x77: Diger karakterlerin pozisyon guncellemesi
+    PacketDrawPlayer (0x20) yerine PacketMobileMoving (0x77) ile gonderiliyor.
+    0x20 paketi istemciye "sen bu karaktersin" diyordu; NPC icin gonderildiginde
+    istemci donuyordu. Hareket broadcast, resurrect ve war mode broadcast da
+    ayni sekilde duzeltildi. (GameClient.cs, GamePackets.cs)
+  - ConsumeDirty: Dirty flag'ler her tick sonunda temizleniyor. Onceden objeler
+    bir kez dirty olduktan sonra flag'leri asla sifirlanmiyordu, sonraki property
+    degisiklikleri dirty set'e tekrar eklenemiyordu. NPC flickering ve eksik
+    goruntulenmelerin temel nedeni buydu. (Program.cs, ObjBase.cs)
+  - War mode 0x72 onay paketi: Sunucu istemciye PacketWarModeResponse (0x72)
+    gondermiyordu. Istemci bu paketi almadan war mode'a gecmiyordu.
+    (GamePackets.cs, GameClient.cs)
+  - Login Z duzeltmesi: Karakter zemin altindaysa (Z < terrainZ) otomatik olarak
+    terrain yuksekligine tasinir. Zemin ustundeki karakterlere dokunulmaz
+    (bina/kopru uzerinde olabilirler). (GameClient.cs)
+  - .GO komutu Z otomatik cozumleme: Z belirtilmediginde GetEffectiveZ ile
+    terrain yuksekligi hesaplanir (onceden Z=0 ataniyordu). (SpeechEngine.cs)
+  - MovementEngine Z duzeltmesi: TryMove hedef pozisyonu icin terrain effectiveZ
+    hesaplaniyor (onceden ch.Z kullaniliyordu, karakter haritanin altina
+    dusuyordu). (MovementEngine.cs)
+
+YENI PAKETLER:
+  - PacketMobileMoving (0x77): Diger karakterlerin pozisyon/yon guncellemesi.
+    17 byte sabit boyut. Serial, Body, X, Y, Z, Dir, Hue, Flags, Notoriety.
+  - PacketWarModeResponse (0x72): War/peace mode onay paketi.
+
+MOUNT/DISMOUNT:
+  - Dismount pozisyon: Binek artik rider'in koordinatina spawn oluyor
+    (onceden farkli tile'a yerlestirmeye calisiyordu). (MountEngine.cs)
+  - Mount/dismount walk state reset: WalkSequence ve _nextMoveTime sifirlaniyor,
+    mount hiz gecislerinde fastwalk reject onleniyor. Dismount'ta rider'a
+    PacketDrawPlayer (0x20) gonderimi eklendi. (GameClient.cs)
+
+PERFORMANS:
+  - Ana dongu latency: Thread.Sleep(1) -> SpinWait(100) + Thread.Sleep(0).
+    Windows'ta Thread.Sleep(1) ~15ms uyuyordu (timer resolution 15.6ms),
+    localhost ping 9-10ms'den <1ms'e dustu. (Program.cs)
+  - Stat setter change-guard: Hits/Mana/Stam/Direction setter'lari deger
+    degismediginde MarkDirty cagirmiyor. Gereksiz dirty set entryleri
+    onleniyor. (Character.cs)
+  - ApplyDirtyOnly Stats branch: NPC'ler icin Stats-only dirty flag islemesi
+    eklendi. (GameClient.cs)
+
+OYUN MEKANIGI:
+  - Kosma stamina maliyeti kaldirildi (weight sistemi henuz yok).
+    Item agirliklari implement edilince tekrar eklenecek. (MovementEngine.cs)
+
+DOKUMANTASYON:
+  - README.md: Performans, WinForms konsol, proje yapisi, oyun dongusu,
+    yapilandirma, PerfHarness ve script sistemi bolumleri eklendi.
+  - system_rules.md: DirtyFlag, Global Dirty Set, Delta View, Timer Wheel,
+    Multicore Pipeline mimari kurallari belgelendi.
+  - config/sphere.ini: Performans config'leri eklendi (MulticoreEnabled,
+    UseDeltaView, MulticoreWorkerCount vb.)
+
+[2026-04-15] - Script Uyumlulugu, Mount Senkronu ve Komut Stabilitesi
+----------------------------------------
+
+KRITIK DUZELTMELER:
+  - Target/cursor akisinda ESC iptali ve stale target state temizligi guclendirildi.
+    mtele/ntele/add/remove/targetf akislari arasinda kalan state temizleniyor;
+    target iptalinde siyah ekran olusturan zincirler kesildi. (GameClient.cs)
+  - mtele/ntele script fallback recursion sorunu giderildi. TELE/MTELE/NTELE
+    built-in oncelikli hale getirildi, cursor spam (ardisik 0x6C) engellendi.
+    (SpeechEngine.cs, GameClient.cs)
+  - Mount login senkronu duzeltildi: OnHorse flag/layer horse/item uyumsuzluklari
+    login-resync sirasinda toparlaniyor, mount item reconstruct ediliyor.
+    Dismount candidate seciminde map/sector sinir kontrolleri eklendi.
+    (MountEngine.cs, GameClient.cs)
+
+SCRIPT VE EVENTS UYUMU:
+  - MESSAGE komutu overhead davranisina cekildi (type=1/6 normalize -> 0),
+    hue parse uyumlulugu genisletildi; click trigger mesajlari hedef ustunde
+    gosterim mantigina yaklastirildi. (GameClient.cs)
+  - SRC.* komutlari icin script bridge genisletildi; SRC.MESSAGE gibi satirlar
+    artik client script command katmanina da dusebiliyor. (ScriptInterpreter.cs)
+  - SYS_WHITE/SYS_RED/SYS_GREEN icin hardcoded handler kaldirildi; scriptte
+    tanimli function/verb akisinin onune gecmesi engellendi. (GameClient.cs)
+  - Runtime EVENTS kaliciligi duzeltildi: save dosyasina yazim + load parser
+    uyumlulugu guclendirildi (Events:<index>, isim ve numeric fallback).
+    (WorldSaver.cs, ObjBase.cs)
+
+OYUNCU VE ITEM AKISI:
+  - Oyuncu backpack garantisi guclendirildi: login sirasinda mevcut konteyner
+    baglantisindan geri kazanma + eksikse otomatik olusturma/equip.
+    (GameClient.cs)
+  - Unicode SysMessage destegi eklendi (0xAE), Turkce karakter bozulmasi
+    giderildi. (GamePackets.cs, GameClient.cs)
+
+KONSOL / IZLEME:
+  - Konsol RAM gostergesi yuzde yerine kullanilan miktar (MB/GB) olarak
+    gosterilecek sekilde guncellendi. (ConsoleForm.cs)
+
+PERFORMANS / MIMARI:
+  - Deterministic multicore migration planinin fazlari kodlandi:
+    snapshot/compute/apply iskeleti, parallel-safe API'ler, fallback/telemetry,
+    determinism hash guardrail ve perf baseline guncellemeleri.
+    (Program.cs, GameWorld.cs, NpcAI.cs, GameClient.cs, PerfHarness)
+
+[2026-04-15] - Source-X Final Parity, Konsol ve Performans Iyilestirmeleri
+----------------------------------------
+
+YENI OZELLIKLER:
+  - Global script hook dispatcher eklendi: f_onserver_*, f_onaccount_*,
+    f_onclient_*, f_onobj_*, f_onitem_* ve f_packet_0xNN fonksiyonlari merkezi
+    bir katmandan tetikleniyor. (ScriptSystemHooks.cs, Program.cs)
+  - Script DB adapter gerceklendi: db.connect/query/execute/close ve db.row.*
+    erisimleri aktif. MySQL tarzinda config (MySQLHost/User/Password/Database)
+    ile varsayilan baglanti kurulabiliyor. (ScriptDbAdapter.cs, SphereConfig.cs)
+  - Packet hook pilotu eklendi: secili paketler script tarafinda yakalanip
+    short-circuit edilebiliyor. (NetworkManager.cs, Program.cs)
+  - DEFMESSAGE ve DIALOG koprusu eklendi: script mesaj tablolari ve dialog close
+    callback akisi oyun istemcisine baglandi. (ResourceHolder.cs, GameClient.cs)
+  - RESYNC alias'i olarak RY komutu desteklendi (hem admin komutu hem speech).
+    (AdminCommandProcessor.cs, SpeechEngine.cs)
+
+KONSOL / UI:
+  - WinForms konsol tasarimi Source-X tarzinda guncellendi, sabit baslik yerine
+    "sphereNet - <serv.name>" dinamik baslik eklendi. (ConsoleForm.cs, Program.cs)
+  - Hizli aksiyon butonlari Resync / Save / Shutdown olarak yenilendi, shutdown
+    icin onay diyaloğu eklendi. (ConsoleForm.cs)
+  - Konsol metinleri Turkcelestirildi, DPI olcekleme iyilestirmesi yapildi.
+    (ConsoleForm.cs, Program.cs)
+  - Aktif oyuncu, CPU ve RAM metrikleri gercek veriden okunuyor ve dakikada bir
+    yenileniyor. (ConsoleForm.cs)
+  - "Son 3 hata" algilamasinda anahtar kelime seti genisletildi (ERR, ERROR,
+    FATAL, EXCEPTION, FAIL, FAILED, HATA). (ConsoleForm.cs)
+
+KOMUT / SCRIPT UYUMU:
+  - .GO komutunda AREADEF NAME eslesmesi strict exact-match mantigina cekildi;
+    contains/fuzzy eslesmeler kaldirildi. (SpeechEngine.cs)
+  - AREADEF cache olusturma akisi section bazli duzeltildi; yalnizca ilgili
+    AREADEF section'inin NAME/P degerleri okunuyor. (SpeechEngine.cs)
+  - Komut metni parse edilirken gorunmeyen null karakterler temizlenerek
+    ".go britain" gibi komutlarda yanlis negatif eslesme ihtimali azaltildi.
+    (GameClient.cs, SpeechEngine.cs)
+
+PERFORMANS / DEBUG:
+  - NPC hareket/aksiyon cadence'i yavaslatildi (yaklasik 700-900ms) ve asiri
+    0x20 movement paketi spam'i azaltildi. (NpcAI.cs, Character.cs)
+  - DebugPackets acikken opcode bazli filtre eklendi (DebugPacketOpcodes), ping
+    paketleri (0x73) log spam'den otomatik ayiklanıyor. (SphereConfig.cs,
+    Program.cs, NetworkManager.cs, config/sphere.ini)
+
+DOGRULAMA:
+  - Entegrasyon ve regresyon testleri guncellendi; tum degisiklikler sonrasinda
+    testler calistirildi ve basarili sonuc alindi. (SphereNet.Tests)
+
+[2026-04-15] - Komut sistemi, debug filtreleri ve import duzeltmeleri
+----------------------------------------
+
+YENI OZELLIKLER:
+  - GO komutu AREADEF destegi: .go britain, .go moonglow vb. script dosyalarindan
+    (sphere_map*.scp) okunan AREADEF region'larina teleport. Ilk kullaninda cache
+    olusturulur, RESYNC ile invalidate edilir. (SpeechEngine.cs)
+  - GM komutu: .gm ile mevcut PrivLevel gosterilir.
+  - TELE komutu: Kayitli, .go kullanmasini onerir.
+  - CommandResult enum: Komut bulunamadi / yetki yetersiz / basarili ayirimi.
+    Yetki yetersizse "Insufficient privileges (PLEVEL=X)" mesaji gosterilir.
+
+DUZELTMELER:
+  - Debug paket filtreleri: Ping (0x73) ve StatUpdate (0x11) paketleri debug
+    loglarindan filtrelendi. Diger paketler artik gorulebilir. (NetworkManager.cs,
+    NetState.cs)
+  - ServerMain try-catch: Background thread'deki hatalar artik sessizce yutulmuyor,
+    konsola kirmizi FATAL mesaji yaziliyor. (Program.cs)
+  - Baslatma progress loglari: "Initializing game engines...",
+    "Loading definitions...", "Starting network..." asamalari loglaniyor.
+  - sphere.ini DEFAULTCOMMANDLEVEL=7 → 1: Yeni hesaplar Player olarak olusturulur.
+
+[2026-04-15] - WinForms Konsol Penceresi
+----------------------------------------
+
+YENI OZELLIKLER:
+  - ConsoleForm: Source-X tarzi WinForms konsol penceresi. Eski konsol tabanli
+    ServerConsole kaldirildi, yerine ayri output/input alanli WinForms formu geldi.
+    (ConsoleForm.cs)
+  - RichTextBox log alani: Siyah arka plan, Consolas 10pt, read-only, renkli cikti.
+    Error=kirmizi, Warning=sari, Debug=gri, Info=acik gri.
+  - TextBox komut girisi: Koyu arka plan, yesil yazi, Enter ile komut gonderimi.
+  - Komut gecmisi: Up/Down ok tuslariyla onceki komutlara erisim (100 limit).
+  - Serilog ILogEventSink entegrasyonu: Log mesajlari renkli olarak forma yazilir.
+  - Thread-safe mimari: WinForms UI main thread'de, sunucu background thread'de
+    calisir. ConcurrentQueue ile komut iletimi.
+  - Max 5000 satir limiti — eski satirlar otomatik silinir.
+  - Pencere kapatilinca sunucu duzgun kapanir (ShutdownRequested event).
+
+KALDIRILANLAR:
+  - ServerConsole.cs silindi (konsol tabanli \r yaklasimi WinForms ile degistirildi).
+
+================================================================================
+
+[2026-04-15] - Ekipman Gorunurluk ve Container Duzeltmesi
+----------------------------------------
+
+DUZELTMELER:
+  - WorldLoader: Container icerisindeki itemler artik parent'in Contents listesine
+    ekleniyor (parentItem.AddItem). Onceden sadece ContainedIn set ediliyordu,
+    parent'in Contents listesi bos kaliyordu. Save/load sonrasi backpack'ler bos
+    gorunuyor ve itemler kayboluyordu. (WorldLoader.cs)
+  - GameClient (EnterWorld): Oyuncu login oldugunda kendi karakteri DrawObject
+    (0x78) paketi ile ekipmanlariyla birlikte gonderiliyor. Onceden client,
+    karakterin uzerindeki ekipmani bilmiyordu. (GameClient.cs)
+  - GameClient (Resync): Resync isleminde de DrawObject + WornItem paketleri
+    gonderiliyor. Ekipman bilgisi resync sonrasi kaybolmuyordu. (GameClient.cs)
+  - HandleItemEquip: Item equip edildiginde client'a PacketWornItem (0x2E)
+    gonderiliyor. Giyilen esya aninda gorunur oluyor. (GameClient.cs)
+
+YENI OZELLIKLER:
+  - PacketWornItem (0x2E): Yeni outgoing paket. Bir item'in bir mobile uzerine
+    giyildigini client'a bildirir. Login, resync ve equip islemlerinde
+    kullaniliyor. (ExtendedPackets.cs)
+
+================================================================================
+
+[2026-04-15] - Script Motoru ve Oyun Sistemleri Guncelleme
+----------------------------------------
+
+SCRIPT MOTORU DUZELTMELERI:
+  - RunFunction: Sabit index 0 hatasi duzeltildi. Artik defname tabanli arama
+    yapiliyor, f_ prefix fallback destegi eklendi. (TriggerRunner.cs)
+  - ScriptFile: Non-cached modda pushback hatasi duzeltildi. Yeni section
+    header'i okunurken satir kayboluyordu. (_pushedBackLine) (ScriptFile.cs)
+  - ScriptInterpreter: LOCAL.foo=bar atamasi artik dogru calisiyor.
+    ScriptKey parse sonrasi Key="LOCAL.foo" switch'te eslesmiyordu,
+    switch oncesi LOCAL. prefix kontrolu eklendi. (ScriptInterpreter.cs)
+  - ScriptInterpreter: Bilinmeyen komutlar otomatik olarak fonksiyon cagrisi
+    olarak isleniyor (Source-X davranisi). (ScriptInterpreter.cs)
+  - ScriptInterpreter: <LOCAL.foo> ifade cozumlemesinde scope erisimi eklendi.
+    ResolveArgs ve ResolveVarForTarget'a scope parametresi eklendi.
+  - ScriptInterpreter: ENDIF/ENDFOR/ENDWHILE/END/ENDDO blok sonlandirici
+    satirlari ust seviyede karsilasildiginda atlanarak islenmeye devam ediliyor.
+  - ResourceHolder: LogResourceSummary() ile yuklenen kaynak ozeti loglaniyor.
+    DefNameCount property eklendi.
+
+EVENTS / TEVENTS SISTEMI:
+  - CharDef/ItemDef: EVENTS ve TEVENTS parsing eklendi. [CHARDEF] ve [ITEMDEF]
+    section body'lerinden event listesi okunuyor. (CharDef.cs, ItemDef.cs)
+  - DefinitionLoader: CHARDEF/ITEMDEF body'leri artik gercekten okunuyor.
+    EVENTS=e_carnivores,e_npc_default seklinde virgullu listeler destekleniyor.
+  - TriggerDispatcher: CharDef/ItemDef Events listesinden trigger calistirma
+    eklendi. Artik NPC'lerin ve itemlarin script eventleri ateslenebiliyor.
+  - Character/Item: Runtime Events listesi eklendi.
+
+YENI SCRIPT KOMUTLARI:
+  - ObjBase: REMOVE, TIMER, FIX komutlari
+  - Character: NEWITEM, EQUIP, CONSUME, KILL, RESURRECT, EFFECT, SOUND, ANIM,
+    GO, FACE, BOUNCE komutlari
+  - SRC. prefix: Kaynak objeye yonlendirme (SRC.SYSMESSAGE vb.)
+
+NPC SAVAS SISTEMI:
+  - NpcAI: Monster hedef mesafesinde (<=1 tile) artik saldiriyor.
+    Swing timer eklendi, saldiri hizi silaha gore degisiyor. (NpcAI.cs)
+  - Character: NextAttackTime, FightTarget alanlari eklendi.
+
+BINEK (MOUNT) SISTEMI:
+  - MountEngine: Mount/dismount mekanizmasi eklendi. Horse, ostard, llama ve
+    diger binek hayvanlari destekleniyor. (MountEngine.cs)
+  - DoubleClick ile binme/inme islemi calisiyor.
+  - Body->MountItem donusumleri: horse 0xC8->0x3EA0, ostard 0xD2->0x3EA3 vb.
+
+PET SISTEMI:
+  - PetAIMode: Follow, Guard, Attack, Stay modlari eklendi. (PetAIMode.cs)
+  - StableEngine: Ahir sistemi - pet saklama ve geri alma. (StableEngine.cs)
+
+KOMUT SISTEMI VE PRIVLEVEL DUZELTMESI:
+  - AccountManager: DefaultPrivLevel ozelligi eklendi. Otomatik olusturulan
+    hesaplar artik sphere.ini'deki DEFAULTCOMMANDLEVEL degerini aliyor.
+  - GameClient: EnterWorld'de Account->Character PrivLevel senkronizasyonu.
+    Karakterin yazdigi komutlar artik dogru yetki seviyesiyle calisiyor.
+  - Program.cs: DEFAULTCOMMANDLEVEL config baglantisi, resource summary log.
+
+DIGER:
+  - .gitignore: bin/, obj/, .vs/ ve .user dosyalari artik takip edilmiyor.
+    1494 gereksiz dosya repodan temizlendi.
+  - SphereNet.sln kaldirildi, slnx formatina gecildi.
+  - ExtendedPackets: Yeni paket tipleri.
+
+================================================================================
+
+[2026-04-15] - Coklu Sorun Duzeltmesi
+----------------------------------------
+
+DUZELTMELER:
+  - Speech: Konusan oyuncu artik kendi mesajini da goruyor. BroadcastNearby
+    konusani haric tutuyordu, kendine paket gonderilmiyordu. (GameClient.cs)
+  - Idle Timeout: NetState.Send() metodunda LastActivityTick guncelleniyor.
+    Sunucu istemciye veri gonderdikce baglanti aktif kaliyor, arka planda
+    bekleyen oyuncular artik erken atilmiyor. (NetState.cs)
+  - TelnetConsole Derleme Hatasi: Eksik HandleAccountCommand metodu eklendi.
+    Telnet uzerinden ACCOUNT komutlari artik calisiyor. (TelnetConsole.cs)
+
+YENI OZELLIKLER:
+  - Konsol Komut Girisi: Eski Q/S/R/? hotkey sistemi kaldirildi. Yerine
+    Console.ReadLine() tabanli komut satiri eklendi. help, status, save, quit,
+    account, broadcast, who, resync, shutdown komutlari destekleniyor. (Program.cs)
+  - AdminCommandProcessor: Ortak komut isleyici sinifi olusturuldu. Hem Telnet
+    hem sunucu konsolu ayni komut mantigini kullaniyor. (AdminCommandProcessor.cs)
+  - ACCOUNT Komutlari: Tam hesap yonetimi destegi:
+      ACCOUNT                       - Tum hesaplari listele
+      ACCOUNT ADD <isim> <sifre>    - Hesap olustur
+      ACCOUNT <isim>                - Hesap bilgisi goster
+      ACCOUNT <isim> PASSWORD <sifre> - Sifre degistir
+      ACCOUNT <isim> PLEVEL <0-7>   - Yetki seviyesi ayarla
+      ACCOUNT <isim> DELETE          - Hesap sil
+      ACCOUNT <isim> BAN / UNBAN    - Ban / unban
+
+DOGRULAMA:
+  - Save/Load sistemi kontrol edildi. WorldSaver.Save() zaten
+    Directory.CreateDirectory() cagiriyor, ek duzeltme gerekmedi.

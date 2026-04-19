@@ -1,0 +1,7879 @@
+using Microsoft.Extensions.Logging;
+using SphereNet.Core.Enums;
+using SphereNet.Core.Interfaces;
+using SphereNet.Core.Types;
+using SphereNet.Game.Accounts;
+using SphereNet.Game.Combat;
+using SphereNet.Game.Crafting;
+using SphereNet.Game.Death;
+using SphereNet.Game.Definitions;
+using SphereNet.Game.Guild;
+using SphereNet.Game.Housing;
+using SphereNet.Game.Magic;
+using SphereNet.Game.Movement;
+using SphereNet.Game.Objects.Characters;
+using SphereNet.Game.Objects.Items;
+using SphereNet.Game.Party;
+using SphereNet.Game.Skills;
+using SphereNet.Game.Speech;
+using SphereNet.Game.Trade;
+using SphereNet.Game.World;
+using SphereNet.Game.Objects;
+using SphereNet.Game.Gumps;
+using SphereNet.Game.Scripting;
+using SphereNet.Scripting.Expressions;
+using SphereNet.Scripting.Definitions;
+using SphereNet.Network.Packets;
+using SphereNet.Network.Packets.Outgoing;
+using SphereNet.Network.State;
+using ExecTriggerArgs = SphereNet.Scripting.Execution.TriggerArgs;
+using SphereNet.Game.Messages;
+using ScriptDbAdapter = SphereNet.Scripting.Execution.ScriptDbAdapter;
+using ScriptSystemHooks = SphereNet.Scripting.Execution.ScriptSystemHooks;
+
+namespace SphereNet.Game.Clients;
+
+/// <summary>Parsed ON-block from a [MENU] section: item visuals + script lines to execute.</summary>
+internal record MenuOptionEntry(ushort ModelId, ushort Hue, string Text, List<SphereNet.Scripting.Parsing.ScriptKey> Script);
+
+/// <summary>
+/// Game logic per-client handler. Maps to CClient in Source-X.
+/// Bridges NetState (network) with Character (game object) and Account.
+/// Integrates all game engines: movement, combat, speech, magic, trade, inventory.
+/// Manages the client update loop (sending nearby objects, removing out-of-range).
+/// </summary>
+public sealed class GameClient : ITextConsole
+{
+    /// <summary>OR of all config FEATURE* flags (FEATURET2A|LBR|AOS|SE|ML|KR|SA|TOL|EXTRA).
+    /// Set by Program.cs startup. If zero, HandleGameLogin falls back to a
+    /// hardcoded mapping derived from client version.</summary>
+    public static uint ServerFeatureFlags { get; set; }
+
+    private readonly NetState _netState;
+    private readonly GameWorld _world;
+    private readonly AccountManager _accountManager;
+    private readonly ILogger _logger;
+
+    private MovementEngine? _movement;
+    private SpeechEngine? _speech;
+    private CommandHandler? _commands;
+    private SpellEngine? _spellEngine;
+    private DeathEngine? _deathEngine;
+    private PartyManager? _partyManager;
+    private TradeManager? _tradeManager;
+    private SkillHandlers? _skillHandlers;
+    private CraftingEngine? _craftingEngine;
+    private HousingEngine? _housingEngine;
+    private GuildManager? _guildManager;
+    private Mounts.MountEngine? _mountEngine;
+    private TriggerDispatcher? _triggerDispatcher;
+    private ScriptSystemHooks? _systemHooks;
+    private ScriptDbAdapter? _scriptDb;
+    private ScriptFileHandle? _scriptFile;
+    private Func<string, string?>? _defMessageLookup;
+
+    /// <summary>Callback to broadcast a packet to all clients whose character is near a point.</summary>
+    public Action<Point3D, int, PacketWriter, uint>? BroadcastNearby { get; set; }
+    /// <summary>Broadcast movement and update nearby clients' _lastKnownPos to prevent duplicate 0x77.</summary>
+    public Action<Point3D, int, PacketWriter, uint, Character>? BroadcastMoveNearby { get; set; }
+    /// <summary>Send a packet to a specific character (by UID). Wired from Program.cs.</summary>
+    public Action<Serial, PacketWriter>? SendToChar { get; set; }
+    /// <summary>Notify all nearby clients that a character appeared (login/teleport). Each client renders from its own perspective.</summary>
+    public Action<Character>? BroadcastCharacterAppear { get; set; }
+
+    /// <summary>Fired when this client's character goes online (post-login
+    /// complete, character placed). Program.cs uses it to populate the
+    /// char-UID → client map that BroadcastNearby walks instead of a
+    /// full _clients.Values scan. Cleared on OnDisconnect.</summary>
+    public static Action<Character, GameClient>? OnCharacterOnline;
+    public static Action<Character>? OnCharacterOffline;
+
+    private Account? _account;
+    private Character? _character;
+
+    private readonly HashSet<uint> _knownChars = [];
+    private readonly HashSet<uint> _knownItems = [];
+    private readonly Dictionary<uint, Action<uint, uint[], (ushort, string)[]>> _gumpCallbacks = [];
+    private readonly Dictionary<uint, (short X, short Y, sbyte Z, byte Dir, ushort Body, ushort Hue)> _lastKnownPos = [];
+    private readonly Dictionary<uint, uint> _tooltipHashCache = []; // serial → last sent hash
+    private string? _pendingTargetFunction;
+    private string _pendingTargetArgs = "";
+    private bool _pendingTargetAllowGround;
+    private Serial _pendingTargetItemUid = Serial.Invalid;
+    private bool _pendingTeleTarget;
+    private bool _pendingRemoveTarget;
+    private bool _pendingInspectTarget;
+    // Source-X dialog subject (CLIMODE_DIALOG pObj). When set, bare
+    // property names inside the active script dialog resolve on this
+    // object instead of the GM. Used by d_charprop1 / d_itemprop1 so
+    // <BODY> / <STR> etc. reflect the inspected target. Cleared after
+    // render; callbacks that act on the target stash its UID locally.
+    private Serial _dialogSubjectUid = Serial.Invalid;
+    private string? _pendingAddToken;
+    private string? _pendingShowArgs;
+    private string? _pendingEditArgs;
+    private Point3D? _lastScriptTargetPoint;
+    private Action<uint, short, short, sbyte, ushort>? _pendingTargetCallback;
+    private Item? _pendingScriptNewItem;
+    private bool _targetCursorActive;
+    private string? _pendingDialogCloseFunction;
+    private string _pendingDialogArgs = "";
+    private List<MenuOptionEntry>? _pendingMenuOptions;
+    private ushort _pendingMenuId;
+    private string _pendingMenuDefname = "";
+    private short _lastHits, _lastMana, _lastStam;
+    private long _lastVitalsPacketTick;
+    private const int VitalsPacketIntervalMs = 250;
+    private const int UpdateRange = 18;
+
+    public NetState NetState => _netState;
+    public Account? Account => _account;
+    public Character? Character => _character;
+    public bool IsPlaying => _character != null && !_character.IsDeleted;
+
+    /// <summary>Called when the network connection is closed. Marks character as offline.</summary>
+    public void OnDisconnect()
+    {
+        if (_character != null)
+        {
+            _logger.LogInformation("[LOGOUT] '{Name}' pos: {X},{Y},{Z} map={Map}",
+                _character.Name, _character.X, _character.Y, _character.Z, _character.Position.Map);
+
+            // Yakındaki oyunculara karakterin çıktığını bildir
+            BroadcastNearby?.Invoke(_character.Position, UpdateRange,
+                new PacketDeleteObject(_character.Uid.Value), _character.Uid.Value);
+
+            _systemHooks?.DispatchClient("disconnect", _character, _account);
+            _character.IsOnline = false;
+            _character.CTags.RemoveByPrefix("");
+            OnCharacterOffline?.Invoke(_character);
+            _world.RemoveOnlinePlayer(_character);
+            _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.LogOut,
+                new TriggerArgs { CharSrc = _character });
+            _logger.LogInformation("Client '{Name}' disconnected", _character.Name);
+            _character = null;
+        }
+        else if (_account != null)
+        {
+            _systemHooks?.DispatchClient("disconnect", _account, null);
+        }
+    }
+
+    public void Send(PacketWriter packet) => _netState.Send(packet);
+
+    public GameClient(NetState netState, GameWorld world, AccountManager accountManager, ILogger logger)
+    {
+        _netState = netState;
+        _world = world;
+        _accountManager = accountManager;
+        _logger = logger;
+    }
+
+    public void SetEngines(
+        MovementEngine? movement = null,
+        SpeechEngine? speech = null,
+        CommandHandler? commands = null,
+        SpellEngine? spellEngine = null,
+        DeathEngine? deathEngine = null,
+        PartyManager? partyManager = null,
+        TradeManager? tradeManager = null,
+        SkillHandlers? skillHandlers = null,
+        CraftingEngine? craftingEngine = null,
+        HousingEngine? housingEngine = null,
+        TriggerDispatcher? triggerDispatcher = null,
+        GuildManager? guildManager = null,
+        Mounts.MountEngine? mountEngine = null)
+    {
+        _movement = movement;
+        _speech = speech;
+        _commands = commands;
+        _spellEngine = spellEngine;
+        _deathEngine = deathEngine;
+        _partyManager = partyManager;
+        _tradeManager = tradeManager;
+        _skillHandlers = skillHandlers;
+        _craftingEngine = craftingEngine;
+        _housingEngine = housingEngine;
+        _triggerDispatcher = triggerDispatcher;
+        _guildManager = guildManager;
+        _mountEngine = mountEngine;
+    }
+
+    public void SetScriptServices(
+        ScriptSystemHooks? systemHooks = null,
+        ScriptDbAdapter? scriptDb = null,
+        Func<string, string?>? defMessageLookup = null,
+        ScriptFileHandle? scriptFile = null)
+    {
+        _systemHooks = systemHooks;
+        _scriptDb = scriptDb;
+        _defMessageLookup = defMessageLookup;
+        _scriptFile = scriptFile;
+    }
+
+    // ==================== Login Flow ====================
+
+    public void HandleLoginRequest(string account, string password)
+    {
+        _account = _accountManager.Authenticate(account, password);
+        if (_account == null)
+        {
+            _netState.Send(new PacketLoginDenied(3));
+            _netState.MarkClosing();
+            return;
+        }
+
+        _account.LastIp = _netState.RemoteEndPoint?.Address.ToString() ?? "";
+        _netState.Send(new PacketServerList("SphereNet", 0));
+    }
+
+    public void HandleGameLogin(string account, string password, uint authId)
+    {
+        _logger.LogDebug("HandleGameLogin: account='{Account}' authId=0x{AuthId:X8}", account, authId);
+        _account = _accountManager.Authenticate(account, password);
+        if (_account == null)
+        {
+            _logger.LogDebug("HandleGameLogin: AUTH FAILED for '{Account}'", account);
+            _netState.Send(new PacketLoginDenied(3));
+            _netState.MarkClosing();
+            return;
+        }
+
+        // Feature enable (0xB9) — must come before char list.
+        // Prefer config-driven FEATURE* OR from sphere.ini (set via
+        // ServerFeatureFlags during startup). Fall back to a client-version
+        // mapping if the config is empty (e.g. test harness without ini).
+        uint featureFlags;
+        if (ServerFeatureFlags != 0)
+        {
+            featureFlags = ServerFeatureFlags;
+        }
+        else if (_netState.IsClientPost7090)
+            featureFlags = 0x0244; // SA+ML
+        else if (_netState.IsClientPost6017)
+            featureFlags = 0x0044; // ML
+        else if (_netState.ClientVersionNumber >= 50_000_000)
+            featureFlags = 0x0004; // context menus (SE)
+        else if (_netState.ClientVersionNumber >= 40_000_000)
+            featureFlags = 0x0001; // T2A (AOS)
+        else
+            featureFlags = 0x0000; // minimal
+        _netState.Send(new PacketFeatureEnable(featureFlags, _netState.IsClientPost60142));
+
+        var charNames = _account.GetCharNames(uid => _world.FindChar(uid)?.GetName());
+        var charListPacket = new PacketCharList(charNames);
+        var built = charListPacket.Build();
+        _netState.Send(built);
+    }
+
+    public void HandleCharSelect(int slot, string name)
+    {
+        if (_account == null) return;
+
+        // Dedup: if this client already has a live character, a retransmitted
+        // 0x5D/0xF8 must not create a second one. Without this guard a bugged
+        // client sending the create packet N times produced N characters and
+        // N paperdoll-open packets — observed as "20 paperdolls opened".
+        if (_character != null && _character.IsOnline)
+        {
+            _logger.LogDebug("[LOGIN] Ignoring duplicate CharSelect for account '{Acct}'",
+                _account.Name);
+            return;
+        }
+
+        var charUid = _account.GetCharSlot(slot);
+        if (charUid.IsValid)
+            _character = _world.FindChar(charUid);
+
+        if (_character == null)
+        {
+            _character = _world.CreateCharacter();
+            _character.Name = string.IsNullOrWhiteSpace(name) ? _account.Name : name;
+            _character.IsPlayer = true;
+            _character.BodyId = 0x0190;
+            _character.Str = 50; _character.Dex = 50; _character.Int = 50;
+            _character.MaxHits = 50; _character.MaxMana = 50; _character.MaxStam = 50;
+            _character.Hits = 50; _character.Mana = 50; _character.Stam = 50;
+
+            var startPos = new Point3D(1495, 1629, 10, 0);
+            _world.PlaceCharacter(_character, startPos);
+            int assignSlot = slot >= 0 ? slot : _account.FindFreeSlot();
+            if (assignSlot >= 0)
+                _account.SetCharSlot(assignSlot, _character.Uid);
+            _logger.LogInformation("Created char '{Name}' for account '{Acct}'", _character.Name, _account.Name);
+        }
+
+        EnterWorld();
+    }
+
+    private void EnterWorld()
+    {
+        if (_character == null) return;
+        // Dedup re-entry: 7.0.x clients sometimes retransmit 0x5D/0xF8 during
+        // handshake. Every repeat used to drive a fresh login packet burst
+        // (including 0x88 OpenPaperdoll), producing N paperdoll windows on the
+        // client. Once IsOnline is set, subsequent EnterWorld calls are no-ops.
+        if (_character.IsOnline)
+        {
+            _logger.LogDebug("[LOGIN] Ignoring duplicate EnterWorld for '{Name}'", _character.Name);
+            return;
+        }
+
+        _logger.LogInformation("[LOGIN] '{Name}' pos: {X},{Y},{Z} map={Map}",
+            _character.Name, _character.X, _character.Y, _character.Z, _character.Position.Map);
+        _character.IsOnline = true;
+        _world.AddOnlinePlayer(_character); // activates tick for this player's sectors
+        OnCharacterOnline?.Invoke(_character, this);
+        // Ensure character is in correct sector (may have been removed or stale after save/load)
+        _world.PlaceCharacter(_character, _character.Position);
+        EnsurePlayerBackpack(_character);
+        _mountEngine?.EnsureMountedState(_character);
+
+        // Sync PrivLevel from account to character on each login
+        if (_account != null)
+            _character.PrivLevel = _account.PrivLevel;
+
+        // Ensure Max stats are derived from attributes if missing (old saves)
+        if (_character.MaxHits <= 0 && _character.Str > 0)
+            _character.MaxHits = _character.Str;
+        if (_character.MaxMana <= 0 && _character.Int > 0)
+            _character.MaxMana = _character.Int;
+        if (_character.MaxStam <= 0 && _character.Dex > 0)
+            _character.MaxStam = _character.Dex;
+        // Ensure current stats are at least 1 for a living character
+        if (_character.Hits <= 0 && !_character.IsDead && _character.MaxHits > 0)
+            _character.Hits = _character.MaxHits;
+        if (_character.Mana <= 0 && _character.MaxMana > 0)
+            _character.Mana = _character.MaxMana;
+        if (_character.Stam <= 0 && _character.MaxStam > 0)
+            _character.Stam = _character.MaxStam;
+
+        // Sync _last* tracking fields so TickStatUpdate sends initial packets correctly
+        _lastHits = _character.Hits;
+        _lastMana = _character.Mana;
+        _lastStam = _character.Stam;
+
+        // Snap Z to the nearest walkable surface unless the character is
+        // clearly on an upper-level structure (roof / bridge / second floor).
+        // Rule:
+        //   diff < 0                        → snap up  (character is below ground)
+        //   0 < diff <= RoofSnapTolerance   → snap down (saved Z is stale / hovers)
+        //   diff > RoofSnapTolerance        → keep (assume legitimate upper floor)
+        // Without the downward snap, saves written with an out-of-band Z (e.g.
+        // old dismount code that zeroed Z) keep that Z after login and every
+        // subsequent CanWalkTo projects collision onto wall foundations.
+        const int RoofSnapTolerance = 5;
+        var mapData = _world.MapData;
+        if (mapData != null)
+        {
+            sbyte terrainZ = mapData.GetEffectiveZ(_character.MapIndex, _character.X, _character.Y, _character.Z);
+            int diff = terrainZ - _character.Z;
+            if (diff != 0 && diff >= -RoofSnapTolerance)
+            {
+                _logger.LogInformation("Login Z correction: {OldZ} -> {NewZ} for '{Name}' at {X},{Y}",
+                    _character.Z, terrainZ, _character.Name, _character.X, _character.Y);
+                _character.Position = new Point3D(_character.X, _character.Y, terrainZ, _character.MapIndex);
+            }
+        }
+
+        // Map dimensions per map index (ML-expanded Felucca = 7168x4096)
+        ushort mapW = _character.MapIndex switch
+        {
+            0 => 7168,  // Felucca (ML expanded)
+            1 => 7168,  // Trammel (ML expanded)
+            2 => 2304,  // Ilshenar
+            3 => 2560,  // Malas
+            4 => 1448,  // Tokuno
+            5 => 1280,  // Ter Mur
+            _ => 7168
+        };
+        ushort mapH = _character.MapIndex switch
+        {
+            0 => 4096,
+            1 => 4096,
+            2 => 1600,
+            3 => 2048,
+            4 => 1448,
+            5 => 4096,
+            _ => 4096
+        };
+
+        _netState.Send(new PacketLoginConfirm(
+            _character.Uid.Value, _character.BodyId,
+            _character.X, _character.Y, _character.Z,
+            (byte)_character.Direction, mapW, mapH
+        ));
+
+        _netState.Send(new PacketMapChange((byte)_character.MapIndex));
+        _netState.Send(new PacketMapPatches()); // no map diffs — all zeros
+
+        SendCharacterStatus(_character);
+        SendSkillList();
+
+        // Send paperdoll info on login so the client has name/title immediately.
+        // Without this, the auto-opened paperdoll shows empty on first login.
+        string paperdollTitle = string.IsNullOrEmpty(_character.Title)
+            ? _character.GetName()
+            : $"{_character.GetName()}, {_character.Title}";
+        _netState.Send(new PacketOpenPaperdoll(_character.Uid.Value, paperdollTitle, 0x01));
+        _netState.Send(new PacketGlobalLight(_world.GlobalLight));
+        _netState.Send(new PacketPersonalLight(_character.Uid.Value, _character.LightLevel));
+        _netState.Send(new PacketSeason((byte)_world.CurrentSeason));
+
+        // Send player's own character with equipment — client needs this to render worn items
+        SendDrawObject(_character);
+
+        // Send equipped items individually (0x2E) so client tracks them in inventory
+        for (int i = 1; i <= (int)Layer.Horse; i++)
+        {
+            var equip = _character.GetEquippedItem((Layer)i);
+            if (equip != null)
+            {
+                _netState.Send(new PacketWornItem(
+                    equip.Uid.Value, equip.DispIdFull, (byte)i,
+                    _character.Uid.Value, equip.Hue));
+            }
+        }
+
+        _netState.Send(new PacketLoginComplete());
+
+        _knownChars.Clear();
+        _knownItems.Clear();
+        _lastKnownPos.Clear();
+
+        // Fire @LogIn trigger
+        _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.LogIn, new TriggerArgs { CharSrc = _character });
+        _systemHooks?.DispatchClient("add", _character, _account);
+
+        // Ensure first world snapshot is fully consistent.
+        // Some clients can show partially black map/chunk artifacts if they only
+        // receive the minimal login packet set without a full nearby object refresh.
+        Resync();
+        _mountEngine?.EnsureMountedState(_character);
+
+        // Immediate view update so this client sees all nearby characters/items
+        // right away, without waiting for the next game-loop tick.
+        UpdateClientView();
+
+        _logger.LogInformation("Client '{Name}' entered world at {Pos}", _character.Name, _character.Position);
+    }
+
+    private void EnsurePlayerBackpack(Character ch)
+    {
+        if (!ch.IsPlayer)
+            return;
+
+        Item? pack = ch.GetEquippedItem(Layer.Pack) ?? ch.Backpack;
+        if (pack == null)
+        {
+            // Recover backpack by containment link first to avoid creating duplicates.
+            pack = _world.GetContainerContents(ch.Uid)
+                .FirstOrDefault(i =>
+                    !i.IsDeleted &&
+                    (i.EquipLayer == Layer.Pack ||
+                     i.BaseId == 0x0E75 ||
+                     i.ItemType == ItemType.Container));
+        }
+        if (pack == null || pack.IsDeleted || _world.FindItem(pack.Uid) == null)
+        {
+            pack = _world.CreateItem();
+            pack.BaseId = 0x0E75; // backpack
+            pack.ItemType = ItemType.Container;
+            pack.Name = "Backpack";
+        }
+
+        // Keep canonical backpack metadata consistent, then ensure it is equipped.
+        pack.ItemType = ItemType.Container;
+        if (pack.BaseId == 0)
+            pack.BaseId = 0x0E75;
+        if (string.IsNullOrWhiteSpace(pack.Name))
+            pack.Name = "Backpack";
+
+        ch.Backpack = pack;
+        if (ch.GetEquippedItem(Layer.Pack) != pack)
+            ch.Equip(pack, Layer.Pack);
+    }
+
+    /// <summary>
+    /// Full client resync. Clears all known objects and re-sends the entire world state.
+    /// Maps to CClient::addReSync in Source-X. Called when:
+    ///   - Client requests resync (packet 0x22 / .RESYNC command)
+    ///   - Movement desync detected
+    ///   - Teleport/map change
+    ///   - GM manually triggers it
+    /// </summary>
+    public void Resync()
+    {
+        if (_character == null || !IsPlaying) return;
+        _mountEngine?.EnsureMountedState(_character);
+
+        // 1. Delete all known objects on client side
+        foreach (uint uid in _knownChars)
+            _netState.Send(new PacketDeleteObject(uid));
+        foreach (uint uid in _knownItems)
+            _netState.Send(new PacketDeleteObject(uid));
+
+        _knownChars.Clear();
+        _knownItems.Clear();
+        _lastKnownPos.Clear();
+
+        // 2. Reposition player first, then send full appearance.
+        // DrawPlayer (0x20) must come BEFORE DrawObject (0x78) because the
+        // UO client redraws the local character on 0x20 without equipment —
+        // sending 0x78 afterwards restores the full equipment visual including
+        // the mount at Layer.Horse.
+        _netState.Send(new PacketDrawPlayer(
+            _character.Uid.Value, _character.BodyId, _character.Hue,
+            BuildMobileFlags(_character),
+            _character.X, _character.Y, _character.Z, (byte)_character.Direction));
+        SendDrawObject(_character);
+
+        // Send equipped items individually so client tracks them
+        for (int i = 1; i <= (int)Layer.Horse; i++)
+        {
+            var equip = _character.GetEquippedItem((Layer)i);
+            if (equip != null)
+            {
+                _netState.Send(new PacketWornItem(
+                    equip.Uid.Value, equip.DispIdFull, (byte)i,
+                    _character.Uid.Value, equip.Hue));
+            }
+        }
+
+        // 3. Re-send full status
+        SendCharacterStatus(_character);
+
+        // 4. Re-send light & season
+        _netState.Send(new PacketGlobalLight(_world.GlobalLight));
+        _netState.Send(new PacketPersonalLight(_character.Uid.Value, _character.LightLevel));
+
+        // 5. Reset walk sequence (0 = resync sentinel, client must send seq 0 next)
+        _netState.WalkSequence = 0;
+        _nextMoveTime = 0;
+
+        // 6. Final authoritative DrawObject — ensures mount at Layer.Horse renders.
+        // Some clients skip mount rendering from the first 0x78 if it arrives
+        // interleaved with status/light packets. This final 0x78 is sent after
+        // all other visual updates, guaranteeing the equipment list (including
+        // mount) is processed last.
+        SendDrawObject(_character);
+
+        // 7. Force UpdateClientView on next tick to re-populate all nearby objects
+        // (knownChars/knownItems are empty, so everything will be "new")
+
+        // Notify nearby clients about this character's (possibly new) position
+        BroadcastCharacterAppear?.Invoke(_character);
+
+        _logger.LogDebug("Resync for client '{Name}'", _character.Name);
+    }
+
+    /// <summary>
+    /// Handle a map-boundary teleport: tell the client which map to render, then
+    /// run a full resync so it drops objects from the old map and receives the
+    /// new map's objects via the view-delta pipeline.
+    /// </summary>
+    public void HandleMapChanged()
+    {
+        if (_character == null || !IsPlaying) return;
+        _netState.Send(new PacketMapChange((byte)_character.MapIndex));
+        Resync();
+    }
+
+    /// <summary>
+    /// Re-send DrawPlayer + DrawObject so the owner client re-renders the player
+    /// with updated appearance flags (invisible → translucent, war mode, etc.).
+    /// The client-side visual state only changes when it receives a fresh draw.
+    /// </summary>
+    public void SendSelfRedraw()
+    {
+        if (_character == null || !IsPlaying) return;
+        _netState.Send(new PacketDrawPlayer(
+            _character.Uid.Value, _character.BodyId, _character.Hue,
+            BuildMobileFlags(_character),
+            _character.X, _character.Y, _character.Z, (byte)_character.Direction));
+        SendDrawObject(_character);
+        // 0x20 causes the client to reset its walk sequence counter to 0.
+        // Server-side must mirror that reset or the next client walk comes
+        // in with seq=0 while expectedSeq still holds the pre-redraw value,
+        // producing a seq_mismatch reject storm.
+        _netState.WalkSequence = 0;
+        _nextMoveTime = 0;
+    }
+
+    /// <summary>
+    /// Partial resync — re-sends only position and nearby objects without full clear.
+    /// Used for minor movement desync corrections.
+    /// </summary>
+    public void ResyncPosition()
+    {
+        if (_character == null) return;
+
+        _netState.Send(new PacketDrawPlayer(
+            _character.Uid.Value, _character.BodyId, _character.Hue,
+            0, _character.X, _character.Y, _character.Z,
+            (byte)_character.Direction));
+        _netState.WalkSequence = 0;
+        _nextMoveTime = 0;
+    }
+
+    /// <summary>Re-send the 0x4E PacketPersonalLight packet so the client
+    /// applies the current <see cref="Character.LightLevel"/>. Called after
+    /// effects that change personal brightness (e.g. Night Sight) —
+    /// without this the server-side property change has no visible effect.</summary>
+    public void SendPersonalLight()
+    {
+        if (_character == null || !IsPlaying) return;
+        _netState.Send(new PacketPersonalLight(_character.Uid.Value, _character.LightLevel));
+    }
+
+    // ==================== Movement ====================
+
+    // ServUO-style fastwalk prevention via time-based throttle
+    private long _nextMoveTime;
+
+    public void HandleMove(byte dir, byte seq, uint fastWalkKey)
+    {
+        if (_character == null || _character.IsDead) return;
+
+        var direction = (Direction)(dir & 0x07);
+        bool running = (dir & 0x80) != 0;
+
+        _netState.LastActivityTick = Environment.TickCount64;
+        long now = Environment.TickCount64;
+        byte expectedSeq = _netState.WalkSequence;
+
+        // Turn-in-place: when the client's MoveRequest direction differs from
+        // the character's current facing, the packet is a pure rotation — ACK
+        // with the same position, advance the walk sequence, no collision
+        // check needed. Source-X CClient::Event_Walk handles this identically.
+        if (_character.Direction != direction)
+        {
+            _character.Direction = direction;
+            byte notoRot = GetNotoriety(_character);
+            _netState.Send(new PacketMoveAck(seq, notoRot));
+            _netState.WalkSequence = (byte)(seq + 1);
+            if (_netState.WalkSequence == 0) _netState.WalkSequence = 1;
+
+            // Broadcast facing change so nearby players see the new direction.
+            byte flagsRot = BuildMobileFlags(_character);
+            byte dirRot = (byte)((byte)_character.Direction | (running ? 0x80 : 0));
+            var rotPacket = new PacketMobileMoving(
+                _character.Uid.Value, _character.BodyId,
+                _character.X, _character.Y, _character.Z, dirRot,
+                _character.Hue, flagsRot, notoRot);
+            if (BroadcastMoveNearby != null)
+                BroadcastMoveNearby.Invoke(_character.Position, UpdateRange, rotPacket, _character.Uid.Value, _character);
+            else
+                BroadcastNearby?.Invoke(_character.Position, UpdateRange, rotPacket, _character.Uid.Value);
+            return;
+        }
+
+        // Strict sequence validation (ServUO-style): reject out-of-order walk packets.
+        if (expectedSeq != 0 && seq != expectedSeq)
+        {
+            _logger.LogDebug("[move_reject] reason=seq_mismatch got={Got} expected={Expected} at {X},{Y},{Z}",
+                seq, expectedSeq, _character.X, _character.Y, _character.Z);
+            _netState.Send(new PacketMoveReject(seq, _character.X, _character.Y, _character.Z, (byte)_character.Direction));
+            _netState.WalkSequence = 0;
+            return;
+        }
+
+        // Fast-walk replay check intentionally dropped: the server never ships
+        // the 6-key stack via 0xBF sub 0x01 to the client, so modern clients
+        // either send key=0 (skipped by the !=0 guard) or emit locally-generated
+        // keys whose rotation we cannot predict. False positives manifested as
+        // mid-run "square jumping" rejects. The time-based throttle below is
+        // the speedhack barrier.
+        _netState.LastFastWalkKey = fastWalkKey;
+
+        // Fastwalk throttle: reject if moving too fast.
+        // Tolerance scales with move speed so TCP-buffered walk packets aren't rejected.
+        if (_character.PrivLevel < PrivLevel.GM)
+        {
+            int moveDelay = MovementEngine.GetMoveDelay(_character.IsMounted, running);
+            int tolerance = moveDelay * 5; // allow up to 5 predicted moves ahead
+            if (_nextMoveTime > 0 && now < _nextMoveTime - tolerance)
+            {
+                _logger.LogDebug("[move_reject] reason=throttle ahead={Ahead}ms delay={Delay}ms at {X},{Y},{Z}",
+                    _nextMoveTime - now, moveDelay, _character.X, _character.Y, _character.Z);
+                _netState.Send(new PacketMoveReject(seq, _character.X, _character.Y, _character.Z, (byte)_character.Direction));
+                _netState.WalkSequence = 0;
+                _nextMoveTime = now;
+                return;
+            }
+        }
+
+        // Execute the move
+        bool moved;
+        SphereNet.Game.Movement.WalkCheck.Diagnostic moveDiag = default;
+        if (_movement != null)
+            moved = _movement.TryMoveDetailed(_character, direction, running, seq, out moveDiag);
+        else
+        {
+            GetDirectionDelta(direction, out short dx, out short dy);
+            var newPos = new Point3D((short)(_character.X + dx), (short)(_character.Y + dy), _character.Z, _character.MapIndex);
+            _character.Direction = direction;
+            _world.MoveCharacter(_character, newPos);
+            moved = true;
+        }
+
+        if (moved)
+        {
+            // Advance next allowed move time — cap accumulation to prevent
+            // cascading rejects when the client sends TCP-buffered walk packets.
+            int moveDelay = MovementEngine.GetMoveDelay(_character.IsMounted, running);
+            if (_nextMoveTime <= 0 || now >= _nextMoveTime)
+                _nextMoveTime = now + moveDelay;
+            else
+                _nextMoveTime = Math.Min(_nextMoveTime + moveDelay, now + moveDelay * 5);
+
+            byte notoriety = GetNotoriety(_character);
+            _netState.Send(new PacketMoveAck(seq, notoriety));
+
+            // NOTE: MoveAck (0x22) carries no Z data, so the client keeps its own
+            // predicted Z.  We intentionally do NOT send DrawPlayer here — doing so
+            // during active walking corrupts the client's move buffer and causes
+            // cascading MoveRejects ("square jumping").  The server tracks the
+            // authoritative Z internally and broadcasts it to other players via 0x77.
+            // The client's slight Z prediction error is visually imperceptible.
+
+            // Broadcast movement to nearby players (0x77 MobileMoving, NOT 0x20 DrawPlayer)
+            byte flags = BuildMobileFlags(_character);
+            byte dir77 = (byte)((byte)_character.Direction | (running ? 0x80 : 0));
+            var movePacket = new PacketMobileMoving(
+                _character.Uid.Value, _character.BodyId,
+                _character.X, _character.Y, _character.Z, dir77,
+                _character.Hue, flags, notoriety);
+            if (BroadcastMoveNearby != null)
+                BroadcastMoveNearby.Invoke(_character.Position, UpdateRange, movePacket, _character.Uid.Value, _character);
+            else
+                BroadcastNearby?.Invoke(_character.Position, UpdateRange, movePacket, _character.Uid.Value);
+
+            // Expected next sequence from client (0..255, wraps naturally)
+            _netState.WalkSequence = (byte)(seq + 1);
+        }
+        else
+        {
+            // Attribute the reject to a specific algorithm stage so walk jams
+            // can be traced instead of logged as a vague "collision".
+            GetDirectionDelta(direction, out short dxLog, out short dyLog);
+            short tgtX = (short)(_character.X + dxLog);
+            short tgtY = (short)(_character.Y + dyLog);
+            string reason;
+            if (moveDiag.MobBlocked) reason = "mob_block";
+            else if (!moveDiag.ForwardOk) reason = "forward_blocked";
+            else if (moveDiag.DiagonalChecked && (!moveDiag.LeftOk || !moveDiag.RightOk))
+                reason = $"diagonal_edge left={moveDiag.LeftOk} right={moveDiag.RightOk}";
+            else reason = "unknown";
+
+            _logger.LogDebug(
+                "[move_reject] {Reason} dir={Dir} run={Run} from {FromX},{FromY},{FromZ} " +
+                "target {TgtX},{TgtY} startZ={StartZ} startTop={StartTop} fwdZ={FwdZ} | " +
+                "fwdLand=tile=0x{LandTile:X} ({LZ}/{LC}/{LT}) blocks={LB} consider={CL} | " +
+                "statics={ST} impassable={IMP} surfaces={SC} items={IC} last={Last} | " +
+                "tiles=[{Dump}]",
+                reason, direction, running, _character.X, _character.Y, _character.Z,
+                tgtX, tgtY, moveDiag.StartZ, moveDiag.StartTop, moveDiag.ForwardNewZ,
+                moveDiag.FwdLandTileId, moveDiag.FwdLandZ, moveDiag.FwdLandCenter, moveDiag.FwdLandTop,
+                moveDiag.FwdLandBlocks, moveDiag.FwdConsiderLand,
+                moveDiag.FwdStaticTotal, moveDiag.FwdImpassableCount,
+                moveDiag.FwdSurfaceCount, moveDiag.FwdItemSurfaceCount,
+                moveDiag.FwdReason, moveDiag.FwdStaticDump);
+            _netState.Send(new PacketMoveReject(seq, _character.X, _character.Y, _character.Z, (byte)_character.Direction));
+            _netState.WalkSequence = 0;
+        }
+    }
+
+    // ==================== Speech ====================
+
+    public void HandleSpeech(byte type, ushort hue, ushort font, string text)
+    {
+        if (_character == null) return;
+
+        if (TryHandleCommandSpeech(text))
+            return;
+
+        // Pet commands — "all follow", "all guard", "petname follow" etc.
+        if (TryHandlePetCommand(text))
+        {
+            // Still broadcast the speech so others hear it
+        }
+
+        _speech?.ProcessSpeech(_character, text, (TalkMode)type, hue, font);
+
+        // Broadcast speech to nearby clients
+        int range = type switch
+        {
+            8 => 3,  // whisper
+            9 => 48, // yell
+            _ => 18  // say
+        };
+
+        var speechPacket = new PacketSpeechOut(
+            _character.Uid.Value, _character.BodyId,
+            type, hue, font, _character.Name, text
+        );
+        // Send to self first (speaker should see their own message)
+        Send(speechPacket);
+        // Then broadcast to nearby (excluding self since we already sent)
+        BroadcastNearby?.Invoke(_character.Position, range, speechPacket, _character.Uid.Value);
+    }
+
+    // ==================== Combat ====================
+
+    public void HandleAttack(uint targetUid)
+    {
+        if (_character == null || _character.IsDead) return;
+        if (!_character.IsInWarMode)
+            SetWarMode(true, syncClients: true, preserveTarget: true);
+
+        // Source-X style target clear: attacking 0 resets current fight target.
+        if (targetUid == 0 || targetUid == 0xFFFFFFFF)
+        {
+            _character.FightTarget = Serial.Invalid;
+            _character.NextAttackTime = 0;
+            return;
+        }
+
+        var target = _world.FindChar(new Serial(targetUid));
+        if (target == null) return;
+        _character.FightTarget = target.Uid;
+
+        // Region PvP enforcement
+        if (target.IsPlayer && _character.IsPlayer)
+        {
+            var region = _world.FindRegion(_character.Position);
+            if (region != null && region.IsFlag(Core.Enums.RegionFlag.NoPvP))
+            {
+                SysMessage(ServerMessages.Get("combat_nopvp"));
+                return;
+            }
+            // Attacking an innocent (neither criminal nor murderer) in a
+            // guarded / non-PvP region flags the aggressor criminal. Attacking
+            // a red/gray player is self-defense — no flag. Config gate:
+            // ATTACKINGISACRIME.
+            bool targetIsInnocent = target.IsPlayer && !target.IsCriminal && !target.IsMurderer;
+            if (Character.AttackingIsACrimeEnabled && targetIsInnocent &&
+                region != null && region.IsFlag(Core.Enums.RegionFlag.Guarded))
+            {
+                _character.MakeCriminal();
+            }
+        }
+
+        // Fire @CombatStart — if script blocks, cancel attack
+        if (_triggerDispatcher != null)
+        {
+            var result = _triggerDispatcher.FireCharTrigger(_character, CharTrigger.CombatStart,
+                new TriggerArgs { CharSrc = _character, O1 = target });
+            if (result == TriggerResult.True)
+                return;
+        }
+
+        long now = Environment.TickCount64;
+        if (now < _character.NextAttackTime)
+            return;
+
+        // Keep swing delay simple and deterministic for now; later replaced by full weapon speed curve.
+        _character.NextAttackTime = now + GetSwingDelayMs(_character, _character.GetEquippedItem(Layer.OneHanded)
+            ?? _character.GetEquippedItem(Layer.TwoHanded));
+
+        var weapon = _character.GetEquippedItem(Layer.OneHanded)
+                  ?? _character.GetEquippedItem(Layer.TwoHanded);
+
+        // Ranged weapons (bow/xbow) need line of sight to the target. Melee
+        // is skipped — if you are in melee range you already "see" them via
+        // proximity. Source-X equivalent: CChar::Fight_HitTry LOS guard.
+        if (weapon != null && _character.PrivLevel < PrivLevel.GM &&
+            (weapon.ItemType == ItemType.WeaponBow || weapon.ItemType == ItemType.WeaponXBow))
+        {
+            int rangeDist = Math.Max(Math.Abs(_character.X - target.X), Math.Abs(_character.Y - target.Y));
+            if (rangeDist > 1 && !_world.CanSeeLOS(_character.Position, target.Position))
+            {
+                SysMessage("You cannot see that target.");
+                return;
+            }
+        }
+
+        int damage = CombatEngine.ResolveAttack(_character, target, weapon);
+
+        if (damage > 0)
+        {
+            // Spell interruption on damage
+            _spellEngine?.TryInterruptFromDamage(target, damage);
+
+            // Fire @Hit on attacker, @GetHit on target
+            _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.Hit,
+                new TriggerArgs { CharSrc = _character, O1 = target, N1 = damage });
+            _triggerDispatcher?.FireCharTrigger(target, CharTrigger.GetHit,
+                new TriggerArgs { CharSrc = _character, N1 = damage });
+
+            // Fire @Hit on weapon, @GetHit on target's armor/shield
+            if (weapon != null)
+                _triggerDispatcher?.FireItemTrigger(weapon, ItemTrigger.Hit,
+                    new TriggerArgs { CharSrc = _character, ItemSrc = weapon, O1 = target, N1 = damage });
+            var shield = target.GetEquippedItem(Layer.TwoHanded);
+            if (shield != null)
+                _triggerDispatcher?.FireItemTrigger(shield, ItemTrigger.GetHit,
+                    new TriggerArgs { CharSrc = _character, ItemSrc = shield, N1 = damage });
+
+            _logger.LogDebug("{Attacker} hit {Target} for {Dmg} damage",
+                _character.Name, target.Name, damage);
+
+            // Swing animation — 0x6E (PacketAnimation). The old code
+            // sent 0x70 PacketEffect with a zero graphic which the client
+            // interprets as an invisible projectile, producing a phantom
+            // arrow sound. 0x6E is the correct packet for a humanoid
+            // combat action (swing / punch / bow draw) and leaves the
+            // projectile / sound channel untouched.
+            ushort swingAction = GetSwingAction(_character, weapon);
+            var swingAnim = new PacketAnimation(_character.Uid.Value, swingAction);
+            BroadcastNearby?.Invoke(_character.Position, UpdateRange, swingAnim, 0);
+
+            // Swing-start sound — chosen from the weapon's sound set
+            // (or the unarmed fallback). Fires at the attacker's spot
+            // so nearby clients hear the strike.
+            ushort swingSound = GetSwingSound(weapon);
+            var swingSoundPacket = new PacketSound(swingSound, _character.X, _character.Y, _character.Z);
+            BroadcastNearby?.Invoke(_character.Position, UpdateRange, swingSoundPacket, 0);
+
+            // Hit-land sound at the target (metal clang / flesh thud).
+            ushort hitSound = weapon != null ? (ushort)0x0239 : (ushort)0x0135;
+            var hitSoundPacket = new PacketSound(hitSound, target.X, target.Y, target.Z);
+            BroadcastNearby?.Invoke(target.Position, UpdateRange, hitSoundPacket, 0);
+
+            // Damage number popup (0x0B)
+            var damagePacket = new PacketDamage(target.Uid.Value, (ushort)Math.Min(damage, ushort.MaxValue));
+            BroadcastNearby?.Invoke(target.Position, UpdateRange, damagePacket, 0);
+            _netState.Send(damagePacket); // also send to self
+
+            // Update target's health bar for nearby players
+            var healthPacket = new PacketUpdateHealth(
+                target.Uid.Value, target.MaxHits, target.Hits);
+            BroadcastNearby?.Invoke(target.Position, UpdateRange, healthPacket, 0);
+            _netState.Send(healthPacket);
+
+            if (target.IsDead && _deathEngine != null)
+            {
+                // Fire @Kill on attacker, @Death on victim
+                _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.Kill,
+                    new TriggerArgs { CharSrc = _character, O1 = target });
+                _triggerDispatcher?.FireCharTrigger(target, CharTrigger.Death,
+                    new TriggerArgs { CharSrc = _character });
+                _deathEngine.ProcessDeath(target, _character);
+            }
+        }
+        else
+        {
+            // Fire @HitMiss on attacker
+            _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.HitMiss,
+                new TriggerArgs { CharSrc = _character, O1 = target });
+
+            // Miss sound
+            var missSound = new PacketSound(0x0234, target.X, target.Y, target.Z);
+            BroadcastNearby?.Invoke(target.Position, UpdateRange, missSound, 0);
+        }
+    }
+
+    /// <summary>
+    /// Handle player death — send ghost body, death animation, corpse creation already done by DeathEngine.
+    /// Called when the character dies in combat.
+    /// </summary>
+    public void OnCharacterDeath()
+    {
+        if (_character == null) return;
+
+        // Change to ghost body (male ghost=0x192, female ghost=0x193)
+        ushort ghostBody = _character.BodyId == 0x0191 ? (ushort)0x0193 : (ushort)0x0192;
+        _character.BodyId = ghostBody;
+        _character.Hue = new Core.Types.Color(0x4001); // ghost hue (translucent)
+
+        // Send death animation to nearby players
+        var deathEffect = new PacketEffect(
+            0x03, // type: source fixed effect
+            _character.Uid.Value, 0,
+            0x3735, // death particles effect ID
+            _character.X, _character.Y, (short)_character.Z,
+            0, 0, 0,
+            10, 30, true, false);
+        BroadcastNearby?.Invoke(_character.Position, UpdateRange, deathEffect, 0);
+
+        // Play death sound
+        var deathSound = new PacketSound(0x01FE, _character.X, _character.Y, _character.Z);
+        BroadcastNearby?.Invoke(_character.Position, UpdateRange, deathSound, 0);
+        _netState.Send(deathSound);
+
+        // Update self - show ghost
+        var drawPacket = new PacketDrawPlayer(
+            _character.Uid.Value, _character.BodyId, _character.Hue,
+            BuildMobileFlags(_character),
+            _character.X, _character.Y, _character.Z, (byte)_character.Direction);
+        _netState.Send(drawPacket);
+
+        SendCharacterStatus(_character);
+        SysMessage(ServerMessages.Get("combat_dead"));
+    }
+
+    /// <summary>
+    /// Handle resurrection from NPC healer or spell.
+    /// </summary>
+    public void OnResurrect()
+    {
+        if (_character == null || !_character.IsDead) return;
+
+        // Fire @Resurrect — if script blocks, don't resurrect
+        if (_triggerDispatcher != null)
+        {
+            var result = _triggerDispatcher.FireCharTrigger(_character, CharTrigger.Resurrect,
+                new TriggerArgs { CharSrc = _character });
+            if (result == TriggerResult.True)
+                return;
+        }
+
+        _character.Resurrect();
+        _character.BodyId = 0x0190; // restore to human male (default)
+        _character.Hue = Core.Types.Color.Default;
+
+        // Redraw character — 0x20 for self, 0x77 for others
+        byte resFlags = BuildMobileFlags(_character);
+        byte resNoto = GetNotoriety(_character);
+        _netState.Send(new PacketDrawPlayer(
+            _character.Uid.Value, _character.BodyId, _character.Hue,
+            resFlags, _character.X, _character.Y, _character.Z, (byte)_character.Direction));
+        var resPacket = new PacketMobileMoving(_character.Uid.Value, _character.BodyId,
+            _character.X, _character.Y, _character.Z, (byte)_character.Direction,
+            _character.Hue, resFlags, resNoto);
+        if (BroadcastMoveNearby != null)
+            BroadcastMoveNearby.Invoke(_character.Position, UpdateRange, resPacket, _character.Uid.Value, _character);
+        else
+            BroadcastNearby?.Invoke(_character.Position, UpdateRange, resPacket, _character.Uid.Value);
+
+        SendCharacterStatus(_character);
+        SysMessage(ServerMessages.Get("combat_resurrected"));
+    }
+
+    public void HandleWarMode(bool warMode)
+    {
+        if (_character == null) return;
+        _logger.LogDebug("[war_toggle_request] client={ClientId} char=0x{Char:X8} requested={Requested} current={Current}",
+            _netState.Id, _character.Uid.Value, warMode ? "war" : "peace", _character.IsInWarMode ? "war" : "peace");
+        // @UserWarmode fires before the state flip so a script can abort
+        // the toggle by returning 1. Matches Source-X @UserWarmode in
+        // CClient::Event_WalkToggleWarmode.
+        var triggerArgs = new TriggerArgs { CharSrc = _character, N1 = warMode ? 1 : 0 };
+        if (_triggerDispatcher?.FireCharTrigger(_character, CharTrigger.UserWarmode, triggerArgs) == TriggerResult.True)
+            return;
+        SetWarMode(warMode, syncClients: true, preserveTarget: false);
+        SysMessage(warMode ? ServerMessages.Get("combat_warmode_on") : ServerMessages.Get("combat_warmode_off"));
+    }
+
+    // ==================== Spell Casting ====================
+
+    public void HandleCastSpell(SpellType spell, uint targetUid)
+    {
+        if (_character == null || _spellEngine == null) return;
+
+        // Fire @SpellCast — if script blocks, don't cast
+        if (_triggerDispatcher != null)
+        {
+            var result = _triggerDispatcher.FireCharTrigger(_character, CharTrigger.SpellCast,
+                new TriggerArgs { CharSrc = _character, N1 = (int)spell });
+            if (result == TriggerResult.True)
+                return;
+        }
+
+        // If no explicit target provided, check if the spell needs a target cursor
+        if (targetUid == 0)
+        {
+            var spellDef = _spellEngine.GetSpellDef(spell);
+            bool needsTarget = spellDef != null &&
+                (spellDef.IsFlag(SpellFlag.TargChar) || spellDef.IsFlag(SpellFlag.TargObj) ||
+                 spellDef.IsFlag(SpellFlag.Area) || spellDef.IsFlag(SpellFlag.Field));
+
+            if (needsTarget)
+            {
+                // Open target cursor, cast when target is selected
+                SetPendingTarget((serial, x, y, z, graphic) =>
+                {
+                    HandleCastSpell(spell, serial != 0 ? serial : _character.Uid.Value);
+                });
+                return;
+            }
+
+            // Self-buff spell — target self
+            targetUid = _character.Uid.Value;
+        }
+
+        var targetPos = _character.Position;
+        var targetChar = _world.FindChar(new Serial(targetUid));
+        if (targetChar != null)
+            targetPos = targetChar.Position;
+
+        int castTime = _spellEngine.CastStart(_character, spell, new Serial(targetUid), targetPos);
+        if (castTime > 0)
+        {
+            _character.SetTag("CAST_TIMER", (Environment.TickCount64 + castTime).ToString());
+        }
+        else
+        {
+            // Fire @SpellFail
+            _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.SpellFail,
+                new TriggerArgs { CharSrc = _character, N1 = (int)spell });
+            SysMessage(ServerMessages.Get("spell_cant_cast"));
+        }
+    }
+
+    public void TickSpellCast()
+    {
+        if (_character == null || _spellEngine == null) return;
+
+        if (_character.TryGetTag("CAST_TIMER", out string? timerStr) &&
+            long.TryParse(timerStr, out long castEnd) &&
+            Environment.TickCount64 >= castEnd)
+        {
+            _character.RemoveTag("CAST_TIMER");
+
+            // Retrieve spell ID before CastDone clears state
+            int spellId = 0;
+            if (_character.TryGetTag("SPELL_CASTING", out string? spellStr))
+                int.TryParse(spellStr, out spellId);
+
+            // Get spell def + target BEFORE CastDone clears state
+            var spellDef = _spellEngine.GetSpellDef((SpellType)spellId);
+            uint targetUidRaw = 0;
+            if (_character.TryGetTag("SPELL_TARGET_UID", out string? tgtStr))
+                uint.TryParse(tgtStr, out targetUidRaw);
+            var targetChar = targetUidRaw != 0 ? _world.FindChar(new Serial(targetUidRaw)) : null;
+
+            bool castOk = _spellEngine.CastDone(_character);
+
+            if (castOk)
+            {
+                // --- Spell name message ---
+                string spellName = spellDef?.Name ?? $"Spell #{spellId}";
+                SysMessage(ServerMessages.GetFormatted("spell_cast_ok", spellName));
+
+                // --- Visual effect (0x70) on target ---
+                var effectTarget = targetChar ?? _character;
+                ushort effectGraphic = spellDef?.EffectId ?? 0;
+                if (effectGraphic != 0)
+                {
+                    // type 3 = effect at location (on char), type 1 = bolt from src to dst
+                    byte effectType = (spellDef != null && spellDef.IsFlag(SpellFlag.FxBolt)) ? (byte)1 : (byte)3;
+                    var effectPacket = new PacketEffect(
+                        effectType,
+                        effectType == 1 ? _character.Uid.Value : effectTarget.Uid.Value,
+                        effectTarget.Uid.Value,
+                        effectGraphic,
+                        effectTarget.X, effectTarget.Y, (short)effectTarget.Z,
+                        effectTarget.X, effectTarget.Y, (short)effectTarget.Z,
+                        10, 30, true, false);
+                    _netState.Send(effectPacket);
+                    BroadcastNearby?.Invoke(effectTarget.Position, UpdateRange, effectPacket, _character.Uid.Value);
+                }
+
+                // --- Buff icon (0xDF) for beneficial spells with duration ---
+                if (spellDef != null && spellDef.IsFlag(SpellFlag.Good) && spellDef.DurationBase > 0)
+                {
+                    int skillLvl = _character.GetSkill(spellDef.GetPrimarySkill());
+                    int durTenths = spellDef.GetDuration(skillLvl);
+                    ushort durSec = (ushort)Math.Min(durTenths / 10, ushort.MaxValue);
+                    ushort buffIconId = GetBuffIconId((SpellType)spellId);
+                    if (buffIconId != 0)
+                    {
+                        _netState.Send(new PacketBuffIcon(
+                            _character.Uid.Value, buffIconId, true, durSec, spellName, ""));
+                    }
+                }
+
+                // Fire @SpellEffect on caster, @SpellSuccess
+                _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.SpellEffect,
+                    new TriggerArgs { CharSrc = _character, N1 = spellId });
+                _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.SpellSuccess,
+                    new TriggerArgs { CharSrc = _character, N1 = spellId });
+            }
+            else
+            {
+                _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.SpellFail,
+                    new TriggerArgs { CharSrc = _character, N1 = spellId });
+            }
+        }
+    }
+
+    /// <summary>Map spell types to ClassicUO buff icon IDs.</summary>
+    private static ushort GetBuffIconId(SpellType spell) => spell switch
+    {
+        SpellType.ReactiveArmor => 0x03E8,
+        SpellType.Protection => 0x03E9,
+        SpellType.NightSight => 0x03ED,
+        SpellType.MagicReflect => 0x03EC,
+        SpellType.Incognito => 0x03EF,
+        SpellType.Bless => 0x03EA,
+        SpellType.Agility => 0x03EB,
+        SpellType.Cunning => 0x03EE,
+        SpellType.Strength => 0x03F0,
+        SpellType.Invisibility => 0x03F1,
+        SpellType.Paralyze => 0x03F2,
+        SpellType.Poison => 0x03F3,
+        SpellType.Curse => 0x03F6,
+        _ => 0,
+    };
+
+    /// <summary>
+    /// Detect stat changes (from regen, combat, etc.) and send updates to client.
+    /// Called each server tick.
+    /// </summary>
+    public void TickStatUpdate()
+    {
+        if (_character == null || !IsPlaying) return;
+
+        bool hitsChanged = _character.Hits != _lastHits;
+        bool manaChanged = _character.Mana != _lastMana;
+        bool stamChanged = _character.Stam != _lastStam;
+        if (hitsChanged || manaChanged || stamChanged)
+        {
+            long now = Environment.TickCount64;
+            if (_lastVitalsPacketTick > 0 && now - _lastVitalsPacketTick < VitalsPacketIntervalMs)
+                return;
+
+            _lastHits = _character.Hits;
+            _lastMana = _character.Mana;
+            _lastStam = _character.Stam;
+            _lastVitalsPacketTick = now;
+
+            // Send only changed vital packets (avoid A1/A2/A3 spam).
+            if (hitsChanged)
+            {
+                var healthPacket = new PacketUpdateHealth(
+                    _character.Uid.Value, _character.MaxHits, _character.Hits);
+                _netState.Send(healthPacket);
+                BroadcastNearby?.Invoke(_character.Position, UpdateRange, healthPacket, _character.Uid.Value);
+            }
+            if (manaChanged)
+            {
+                _netState.Send(new PacketUpdateMana(
+                    _character.Uid.Value, _character.MaxMana, _character.Mana));
+            }
+            if (stamChanged)
+            {
+                _netState.Send(new PacketUpdateStamina(
+                    _character.Uid.Value, _character.MaxStam, _character.Stam));
+            }
+        }
+    }
+
+    // ==================== Double Click / Item Use ====================
+
+    public void HandleDoubleClick(uint uid)
+    {
+        if (_character == null) return;
+
+        if (uid == _character.Uid.Value)
+        {
+            // If mounted, dismount on self-dclick
+            if (_character.IsMounted && _mountEngine != null)
+            {
+                _logger.LogInformation("[DCLICK] '{Name}' pos at double-click: {X},{Y},{Z} map={Map}",
+                    _character.Name, _character.X, _character.Y, _character.Z, _character.Position.Map);
+                uint oldMountItemUid = _character.GetEquippedItem(Layer.Horse)?.Uid.Value ?? 0;
+                var npc = _mountEngine.Dismount(_character);
+
+                // Correct Z to terrain after body type change (mounted→foot)
+                var mapData = _world.MapData;
+                if (mapData != null)
+                {
+                    sbyte correctedZ = mapData.GetEffectiveZ(_character.MapIndex,
+                        _character.X, _character.Y, _character.Z);
+                    if (correctedZ != _character.Z)
+                    {
+                        _logger.LogInformation("[DISMOUNT] Z correction: {OldZ} -> {NewZ}", _character.Z, correctedZ);
+                        _character.Position = new Point3D(_character.X, _character.Y, correctedZ, _character.MapIndex);
+                    }
+                }
+
+                _logger.LogInformation("[DISMOUNT] '{Name}' pos AFTER dismount: {X},{Y},{Z} map={Map}",
+                    _character.Name, _character.X, _character.Y, _character.Z, _character.Position.Map);
+                if (npc != null)
+                {
+                    // Immediately remove the old horse-layer item from all clients to avoid ghost mount visuals.
+                    if (oldMountItemUid != 0)
+                        BroadcastDeleteObject(oldMountItemUid);
+
+                    // Snap the client back to the server-authoritative rider position
+                    // and drop the horse right there. Without the snap the client
+                    // keeps its predicted (possibly 1 tile ahead) position while the
+                    // server places the NPC at the real rider.Position, producing
+                    // the "horse spawns a tile behind me" complaint. With the snap
+                    // the player may briefly slide back one tile, but the horse is
+                    // always exactly under the character — which is the contract.
+                    _nextMoveTime = 0;
+                    _netState.WalkSequence = 0;
+                    _netState.Send(new PacketMoveReject(0,
+                        _character.X, _character.Y, _character.Z,
+                        (byte)((byte)_character.Direction & 0x07)));
+
+                    // MobileMoving (0x77) to self + nearby — body update without screen reload.
+                    byte flags = BuildMobileFlags(_character);
+                    byte dir77 = (byte)((byte)_character.Direction & 0x07);
+                    byte noto = GetNotoriety(_character);
+                    var movePacket = new PacketMobileMoving(
+                        _character.Uid.Value, _character.BodyId,
+                        _character.X, _character.Y, _character.Z, dir77,
+                        _character.Hue, flags, noto);
+                    _netState.Send(movePacket); // self — update own body
+                    if (BroadcastMoveNearby != null)
+                        BroadcastMoveNearby.Invoke(_character.Position, UpdateRange, movePacket, _character.Uid.Value, _character);
+                    else
+                        BroadcastNearby?.Invoke(_character.Position, UpdateRange, movePacket, _character.Uid.Value);
+
+                    // Clear Ridden flag AFTER sending all dismount packets.
+                    // View delta filters Ridden NPCs, so the NPC will appear on the
+                    // NEXT tick — giving the client time to process mount item deletion first.
+                    npc.ClearStatFlag(StatFlag.Ridden);
+                }
+                return;
+            }
+            SendPaperdoll(_character);
+            return;
+        }
+
+        var item = _world.FindItem(new Serial(uid));
+        if (item != null)
+        {
+            // Fire @DClick on item — if script returns true, block default action
+            if (_triggerDispatcher != null)
+            {
+                var result = _triggerDispatcher.FireItemTrigger(item, ItemTrigger.DClick,
+                    new TriggerArgs { CharSrc = _character, ItemSrc = item });
+                if (result == TriggerResult.True)
+                    return;
+            }
+            HandleItemUse(item);
+            return;
+        }
+
+        var ch = _world.FindChar(new Serial(uid));
+        if (ch != null)
+        {
+            // Fire @DClick on character — if script returns true, block default action
+            if (_triggerDispatcher != null)
+            {
+                var result = _triggerDispatcher.FireCharTrigger(ch, CharTrigger.DClick,
+                    new TriggerArgs { CharSrc = _character });
+                if (result == TriggerResult.True)
+                    return;
+            }
+            if (!ch.IsPlayer && ch.NpcBrain == NpcBrainType.Vendor)
+            {
+                HandleVendorInteraction(ch);
+                return;
+            }
+
+            // Mount check — double-click mountable NPC
+            if (!ch.IsPlayer && _mountEngine != null &&
+                Mounts.MountEngine.IsMountable(ch.BodyId))
+            {
+                // Already riding — block with message instead of falling through to paperdoll
+                if (_character.IsMounted)
+                {
+                    SysMessage(ServerMessages.Get("mount_already_riding"));
+                    return;
+                }
+
+                // UO mount-range rule: the mount must be adjacent (within 1 tile).
+                // Without this check, a distant mount gets accepted by the server
+                // while the client teleports the player to the mount's tile — the
+                // classic "I got yanked onto my horse" glitch.
+                int dx = Math.Abs(_character.X - ch.X);
+                int dy = Math.Abs(_character.Y - ch.Y);
+                if (_character.MapIndex != ch.MapIndex || dx > 1 || dy > 1)
+                {
+                    SysMessage("That is too far away.");
+                    return;
+                }
+
+                uint mountNpcUid = ch.Uid.Value;
+                _logger.LogInformation("[MOUNT] '{Name}' pos BEFORE mount: {X},{Y},{Z} map={Map}",
+                    _character.Name, _character.X, _character.Y, _character.Z, _character.Position.Map);
+                if (_mountEngine.TryMount(_character, ch))
+                {
+                    // Correct Z to terrain after body type change (foot→mounted)
+                    var mountMapData = _world.MapData;
+                    if (mountMapData != null)
+                    {
+                        sbyte correctedZ = mountMapData.GetEffectiveZ(_character.MapIndex,
+                            _character.X, _character.Y, _character.Z);
+                        if (correctedZ != _character.Z)
+                        {
+                            _logger.LogInformation("[MOUNT] Z correction: {OldZ} -> {NewZ}", _character.Z, correctedZ);
+                            _character.Position = new Point3D(_character.X, _character.Y, correctedZ, _character.MapIndex);
+                        }
+                    }
+
+                    _logger.LogInformation("[MOUNT] '{Name}' pos AFTER mount: {X},{Y},{Z} map={Map}",
+                        _character.Name, _character.X, _character.Y, _character.Z, _character.Position.Map);
+                    // Immediately remove the old NPC mount from nearby clients to prevent temporary duplicates.
+                    BroadcastDeleteObject(mountNpcUid);
+
+                    // Reset walk state — foot→mount speed transition
+                    _netState.WalkSequence = 0;
+                    _nextMoveTime = 0;
+
+                    // MoveReject FIRST — clears walk queue + Offset.Z, sets exact position
+                    _netState.Send(new PacketMoveReject(0,
+                        _character.X, _character.Y, _character.Z,
+                        (byte)((byte)_character.Direction & 0x07)));
+
+                    // DrawObject AFTER — body/equipment update with Steps queue already cleared.
+                    // BroadcastDrawObject sends to self + nearby clients.
+                    BroadcastDrawObject(_character);
+                    return;
+                }
+            }
+
+            SendPaperdoll(ch);
+        }
+    }
+
+    private void HandleItemUse(Item item)
+    {
+        if (_character != null && _character.IsDead)
+        {
+            SysMessage(ServerMessages.Get("death_cant_while_dead"));
+            return;
+        }
+
+        switch (item.ItemType)
+        {
+            case ItemType.Container:
+            case ItemType.ContainerLocked:
+                SendOpenContainer(item);
+                break;
+            case ItemType.Door:
+                ToggleDoor(item);
+                break;
+            case ItemType.DoorLocked:
+                SysMessage(ServerMessages.Get("itemuse_locked"));
+                break;
+            case ItemType.Potion:
+                UsePotion(item);
+                break;
+            case ItemType.Spellbook:
+                _netState.Send(new PacketOpenContainer(item.Uid.Value, 0x003E, _netState.IsClientPost7090));
+                break;
+            case ItemType.Food:
+                if (_character != null)
+                {
+                    _character.Food = (ushort)Math.Min(_character.Food + 5, 60);
+                    SysMessage(ServerMessages.Get("itemuse_eat_food"));
+                    _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Destroy,
+                        new TriggerArgs { CharSrc = _character, ItemSrc = item });
+                    item.Delete();
+                }
+                break;
+            case ItemType.StoneGuild:
+                OpenGuildStoneGump(item);
+                break;
+            case ItemType.Multi:
+            case ItemType.MultiCustom:
+            case ItemType.SignGump:
+                OpenHouseSignGump(item);
+                break;
+            case ItemType.Deed:
+                if (_character != null && _housingEngine != null)
+                {
+                    var house = _housingEngine.PlaceHouse(_character, item.BaseId, _character.Position);
+                    if (house != null)
+                    {
+                        SysMessage(ServerMessages.Get("house_placed"));
+                        _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Destroy,
+                            new TriggerArgs { CharSrc = _character, ItemSrc = item });
+                        item.Delete();
+                    }
+                    else
+                    {
+                        SysMessage(ServerMessages.Get("house_cant_place"));
+                    }
+                }
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Try to handle pet voice commands. Returns true if a pet command was recognized.
+    /// Supports: "all follow", "all guard", "all stay", "all stop", "all come",
+    /// "all attack", and "<petname> follow/guard/stay/stop/come/attack/kill".
+    /// </summary>
+    private bool TryHandlePetCommand(string text)
+    {
+        if (_character == null) return false;
+        string lower = text.ToLowerInvariant().Trim();
+
+        // "all <command>"
+        if (lower.StartsWith("all "))
+        {
+            string cmd = lower[4..].Trim();
+            var mode = ParsePetCommand(cmd);
+            if (mode == null) return false;
+
+            foreach (var ch in _world.GetCharsInRange(_character.Position, 12))
+            {
+                if (ch.IsPlayer || ch.IsDead || ch.NpcMaster != _character.Uid) continue;
+                ch.PetAIMode = mode.Value;
+            }
+            SysMessage(ServerMessages.GetFormatted("pet_all_cmd", cmd));
+            return true;
+        }
+
+        // "<petname> <command>" — find pet by name prefix
+        int spaceIdx = lower.IndexOf(' ');
+        if (spaceIdx > 0)
+        {
+            string petName = lower[..spaceIdx];
+            string cmd = lower[(spaceIdx + 1)..].Trim();
+            var mode = ParsePetCommand(cmd);
+            if (mode == null) return false;
+
+            foreach (var ch in _world.GetCharsInRange(_character.Position, 12))
+            {
+                if (ch.IsPlayer || ch.IsDead || ch.NpcMaster != _character.Uid) continue;
+                if (ch.Name.StartsWith(petName, StringComparison.OrdinalIgnoreCase))
+                {
+                    ch.PetAIMode = mode.Value;
+                    SysMessage(ServerMessages.GetFormatted("pet_cmd", ch.Name, cmd));
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static PetAIMode? ParsePetCommand(string cmd) => cmd switch
+    {
+        "follow" or "follow me" or "come" => PetAIMode.Follow,
+        "guard" or "guard me" => PetAIMode.Guard,
+        "attack" or "kill" => PetAIMode.Attack,
+        "stay" => PetAIMode.Stay,
+        "stop" => PetAIMode.Stop,
+        _ => null
+    };
+
+    private void HandleVendorInteraction(Character vendor)
+    {
+        if (_character == null) return;
+
+        // Build a buy/sell gump for the vendor
+        var gump = new GumpBuilder(_character.Uid.Value, vendor.Uid.Value, 400, 300);
+        gump.AddResizePic(0, 0, 5054, 400, 300);
+        gump.AddText(30, 20, 0, vendor.GetName());
+        gump.AddText(30, 50, 0, "How may I help you?");
+        gump.AddButton(30, 100, 4005, 4007, 1);  // Buy
+        gump.AddText(70, 100, 0, "Buy");
+        gump.AddButton(30, 130, 4005, 4007, 2);  // Sell
+        gump.AddText(70, 130, 0, "Sell");
+        gump.AddButton(150, 250, 4017, 4019, 0); // Cancel
+
+        SendGump(gump, (buttonId, switches, textEntries) =>
+        {
+            if (buttonId == 1)
+                SendVendorBuyList(vendor);
+            else if (buttonId == 2)
+                SendVendorSellList(vendor);
+        });
+    }
+
+    /// <summary>Send the vendor's buy list (items available for purchase) to the client.</summary>
+    private void SendVendorBuyList(Character vendor)
+    {
+        if (_character == null) return;
+
+        // Auto-restock if needed
+        if (VendorEngine.NeedsRestock(vendor))
+            VendorEngine.RestockVendor(vendor);
+
+        // Collect vendor inventory items (items in vendor's "sell" container / buy pack)
+        var vendorItems = GetVendorBuyInventory(vendor);
+        if (vendorItems.Count == 0)
+        {
+            NpcSpeech(vendor, ServerMessages.Get("npc_vendor_no_goods"));
+            return;
+        }
+
+        // Send container contents first (items the vendor has for sale)
+        foreach (var vi in vendorItems)
+        {
+            _netState.Send(new PacketContainerItem(
+                vi.Serial, vi.ItemId, 0, vi.Amount, 0, 0,
+                vendor.Uid.Value | 0x40000000, vi.Hue, _netState.IsClientPost6017));
+        }
+
+        // Send the buy list with prices
+        _netState.Send(new PacketVendorBuyList(vendor.Uid.Value, vendorItems));
+
+        // Open the buy container gump
+        _netState.Send(new PacketOpenContainer(vendor.Uid.Value | 0x40000000, 0x0030, _netState.IsClientPost7090)); // buy gump
+    }
+
+    /// <summary>Send the sell list (items player can sell to this vendor) to the client.</summary>
+    private void SendVendorSellList(Character vendor)
+    {
+        if (_character == null) return;
+
+        var backpack = _character.Backpack;
+        if (backpack == null)
+        {
+            NpcSpeech(vendor, ServerMessages.Get("npc_vendor_nothing_buy"));
+            return;
+        }
+
+        // Build list of items the vendor will buy from the player's backpack
+        var sellItems = new List<VendorItem>();
+        foreach (var item in _world.GetContainerContents(backpack.Uid))
+        {
+            if (item.ItemType == ItemType.Gold) continue; // don't sell gold
+            if (item.IsDeleted) continue;
+
+            int price = GetVendorItemSellPrice(vendor, item);
+            if (price <= 0) continue;
+
+            sellItems.Add(new VendorItem
+            {
+                Serial = item.Uid.Value,
+                ItemId = item.DispIdFull,
+                Hue = item.Hue.Value,
+                Amount = (ushort)item.Amount,
+                Price = price,
+                Name = item.GetName()
+            });
+
+            if (sellItems.Count >= 50) break; // limit
+        }
+
+        if (sellItems.Count == 0)
+        {
+            NpcSpeech(vendor, ServerMessages.Get("npc_vendor_nothing_buy"));
+            return;
+        }
+
+        _netState.Send(new PacketVendorSellList(vendor.Uid.Value, sellItems));
+    }
+
+    /// <summary>
+    /// Build vendor buy inventory from vendor's TAG.SELL entries or equipped buy-pack items.
+    /// In Sphere, vendor inventory is defined in CHARDEF with item entries.
+    /// </summary>
+    private List<VendorItem> GetVendorBuyInventory(Character vendor)
+    {
+        var items = new List<VendorItem>();
+
+        // Look for items in vendor's backpack (vendor stock)
+        var vendorPack = vendor.Backpack;
+        if (vendorPack != null)
+        {
+            foreach (var item in _world.GetContainerContents(vendorPack.Uid))
+            {
+                if (item.IsDeleted) continue;
+
+                int price = GetVendorItemPrice(vendor, item);
+                items.Add(new VendorItem
+                {
+                    Serial = item.Uid.Value,
+                    ItemId = item.DispIdFull,
+                    Hue = item.Hue.Value,
+                    Amount = Math.Max((ushort)1, (ushort)item.Amount),
+                    Price = price,
+                    Name = item.GetName()
+                });
+
+                if (items.Count >= 50) break;
+            }
+        }
+
+        return items;
+    }
+
+    // ==================== Crafting Gump ====================
+
+    /// <summary>
+    /// Open a crafting gump for the given skill.
+    /// Lists available recipes and lets the player select one to craft.
+    /// </summary>
+    public void OpenCraftingGump(SkillType craftSkill)
+    {
+        if (_character == null || _craftingEngine == null) return;
+
+        var recipes = _craftingEngine.GetRecipesBySkill(craftSkill);
+        if (recipes.Count == 0)
+        {
+            SysMessage(ServerMessages.Get("craft_no_recipes"));
+            return;
+        }
+
+        var gump = new GumpBuilder(_character.Uid.Value, 0, 530, 437);
+        gump.AddResizePic(0, 0, 5054, 530, 437);
+        gump.AddText(15, 15, 0, $"{craftSkill} Menu");
+
+        // Page 0 — recipe list
+        int y = 50;
+        int buttonId = 100;
+        foreach (var recipe in recipes)
+        {
+            if (y > 390) break;
+
+            string name = string.IsNullOrEmpty(recipe.ResultName)
+                ? $"Item 0x{recipe.ResultItemId:X4}"
+                : recipe.ResultName;
+            bool canMake = _craftingEngine.CanCraft(_character, recipe);
+            int hue = canMake ? 0x0044 : 0x0020; // green vs red
+
+            gump.AddButton(15, y, 4005, 4007, buttonId);
+            gump.AddText(55, y, hue, name);
+
+            // Show resource info
+            if (recipe.Resources.Count > 0)
+            {
+                var resText = string.Join(", ", recipe.Resources.Select(r => $"{r.Amount}x 0x{r.ItemId:X4}"));
+                gump.AddText(280, y, 0, resText);
+            }
+
+            y += 22;
+            buttonId++;
+        }
+
+        // Cancel button
+        gump.AddButton(15, 400, 4017, 4019, 0);
+        gump.AddText(55, 400, 0, "Close");
+
+        SendGump(gump, (pressedButton, switches, textEntries) =>
+        {
+            if (pressedButton >= 100)
+            {
+                int index = (int)(pressedButton - 100);
+                if (index < recipes.Count)
+                {
+                    var recipe = recipes[index];
+                    var result = _craftingEngine.TryCraft(_character, recipe);
+
+                    // Fire @SkillMakeItem trigger
+                    _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.SkillMakeItem,
+                        new TriggerArgs { CharSrc = _character, N1 = (int)craftSkill });
+
+                    if (result != null)
+                        SysMessage(ServerMessages.GetFormatted("craft_success", result.GetName()));
+                    else
+                        SysMessage(ServerMessages.Get("craft_fail"));
+
+                    // Re-open gump for continued crafting
+                    OpenCraftingGump(craftSkill);
+                }
+            }
+        });
+    }
+
+    /// <summary>Handle vendor buy packet (0x3B).</summary>
+    public void HandleVendorBuy(uint vendorSerial, byte flag,
+        List<SphereNet.Network.Packets.Incoming.VendorBuyEntry> buyItems)
+    {
+        if (_character == null) return;
+        var vendor = _world.FindChar(new Serial(vendorSerial));
+        if (vendor == null || vendor.NpcBrain != NpcBrainType.Vendor) return;
+
+        if (flag == 0 || buyItems.Count == 0)
+        {
+            NpcSpeech(vendor, ServerMessages.Get("npc_vendor_ty"));
+            return;
+        }
+
+        // Fire @Buy trigger on vendor NPC
+        _triggerDispatcher?.FireCharTrigger(vendor, CharTrigger.NPCAction,
+            new TriggerArgs { CharSrc = _character, S1 = "BUY" });
+
+        // Build trade entries from packet data
+        var entries = new List<TradeEntry>();
+        foreach (var bi in buyItems)
+        {
+            var item = _world.FindItem(new Serial(bi.ItemSerial));
+            if (item == null) continue;
+
+            int price = GetVendorItemPrice(vendor, item);
+            entries.Add(new TradeEntry
+            {
+                ItemUid = item.Uid,
+                ItemId = item.BaseId,
+                Name = item.GetName(),
+                Price = price,
+                Amount = bi.Amount
+            });
+        }
+
+        int result = VendorEngine.ProcessBuy(_character, vendor, entries);
+        if (result < 0)
+            NpcSpeech(vendor, ServerMessages.Get("npc_vendor_nomoney1"));
+        else
+            NpcSpeech(vendor, ServerMessages.GetFormatted("npc_vendor_b1", result, result == 1 ? "" : "s"));
+
+        SendCharacterStatus(_character);
+    }
+
+    /// <summary>Handle vendor sell packet (0x9F).</summary>
+    public void HandleVendorSell(uint vendorSerial,
+        List<SphereNet.Network.Packets.Incoming.VendorSellEntry> sellItems)
+    {
+        if (_character == null) return;
+        var vendor = _world.FindChar(new Serial(vendorSerial));
+        if (vendor == null || vendor.NpcBrain != NpcBrainType.Vendor) return;
+
+        if (sellItems.Count == 0)
+        {
+            NpcSpeech(vendor, ServerMessages.Get("npc_vendor_ty"));
+            return;
+        }
+
+        // Fire @Sell trigger on vendor NPC
+        _triggerDispatcher?.FireCharTrigger(vendor, CharTrigger.NPCAction,
+            new TriggerArgs { CharSrc = _character, S1 = "SELL" });
+
+        // Build trade entries from packet data
+        var entries = new List<TradeEntry>();
+        foreach (var si in sellItems)
+        {
+            var item = _world.FindItem(new Serial(si.ItemSerial));
+            if (item == null) continue;
+
+            int price = GetVendorItemSellPrice(vendor, item);
+            entries.Add(new TradeEntry
+            {
+                ItemUid = item.Uid,
+                ItemId = item.BaseId,
+                Name = item.GetName(),
+                Price = price,
+                Amount = si.Amount
+            });
+        }
+
+        int result = VendorEngine.ProcessSell(_character, vendor, entries);
+        NpcSpeech(vendor, ServerMessages.GetFormatted("npc_vendor_sell_ty", result, result == 1 ? "" : "s"));
+        SendCharacterStatus(_character);
+    }
+
+    /// <summary>Get the buy price for an item from vendor inventory. Uses TAG.PRICE or defaults.</summary>
+    private static int GetVendorItemPrice(Character vendor, Item item)
+    {
+        if (item.TryGetTag("PRICE", out string? priceStr) && int.TryParse(priceStr, out int price))
+            return price;
+        return Math.Max(1, item.BaseId / 10 + 5); // default price
+    }
+
+    /// <summary>Get the sell price (what vendor pays the player). Usually half of buy price.</summary>
+    private static int GetVendorItemSellPrice(Character vendor, Item item)
+    {
+        return Math.Max(1, GetVendorItemPrice(vendor, item) / 2);
+    }
+
+    /// <summary>
+    /// Handle secure trade packet (0x6F).
+    /// Actions: 0=display, 1=close, 2=update (check/uncheck accept).
+    /// </summary>
+    public void HandleSecureTrade(byte action, uint sessionId, uint param)
+    {
+        if (_character == null || _tradeManager == null) return;
+
+        var trade = _tradeManager.FindTradeFor(_character);
+        if (trade == null && action != 0) return;
+
+        switch (action)
+        {
+            case 0: // Open/initiate trade — param is target serial
+                var target = _world.FindChar(new Serial(param));
+                if (target == null || !target.IsPlayer) { SysMessage(ServerMessages.Get("trade_invalid_target")); return; }
+                _tradeManager.StartTrade(_character, target);
+                SysMessage(ServerMessages.GetFormatted("trade_initiated", target.Name));
+                break;
+            case 1: // Close/cancel trade
+                trade?.Cancel();
+                SysMessage(ServerMessages.Get("trade_cancelled"));
+                break;
+            case 2: // Accept toggle
+                trade?.Accept(_character);
+                SysMessage(trade?.IsCompleted == true ? "Trade completed!" : "You have accepted the trade.");
+                break;
+        }
+    }
+
+    /// <summary>Handle rename request (0x75).</summary>
+    public void HandleRename(uint serial, string name)
+    {
+        if (_character == null) return;
+
+        // Only GM+ can rename
+        if (_character.PrivLevel < PrivLevel.GM)
+        {
+            SysMessage(ServerMessages.Get("rename_no_permission"));
+            return;
+        }
+
+        var target = _world.FindChar(new Serial(serial));
+        if (target != null)
+        {
+            string oldName = target.Name;
+            target.Name = name.Trim();
+            SysMessage(ServerMessages.GetFormatted("msg_rename_success", oldName, target.Name));
+            return;
+        }
+
+        var item = _world.FindItem(new Serial(serial));
+        if (item != null)
+        {
+            item.Name = name.Trim();
+            SysMessage(ServerMessages.GetFormatted("rename_item_ok", item.Name));
+        }
+    }
+
+    /// <summary>Handle client view range change (0xC8).</summary>
+    public void HandleViewRange(byte range)
+    {
+        // Clamp to valid range (4-24)
+        if (range < 4) range = 4;
+        if (range > 24) range = 24;
+        _netState.ViewRange = range;
+    }
+
+    /// <summary>Open guild stone gump with member list, options.</summary>
+    private void OpenGuildStoneGump(Item stone)
+    {
+        if (_character == null || _guildManager == null) return;
+
+        var guild = _guildManager.GetGuild(stone.Uid);
+        if (guild == null)
+        {
+            // No guild on this stone yet — offer to create one
+            var createGump = new GumpBuilder(_character.Uid.Value, stone.Uid.Value, 400, 300);
+            createGump.AddResizePic(0, 0, 5054, 400, 300);
+            createGump.AddText(30, 20, 0, "Guild Stone");
+            createGump.AddText(30, 50, 0, "No guild is registered to this stone.");
+            createGump.AddText(30, 80, 0, "Create a new guild?");
+            createGump.AddButton(30, 130, 4005, 4007, 1); // Create
+            createGump.AddText(70, 130, 0, "Create Guild");
+            createGump.AddButton(150, 250, 4017, 4019, 0); // Cancel
+
+            SendGump(createGump, (buttonId, switches, textEntries) =>
+            {
+                if (buttonId == 1)
+                {
+                    var newGuild = _guildManager.CreateGuild(stone.Uid, $"{_character.Name}'s Guild", _character.Uid);
+                    SysMessage(ServerMessages.GetFormatted("guild_created", newGuild.Name));
+                }
+            });
+            return;
+        }
+
+        // Show guild info gump
+        var gump = new GumpBuilder(_character.Uid.Value, stone.Uid.Value, 500, 520);
+        gump.AddResizePic(0, 0, 5054, 500, 520);
+        gump.AddText(30, 10, 0, $"Guild: {guild.Name}");
+        gump.AddText(30, 30, 0, $"Abbreviation: [{guild.Abbreviation}]");
+        if (!string.IsNullOrEmpty(guild.Charter))
+            gump.AddText(30, 50, 0, $"Charter: {guild.Charter}");
+        gump.AddText(30, 70, 0, $"Members: {guild.MemberCount} | Wars: {guild.Wars.Count()} | Allies: {guild.Allies.Count()}");
+
+        // Member list with titles and candidate status
+        int y = 100;
+        int memberIdx = 0;
+        foreach (var member in guild.Members)
+        {
+            var ch = _world.FindChar(member.CharUid);
+            string memberName = ch?.Name ?? $"UID 0x{member.CharUid.Value:X}";
+            string privText = member.Priv switch
+            {
+                GuildPriv.Master => " [Master]",
+                GuildPriv.Candidate => " [Candidate]",
+                _ => ""
+            };
+            string titleText = !string.IsNullOrEmpty(member.Title) ? $" ({member.Title})" : "";
+            int hue = member.Priv == GuildPriv.Candidate ? 33 : 0; // yellow for candidates
+            gump.AddText(50, y, hue, $"{memberName}{privText}{titleText}");
+            y += 20;
+            memberIdx++;
+            if (y > 350) break;
+        }
+
+        var myMember = guild.FindMember(_character.Uid);
+        int btnY = 370;
+
+        if (myMember == null)
+        {
+            gump.AddButton(30, btnY, 4005, 4007, 1); // Join
+            gump.AddText(70, btnY, 0, "Request to Join");
+            btnY += 25;
+        }
+        else if (myMember.Priv == GuildPriv.Master)
+        {
+            gump.AddButton(30, btnY, 4005, 4007, 2); // Disband
+            gump.AddText(70, btnY, 0, "Disband Guild");
+            btnY += 25;
+            gump.AddButton(30, btnY, 4005, 4007, 10); // Accept candidates
+            gump.AddText(70, btnY, 0, "Accept Candidate");
+            btnY += 25;
+            gump.AddButton(30, btnY, 4005, 4007, 11); // Set title
+            gump.AddText(70, btnY, 0, "Set Member Title");
+            btnY += 25;
+            gump.AddButton(30, btnY, 4005, 4007, 12); // Declare war
+            gump.AddText(70, btnY, 0, "Declare War");
+            btnY += 25;
+            gump.AddButton(30, btnY, 4005, 4007, 13); // Declare peace
+            gump.AddText(70, btnY, 0, "Declare Peace");
+            btnY += 25;
+            gump.AddButton(30, btnY, 4005, 4007, 14); // Set charter
+            gump.AddText(70, btnY, 0, "Set Charter");
+            gump.AddTextEntry(170, btnY, 250, 20, 0, 1, guild.Charter);
+            btnY += 25;
+        }
+        else
+        {
+            gump.AddButton(30, btnY, 4005, 4007, 3); // Leave
+            gump.AddText(70, btnY, 0, "Leave Guild");
+            btnY += 25;
+        }
+        gump.AddButton(350, 480, 4017, 4019, 0); // Close
+
+        var capturedGuild = guild;
+        SendGump(gump, (buttonId, switches, textEntries) =>
+        {
+            HandleGuildGumpResponse(stone, capturedGuild, buttonId, textEntries);
+        });
+    }
+
+    private void HandleGuildGumpResponse(Item stone, GuildDef guild, uint buttonId, (ushort Id, string Text)[] textEntries)
+    {
+        if (_character == null || _guildManager == null) return;
+
+        switch (buttonId)
+        {
+            case 1: // Join request
+                guild.AddRecruit(_character.Uid);
+                SysMessage(ServerMessages.Get("guild_join_request"));
+                break;
+            case 2: // Disband
+                _guildManager.RemoveGuild(stone.Uid);
+                SysMessage(ServerMessages.Get("guild_disbanded"));
+                break;
+            case 3: // Leave
+                guild.RemoveMember(_character.Uid);
+                SysMessage(ServerMessages.Get("guild_left"));
+                break;
+            case 10: // Accept candidate
+                SysMessage(ServerMessages.Get("guild_target_candidate"));
+                SetPendingTarget((serial, x, y, z, graphic) =>
+                {
+                    var target = _world.FindChar(new Serial(serial));
+                    if (target == null) { SysMessage(ServerMessages.Get("msg_invalid_target")); return; }
+                    if (guild.AcceptMember(target.Uid))
+                        SysMessage(ServerMessages.GetFormatted("guild_member_added", target.Name));
+                    else
+                        SysMessage(ServerMessages.GetFormatted("guild_not_candidate", target.Name));
+                });
+                break;
+            case 11: // Set member title
+                SysMessage(ServerMessages.Get("guild_target_title"));
+                SetPendingTarget((serial, x, y, z, graphic) =>
+                {
+                    var target = _world.FindChar(new Serial(serial));
+                    if (target == null) { SysMessage(ServerMessages.Get("msg_invalid_target")); return; }
+                    var member = guild.FindMember(target.Uid);
+                    if (member == null) { SysMessage(ServerMessages.Get("guild_not_member")); return; }
+                    // Use text entry if provided
+                    var titleEntry = textEntries.FirstOrDefault(e => e.Id == 1);
+                    if (!string.IsNullOrWhiteSpace(titleEntry.Text))
+                    {
+                        member.Title = titleEntry.Text.Trim();
+                        SysMessage(ServerMessages.GetFormatted("guild_title_set", target.Name, member.Title));
+                    }
+                    else
+                        SysMessage(ServerMessages.Get("guild_no_title"));
+                });
+                break;
+            case 12: // Declare war
+                SysMessage(ServerMessages.Get("guild_target_enemy"));
+                SetPendingTarget((serial, x, y, z, graphic) =>
+                {
+                    var targetItem = _world.FindItem(new Serial(serial));
+                    if (targetItem == null) { SysMessage(ServerMessages.Get("msg_invalid_target")); return; }
+                    var enemyGuild = _guildManager.GetGuild(targetItem.Uid);
+                    if (enemyGuild == null) { SysMessage(ServerMessages.Get("guild_not_stone")); return; }
+                    guild.DeclareWar(targetItem.Uid);
+                    SysMessage(ServerMessages.GetFormatted("guild_war_declared", enemyGuild.Name));
+                });
+                break;
+            case 13: // Declare peace
+                SysMessage(ServerMessages.Get("guild_target_peace"));
+                SetPendingTarget((serial, x, y, z, graphic) =>
+                {
+                    var targetItem = _world.FindItem(new Serial(serial));
+                    if (targetItem == null) { SysMessage(ServerMessages.Get("msg_invalid_target")); return; }
+                    guild.DeclarePeace(targetItem.Uid);
+                    SysMessage(ServerMessages.Get("guild_peace_declared"));
+                });
+                break;
+            case 14: // Set charter
+            {
+                var charterEntry = textEntries.FirstOrDefault(e => e.Id == 1);
+                if (!string.IsNullOrWhiteSpace(charterEntry.Text))
+                {
+                    guild.Charter = charterEntry.Text.Trim();
+                    SysMessage(ServerMessages.Get("guild_charter_updated"));
+                }
+                break;
+            }
+        }
+    }
+
+    /// <summary>Open house management gump from house sign or multi item.</summary>
+    private void OpenHouseSignGump(Item signOrMulti)
+    {
+        if (_character == null || _housingEngine == null) return;
+
+        // Find the house — could be the multi item itself or linked via tag
+        var house = _housingEngine.GetHouse(signOrMulti.Uid);
+        if (house == null && signOrMulti.TryGetTag("HOUSE_UID", out string? houseUidStr) &&
+            uint.TryParse(houseUidStr, out uint houseUid))
+        {
+            house = _housingEngine.GetHouse(new Serial(houseUid));
+        }
+
+        if (house == null)
+        {
+            SysMessage(ServerMessages.Get("house_not_house"));
+            return;
+        }
+
+        // Auto-refresh on owner visit
+        _housingEngine.OnCharacterEnterHouse(_character, house);
+
+        var priv = house.GetPriv(_character.Uid);
+        var ownerCh = _world.FindChar(house.Owner);
+        string ownerName = ownerCh?.Name ?? "Unknown";
+
+        var gump = new GumpBuilder(_character.Uid.Value, signOrMulti.Uid.Value, 420, 440);
+        gump.AddResizePic(0, 0, 5054, 420, 440);
+        gump.AddText(30, 10, 0, "House Management");
+        gump.AddText(30, 35, 0, $"Owner: {ownerName}");
+        gump.AddText(30, 55, 0, $"Type: {house.Type}");
+        gump.AddText(30, 75, 0, $"Storage: {house.Lockdowns.Count}/{house.MaxLockdowns} lockdowns, {house.SecureContainers.Count}/{house.MaxSecure} secure");
+        gump.AddText(30, 95, 0, $"Condition: {house.DecayStage}");
+        gump.AddText(30, 115, 0, $"Co-Owners: {house.CoOwners.Count}  Friends: {house.Friends.Count}");
+
+        int btnY = 145;
+        if (priv is HousePriv.Owner or HousePriv.CoOwner)
+        {
+            gump.AddButton(30, btnY, 4005, 4007, 1);
+            gump.AddText(70, btnY, 0, "Transfer House");
+            btnY += 25;
+            gump.AddButton(30, btnY, 4005, 4007, 2);
+            gump.AddText(70, btnY, 0, "Demolish House");
+            btnY += 25;
+            gump.AddButton(30, btnY, 4005, 4007, 10);
+            gump.AddText(70, btnY, 0, "Add Co-Owner");
+            btnY += 25;
+            gump.AddButton(30, btnY, 4005, 4007, 11);
+            gump.AddText(70, btnY, 0, "Add Friend");
+            btnY += 25;
+            gump.AddButton(30, btnY, 4005, 4007, 12);
+            gump.AddText(70, btnY, 0, "Remove Co-Owner");
+            btnY += 25;
+            gump.AddButton(30, btnY, 4005, 4007, 13);
+            gump.AddText(70, btnY, 0, "Remove Friend");
+            btnY += 25;
+            gump.AddButton(30, btnY, 4005, 4007, 14);
+            gump.AddText(70, btnY, 0, "Lock Down Item");
+            btnY += 25;
+            gump.AddButton(30, btnY, 4005, 4007, 15);
+            gump.AddText(70, btnY, 0, "Release Lockdown");
+            btnY += 25;
+            gump.AddButton(30, btnY, 4005, 4007, 16);
+            gump.AddText(70, btnY, 0, "Secure Container");
+            btnY += 25;
+            gump.AddButton(30, btnY, 4005, 4007, 17);
+            gump.AddText(70, btnY, 0, "Release Secure");
+            btnY += 25;
+        }
+        if (priv == HousePriv.Owner)
+        {
+            gump.AddButton(30, btnY, 4005, 4007, 20);
+            gump.AddText(70, btnY, 0, "Ban Player");
+            btnY += 25;
+            gump.AddButton(30, btnY, 4005, 4007, 21);
+            gump.AddText(70, btnY, 0, "Unban Player");
+            btnY += 25;
+        }
+        if (priv != HousePriv.None && priv != HousePriv.Ban)
+        {
+            gump.AddButton(30, btnY, 4005, 4007, 3);
+            gump.AddText(70, btnY, 0, "Open Door");
+            btnY += 25;
+        }
+        gump.AddButton(280, 400, 4017, 4019, 0); // Close
+
+        var capturedHouse = house;
+        SendGump(gump, (buttonId, switches, textEntries) =>
+        {
+            HandleHouseGumpResponse(signOrMulti, capturedHouse, buttonId);
+        });
+    }
+
+    private void HandleHouseGumpResponse(Item signOrMulti, House house, uint buttonId)
+    {
+        if (_character == null || _housingEngine == null) return;
+
+        switch (buttonId)
+        {
+            case 1: // Transfer — target the new owner
+                SysMessage(ServerMessages.Get("house_select_owner"));
+                SetPendingTarget((serial, x, y, z, graphic) =>
+                {
+                    var target = _world.FindChar(new Serial(serial));
+                    if (target == null || !target.IsPlayer)
+                    {
+                        SysMessage(ServerMessages.Get("msg_invalid_target"));
+                        return;
+                    }
+                    house.TransferOwnership(target.Uid);
+                    SysMessage(ServerMessages.GetFormatted("house_transferred", target.Name));
+                });
+                break;
+            case 2: // Demolish
+                var deed = _housingEngine.RemoveHouse(signOrMulti.Uid, _character);
+                if (deed != null)
+                    SysMessage(ServerMessages.Get("house_demolished"));
+                else
+                    SysMessage(ServerMessages.Get("house_cant_demolish"));
+                break;
+            case 3: // Open door
+                SysMessage(ServerMessages.Get("house_door_opened"));
+                break;
+            case 10: // Add Co-Owner
+                SysMessage(ServerMessages.Get("house_add_coowner"));
+                SetPendingTarget((serial, x, y, z, graphic) =>
+                {
+                    var target = _world.FindChar(new Serial(serial));
+                    if (target == null || !target.IsPlayer) { SysMessage(ServerMessages.Get("msg_invalid_target")); return; }
+                    if (house.AddCoOwner(target.Uid))
+                        SysMessage(ServerMessages.GetFormatted("house_added_coowner", target.Name));
+                    else
+                        SysMessage(ServerMessages.GetFormatted("house_already_coowner", target.Name));
+                });
+                break;
+            case 11: // Add Friend
+                SysMessage(ServerMessages.Get("house_add_friend"));
+                SetPendingTarget((serial, x, y, z, graphic) =>
+                {
+                    var target = _world.FindChar(new Serial(serial));
+                    if (target == null || !target.IsPlayer) { SysMessage(ServerMessages.Get("msg_invalid_target")); return; }
+                    if (house.AddFriend(target.Uid))
+                        SysMessage(ServerMessages.GetFormatted("house_added_friend", target.Name));
+                    else
+                        SysMessage(ServerMessages.GetFormatted("house_already_friend", target.Name));
+                });
+                break;
+            case 12: // Remove Co-Owner
+                SysMessage(ServerMessages.Get("house_remove_coowner"));
+                SetPendingTarget((serial, x, y, z, graphic) =>
+                {
+                    var target = _world.FindChar(new Serial(serial));
+                    if (target == null) { SysMessage(ServerMessages.Get("msg_invalid_target")); return; }
+                    if (house.RemoveCoOwner(target.Uid))
+                        SysMessage(ServerMessages.GetFormatted("house_removed_coowner", target.Name));
+                    else
+                        SysMessage(ServerMessages.Get("house_not_coowner"));
+                });
+                break;
+            case 13: // Remove Friend
+                SysMessage(ServerMessages.Get("house_remove_friend"));
+                SetPendingTarget((serial, x, y, z, graphic) =>
+                {
+                    var target = _world.FindChar(new Serial(serial));
+                    if (target == null) { SysMessage(ServerMessages.Get("msg_invalid_target")); return; }
+                    if (house.RemoveFriend(target.Uid))
+                        SysMessage(ServerMessages.GetFormatted("house_removed_friend", target.Name));
+                    else
+                        SysMessage(ServerMessages.Get("house_not_friend"));
+                });
+                break;
+            case 14: // Lock Down Item
+                SysMessage(ServerMessages.Get("house_lockdown"));
+                SetPendingTarget((serial, x, y, z, graphic) =>
+                {
+                    var targetUid = new Serial(serial);
+                    if (house.Lockdown(targetUid, _character.Uid))
+                        SysMessage(ServerMessages.Get("house_lockdown_ok"));
+                    else
+                        SysMessage(ServerMessages.Get("house_lockdown_fail"));
+                });
+                break;
+            case 15: // Release Lockdown
+                SysMessage(ServerMessages.Get("house_lockdown_release"));
+                SetPendingTarget((serial, x, y, z, graphic) =>
+                {
+                    var targetUid = new Serial(serial);
+                    if (house.ReleaseLockdown(targetUid, _character.Uid))
+                        SysMessage(ServerMessages.Get("house_lockdown_released"));
+                    else
+                        SysMessage(ServerMessages.Get("house_lockdown_not"));
+                });
+                break;
+            case 16: // Secure Container
+                SysMessage(ServerMessages.Get("house_secure"));
+                SetPendingTarget((serial, x, y, z, graphic) =>
+                {
+                    var targetUid = new Serial(serial);
+                    if (house.SecureContainer(targetUid, _character.Uid))
+                        SysMessage(ServerMessages.Get("house_secure_ok"));
+                    else
+                        SysMessage(ServerMessages.Get("house_secure_fail"));
+                });
+                break;
+            case 17: // Release Secure
+                SysMessage(ServerMessages.Get("house_secure_release"));
+                SetPendingTarget((serial, x, y, z, graphic) =>
+                {
+                    var targetUid = new Serial(serial);
+                    if (house.ReleaseSecure(targetUid, _character.Uid))
+                        SysMessage(ServerMessages.Get("house_secure_released"));
+                    else
+                        SysMessage(ServerMessages.Get("house_secure_not"));
+                });
+                break;
+            case 20: // Ban
+                SysMessage(ServerMessages.Get("house_ban"));
+                SetPendingTarget((serial, x, y, z, graphic) =>
+                {
+                    var target = _world.FindChar(new Serial(serial));
+                    if (target == null || !target.IsPlayer) { SysMessage(ServerMessages.Get("msg_invalid_target")); return; }
+                    if (house.AddBan(target.Uid))
+                        SysMessage(ServerMessages.GetFormatted("house_banned", target.Name));
+                    else
+                        SysMessage(ServerMessages.GetFormatted("house_already_banned", target.Name));
+                });
+                break;
+            case 21: // Unban
+                SysMessage(ServerMessages.Get("house_unban"));
+                SetPendingTarget((serial, x, y, z, graphic) =>
+                {
+                    var target = _world.FindChar(new Serial(serial));
+                    if (target == null) { SysMessage(ServerMessages.Get("msg_invalid_target")); return; }
+                    if (house.RemoveBan(target.Uid))
+                        SysMessage(ServerMessages.GetFormatted("house_unbanned", target.Name));
+                    else
+                        SysMessage(ServerMessages.Get("house_not_banned"));
+                });
+                break;
+        }
+    }
+
+
+    private void ToggleDoor(Item door)
+    {
+        if (_character == null) return;
+
+        // Door art IDs toggle between open/closed variants (±1 or ±2 offset)
+        bool isOpen = door.TryGetTag("DOOR_OPEN", out string? openStr) && openStr == "1";
+
+        if (isOpen)
+        {
+            door.BaseId = (ushort)(door.BaseId - 1);
+            door.RemoveTag("DOOR_OPEN");
+        }
+        else
+        {
+            door.BaseId = (ushort)(door.BaseId + 1);
+            door.SetTag("DOOR_OPEN", "1");
+        }
+
+        // Play door sound and broadcast updated item to nearby clients
+        ushort soundId = (ushort)(isOpen ? 0x00F1 : 0x00EA); // close/open sounds
+        var soundPacket = new PacketSound(soundId, door.X, door.Y, door.Z);
+        BroadcastNearby?.Invoke(door.Position, UpdateRange, soundPacket, 0);
+
+        var itemPacket = new PacketWorldItem(
+            door.Uid.Value, door.DispIdFull, door.Amount,
+            door.X, door.Y, door.Z, door.Hue);
+        BroadcastNearby?.Invoke(door.Position, UpdateRange, itemPacket, 0);
+    }
+
+    private void UsePotion(Item potion)
+    {
+        if (_character == null) return;
+
+        // Determine potion effect from BaseId ranges
+        // Common UO potion base IDs: 0x0F06-0x0F0D heal, 0x0F07 cure, 0x0F0B refresh etc.
+        string potionType = "heal"; // default
+        if (potion.TryGetTag("POTION_TYPE", out string? pType) && pType != null)
+            potionType = pType.ToLowerInvariant();
+
+        switch (potionType)
+        {
+            case "heal":
+            case "greatheal":
+                int healAmount = potionType == "greatheal" ? 20 : 10;
+                _character.Hits = (short)Math.Min(_character.Hits + healAmount, _character.MaxHits);
+                SysMessage(ServerMessages.GetFormatted("potion_heal", healAmount));
+                break;
+            case "cure":
+                _character.ClearStatFlag(StatFlag.Poisoned);
+                SysMessage(ServerMessages.Get("potion_cured"));
+                break;
+            case "refresh":
+            case "totalrefresh":
+                int stamAmount = potionType == "totalrefresh" ? 60 : 25;
+                _character.Stam = (short)Math.Min(_character.Stam + stamAmount, _character.MaxStam);
+                SysMessage(ServerMessages.GetFormatted("potion_stamina", stamAmount));
+                break;
+            case "strength":
+                _character.Str += 10;
+                SysMessage(ServerMessages.Get("potion_str"));
+                break;
+            case "agility":
+                _character.Dex += 10;
+                SysMessage(ServerMessages.Get("potion_dex"));
+                break;
+            default:
+                SysMessage(ServerMessages.Get("potion_drink"));
+                break;
+        }
+
+        // Play drink sound
+        var soundPacket = new PacketSound(0x0031, _character.X, _character.Y, _character.Z);
+        _netState.Send(soundPacket);
+
+        // Update stats
+        SendCharacterStatus(_character);
+
+        // Consume potion
+        _triggerDispatcher?.FireItemTrigger(potion, ItemTrigger.Destroy,
+            new TriggerArgs { CharSrc = _character, ItemSrc = potion });
+        potion.Delete();
+    }
+
+    /// <summary>Handle UseSkill request (from packet 0x12 or extended command).</summary>
+    public void HandleUseSkill(int skillId)
+    {
+        if (_character == null || _character.IsDead) return;
+        if (skillId < 0 || skillId >= (int)SkillType.Qty) return;
+
+        var skill = (SkillType)skillId;
+
+        // Fire @SkillPreStart — if script blocks, don't use skill
+        if (_triggerDispatcher != null)
+        {
+            var preResult = _triggerDispatcher.FireCharTrigger(_character, CharTrigger.SkillPreStart,
+                new TriggerArgs { CharSrc = _character, N1 = skillId });
+            if (preResult == TriggerResult.True)
+                return;
+        }
+
+        // Fire @SkillStart — if script blocks, don't use skill
+        if (_triggerDispatcher != null)
+        {
+            var result = _triggerDispatcher.FireCharTrigger(_character, CharTrigger.SkillStart,
+                new TriggerArgs { CharSrc = _character, N1 = skillId });
+            if (result == TriggerResult.True)
+                return;
+        }
+
+        // Fire @SkillStroke — the main action moment
+        _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.SkillStroke,
+            new TriggerArgs { CharSrc = _character, N1 = skillId });
+
+        bool success = _skillHandlers?.UseSkill(_character, skill) ?? false;
+
+        // Fire @SkillSuccess or @SkillFail
+        if (_triggerDispatcher != null)
+        {
+            var trigger = success ? CharTrigger.SkillSuccess : CharTrigger.SkillFail;
+            _triggerDispatcher.FireCharTrigger(_character, trigger,
+                new TriggerArgs { CharSrc = _character, N1 = skillId });
+        }
+
+        if (success)
+            SysMessage(ServerMessages.GetFormatted("skill_use_ok", skill));
+        else
+            SysMessage(ServerMessages.GetFormatted("skill_use_fail", skill));
+    }
+
+    /// <summary>Handle extended command (0xBF sub-commands).</summary>
+    public void HandleExtendedCommand(ushort subCmd, byte[] data)
+    {
+        switch (subCmd)
+        {
+            case 0x001A: // stat lock change
+                if (data.Length >= 2 && _character != null)
+                {
+                    byte stat = data[0];
+                    byte lockVal = data[1];
+                    // stat: 0=str, 1=dex, 2=int — store as tags
+                    _character.SetTag($"STATLOCK_{stat}", lockVal.ToString());
+                }
+                break;
+            case 0x0013: // context menu request
+                if (data.Length >= 4)
+                {
+                    uint targetSerial = (uint)((data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]);
+                    SendContextMenu(targetSerial);
+                }
+                break;
+            case 0x0015: // context menu response
+                if (data.Length >= 6)
+                {
+                    uint respSerial = (uint)((data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]);
+                    ushort entryTag = (ushort)((data[4] << 8) | data[5]);
+                    HandleContextMenuResponse(respSerial, entryTag);
+                }
+                break;
+            case 0x0006: // party commands
+                if (data.Length >= 1)
+                    HandlePartyCommand(data);
+                break;
+            case 0x0024: // unknown / unused in most clients
+                break;
+            case 0x000B: // Chat button on paperdoll — client requests chat window
+                if (_character != null)
+                {
+                    _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.UserChatButton,
+                        new TriggerArgs { CharSrc = _character });
+                }
+                break;
+            case 0x0028: // Guild button on paperdoll
+                if (_character != null)
+                {
+                    _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.UserGuildButton,
+                        new TriggerArgs { CharSrc = _character });
+                }
+                break;
+            case 0x0032: // Quest button on paperdoll
+                if (_character != null)
+                {
+                    _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.UserQuestButton,
+                        new TriggerArgs { CharSrc = _character });
+                }
+                break;
+            case 0x002C: // Invoke virtue — client passes virtue id in data[0]
+                if (_character != null && data.Length >= 1)
+                {
+                    _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.UserVirtueInvoke,
+                        new TriggerArgs { CharSrc = _character, N1 = data[0] });
+                }
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Handle party sub-commands (0xBF sub 0x0006).
+    /// Sub-types: 1=Add, 2=Remove, 3=PrivateMsg, 4=PublicMsg, 6=SetLoot, 8=Accept, 9=Decline.
+    /// </summary>
+    private void HandlePartyCommand(byte[] data)
+    {
+        if (_character == null || _partyManager == null) return;
+        byte partyCmd = data[0];
+
+        switch (partyCmd)
+        {
+            case 1: // Add member (invite)
+                if (data.Length >= 5)
+                {
+                    uint targetUid = (uint)((data[1] << 24) | (data[2] << 16) | (data[3] << 8) | data[4]);
+                    var target = _world.FindChar(new Serial(targetUid));
+                    if (target == null || !target.IsPlayer) { SysMessage(ServerMessages.Get("msg_invalid_target")); return; }
+
+                    var existingParty = _partyManager.FindParty(_character.Uid);
+                    if (existingParty != null && existingParty.IsFull) { SysMessage(ServerMessages.Get("party_is_full")); return; }
+
+                    // Fire @PartyInvite trigger on target
+                    _triggerDispatcher?.FireCharTrigger(target, CharTrigger.PartyInvite,
+                        new TriggerArgs { CharSrc = _character });
+
+                    // Store pending invite and send invite packet to target
+                    target.SetTag("PARTY_INVITE_FROM", _character.Uid.Value.ToString());
+                    SendToChar?.Invoke(target.Uid, new PacketPartyInvitation(_character.Uid.Value));
+                    SysMessage(ServerMessages.GetFormatted("party_invite", target.Name));
+                }
+                break;
+
+            case 2: // Remove member
+                if (data.Length >= 5)
+                {
+                    uint removeUid = (uint)((data[1] << 24) | (data[2] << 16) | (data[3] << 8) | data[4]);
+                    var party = _partyManager.FindParty(_character.Uid);
+                    if (party == null) break;
+                    if (party.Master != _character.Uid && new Serial(removeUid) != _character.Uid)
+                    {
+                        SysMessage(ServerMessages.Get("party_notleader"));
+                        break;
+                    }
+                    // Fire @PartyRemove trigger on removed member
+                    var removedChar = _world.FindChar(new Serial(removeUid));
+                    if (removedChar != null)
+                        _triggerDispatcher?.FireCharTrigger(removedChar, CharTrigger.PartyRemove,
+                            new TriggerArgs { CharSrc = _character });
+
+                    _partyManager.Leave(new Serial(removeUid));
+                    SysMessage(ServerMessages.Get("party_leave_1"));
+                    BroadcastPartyUpdate(party, new Serial(removeUid));
+                }
+                break;
+
+            case 3: // Private party message
+                if (data.Length >= 5)
+                {
+                    uint pmTargetUid = (uint)((data[1] << 24) | (data[2] << 16) | (data[3] << 8) | data[4]);
+                    string pmMsg = data.Length > 5
+                        ? System.Text.Encoding.BigEndianUnicode.GetString(data, 5, data.Length - 5).TrimEnd('\0')
+                        : "";
+                    if (!string.IsNullOrEmpty(pmMsg))
+                    {
+                        SendToChar?.Invoke(new Serial(pmTargetUid),
+                            new PacketPartyMessage(_character.Uid.Value, pmMsg, isPrivate: true));
+                        SysMessage(ServerMessages.GetFormatted("party_msg", $"{pmTargetUid:X}", pmMsg));
+                    }
+                }
+                break;
+
+            case 4: // Public party message
+                if (data.Length >= 2)
+                {
+                    string msg = System.Text.Encoding.BigEndianUnicode.GetString(data, 1, data.Length - 1).TrimEnd('\0');
+                    if (string.IsNullOrWhiteSpace(msg)) break;
+                    var party = _partyManager.FindParty(_character.Uid);
+                    if (party != null)
+                    {
+                        var chatPacket = new PacketPartyMessage(_character.Uid.Value, msg);
+                        foreach (var memberUid in party.Members)
+                            SendToChar?.Invoke(memberUid, chatPacket);
+                    }
+                }
+                break;
+
+            case 6: // Set loot flag
+                if (data.Length >= 2)
+                {
+                    bool canLoot = data[1] != 0;
+                    var party = _partyManager.FindParty(_character.Uid);
+                    party?.SetLootFlag(_character.Uid, canLoot);
+                    SysMessage(canLoot ? "Party loot sharing enabled." : "Party loot sharing disabled.");
+                }
+                break;
+
+            case 8: // Accept invite
+            {
+                if (_character.TryGetTag("PARTY_INVITE_FROM", out string? inviterStr) &&
+                    uint.TryParse(inviterStr, out uint inviterUid))
+                {
+                    _partyManager.AcceptInvite(new Serial(inviterUid), _character.Uid);
+                    _character.RemoveTag("PARTY_INVITE_FROM");
+                    SysMessage(ServerMessages.Get("party_added"));
+                    var party = _partyManager.FindParty(_character.Uid);
+                    if (party != null) BroadcastPartyUpdate(party);
+                }
+                break;
+            }
+
+            case 9: // Decline invite
+            {
+                if (_character.TryGetTag("PARTY_INVITE_FROM", out string? declineInviterStr) &&
+                    uint.TryParse(declineInviterStr, out uint declineInviterUid))
+                {
+                    SendToChar?.Invoke(new Serial(declineInviterUid), null!); // notify inviter
+                }
+                _character.RemoveTag("PARTY_INVITE_FROM");
+                SysMessage(ServerMessages.Get("party_decline_2"));
+                break;
+            }
+        }
+    }
+
+    /// <summary>Send party member list update to all members.</summary>
+    private void BroadcastPartyUpdate(PartyDef party, Serial? removedMember = null)
+    {
+        var memberSerials = party.Members.Select(m => m.Value).ToArray();
+        if (removedMember.HasValue)
+        {
+            var removePacket = new PacketPartyRemoveMember(removedMember.Value.Value, memberSerials);
+            foreach (var memberUid in party.Members)
+                SendToChar?.Invoke(memberUid, removePacket);
+            SendToChar?.Invoke(removedMember.Value, removePacket);
+        }
+        else
+        {
+            var listPacket = new PacketPartyMemberList(memberSerials);
+            foreach (var memberUid in party.Members)
+                SendToChar?.Invoke(memberUid, listPacket);
+        }
+    }
+
+    private void SendContextMenu(uint targetSerial)
+    {
+        if (_character == null) return;
+
+        var entries = new List<(ushort EntryTag, uint ClilocId, ushort Flags)>();
+
+        var ch = _world.FindChar(new Serial(targetSerial));
+        if (ch != null)
+        {
+            entries.Add((1, 3006123, 0)); // Open Paperdoll
+            if (ch == _character)
+            {
+                entries.Add((2, 3006145, 0)); // Open Backpack
+            }
+            if (!ch.IsPlayer && ch.NpcBrain == NpcBrainType.Vendor)
+            {
+                entries.Add((3, 3006103, 0)); // Buy
+                entries.Add((4, 3006106, 0)); // Sell
+            }
+            if (!ch.IsPlayer && ch.NpcBrain == NpcBrainType.Banker)
+            {
+                entries.Add((5, 3006105, 0)); // Open Bankbox
+            }
+            // Mount / Dismount: exposed as a context-menu action so the client
+            // does not require a DoubleClick to saddle. Double-click remains
+            // equivalent. Entry is filtered by IsMountable so non-ridable
+            // mobs (monsters, humans) don't get a useless "Mount Me" line.
+            if (!ch.IsPlayer && ch != _character &&
+                Mounts.MountEngine.IsMountable(ch.BodyId))
+            {
+                entries.Add((6, 3006155, 0)); // Mount Me
+            }
+            if (ch == _character && _character.IsMounted)
+            {
+                entries.Add((7, 3006112, 0)); // Dismount
+            }
+        }
+
+        if (entries.Count > 0)
+            _netState.Send(new PacketContextMenu(targetSerial, entries.ToArray()));
+    }
+
+    private void HandleContextMenuResponse(uint targetSerial, ushort entryTag)
+    {
+        if (_character == null) return;
+
+        switch (entryTag)
+        {
+            case 1: // Open Paperdoll
+                var ch = _world.FindChar(new Serial(targetSerial));
+                if (ch != null) SendPaperdoll(ch);
+                break;
+            case 2: // Open Backpack
+                if (_character.Backpack != null)
+                    SendOpenContainer(_character.Backpack);
+                break;
+            case 3: // Buy
+                var vendor = _world.FindChar(new Serial(targetSerial));
+                if (vendor != null) HandleVendorInteraction(vendor);
+                break;
+            case 4: // Sell
+                SysMessage(ServerMessages.Get("vendor_what_sell"));
+                break;
+            case 5: // Open Bankbox
+                SysMessage(ServerMessages.Get("vendor_bank_unavailable"));
+                break;
+            case 6: // Mount Me
+                HandleDoubleClick(targetSerial);
+                break;
+            case 7: // Dismount
+                _mountEngine?.Dismount(_character);
+                break;
+        }
+    }
+
+    // ==================== Single Click ====================
+
+    public void HandleSingleClick(uint uid)
+    {
+        if (_character == null) return;
+
+        var obj = _world.FindObject(new Serial(uid));
+        if (obj == null) return;
+
+        // Fire @Click trigger
+        if (_triggerDispatcher != null)
+        {
+            if (obj is Character clickCh)
+            {
+                var result = _triggerDispatcher.FireCharTrigger(clickCh, CharTrigger.Click,
+                    new TriggerArgs { CharSrc = _character, ScriptConsole = this });
+                if (result == TriggerResult.True)
+                    return;
+            }
+            else if (obj is Item clickItem)
+            {
+                var result = _triggerDispatcher.FireItemTrigger(clickItem, ItemTrigger.Click,
+                    new TriggerArgs { CharSrc = _character, ItemSrc = clickItem, ScriptConsole = this });
+                if (result == TriggerResult.True)
+                    return;
+            }
+        }
+
+        // Overhead name: for characters, the hue follows notoriety so the
+        // label reads blue/green/grey/orange/red/yellow. Items stay grey.
+        ushort nameHue = 0x03B2;
+        if (obj is Character labelCh)
+            nameHue = NotoToHue(GetNotoriety(labelCh));
+        _netState.Send(new PacketSpeechOut(
+            uid, (ushort)(obj is Character c ? c.BodyId : 0),
+            6, nameHue, 3, "", obj.GetName()));
+    }
+
+    /// <summary>Convert a notoriety byte (1-7) to the hue used for
+    /// overhead labels and system speech. Values mirror Source-X
+    /// CServerConfig::m_iColorNoto* defaults:
+    /// good/innocent=0x59 blue, guild-same=0x3f green, neutral=0x3b2 grey,
+    /// criminal=0x3b2 grey, guild-war=0x90 orange, evil/murderer=0x22 red,
+    /// invul=0x35 yellow.</summary>
+    private static ushort NotoToHue(byte noto) => noto switch
+    {
+        1 => 0x0059, // innocent / blue
+        2 => 0x003F, // friend (party/guild-ally) / green
+        4 => 0x03B2, // criminal / grey
+        5 => 0x0090, // enemy guild / orange
+        6 => 0x0022, // murderer / red
+        7 => 0x0035, // invulnerable / yellow
+        _ => 0x03B2, // neutral / grey (NPC default)
+    };
+
+    // ==================== Item Pick Up ====================
+
+    public void HandleItemPickup(uint serial, ushort amount)
+    {
+        if (_character == null) return;
+
+        var item = _world.FindItem(new Serial(serial));
+        if (item == null)
+        {
+            SendPickupFailed(5); // doesn't exist
+            return;
+        }
+
+        // Fire @Pickup trigger
+        if (_triggerDispatcher != null)
+        {
+            var trigger = item.ContainedIn.IsValid ? ItemTrigger.PickupPack : ItemTrigger.PickupGround;
+            var result = _triggerDispatcher.FireItemTrigger(item, trigger,
+                new TriggerArgs { CharSrc = _character, ItemSrc = item });
+            if (result == TriggerResult.True)
+            {
+                SendPickupFailed(1);
+                return;
+            }
+        }
+
+        int dist = _character.Position.GetDistanceTo(item.Position);
+        if (dist > 3 && !item.ContainedIn.IsValid && _character.PrivLevel < PrivLevel.GM)
+        {
+            SendPickupFailed(4); // too far away
+            return;
+        }
+
+        if (item.IsEquipped)
+        {
+            var owner = _world.FindChar(item.ContainedIn);
+            if (owner != null && owner != _character && _character.PrivLevel < PrivLevel.GM)
+            {
+                SendPickupFailed(1); // cannot pick up
+                return;
+            }
+            // Fire @Unequip trigger on the item being removed
+            if (_triggerDispatcher != null && owner != null)
+            {
+                var unequipResult = _triggerDispatcher.FireItemTrigger(item, ItemTrigger.Unequip,
+                    new TriggerArgs { CharSrc = _character, ItemSrc = item });
+                if (unequipResult == TriggerResult.True)
+                {
+                    SendPickupFailed(1);
+                    return;
+                }
+            }
+            owner?.Unequip(item.EquipLayer);
+        }
+        else if (item.ContainedIn.IsValid)
+        {
+            var container = _world.FindItem(item.ContainedIn);
+            container?.RemoveItem(item);
+        }
+        else
+        {
+            var sector = _world.GetSector(item.Position);
+            sector?.RemoveItem(item);
+        }
+
+        item.ContainedIn = _character.Uid;
+        _character.SetTag("DRAGGING", serial.ToString());
+    }
+
+    // ==================== Item Drop ====================
+
+    public void HandleItemDrop(uint serial, short x, short y, sbyte z, uint containerUid)
+    {
+        if (_character == null) return;
+
+        var item = _world.FindItem(new Serial(serial));
+        if (item == null) return;
+
+        _character.RemoveTag("DRAGGING");
+
+        if (containerUid != 0 && containerUid != 0xFFFFFFFF)
+        {
+            var container = _world.FindItem(new Serial(containerUid));
+            if (container != null)
+            {
+                // Capacity enforcement — bank and normal containers have separate limits.
+                // Staff bypass so GMs can overstuff chests during testing.
+                // On rejection we bounce the item into the dropper's backpack so it
+                // is never destroyed; client visually resyncs from our 0x25/0x3C.
+                if (_character.PrivLevel < PrivLevel.GM)
+                {
+                    bool isBank = container.EquipLayer == Layer.BankBox;
+                    int currentCount = _world.GetContainerContents(container.Uid).Count();
+                    int maxItems = isBank ? _world.MaxBankItems : _world.MaxContainerItems;
+                    if (currentCount >= maxItems)
+                    {
+                        SysMessage(isBank ? "Your bank box is full." : "That container is full.");
+                        PlaceItemInPack(_character, item);
+                        _netState.Send(new PacketDropAck());
+                        return;
+                    }
+                    if (isBank && _world.MaxBankWeight > 0)
+                    {
+                        int totalWeight = 0;
+                        foreach (var b in _world.GetContainerContents(container.Uid))
+                            totalWeight += Math.Max(1, (int)b.Amount);
+                        if (totalWeight + Math.Max(1, (int)item.Amount) > _world.MaxBankWeight)
+                        {
+                            SysMessage("Your bank box is too heavy.");
+                            PlaceItemInPack(_character, item);
+                            _netState.Send(new PacketDropAck());
+                            return;
+                        }
+                    }
+                }
+
+                // Fire @DropOn_Item
+                if (_triggerDispatcher != null)
+                {
+                    var result = _triggerDispatcher.FireItemTrigger(item, ItemTrigger.DropOnItem,
+                        new TriggerArgs { CharSrc = _character, ItemSrc = item, O1 = container });
+                    if (result == TriggerResult.True) { _netState.Send(new PacketDropAck()); return; }
+                }
+                container.AddItem(item);
+                item.Position = new Point3D(x, y, 0, _character.MapIndex);
+                // Critical: tell the client the item actually landed in the
+                // container. Without 0x25 the client only remembers the
+                // earlier pickup → the item silently vanishes from its view.
+                _netState.Send(new PacketContainerItem(
+                    item.Uid.Value, item.DispIdFull, 0,
+                    item.Amount, item.X, item.Y,
+                    container.Uid.Value, item.Hue,
+                    _netState.IsClientPost6017));
+                _netState.Send(new PacketDropAck());
+                return;
+            }
+
+            var charTarget = _world.FindChar(new Serial(containerUid));
+            if (charTarget != null && charTarget == _character)
+            {
+                // Fire @DropOn_Self
+                if (_triggerDispatcher != null)
+                {
+                    var result = _triggerDispatcher.FireItemTrigger(item, ItemTrigger.DropOnSelf,
+                        new TriggerArgs { CharSrc = _character, ItemSrc = item });
+                    if (result == TriggerResult.True) { _netState.Send(new PacketDropAck()); return; }
+                }
+                PlaceItemInPack(_character, item);
+                _netState.Send(new PacketDropAck());
+                return;
+            }
+            else if (charTarget != null)
+            {
+                // Fire @DropOn_Char
+                if (_triggerDispatcher != null)
+                {
+                    var result = _triggerDispatcher.FireItemTrigger(item, ItemTrigger.DropOnChar,
+                        new TriggerArgs { CharSrc = _character, ItemSrc = item, O1 = charTarget });
+                    if (result == TriggerResult.True) { _netState.Send(new PacketDropAck()); return; }
+                }
+                PlaceItemInPack(charTarget, item);
+                _netState.Send(new PacketDropAck());
+                return;
+            }
+        }
+
+        // Fire @DropOn_Ground
+        _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.DropOnGround,
+            new TriggerArgs { CharSrc = _character, ItemSrc = item });
+        _world.PlaceItem(item, new Point3D(x, y, z, _character.MapIndex));
+        _netState.Send(new PacketDropAck());
+    }
+
+    // ==================== Item Equip ====================
+
+    public void HandleItemEquip(uint serial, byte layer, uint charSerial)
+    {
+        if (_character == null) return;
+
+        var item = _world.FindItem(new Serial(serial));
+        if (item == null) return;
+
+        var target = _world.FindChar(new Serial(charSerial));
+        if (target == null) target = _character;
+
+        if (target != _character && _character.PrivLevel < PrivLevel.GM) return;
+
+        // Fire @EquipTest — if script blocks, deny equip
+        if (_triggerDispatcher != null)
+        {
+            var result = _triggerDispatcher.FireItemTrigger(item, ItemTrigger.EquipTest,
+                new TriggerArgs { CharSrc = _character, ItemSrc = item });
+            if (result == TriggerResult.True)
+                return;
+        }
+
+        // Spell interruption on equip change
+        _spellEngine?.TryInterruptFromEquip(target);
+
+        target.Equip(item, (Layer)layer);
+
+        // Notify client about the equipped item
+        _netState.Send(new PacketWornItem(
+            item.Uid.Value, item.DispIdFull, layer,
+            target.Uid.Value, item.Hue));
+
+        // Fire @Equip (post-equip notification)
+        _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Equip,
+            new TriggerArgs { CharSrc = _character, ItemSrc = item });
+    }
+
+    // ==================== Status Request ====================
+
+    public void HandleProfileRequest(byte mode, uint serial)
+    {
+        if (_character == null) return;
+        if (mode != 0) return; // 0=request, 1=set (not supported yet)
+
+        Character? ch = _world.FindChar(new Serial(serial));
+        ch ??= _character;
+
+        string title = string.IsNullOrEmpty(ch.Title)
+            ? ch.GetName()
+            : $"{ch.GetName()}, {ch.Title}";
+
+        _netState.Send(new PacketProfileResponse(ch.Uid.Value, title));
+    }
+
+    public void HandleStatusRequest(byte type, uint serial)
+    {
+        if (_character == null) return;
+
+        if (type == 4 || type == 0) // status
+        {
+            Character? ch = null;
+            if (serial != 0 && serial != 0xFFFFFFFF)
+                ch = _world.FindChar(new Serial(serial));
+
+            // Some clients may request status with invalid/empty serial after resync.
+            // Fallback to self so status bars are never blank.
+            ch ??= _character;
+
+            // Self status is always allowed; other mobiles require visibility/range.
+            if (ch != _character && !CanSendStatusFor(ch))
+                return;
+
+            // @UserStats fires when the client opens the status window
+            // on *its own* character. Matches Source-X CClient::Event_StatusRequest.
+            if (ch == _character)
+            {
+                _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.UserStats,
+                    new TriggerArgs { CharSrc = _character });
+            }
+
+            SendCharacterStatus(ch, includeExtendedStats: ch == _character);
+        }
+        else if (type == 5) // skill list
+        {
+            SendSkillList();
+        }
+    }
+
+    // ==================== Target Response ====================
+
+    public void HandleTargetResponse(byte type, uint targetId, uint serial, short x, short y, sbyte z, ushort graphic)
+    {
+        if (_character == null) return;
+        _targetCursorActive = false;
+        bool targetCancelled = IsTargetCancelled(serial, x, y, z, graphic);
+        if (targetCancelled)
+        {
+            // Hard-cancel all pending target flows to avoid any stale state from triggering
+            // a resync/teleport path on the next target packet.
+            _pendingTeleTarget = false;
+            _pendingAddToken = null;
+            _pendingRemoveTarget = false;
+            _pendingTargetFunction = null;
+            _pendingTargetArgs = "";
+            _pendingTargetAllowGround = false;
+            _pendingTargetItemUid = Serial.Invalid;
+            _pendingScriptNewItem = null;
+            _lastScriptTargetPoint = null;
+            _pendingTargetCallback = null;
+
+            if (_character.TryGetTag("CAST_SPELL", out _))
+                _character.RemoveTag("CAST_SPELL");
+            _character.RemoveTag("TARGP");
+            _character.RemoveTag("TARG.X");
+            _character.RemoveTag("TARG.Y");
+            _character.RemoveTag("TARG.Z");
+            _character.RemoveTag("TARG.MAP");
+            _character.RemoveTag("TARG.UID");
+
+            SysMessage(ServerMessages.Get("target_cancel_1"));
+            return;
+        }
+
+        // Callback-based target (housing, etc.)
+        if (_pendingTargetCallback != null)
+        {
+            var cb = _pendingTargetCallback;
+            _pendingTargetCallback = null;
+            cb(serial, x, y, z, graphic);
+            return;
+        }
+
+        if (_pendingTeleTarget)
+        {
+            _pendingTeleTarget = false;
+
+            Point3D? destination = null;
+            if (serial != 0 && serial != 0xFFFFFFFF)
+            {
+                var obj = _world.FindObject(new Serial(serial));
+                if (obj is Character targetChar)
+                {
+                    destination = targetChar.Position;
+                }
+                else if (obj is Item targetItem)
+                {
+                    destination = targetItem.Position;
+                }
+            }
+
+            destination ??= new Point3D(x, y, z, _character.MapIndex);
+
+            // Snap Z to the nearest walkable surface. Clients pick the Z of
+            // whatever tile the mouse overlaps — frequently a rooftop or a
+            // static plane. Landing there strands the player: every subsequent
+            // step gets rejected by climb/cliff checks (~150 MoveReject spam
+            // on `.mtele 1493,1639,40` observed in logs).
+            var mdata = _world.MapData;
+            if (mdata != null)
+            {
+                var d = destination.Value;
+                sbyte walkZ = mdata.GetEffectiveZ(_character.MapIndex, d.X, d.Y, (sbyte)d.Z);
+                if (walkZ != d.Z)
+                    destination = new Point3D(d.X, d.Y, walkZ, _character.MapIndex);
+            }
+
+            _world.MoveCharacter(_character, destination.Value);
+            Resync();
+            _mountEngine?.EnsureMountedState(_character);
+            // Broadcast full appearance (including mount) to nearby clients at new location.
+            BroadcastDrawObject(_character);
+            SysMessage(ServerMessages.GetFormatted("gm_teleported_dest", destination.Value));
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_pendingAddToken))
+        {
+            string addToken = _pendingAddToken;
+            _pendingAddToken = null;
+
+            Point3D targetPos = new Point3D(x, y, z, _character.MapIndex);
+            if (serial != 0 && serial != 0xFFFFFFFF)
+            {
+                var obj = _world.FindObject(new Serial(serial));
+                if (obj != null)
+                    targetPos = obj.Position;
+            }
+
+            if (!TryAddAtTarget(addToken, targetPos))
+                SysMessage(ServerMessages.GetFormatted("gm_unknown_add", addToken));
+            return;
+        }
+
+        if (_pendingRemoveTarget)
+        {
+            _pendingRemoveTarget = false;
+
+            if (serial == 0 || serial == 0xFFFFFFFF)
+            {
+                SysMessage(ServerMessages.Get("target_must_object"));
+                return;
+            }
+
+            if (RemoveTargetedObject(serial))
+                SysMessage(ServerMessages.GetFormatted("gm_removed", $"{serial:X8}"));
+            else
+                SysMessage(ServerMessages.Get("target_cant_remove"));
+            return;
+        }
+
+        if (_pendingInspectTarget)
+        {
+            _pendingInspectTarget = false;
+            if (serial == 0 || serial == 0xFFFFFFFF)
+            {
+                SysMessage(ServerMessages.Get("target_must_object"));
+                return;
+            }
+            ShowInspectDialog(serial);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_pendingShowArgs))
+        {
+            string showArgs = _pendingShowArgs;
+            _pendingShowArgs = null;
+
+            if (_commands == null || serial == 0 || serial == 0xFFFFFFFF)
+            {
+                SysMessage(ServerMessages.Get("target_must_object"));
+                return;
+            }
+
+            _commands.ExecuteShowForTarget(_character, showArgs, serial);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_pendingEditArgs))
+        {
+            string editArgs = _pendingEditArgs;
+            _pendingEditArgs = null;
+
+            if (_commands == null || serial == 0 || serial == 0xFFFFFFFF)
+            {
+                SysMessage(ServerMessages.Get("target_must_object"));
+                return;
+            }
+
+            _commands.ExecuteEditForTarget(_character, editArgs, serial);
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(_pendingTargetFunction) && _triggerDispatcher?.Runner != null)
+        {
+            string func = _pendingTargetFunction;
+            _pendingTargetFunction = null;
+            bool allowGround = _pendingTargetAllowGround;
+            _pendingTargetAllowGround = false;
+            var pendingItemUid = _pendingTargetItemUid;
+            _pendingTargetItemUid = Serial.Invalid;
+            _lastScriptTargetPoint = new Point3D(x, y, z, _character.MapIndex);
+            _character.SetTag("TARGP", $"{x},{y},{z},{_character.MapIndex}");
+            _character.SetTag("TARG.X", x.ToString());
+            _character.SetTag("TARG.Y", y.ToString());
+            _character.SetTag("TARG.Z", z.ToString());
+            _character.SetTag("TARG.MAP", _character.MapIndex.ToString());
+            _character.SetTag("TARG.UID", $"0{serial:X}");
+
+            IScriptObj? argo = null;
+            if (serial != 0 && serial != 0xFFFFFFFF)
+                argo = _world.FindObject(new Serial(serial));
+            if (argo == null && !allowGround)
+            {
+                SysMessage(ServerMessages.Get("target_must_object"));
+                return;
+            }
+
+            var trigArgs = new ExecTriggerArgs(_character, 0, 0, _pendingTargetArgs)
+            {
+                Object1 = argo,
+                Object2 = pendingItemUid.IsValid
+                    ? ((IScriptObj?)_world.FindItem(pendingItemUid) ?? _character)
+                    : _character
+            };
+            _pendingTargetArgs = "";
+
+            // Snapshot position before running the script function so we can
+            // detect if it moved the character (e.g. SRC.GO <TARGP>).
+            // We cannot rely on _lastScriptTargetPoint because the script may
+            // chain another TARGETF which calls ClearPendingTargetState and
+            // clears _lastScriptTargetPoint before we get back here.
+            var posBefore = _character.Position;
+            _triggerDispatcher.Runner.RunFunction(func, _character, this, trigArgs);
+            if (_character != null && !_character.Position.Equals(posBefore))
+            {
+                _world.MoveCharacter(_character, _character.Position);
+                Resync();
+                _mountEngine?.EnsureMountedState(_character);
+                BroadcastDrawObject(_character);
+            }
+            return;
+        }
+
+        if (_character.TryGetTag("CAST_SPELL", out string? spellStr) &&
+            Enum.TryParse<SpellType>(spellStr, out var spell))
+        {
+            _character.RemoveTag("CAST_SPELL");
+            HandleCastSpell(spell, serial);
+        }
+    }
+
+    private static bool IsTargetCancelled(uint serial, short x, short y, sbyte z, ushort graphic)
+    {
+        // Classic cancel payload variant (seen in some clients): serial=0, x=y=0xFFFF.
+        if (serial == 0 && (ushort)x == 0xFFFF && (ushort)y == 0xFFFF)
+            return true;
+
+        // Client cancel is most commonly serial=0xFFFFFFFF.
+        if (serial == 0xFFFFFFFF)
+            return true;
+
+        // Some clients send a fully-zero target payload on ESC.
+        if (serial == 0 && x == 0 && y == 0 && z == 0 && graphic == 0)
+            return true;
+
+        // Legacy cancel payload variant with -1 coordinates.
+        if (serial == 0 && x == -1 && y == -1 && z == -1)
+            return true;
+
+        // Additional client variants may send negative coords while serial is invalid.
+        if (serial == 0 && (x < 0 || y < 0 || z < 0))
+            return true;
+
+        // Another observed cancel form: invalid serial + no model + max coords.
+        if (serial == 0 && graphic == 0 && ((ushort)x == 0xFFFF || (ushort)y == 0xFFFF))
+            return true;
+
+        return false;
+    }
+
+    // ==================== Gump Response ====================
+
+    public void HandleGumpResponse(uint serial, uint gumpId, uint buttonId,
+        uint[] switches, (ushort Id, string Text)[] textEntries)
+    {
+        if (_character == null) return;
+
+        if (!string.IsNullOrWhiteSpace(_pendingDialogCloseFunction))
+        {
+            string closeFn = _pendingDialogCloseFunction;
+            _pendingDialogCloseFunction = null;
+            var trigArgs = new ExecTriggerArgs(_character, (int)buttonId, (int)gumpId, _pendingDialogArgs)
+            {
+                Object1 = _character,
+                Object2 = _character
+            };
+
+            // Allow script-provided close function tokens like CTAG0.HELP_TYPE.
+            if (TryResolveScriptVariable(closeFn, _character, trigArgs, out string resolvedCloseFn) &&
+                !string.IsNullOrWhiteSpace(resolvedCloseFn))
+            {
+                closeFn = resolvedCloseFn;
+            }
+
+            closeFn = closeFn.Trim().Trim(',', ';');
+            if (closeFn.Equals("DIALOGCLOSE", StringComparison.OrdinalIgnoreCase) ||
+                closeFn.Equals("DIALOGCLOSE()", StringComparison.OrdinalIgnoreCase))
+            {
+                closeFn = $"f_dialogclose_{_pendingDialogArgs}";
+            }
+            if (string.IsNullOrWhiteSpace(closeFn))
+                closeFn = $"f_dialogclose_{_pendingDialogArgs}";
+
+            _pendingDialogArgs = "";
+            if (_triggerDispatcher?.Runner != null)
+            {
+                // Script-first fallback chain:
+                // 1) explicit/variable-resolved close function
+                // 2) default f_dialogclose_<dialogId>
+                if (!_triggerDispatcher.Runner.TryRunFunction(closeFn, _character, this, trigArgs, out _))
+                {
+                    string defaultCloseFn = $"f_dialogclose_{trigArgs.ArgString.Trim().Trim(',', ';')}";
+                    _triggerDispatcher.Runner.TryRunFunction(defaultCloseFn, _character, this, trigArgs, out _);
+                }
+            }
+        }
+
+        // Route to registered callback if present
+        if (_gumpCallbacks.TryGetValue(gumpId, out var callback))
+        {
+            _gumpCallbacks.Remove(gumpId);
+            callback(buttonId, switches, textEntries);
+            return;
+        }
+
+        _logger.LogDebug("GumpResponse: serial=0x{S:X}, gumpId=0x{G:X}, button={B}",
+            serial, gumpId, buttonId);
+    }
+
+    // ==================== Gump Sending ====================
+
+    /// <summary>Send a gump dialog to the client. Optionally register a response callback.</summary>
+    public void SendGump(GumpBuilder gump, Action<uint, uint[], (ushort, string)[]>? callback = null)
+    {
+        if (_character == null) return;
+
+        if (callback != null)
+            _gumpCallbacks[gump.GumpId] = callback;
+
+        string layout = gump.BuildLayoutString();
+        _netState.Send(new PacketGumpDialog(
+            gump.Serial, gump.GumpId,
+            (gump.Width > 0 ? (800 - gump.Width) / 2 : 50),
+            (gump.Height > 0 ? (600 - gump.Height) / 2 : 50),
+            layout, gump.Texts));
+    }
+
+    /// <summary>Set a callback-based target cursor. Used by housing, etc.</summary>
+    private void SetPendingTarget(Action<uint, short, short, sbyte, ushort> callback)
+    {
+        _pendingTargetCallback = callback;
+        _netState.Send(new PacketTarget(1, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    // ==================== Help Menu ====================
+
+    public void HandleHelpRequest()
+    {
+        if (_character == null) return;
+
+        // Script-first parity:
+        // If [FUNCTION f_onclient_helppage] exists and runs, skip default help gump.
+        if (_triggerDispatcher?.Runner != null)
+        {
+            var trigArgs = new ExecTriggerArgs(_character, 0, 0, string.Empty)
+            {
+                Object1 = _character,
+                Object2 = _character
+            };
+            if (_triggerDispatcher.Runner.TryRunFunction("f_onclient_helppage", _character, this, trigArgs, out _))
+                return;
+        }
+
+        var gump = new GumpBuilder(_character.Uid.Value, 0x0001BE1F, 300, 250);
+        gump.AddResizePic(0, 0, 5054, 300, 250);
+        gump.AddText(30, 20, 0, "SphereNet Help");
+        gump.AddText(30, 50, 0, "Page a GM for assistance");
+        gump.AddText(30, 80, 0, "Commands:");
+        gump.AddText(30, 100, 0, ".help - Show this help");
+        gump.AddText(30, 120, 0, ".status - Show status");
+        gump.AddText(30, 140, 0, ".where - Show location");
+        gump.AddButton(120, 200, 4005, 4007, 0); // close button
+
+        SendGump(gump);
+    }
+
+    // ==================== AOS Tooltip ====================
+
+    public void HandleAOSTooltip(uint serial)
+    {
+        if (_character == null) return;
+
+        var obj = _world.FindObject(new Serial(serial));
+        if (obj == null) return;
+
+        var propList = new List<(uint ClilocId, string Args)>
+        {
+            (1050045, obj.GetName()) // generic name cliloc
+        };
+
+        // Enrich tooltips for items
+        if (obj is Item item)
+        {
+            switch (item.ItemType)
+            {
+                case ItemType.WeaponMaceSmith:
+                case ItemType.WeaponMaceSharp:
+                case ItemType.WeaponSword:
+                case ItemType.WeaponFence:
+                case ItemType.WeaponBow:
+                case ItemType.WeaponAxe:
+                case ItemType.WeaponXBow:
+                case ItemType.WeaponMaceStaff:
+                case ItemType.WeaponMaceCrook:
+                case ItemType.WeaponMacePick:
+                case ItemType.WeaponThrowing:
+                case ItemType.WeaponWhip:
+                    // Weapon damage — try reading from tags or CombatEngine lookup
+                    if (item.TryGetTag("DAM", out string? damStr) && damStr != null)
+                        propList.Add((1061168, $"\t{damStr}")); // weapon damage cliloc
+                    if (item.TryGetTag("SPEED", out string? speedStr) && speedStr != null)
+                        propList.Add((1061167, $"\t{speedStr}")); // weapon speed cliloc
+                    break;
+
+                case ItemType.Armor:
+                case ItemType.ArmorLeather:
+                case ItemType.ArmorBone:
+                case ItemType.ArmorChain:
+                case ItemType.ArmorRing:
+                case ItemType.Shield:
+                    if (item.TryGetTag("ARMOR", out string? armorStr) && armorStr != null)
+                        propList.Add((1060448, $"\t{armorStr}")); // physical resist
+                    if (item.TryGetTag("DURABILITY", out string? durStr) && durStr != null)
+                        propList.Add((1060639, $"\t{durStr}")); // durability
+                    break;
+
+                case ItemType.Container:
+                case ItemType.ContainerLocked:
+                    propList.Add((1050044, $"\t{item.ContentCount}\t125")); // items/max items
+                    propList.Add((1072789, $"\t{item.TotalWeight}")); // weight
+                    break;
+            }
+        }
+
+        var props = propList.ToArray();
+        // Deterministic hash — .NET GetHashCode() is randomized per process
+        uint hash = StableStringHash(obj.GetName());
+        foreach (var (clilocId, args) in props)
+            hash = hash * 31 + (uint)clilocId + StableStringHash(args);
+
+        // Skip entirely if we already sent this exact hash for this serial.
+        // The client already has the tooltip data — no need to resend 0xDC.
+        if (_tooltipHashCache.TryGetValue(serial, out uint cachedHash) && cachedHash == hash)
+            return;
+        _tooltipHashCache[serial] = hash;
+
+        _netState.Send(new PacketOPLData(serial, hash, props));
+        _netState.Send(new PacketOPLInfo(serial, hash));
+    }
+
+    // ==================== Trade ====================
+
+    public void HandleTradeRequest(uint targetUid)
+    {
+        if (_character == null || _tradeManager == null) return;
+        var target = _world.FindChar(new Serial(targetUid));
+        if (target == null || !target.IsPlayer) return;
+
+        _tradeManager.StartTrade(_character, target);
+        SysMessage(ServerMessages.GetFormatted("trade_initiated2", target.Name));
+    }
+
+    // ==================== Party ====================
+
+    public void HandlePartyInvite(uint targetUid)
+    {
+        if (_character == null || _partyManager == null) return;
+        var target = _world.FindChar(new Serial(targetUid));
+        if (target == null || !target.IsPlayer) return;
+        _triggerDispatcher?.FireCharTrigger(target, CharTrigger.PartyInvite,
+            new TriggerArgs { CharSrc = _character });
+        _partyManager.AcceptInvite(_character.Uid, target.Uid);
+    }
+
+    public void HandlePartyLeave()
+    {
+        if (_character == null || _partyManager == null) return;
+        _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.PartyLeave,
+            new TriggerArgs { CharSrc = _character });
+        _partyManager.Leave(_character.Uid);
+    }
+
+    // ==================== Client Version ====================
+
+    public void HandleClientVersion(string version)
+    {
+        _logger.LogDebug("Client version: {Ver}", version);
+
+        // Parse version string (e.g. "7.0.20.0") into the numeric format used by NetState
+        if (!string.IsNullOrEmpty(version) && _netState.ClientVersionNumber == 0)
+        {
+            var parts = version.Split('.');
+            if (parts.Length >= 3 &&
+                uint.TryParse(parts[0], out uint major) &&
+                uint.TryParse(parts[1], out uint minor) &&
+                uint.TryParse(parts[2], out uint rev))
+            {
+                uint patch = parts.Length > 3 && uint.TryParse(parts[3], out uint p) ? p : 0;
+                _netState.ClientVersionNumber = major * 10_000_000 + minor * 1_000_000 + rev * 1_000 + patch;
+                _logger.LogInformation("Client version detected from 0xBD: {Ver} → {Num}", version, _netState.ClientVersionNumber);
+            }
+        }
+    }
+
+    // ==================== Client Update Loop ====================
+
+    /// <summary>
+    /// Source-X CClient::addObjMessage loop. Sends newly visible objects and
+    /// removes objects that went out of range. Called each server tick.
+    /// </summary>
+    public void UpdateClientView()
+    {
+        var delta = BuildViewDelta();
+        if (delta != null)
+            ApplyViewDelta(delta);
+    }
+
+    public sealed class ClientViewDelta
+    {
+        public HashSet<uint> CurrentChars { get; } = [];
+        public HashSet<uint> CurrentItems { get; } = [];
+        public List<(Character Character, bool HiddenAsAllShow)> NewChars { get; } = [];
+        public List<Character> UpdatedChars { get; } = [];
+        public List<(Item Item, bool HiddenAsAllShow)> NewItems { get; } = [];
+    }
+
+    /// <summary>
+    /// Build a readonly visibility delta. Safe for parallel build phase.
+    /// </summary>
+    public ClientViewDelta? BuildViewDelta()
+    {
+        if (_character == null || !IsPlaying) return null;
+
+        int range = _netState.ViewRange;
+        var center = _character.Position;
+        var delta = new ClientViewDelta();
+
+        foreach (var ch in _world.GetCharsInRange(center, range))
+        {
+            if (ch == _character || ch.IsDeleted) continue;
+            // Skip mounted NPCs (Ridden flag) — they are hidden while mounted
+            if (ch.IsStatFlag(Core.Enums.StatFlag.Ridden)) continue;
+
+            // Offline player characters are never visible in normal play. Only
+            // AllShow (explicit GM debug override) reveals them — PrivLevel
+            // alone does NOT count, otherwise every Owner sees every logged-out
+            // character in the world as a ghost, which surprises users after a
+            // server restart.
+            bool isOfflinePlayer = ch.IsPlayer && !ch.IsOnline;
+            if (isOfflinePlayer && !_character.AllShow)
+                continue;
+
+            // Source-X visibility rule: Counsel+ staff sees hidden/invisible
+            // characters of equal-or-lower PrivLevel as "ghostly" (hue 0x4001).
+            bool isHidden = ch.IsInvisible || ch.IsStatFlag(Core.Enums.StatFlag.Hidden);
+            bool canSeeHidden = _character.AllShow ||
+                (_character.PrivLevel >= Core.Enums.PrivLevel.Counsel &&
+                 _character.PrivLevel >= ch.PrivLevel);
+
+            if (isHidden && !canSeeHidden)
+                continue;
+
+            uint uid = ch.Uid.Value;
+            delta.CurrentChars.Add(uid);
+
+            // Ghostly render when the viewer is seeing an otherwise-hidden target
+            // (offline shown via AllShow, or invis/hidden via staff privilege).
+            bool ghostly = isOfflinePlayer || (isHidden && canSeeHidden);
+            if (!_knownChars.Contains(uid))
+                delta.NewChars.Add((ch, ghostly));
+            else
+                delta.UpdatedChars.Add(ch);
+        }
+
+        foreach (var item in _world.GetItemsInRange(center, range))
+        {
+            if (item.IsDeleted || item.IsEquipped || !item.IsOnGround) continue;
+            bool isInvis = item.IsAttr(Core.Enums.ObjAttributes.Invis);
+            if (isInvis && !_character.AllShow)
+                continue;
+
+            uint uid = item.Uid.Value;
+            delta.CurrentItems.Add(uid);
+            if (!_knownItems.Contains(uid))
+                delta.NewItems.Add((item, isInvis && _character.AllShow));
+        }
+
+        return delta;
+    }
+
+    /// <summary>
+    /// Apply previously built delta and perform packet I/O + known-set mutation.
+    /// Must run on single-thread apply phase.
+    /// </summary>
+    public void ApplyViewDelta(ClientViewDelta delta)
+    {
+        if (_character == null || !IsPlaying) return;
+
+        foreach (var (ch, hiddenAsAllShow) in delta.NewChars)
+        {
+            if (hiddenAsAllShow)
+                SendDrawObjectWithHue(ch, 0x4001);
+            else
+                SendDrawObject(ch);
+
+            uint uid = ch.Uid.Value;
+            _knownChars.Add(uid);
+            _lastKnownPos[uid] = (ch.X, ch.Y, ch.Z, (byte)ch.Direction, ch.BodyId, ch.Hue);
+        }
+
+        foreach (var ch in delta.UpdatedChars)
+        {
+            uint uid = ch.Uid.Value;
+            bool posChanged = false;
+            bool bodyChanged = false;
+            if (_lastKnownPos.TryGetValue(uid, out var last))
+            {
+                posChanged = last.X != ch.X || last.Y != ch.Y || last.Z != ch.Z || last.Dir != (byte)ch.Direction;
+                bodyChanged = last.Body != ch.BodyId || last.Hue != ch.Hue;
+            }
+            else
+            {
+                posChanged = true;
+            }
+
+            if (bodyChanged)
+            {
+                // Body or hue changed — send full DrawObject (0x78) so client updates appearance
+                SendDrawObject(ch);
+            }
+            else if (posChanged)
+            {
+                SendUpdateMobile(ch);
+            }
+
+            if (posChanged || bodyChanged)
+                _lastKnownPos[uid] = (ch.X, ch.Y, ch.Z, (byte)ch.Direction, ch.BodyId, ch.Hue);
+        }
+
+        foreach (var (item, hiddenAsAllShow) in delta.NewItems)
+        {
+            if (hiddenAsAllShow)
+                SendWorldItemWithHue(item, 0x4001);
+            else
+                SendWorldItem(item);
+            _knownItems.Add(item.Uid.Value);
+        }
+
+        var staleChars = new List<uint>();
+        foreach (uint uid in _knownChars)
+        {
+            if (!delta.CurrentChars.Contains(uid))
+            {
+                _netState.Send(new PacketDeleteObject(uid));
+                staleChars.Add(uid);
+            }
+        }
+        foreach (uint uid in staleChars)
+        {
+            _knownChars.Remove(uid);
+            _lastKnownPos.Remove(uid);
+        }
+
+        var staleItems = new List<uint>();
+        foreach (uint uid in _knownItems)
+        {
+            if (!delta.CurrentItems.Contains(uid))
+            {
+                _netState.Send(new PacketDeleteObject(uid));
+                staleItems.Add(uid);
+            }
+        }
+        foreach (uint uid in staleItems)
+            _knownItems.Remove(uid);
+    }
+
+    /// <summary>
+    /// Update this client's _lastKnownPos for a character that was just broadcast via 0x77.
+    /// Prevents the view delta from sending a duplicate 0x77 for the same position.
+    /// </summary>
+    public void UpdateKnownCharPosition(Character ch)
+    {
+        uint uid = ch.Uid.Value;
+        if (_knownChars.Contains(uid))
+            _lastKnownPos[uid] = (ch.X, ch.Y, ch.Z, (byte)ch.Direction, ch.BodyId, ch.Hue);
+    }
+
+    /// <summary>Returns true if this client already tracks the given mobile (has sent 0x78 spawn).</summary>
+    public bool HasKnownChar(uint uid) => _knownChars.Contains(uid);
+
+    /// <summary>
+    /// Called by BroadcastCharacterAppear to immediately show a character on this client.
+    /// Each client renders from its own perspective (notoriety, AllShow, etc.).
+    /// </summary>
+    public void NotifyCharacterAppear(Character ch)
+    {
+        if (_character == null || !IsPlaying) return;
+        if (ch == _character) return;
+        if (ch.Position.Map != _character.Position.Map) return;
+        if (!InRange(_character.Position, ch.Position, _netState.ViewRange)) return;
+
+        uint uid = ch.Uid.Value;
+        SendDrawObject(ch);
+        _knownChars.Add(uid);
+        _lastKnownPos[uid] = (ch.X, ch.Y, ch.Z, (byte)ch.Direction, ch.BodyId, ch.Hue);
+    }
+
+    private static bool InRange(Point3D a, Point3D b, int range)
+    {
+        if (a.Map != b.Map) return false;
+        int dx = Math.Abs(a.X - b.X);
+        int dy = Math.Abs(a.Y - b.Y);
+        return dx <= range && dy <= range;
+    }
+
+    // ==================== Outgoing Packet Helpers ====================
+
+    private void SendDrawObject(Character ch)
+    {
+        var equipment = BuildEquipmentList(ch);
+        byte flags = BuildMobileFlags(ch);
+        byte noto = GetNotoriety(ch);
+
+        _netState.Send(new PacketDrawObject(
+            ch.Uid.Value, ch.BodyId,
+            ch.X, ch.Y, ch.Z,
+            (byte)ch.Direction, ch.Hue, flags, noto,
+            equipment
+        ));
+    }
+
+    public void BeginTeleportTarget()
+    {
+        if (_character == null)
+            return;
+        if (_targetCursorActive)
+            return;
+
+        ClearPendingTargetState();
+        _pendingTeleTarget = true;
+        _targetCursorActive = true;
+        _netState.Send(new PacketTarget(1, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    public void BeginRemoveTarget()
+    {
+        if (_character == null)
+            return;
+        if (_targetCursorActive)
+            return;
+
+        ClearPendingTargetState();
+        _pendingRemoveTarget = true;
+        _targetCursorActive = true;
+        _netState.Send(new PacketTarget(1, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    /// <summary>.info without a UID — opens a target cursor; whatever
+    /// the GM clicks on lands in <see cref="ShowInspectDialog"/>.</summary>
+    public void BeginInspectTarget()
+    {
+        if (_character == null) return;
+        if (_targetCursorActive) return;
+        ClearPendingTargetState();
+        _pendingInspectTarget = true;
+        _targetCursorActive = true;
+        _netState.Send(new PacketTarget(1, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    public void BeginAddTarget(string addToken)
+    {
+        if (_character == null)
+            return;
+        if (_targetCursorActive)
+            return;
+
+        ClearPendingTargetState();
+        _pendingAddToken = addToken.Trim();
+        _targetCursorActive = true;
+        _netState.Send(new PacketTarget(1, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    public void BeginShowTarget(string showArgs)
+    {
+        if (_character == null)
+            return;
+        if (_targetCursorActive)
+            return;
+
+        ClearPendingTargetState();
+        _pendingShowArgs = string.IsNullOrWhiteSpace(showArgs) ? "EVENTS" : showArgs.Trim();
+        _targetCursorActive = true;
+        _netState.Send(new PacketTarget(1, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    public void BeginEditTarget(string editArgs)
+    {
+        if (_character == null)
+            return;
+        if (_targetCursorActive)
+            return;
+
+        ClearPendingTargetState();
+        _pendingEditArgs = string.IsNullOrWhiteSpace(editArgs) ? "EVENTS" : editArgs.Trim();
+        _targetCursorActive = true;
+        _netState.Send(new PacketTarget(1, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    private void ClearPendingTargetState()
+    {
+        _pendingTeleTarget = false;
+        _pendingAddToken = null;
+        _pendingShowArgs = null;
+        _pendingEditArgs = null;
+        _pendingRemoveTarget = false;
+        _pendingInspectTarget = false;
+        _pendingTargetFunction = null;
+        _pendingTargetArgs = "";
+        _pendingTargetAllowGround = false;
+        _pendingTargetItemUid = Serial.Invalid;
+        _pendingScriptNewItem = null;
+        _lastScriptTargetPoint = null;
+        _targetCursorActive = false;
+    }
+
+    /// <summary>Source-X <c>.info</c> handler. Tries the shipped
+    /// <c>d_charprop1</c> / <c>d_itemprop1</c> dialog scripts first (so
+    /// the layout matches Source-X exactly) with the target as the
+    /// dialog subject. Falls back to a native editable property gump
+    /// when those scripts aren't loaded on the shard.</summary>
+    public void ShowInspectDialog(uint uid)
+    {
+        if (_character == null) return;
+        ObjBase? obj = _world.FindObject(new Serial(uid));
+        if (obj == null)
+        {
+            SysMessage(ServerMessages.GetFormatted("gm_object_serial", $"{uid:X8}"));
+            return;
+        }
+
+        string scriptDialog = obj is Character ? "d_charprop1" : "d_itemprop1";
+        if (TryShowScriptDialog(scriptDialog, 1, obj))
+            return;
+
+        var fields = BuildInspectFields(obj);
+        uint gumpId = (uint)(0xEE000000u | (uid & 0x00FFFFFFu));
+        const int W = 520, ROW_H = 26, TOP = 60, LABEL_W = 110, ENTRY_W = 340;
+        int H = TOP + fields.Count * ROW_H + 70;
+        var gump = new GumpBuilder(_character.Uid.Value, gumpId, W, H);
+        gump.AddResizePic(0, 0, 5054, W, H);
+        string kind = obj is Character ? "CHAR" : obj is Item ? "ITEM" : "OBJ";
+        gump.AddText(20, 15, 0, $"INFO [{kind}] 0x{uid:X8} — {obj.Name}");
+
+        // Field rows: label + text entry. Entry index = field index + 10
+        // so button-ids and entry-ids never collide.
+        for (int i = 0; i < fields.Count; i++)
+        {
+            int y = TOP + i * ROW_H;
+            gump.AddText(20, y + 3, 0x0481, fields[i].Label);
+            gump.AddTextEntry(20 + LABEL_W, y, ENTRY_W, ROW_H - 4, 0, 10 + i, fields[i].Value ?? "");
+        }
+
+        // Bottom button row: APPLY, TAGS, EVENTS, CLOSE.
+        int by = TOP + fields.Count * ROW_H + 15;
+        gump.AddButton(20, by, 4005, 4007, 1).AddText(55, by + 3, 0, "APPLY");
+        gump.AddButton(130, by, 4005, 4007, 2).AddText(165, by + 3, 0, "TAGS");
+        gump.AddButton(230, by, 4005, 4007, 3).AddText(265, by + 3, 0, "EVENTS");
+        if (obj is Character)
+            gump.AddButton(340, by, 4005, 4007, 4).AddText(375, by + 3, 0, "PAPERDOLL");
+        gump.AddButton(W - 60, by, 4017, 4019, 0);
+
+        SendGump(gump, (buttonId, _, textEntries) =>
+        {
+            if (_character == null) return;
+            var target = _world.FindObject(new Serial(uid));
+            if (target == null) return;
+
+            switch (buttonId)
+            {
+                case 1: // APPLY all changed fields
+                    ApplyInspectChanges(target, fields, textEntries);
+                    ShowInspectDialog(uid); // refresh the dialog with new values
+                    break;
+                case 2: ShowTagsDialog(target); break;
+                case 3: ShowEventsDialog(target); break;
+                case 4 when target is Character tc: SendPaperdoll(tc); break;
+            }
+        });
+    }
+
+    /// <summary>Field descriptor for the property grid. <see cref="Key"/>
+    /// is the TrySetProperty key we will push back on Apply.</summary>
+    private readonly record struct InspectField(string Label, string Key, string? Value);
+
+    private List<InspectField> BuildInspectFields(ObjBase obj)
+    {
+        var list = new List<InspectField>();
+        void Add(string label, string key, string? value) => list.Add(new InspectField(label, key, value));
+
+        Add("UID", "", $"0x{obj.Uid.Value:X8}"); // read-only (empty Key)
+        Add("NAME", "NAME", obj.Name);
+        Add("P", "P", $"{obj.Position.X},{obj.Position.Y},{obj.Position.Z},{obj.Position.Map}");
+        Add("BASEID", "BASEID", $"0x{obj.BaseId:X4}");
+        Add("HUE", "COLOR", $"0{obj.Hue.Value:X}");
+        Add("ATTR", "ATTR", $"0{(uint)obj.Attributes:X}");
+
+        if (obj is Character ch)
+        {
+            Add("BODY", "BODY", $"0x{ch.BodyId:X4}");
+            Add("DIR", "DIR", ((byte)ch.Direction).ToString());
+            Add("STR", "STR", ch.Str.ToString());
+            Add("DEX", "DEX", ch.Dex.ToString());
+            Add("INT", "INT", ch.Int.ToString());
+            Add("HITS", "HITS", ch.Hits.ToString());
+            Add("MAXHITS", "MAXHITS", ch.MaxHits.ToString());
+            Add("MANA", "MANA", ch.Mana.ToString());
+            Add("MAXMANA", "MAXMANA", ch.MaxMana.ToString());
+            Add("STAM", "STAM", ch.Stam.ToString());
+            Add("MAXSTAM", "MAXSTAM", ch.MaxStam.ToString());
+            Add("FAME", "FAME", ch.Fame.ToString());
+            Add("KARMA", "KARMA", ch.Karma.ToString());
+            Add("FOOD", "FOOD", ch.Food.ToString());
+            Add("NPC", "NPC", ((byte)ch.NpcBrain).ToString());
+            Add("FLAGS", "FLAGS", $"0{(uint)ch.StatFlags:X}");
+            Add("PRIVLEVEL", "PRIVSET", ((byte)ch.PrivLevel).ToString());
+        }
+        else if (obj is Item it)
+        {
+            Add("TYPE", "TYPE", ((ushort)it.ItemType).ToString());
+            Add("AMOUNT", "AMOUNT", it.Amount.ToString());
+            Add("LAYER", "LAYER", ((byte)it.EquipLayer).ToString());
+            Add("CONT", "CONT", it.ContainedIn.IsValid ? $"0{it.ContainedIn.Value:X}" : "(ground)");
+            Add("LINK", "LINK", it.Link.IsValid ? $"0{it.Link.Value:X}" : "");
+            Add("MORE1", "MORE1", it.More1.ToString());
+            Add("MORE2", "MORE2", it.More2.ToString());
+            Add("MOREX", "MOREX", it.MoreP.X.ToString());
+            Add("MOREY", "MOREY", it.MoreP.Y.ToString());
+            Add("MOREZ", "MOREZ", it.MoreP.Z.ToString());
+            Add("MOREM", "MOREM", it.MoreP.Map.ToString());
+            Add("HITPOINTS", "HITPOINTS",
+                it.TryGetProperty("HITPOINTS", out var hp) ? hp : "");
+            Add("TIMER", "TIMER", it.DecayTime > 0
+                ? Math.Max(0, (int)((it.DecayTime - Environment.TickCount64) / 1000)).ToString()
+                : "-1");
+        }
+        return list;
+    }
+
+    private void ApplyInspectChanges(ObjBase target, List<InspectField> fields,
+        (ushort Id, string Text)[] textEntries)
+    {
+        int applied = 0;
+        foreach (var (id, text) in textEntries)
+        {
+            int idx = id - 10;
+            if (idx < 0 || idx >= fields.Count) continue;
+            var f = fields[idx];
+            if (string.IsNullOrEmpty(f.Key)) continue;              // read-only row
+            string oldVal = f.Value ?? "";
+            string newVal = text ?? "";
+            if (newVal == oldVal) continue;
+            if (target.TrySetProperty(f.Key, newVal))
+                applied++;
+        }
+        if (applied > 0)
+            SysMessage($"{applied} property updated on 0x{target.Uid.Value:X8}");
+    }
+
+    private void ShowTagsDialog(ObjBase target)
+    {
+        var tags = new List<string>();
+        foreach (var (k, v) in target.Tags.GetAll())
+            tags.Add($"{k} = {v}");
+        if (tags.Count == 0) tags.Add("(no tags)");
+        ShowTextDialog($"TAGS 0x{target.Uid.Value:X8}", tags);
+    }
+
+    private void ShowEventsDialog(ObjBase target)
+    {
+        var events = new List<string>();
+        if (target is Character ech)
+            foreach (var e in ech.Events) events.Add(e.ToString());
+        else if (target is Item eit)
+            foreach (var e in eit.Events) events.Add(e.ToString());
+        if (events.Count == 0) events.Add("(no events)");
+        ShowTextDialog($"EVENTS 0x{target.Uid.Value:X8}", events);
+    }
+
+    public void ShowTextDialog(string title, IReadOnlyList<string> lines)
+    {
+        if (_character == null)
+            return;
+
+        string combined = string.Join("\n", lines);
+        var gump = new GumpBuilder(_character.Uid.Value, (uint)Math.Abs($"showdlg:{title}".GetHashCode()), 640, 420);
+        gump.AddResizePic(0, 0, 5054, 640, 420);
+        // Keep close button available by default for utility dialogs.
+        gump.AddText(20, 15, 0, title);
+        gump.AddHtmlGump(20, 45, 600, 180, EscapeHtml(combined).Replace("\n", "<br>"), true, true);
+        // Text entry area allows easy select/copy by user.
+        gump.AddText(20, 235, 0, "Copy-ready text:");
+        gump.AddTextEntry(20, 260, 600, 120, 0, 1, combined);
+        gump.AddButton(280, 390, 4005, 4007, 0);
+        SendGump(gump);
+    }
+
+    private void SendUpdateMobile(Character ch)
+    {
+        byte flags = BuildMobileFlags(ch);
+        byte noto = GetNotoriety(ch);
+        _netState.Send(new PacketMobileMoving(
+            ch.Uid.Value, ch.BodyId,
+            ch.X, ch.Y, ch.Z, (byte)ch.Direction,
+            ch.Hue, flags, noto
+        ));
+    }
+
+    private void SendDrawObjectWithHue(Character ch, ushort hue)
+    {
+        var equipment = BuildEquipmentList(ch);
+        byte flags = BuildMobileFlags(ch);
+        byte noto = GetNotoriety(ch);
+
+        _netState.Send(new PacketDrawObject(
+            ch.Uid.Value, ch.BodyId,
+            ch.X, ch.Y, ch.Z,
+            (byte)ch.Direction, hue, flags, noto,
+            equipment
+        ));
+    }
+
+    private void SendWorldItem(Item item)
+    {
+        _netState.Send(new PacketWorldItem(
+            item.Uid.Value, item.DispIdFull, item.Amount,
+            item.X, item.Y, item.Z, item.Hue
+        ));
+    }
+
+    private void SendWorldItemWithHue(Item item, ushort hue)
+    {
+        _netState.Send(new PacketWorldItem(
+            item.Uid.Value, item.DispIdFull, item.Amount,
+            item.X, item.Y, item.Z, hue
+        ));
+    }
+
+    /// <summary>Place a dragged item into the target character's backpack and
+    /// send the client a 0x25 ContainerItem packet so it actually appears there.
+    /// Without the packet the client only sees the previous 0x1D delete and
+    /// treats the item as gone — classic "drop onto mobile = item vanishes"
+    /// bug. If the backpack is somehow missing we recreate one so the item
+    /// doesn't simply get lost.</summary>
+    private void PlaceItemInPack(Character target, Item item)
+    {
+        var pack = target.Backpack;
+        if (pack == null && target.IsPlayer)
+        {
+            EnsurePlayerBackpack(target);
+            pack = target.Backpack;
+        }
+        if (pack == null)
+        {
+            // NPC without a pack: fall back to equip layer Pack or drop at feet.
+            _world.PlaceItem(item, target.Position);
+            return;
+        }
+
+        pack.AddItem(item);
+        item.Position = new Point3D(0, 0, 0, target.MapIndex);
+
+        // Owner-side visual: only clients that already have the pack "open"
+        // need the 0x25 update; but Sphere/ServUO both send it unconditionally
+        // because it's cheap and keeps drag preview consistent. Send to the
+        // owner who initiated the drop.
+        _netState.Send(new PacketContainerItem(
+            item.Uid.Value, item.DispIdFull, 0,
+            item.Amount, item.X, item.Y,
+            pack.Uid.Value, item.Hue,
+            _netState.IsClientPost6017));
+    }
+
+    private void SendOpenContainer(Item container)
+    {
+        ushort gumpId = 0x003C; // default bag gump
+        _netState.Send(new PacketOpenContainer(container.Uid.Value, gumpId, _netState.IsClientPost7090));
+
+        foreach (var child in container.Contents)
+        {
+            _netState.Send(new PacketContainerItem(
+                child.Uid.Value, child.DispIdFull, 0,
+                child.Amount, child.X, child.Y,
+                container.Uid.Value, child.Hue,
+                _netState.IsClientPost6017
+            ));
+        }
+    }
+
+    /// <summary>
+    /// Open the player's bank box. Creates it if it doesn't exist.
+    /// The bank box is a container item stored on the character at a special layer.
+    /// </summary>
+    public void OpenBankBox()
+    {
+        if (_character == null) return;
+
+        // Look for existing bank box item on the character
+        var bankBox = _character.GetEquippedItem(Layer.BankBox);
+        if (bankBox == null)
+        {
+            // Create bank box
+            bankBox = _world.CreateItem();
+            bankBox.BaseId = 0x09AB; // bank box container graphic
+            bankBox.ItemType = ItemType.Container;
+            bankBox.Name = "Bank Box";
+            _character.Equip(bankBox, Layer.BankBox);
+        }
+
+        SendOpenContainer(bankBox);
+    }
+
+    private void SendPaperdoll(Character ch)
+    {
+        // Send draw object with equipment
+        var equipment = BuildEquipmentList(ch);
+        byte flags = BuildMobileFlags(ch);
+        byte noto = GetNotoriety(ch);
+
+        _netState.Send(new PacketDrawObject(
+            ch.Uid.Value, ch.BodyId,
+            ch.X, ch.Y, ch.Z,
+            (byte)ch.Direction, ch.Hue, flags, noto,
+            equipment
+        ));
+
+        // Send paperdoll open packet (0x88) — Sphere format: "Name, Title"
+        string title = string.IsNullOrEmpty(ch.Title)
+            ? ch.GetName()
+            : $"{ch.GetName()}, {ch.Title}";
+        byte paperdollFlags = 0;
+        if (_character != null && ch == _character) paperdollFlags |= 0x01; // can edit (own paperdoll)
+        _netState.Send(new PacketOpenPaperdoll(ch.Uid.Value, title, paperdollFlags));
+
+        SendCharacterStatus(ch, includeExtendedStats: ch == _character);
+    }
+
+    private void SendCharacterStatus(Character ch, bool includeExtendedStats = true)
+    {
+        // Expansion level matched to client version capabilities
+        byte expansion;
+        if (_netState.IsClientPost7090)
+            expansion = 5; // ML (SA client can handle ML fields)
+        else if (_netState.IsClientPost6017)
+            expansion = 4; // SE
+        else if (_netState.ClientVersionNumber >= 40_000_000)
+            expansion = 3; // AOS
+        else
+            expansion = 0; // pre-AOS
+        string statusName = ResolveStatusName(ch);
+        var (hits, maxHits) = NormalizeStatusPair(ch.Hits, ch.MaxHits, ch.Str);
+        var (stam, maxStam) = NormalizeStatusPair(ch.Stam, ch.MaxStam, ch.Dex);
+        var (mana, maxMana) = NormalizeStatusPair(ch.Mana, ch.MaxMana, ch.Int);
+
+        _netState.Send(new PacketStatusFull(
+            ch.Uid.Value, statusName,
+            hits, maxHits,
+            ch.Str, ch.Dex, ch.Int,
+            stam, maxStam, mana, maxMana,
+            includeExtendedStats ? 0 : (ushort)0,
+            includeExtendedStats ? (ushort)0 : (ushort)0,
+            includeExtendedStats ? (ushort)0 : (ushort)0,
+            ch.Fame, ch.Karma, 0, expansion
+        ));
+
+        // Keep self bars synchronized on clients that rely on A1/A2/A3 updates.
+        if (_character != null && ch == _character)
+        {
+            _netState.Send(new PacketUpdateHealth(ch.Uid.Value, maxHits, hits));
+            _netState.Send(new PacketUpdateMana(ch.Uid.Value, maxMana, mana));
+            _netState.Send(new PacketUpdateStamina(ch.Uid.Value, maxStam, stam));
+        }
+    }
+
+    private static uint StableStringHash(string s)
+    {
+        uint hash = 5381;
+        foreach (char c in s)
+            hash = ((hash << 5) + hash) ^ c;
+        return hash;
+    }
+
+    private static (short Cur, short Max) NormalizeStatusPair(short cur, short max, short fallbackBase)
+    {
+        short safeMax = max > 0 ? max : (short)Math.Max(1, (int)fallbackBase);
+        short safeCur = (short)Math.Clamp(cur, (short)0, safeMax);
+        return (safeCur, safeMax);
+    }
+
+    private void BroadcastDeleteObject(uint uid)
+    {
+        _netState.Send(new PacketDeleteObject(uid));
+        _knownChars.Remove(uid);
+        _knownItems.Remove(uid);
+        _lastKnownPos.Remove(uid);
+        // excludeUid must be the CHARACTER's UID (not the deleted object's UID)
+        // so the sending client is excluded from the broadcast (already got direct send).
+        BroadcastNearby?.Invoke(_character?.Position ?? Point3D.Zero, UpdateRange, new PacketDeleteObject(uid), _character?.Uid.Value ?? 0);
+    }
+
+    private void BroadcastDrawObject(Character ch)
+    {
+        var equipment = BuildEquipmentList(ch);
+        byte flags = BuildMobileFlags(ch);
+        byte noto = GetNotoriety(ch);
+        var drawObj = new PacketDrawObject(
+            ch.Uid.Value, ch.BodyId,
+            ch.X, ch.Y, ch.Z,
+            (byte)ch.Direction, ch.Hue, flags, noto,
+            equipment);
+        _netState.Send(drawObj);
+        // Use BroadcastMoveNearby (if available) to also update receiving clients'
+        // _lastKnownPos cache, preventing a duplicate 0x77 from the next view delta.
+        if (BroadcastMoveNearby != null)
+            BroadcastMoveNearby.Invoke(ch.Position, UpdateRange, drawObj, _character?.Uid.Value ?? 0, ch);
+        else
+            BroadcastNearby?.Invoke(ch.Position, UpdateRange, drawObj, _character?.Uid.Value ?? 0);
+    }
+
+    private bool RemoveTargetedObject(uint uid)
+    {
+        if (_character == null)
+            return false;
+        if (uid == _character.Uid.Value)
+            return false;
+
+        var item = _world.FindItem(new Serial(uid));
+        if (item != null)
+        {
+            _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Destroy,
+                new TriggerArgs { CharSrc = _character, ItemSrc = item });
+            BroadcastDeleteObject(uid);
+            _world.DeleteObject(item);
+            item.Delete();
+            return true;
+        }
+
+        var ch = _world.FindChar(new Serial(uid));
+        if (ch != null)
+        {
+            if (ch == _character)
+                return false;
+
+            _triggerDispatcher?.FireCharTrigger(ch, CharTrigger.Destroy,
+                new TriggerArgs { CharSrc = _character });
+            BroadcastDeleteObject(uid);
+            _world.DeleteObject(ch);
+            ch.Delete();
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryAddAtTarget(string token, Point3D targetPos)
+    {
+        if (_character == null || _commands?.Resources == null)
+            return false;
+
+        string cleaned = token
+            .Replace("\0", string.Empty, StringComparison.Ordinal)
+            .Trim();
+        if (cleaned.Length == 0)
+            return false;
+
+        var resources = _commands.Resources;
+        var rid = resources.ResolveDefName(cleaned);
+        if (rid.IsValid)
+        {
+            if (rid.Type == ResType.ItemDef)
+            {
+                // Resolve the graphic (DispIndex) by walking the itemdef
+                // chain — a named itemdef can inherit its ID from another
+                // itemdef ("id=i_moongate_blue"). Without this, BaseId
+                // ends up as the string-hash index of the defname, which
+                // is not a valid UO art ID and the client renders nothing.
+                ushort dispId = ResolveItemDispId(rid.Index);
+                if (dispId == 0)
+                {
+                    SysMessage(ServerMessages.GetFormatted("gm_item_no_graphic", cleaned));
+                    return true;
+                }
+
+                var item = _world.CreateItem();
+                item.BaseId = dispId;
+                item.Name = cleaned;
+
+                // Apply TYPE + NAME from the named itemdef so scripted
+                // items (e.g. moongates with type=t_script) keep their
+                // behaviour when created via .add.
+                var namedDef = DefinitionLoader.GetItemDef(rid.Index);
+                if (namedDef != null)
+                {
+                    item.ItemType = namedDef.Type;
+                    if (!string.IsNullOrWhiteSpace(namedDef.Name))
+                        item.Name = DefinitionLoader.ResolveNames(namedDef.Name);
+                    foreach (var ev in namedDef.Events)
+                        if (!item.Events.Contains(ev))
+                            item.Events.Add(ev);
+
+                    // Named itemdef has its own triggers (@DClick, @Step, ...)
+                    // that live on the scripted def's index, not on the
+                    // resolved graphic's. Without this tag TriggerDispatcher
+                    // would only look up ITEMDEF(BaseId=0xF6C) and miss
+                    // every trigger written under [ITEMDEF i_moongate].
+                    // Persisted through save/load as any other TAG.
+                    if (rid.Index != dispId)
+                        item.SetTag("SCRIPTDEF", rid.Index.ToString());
+                }
+
+                _world.PlaceItem(item, targetPos);
+                SysMessage(ServerMessages.GetFormatted("gm_item_created", cleaned, $"{dispId:X}"));
+                return true;
+            }
+
+            if (rid.Type == ResType.CharDef)
+            {
+                var npc = CreateNpcFromDef(rid.Index, cleaned);
+                _world.PlaceCharacter(npc, targetPos);
+                _triggerDispatcher?.FireCharTrigger(npc, CharTrigger.Create, new TriggerArgs { CharSrc = _character });
+                BroadcastDrawObject(npc);
+                SysMessage(ServerMessages.GetFormatted("gm_npc_created2", npc.Name, $"{rid.Index:X}", targetPos));
+                return true;
+            }
+        }
+
+        string num = cleaned.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? cleaned[2..] : cleaned;
+        bool parsed = ushort.TryParse(num, System.Globalization.NumberStyles.HexNumber, null, out ushort idHex) ||
+                      ushort.TryParse(cleaned, out idHex);
+        if (!parsed)
+            return false;
+
+        bool hasItemDef = resources.GetResource(ResType.ItemDef, idHex) != null;
+        bool hasCharDef = resources.GetResource(ResType.CharDef, idHex) != null;
+        if (hasItemDef || !hasCharDef)
+        {
+            var item = _world.CreateItem();
+            item.BaseId = idHex;
+            item.Name = $"Item_{idHex:X}";
+            _world.PlaceItem(item, targetPos);
+            SysMessage(ServerMessages.GetFormatted("gm_item_created_hex", $"{idHex:X}", targetPos));
+            return true;
+        }
+
+        var createdNpc = CreateNpcFromDef(idHex, $"NPC_{idHex:X}");
+        _world.PlaceCharacter(createdNpc, targetPos);
+        _triggerDispatcher?.FireCharTrigger(createdNpc, CharTrigger.Create, new TriggerArgs { CharSrc = _character });
+        BroadcastDrawObject(createdNpc);
+        SysMessage(ServerMessages.GetFormatted("gm_npc_created_hex", createdNpc.Name, $"{idHex:X}", targetPos));
+        return true;
+    }
+
+    /// <summary>Walk the ITEMDEF chain to find the concrete UO art ID.
+    /// A scripted itemdef may set <c>id=</c> to another defname that in
+    /// turn resolves to a hex graphic (common Sphere pattern:
+    /// <c>[itemdef i_moongate] id=i_moongate_blue</c>, where
+    /// <c>i_moongate_blue</c> is <c>[itemdef 0f6c]</c>). Returns 0 when
+    /// no numeric graphic can be reached within a small lookup bound —
+    /// the caller treats that as "unknown graphic" and aborts the add.</summary>
+    private static ushort ResolveItemDispId(int defIndex)
+    {
+        for (int hop = 0; hop < 8; hop++)
+        {
+            var d = DefinitionLoader.GetItemDef(defIndex);
+
+            // Numeric itemdef ([ITEMDEF 0f6c]) is keyed by its hex value.
+            // If no def exists at that hex, the index IS the graphic.
+            if (d == null) return (ushort)(defIndex & 0xFFFF);
+
+            // Def exists but has no explicit ID/DISPID. For numeric-range
+            // sections (<= 0xFFFF) the section header itself is the
+            // graphic — treat defIndex as the graphic. For hash-range
+            // (named) sections without a DispIndex, we truly can't
+            // resolve a graphic and the add fails.
+            if (d.DispIndex == 0)
+                return defIndex <= 0xFFFF ? (ushort)defIndex : (ushort)0;
+
+            // DispIndex may itself point to another named itemdef (hash
+            // index that resolves through _itemDefs). Follow the chain.
+            if (DefinitionLoader.GetItemDef(d.DispIndex) is { } next && next != d)
+            {
+                defIndex = d.DispIndex;
+                continue;
+            }
+            return d.DispIndex;
+        }
+        return 0;
+    }
+
+    private Character CreateNpcFromDef(int defIndexOrBaseId, string fallbackName)
+    {
+        var npc = _world.CreateCharacter();
+        ushort safeBaseId = (ushort)Math.Clamp(defIndexOrBaseId, 0, ushort.MaxValue);
+        npc.BaseId = safeBaseId;
+        npc.Name = fallbackName;
+        npc.BodyId = safeBaseId;
+        npc.IsPlayer = false;
+
+        var charDef = DefinitionLoader.GetCharDef(defIndexOrBaseId);
+        if (charDef != null)
+        {
+            ushort resolvedBody = ResolveCharBodyId(charDef, safeBaseId);
+            npc.BodyId = resolvedBody;
+            // Keep BaseId compatible with systems that key by body/base id (mounting, click behavior, etc).
+            npc.BaseId = resolvedBody;
+            if (!string.IsNullOrWhiteSpace(charDef.Name))
+                npc.Name = DefinitionLoader.ResolveNames(charDef.Name);
+
+            int strVal = charDef.StrMax > 0 ? charDef.StrMax : Math.Max(1, charDef.StrMin);
+            int dexVal = charDef.DexMax > 0 ? charDef.DexMax : Math.Max(1, charDef.DexMin);
+            int intVal = charDef.IntMax > 0 ? charDef.IntMax : Math.Max(1, charDef.IntMin);
+
+            npc.Str = (short)Math.Clamp(strVal, 1, short.MaxValue);
+            npc.Dex = (short)Math.Clamp(dexVal, 1, short.MaxValue);
+            npc.Int = (short)Math.Clamp(intVal, 1, short.MaxValue);
+
+            int hits = charDef.HitsMax > 0 ? charDef.HitsMax : Math.Max(1, strVal);
+            short maxHits = (short)Math.Clamp(hits, 1, short.MaxValue);
+            npc.MaxHits = maxHits;
+            npc.Hits = maxHits;
+            npc.MaxMana = npc.Int;
+            npc.Mana = npc.Int;
+            npc.MaxStam = npc.Dex;
+            npc.Stam = npc.Dex;
+
+            if (charDef.NpcBrain != NpcBrainType.None)
+                npc.NpcBrain = charDef.NpcBrain;
+
+            string? colorText = charDef.TagDefs.Get("COLOR");
+            if (TryParseHue(colorText, out ushort hue))
+                npc.Hue = new Color(hue);
+
+            // Equip ITEMNEWBIE items
+            EquipNewbieItems(npc, charDef);
+        }
+        else
+        {
+            npc.Str = 50; npc.Dex = 50; npc.Int = 50;
+            npc.MaxHits = 50; npc.Hits = 50;
+            npc.MaxMana = 50; npc.Mana = 50;
+            npc.MaxStam = 50; npc.Stam = 50;
+        }
+
+        if (npc.NpcBrain == NpcBrainType.None)
+            npc.NpcBrain = NpcBrainType.Animal;
+
+        // Fire @NPCRestock right after NPC creation so vendors come
+        // dressed AND stocked. Script body uses SELL= / BUY= verbs
+        // that are now handled in Character.TryExecuteCommand.
+        if (npc.NpcBrain == NpcBrainType.Vendor)
+        {
+            _triggerDispatcher?.FireCharTrigger(npc, CharTrigger.NPCRestock,
+                new TriggerArgs { CharSrc = npc });
+        }
+
+        return npc;
+    }
+
+    private ushort ResolveCharBodyId(CharDef charDef, ushort fallbackBaseId)
+    {
+        if (charDef.DispIndex > 0)
+            return charDef.DispIndex;
+
+        string alias = charDef.DisplayIdRef?.Trim() ?? "";
+        if (alias.Length == 0 || _commands?.Resources == null)
+            return fallbackBaseId;
+
+        var rid = _commands.Resources.ResolveDefName(alias);
+        if (rid.IsValid && rid.Type == ResType.CharDef)
+        {
+            var refDef = DefinitionLoader.GetCharDef(rid.Index);
+            if (refDef?.DispIndex > 0)
+                return refDef.DispIndex;
+
+            if (rid.Index >= 0 && rid.Index <= ushort.MaxValue)
+                return (ushort)rid.Index;
+        }
+
+        return fallbackBaseId;
+    }
+
+    private static bool TryParseHue(string? value, out ushort hue)
+    {
+        hue = 0;
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        string v = value.Trim();
+        if (v.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            return ushort.TryParse(v[2..], System.Globalization.NumberStyles.HexNumber, null, out hue);
+        if (v.StartsWith('0') && v.Length > 1 &&
+            ushort.TryParse(v, System.Globalization.NumberStyles.HexNumber, null, out ushort hexHue))
+        {
+            hue = hexHue;
+            return true;
+        }
+        return ushort.TryParse(v, out hue);
+    }
+
+    private void EquipNewbieItems(Character npc, CharDef charDef)
+    {
+        if (charDef.NewbieItems.Count == 0 || _commands?.Resources == null)
+            return;
+
+        var resources = _commands.Resources;
+        ushort lastHue = 0; // for COLOR=match_hair / match_*
+        foreach (var entry in charDef.NewbieItems)
+        {
+            // Resolve random_* / weighted-template pools to a single itemdef.
+            string pickedName = TemplateEngine.PickRandomItemDefName(entry.DefName);
+            if (string.IsNullOrWhiteSpace(pickedName))
+                continue;
+
+            var rid = resources.ResolveDefName(pickedName);
+            if (!rid.IsValid || rid.Type != ResType.ItemDef)
+                continue;
+
+            var item = _world.CreateItem();
+            item.BaseId = (ushort)rid.Index;
+
+            var itemDef = DefinitionLoader.GetItemDef(rid.Index);
+            if (itemDef != null && !string.IsNullOrWhiteSpace(itemDef.Name))
+                item.Name = itemDef.Name;
+
+            // Amount: explicit wins; else dice roll; else leave default (1).
+            int amount = entry.Amount;
+            if (amount <= 0 && !string.IsNullOrWhiteSpace(entry.Dice))
+                amount = RollSphereDice(entry.Dice);
+            if (amount > 1)
+                item.Amount = (ushort)Math.Min(amount, ushort.MaxValue);
+
+            // Color: colors_* defname → random hue from the range;
+            // "match_<prev>" → re-use the last resolved hue so a hair /
+            // beard pair share the tint.
+            if (!string.IsNullOrWhiteSpace(entry.Color))
+            {
+                ushort hue = ResolveColorDefName(entry.Color!, lastHue);
+                if (hue != 0)
+                {
+                    item.Hue = new Color(hue);
+                    lastHue = hue;
+                }
+            }
+
+            Layer layer = itemDef?.Layer ?? Layer.None;
+            if (layer == Layer.None && _world.MapData != null)
+            {
+                var tile = _world.MapData.GetItemTileData(item.BaseId);
+                if ((tile.Flags & SphereNet.MapData.Tiles.TileFlag.Wearable) != 0 &&
+                    tile.Quality > 0 && tile.Quality <= (byte)Layer.Horse)
+                {
+                    layer = (Layer)tile.Quality;
+                }
+            }
+            if (layer == Layer.None)
+            {
+                var pack = npc.Backpack;
+                if (pack == null)
+                {
+                    pack = _world.CreateItem();
+                    pack.BaseId = 0x0E75;
+                    npc.Equip(pack, Layer.Pack);
+                }
+                item.ContainedIn = pack.Uid;
+            }
+            else
+            {
+                npc.Equip(item, layer);
+            }
+        }
+    }
+
+    /// <summary>Very small Sphere dice roller. Supports R&lt;max&gt;
+    /// (1..max) and NdM (N M-sided). Anything unrecognised falls back
+    /// to 1 so a broken script line never silently spawns a 0-amount
+    /// item.</summary>
+    private static int RollSphereDice(string expr)
+    {
+        expr = expr.Trim();
+        if (expr.Length == 0) return 1;
+        if ((expr[0] == 'R' || expr[0] == 'r') &&
+            int.TryParse(expr.AsSpan(1), out int max) && max > 0)
+            return Random.Shared.Next(1, max + 1);
+        int dIdx = expr.IndexOf('d');
+        if (dIdx < 0) dIdx = expr.IndexOf('D');
+        if (dIdx > 0 &&
+            int.TryParse(expr.AsSpan(0, dIdx), out int n) && n > 0 &&
+            int.TryParse(expr.AsSpan(dIdx + 1), out int sides) && sides > 0)
+        {
+            int total = 0;
+            for (int i = 0; i < n; i++) total += Random.Shared.Next(1, sides + 1);
+            return total;
+        }
+        return int.TryParse(expr, out int literal) && literal > 0 ? literal : 1;
+    }
+
+    /// <summary>Resolve a <c>colors_*</c> / <c>match_*</c> defname to an
+    /// actual hue value. Source-X defines <c>colors_skin</c>,
+    /// <c>colors_hair</c>, <c>colors_red</c> etc. as DEF[NAME] entries
+    /// containing <c>{low high}</c> ranges; we mirror the common ones
+    /// inline so scripts using the standard palette work without the
+    /// color-defs scp file. Unknown names fall through to numeric parse.</summary>
+    private static ushort ResolveColorDefName(string name, ushort lastHue)
+    {
+        string n = name.Trim();
+        if (string.IsNullOrEmpty(n)) return 0;
+        // match_hair / match_skin / match_* → use the previously picked hue.
+        if (n.StartsWith("match_", StringComparison.OrdinalIgnoreCase))
+            return lastHue;
+
+        // Canonical palette ranges (inclusive) — matches classic
+        // Sphere defaults shipped with mortechUO scripts.
+        (ushort lo, ushort hi) = n.ToLowerInvariant() switch
+        {
+            "colors_skin" => ((ushort)0x03EA, (ushort)0x03F2),
+            "colors_hair" => ((ushort)0x044E, (ushort)0x0455),
+            "colors_red" => ((ushort)0x0020, (ushort)0x002C),
+            "colors_orange" => ((ushort)0x002D, (ushort)0x0038),
+            "colors_yellow" => ((ushort)0x0039, (ushort)0x0044),
+            "colors_green" => ((ushort)0x0059, (ushort)0x0062),
+            "colors_blue" => ((ushort)0x0053, (ushort)0x0058),
+            "colors_purple" => ((ushort)0x0010, (ushort)0x001E),
+            "colors_neutral" => ((ushort)0x03B0, (ushort)0x03B4),
+            "colors_all" => ((ushort)0x0002, (ushort)0x03E9),
+            _ => ((ushort)0, (ushort)0),
+        };
+        if (lo != 0 || hi != 0)
+            return (ushort)Random.Shared.Next(lo, hi + 1);
+
+        // Last resort: numeric hex/dec literal (COLOR=0x0481 style).
+        if (TryParseHue(n, out ushort direct))
+            return direct;
+        return 0;
+    }
+
+    private void ShowHelpPageDialog(int requestedPage)
+    {
+        if (_character == null)
+            return;
+
+        int page = Math.Clamp(requestedPage, 1, 8);
+        _character.SetTag("help_type", page.ToString());
+
+        string[] menu = ["Duyurular", "Yardim", "Stuck", "Istatistik", "Bildirimler", "Takvim", "Basarimlar", "Donate"];
+        int[] icons = [180, 185, 183, 189, 187, 188, 182, 186];
+
+        var gump = new GumpBuilder(_character.Uid.Value, (uint)Math.Abs("d_helppage".GetHashCode()), 540, 430);
+        gump.AddGumpPic(41, 182, 363)
+            .AddGumpPic(58, 187, 354)
+            .AddResizePic(135, 135, 340, 420, 420)
+            .AddGumpPic(470, 125, 339)
+            .AddGumpPic(190, 165, 353);
+
+        for (int i = 0; i < menu.Length; i++)
+        {
+            int idx = i + 1;
+            int y = 220 + (i * 32);
+            bool active = idx == page;
+            gump.AddButton(44, y, active ? 351 : 349, active ? 352 : 350, idx)
+                .AddHtmlGump(70, y + 3, 90, 20, menu[i], false, false)
+                .AddGumpPic(35, y - 5, icons[i]);
+        }
+
+        string pageTitle = menu[page - 1];
+        gump.AddHtmlGump(135, 145, 420, 20, $"<CENTER><BIG>{pageTitle}</BIG></CENTER>", false, false);
+
+        switch (page)
+        {
+            case 1:
+                gump.AddHtmlGump(155, 190, 360, 180,
+                    "Duyuru sistemi script tarafinda aktif. Iceriklerin scriptten doldurulmasi gerekiyor.",
+                    true, true);
+                break;
+            case 2:
+                gump.AddHtmlGump(155, 190, 360, 180,
+                    "Yardim menusu: sorununu ayrintili sekilde yazip page atabilirsin.", true, true)
+                    .AddButton(193, 380, 142, 143, 21)
+                    .AddButton(363, 380, 144, 145, 22);
+                break;
+            case 3:
+                gump.AddHtmlGump(155, 190, 360, 180,
+                    "Stuck noktalarini secerek guvenli bolgelere transfer olabilirsin.", true, true)
+                    .AddButton(170, 390, 130, 131, 30)
+                    .AddButton(250, 390, 133, 134, 31)
+                    .AddButton(330, 390, 136, 137, 32)
+                    .AddButton(410, 390, 139, 140, 33);
+                break;
+            case 4:
+            {
+                var stats = _world.GetStats();
+                gump.AddHtmlGump(155, 190, 360, 200,
+                    $"Online Oyuncu: {_world.GetAllObjects().OfType<Character>().Count(c => c.IsPlayer && c.IsOnline)}<br>" +
+                    $"Yaratik Sayisi: {stats.Chars}<br>" +
+                    $"Esya Sayisi: {stats.Items}<br>" +
+                    $"Sektor Sayisi: {stats.Sectors}",
+                    true, true);
+                break;
+            }
+            default:
+                gump.AddHtmlGump(155, 190, 360, 180,
+                    "Bu sayfa icin script tabanli icerik gerekiyor. Kademeli olarak eklenecek.",
+                    true, true);
+                break;
+        }
+
+        SendGump(gump, (buttonId, _, _) =>
+        {
+            if (_character == null)
+                return;
+            if (buttonId == 0)
+                return;
+
+            if (buttonId is >= 1 and <= 8)
+            {
+                ShowHelpPageDialog((int)buttonId);
+                return;
+            }
+
+            if (buttonId is >= 30 and <= 33)
+            {
+                SysMessage(ServerMessages.Get("msg_stuck_script"));
+                return;
+            }
+
+            if (buttonId == 21)
+            {
+                SysMessage(ServerMessages.Get("msg_page_script"));
+                return;
+            }
+
+            if (buttonId == 22)
+            {
+                SysMessage(ServerMessages.Get("msg_pagelist_script"));
+            }
+        });
+    }
+
+    /// <summary>Open a script-defined dialog ([DIALOG &lt;name&gt;] sections)
+    /// on this client. Returns false when the dialog name cannot be
+    /// resolved — caller logs or sysmessages accordingly. Public so
+    /// admin commands (".dialog") and script-command handlers share the
+    /// same code path.</summary>
+    public bool TryShowScriptDialog(string dialogId, int requestedPage)
+        => TryShowScriptDialog(dialogId, requestedPage, subject: null);
+
+    /// <summary>Open a script DIALOG section. When <paramref name="subject"/>
+    /// is non-null, bare property reads inside the dialog resolve against
+    /// that object first (Source-X CLIMODE_DIALOG pObj semantics) — needed
+    /// by d_charprop1 / d_itemprop1 where the gump is bound to an inspected
+    /// target instead of the GM.</summary>
+    public bool TryShowScriptDialog(string dialogId, int requestedPage, ObjBase? subject)
+    {
+        if (_character == null || _commands?.Resources == null)
+            return false;
+
+        if (!TryFindDialogSections(dialogId, out var layoutSection))
+            return false;
+
+        var prevSubject = _dialogSubjectUid;
+        _dialogSubjectUid = subject?.Uid ?? Serial.Invalid;
+        try
+        {
+            return RenderScriptDialog(dialogId, requestedPage, layoutSection);
+        }
+        finally
+        {
+            _dialogSubjectUid = prevSubject;
+        }
+    }
+
+    private bool RenderScriptDialog(string dialogId, int requestedPage,
+        SphereNet.Scripting.Parsing.ScriptSection layoutSection)
+    {
+        if (_character == null) return false;
+
+        int currentPage = Math.Max(0, requestedPage);
+        var gump = new GumpBuilder(_character.Uid.Value, (uint)Math.Abs(dialogId.GetHashCode()), 500, 400);
+        int originX = 0, originY = 0;
+        int cursorX = 0, cursorY = 0;
+        // Separate "row tracker" for the `*N` operator. Sphere treats *N as a
+        // fresh row step independent of the +/- cursor used for column work.
+        int rowCursorX = 0, rowCursorY = 0;
+        bool currentPageVisible = currentPage <= 0;
+
+        // Per-call local variable scope for LOCAL.x= assignments and
+        // <local.x> / <dlocal.x> references — used by Sphere dialog
+        // scripts that loop over a list (FOR) and emit a row per
+        // iteration. Resolvers below look here first before delegating.
+        var dialogLocals = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        // Expand FOR / WHILE / IF blocks into a flat key sequence so the
+        // render switch below can remain a linear walk. Each unrolled
+        // copy of a loop body runs with the iterator's value substituted
+        // into <local._for> / <local.n> / etc. before render commands see
+        // the args — matching Sphere's runtime-expansion behaviour.
+        var expandedKeys = ExpandDialogScriptKeys(layoutSection.Keys, dialogLocals, requestedPage);
+
+        // Diagnostic: count of commands per page post-expansion. If page 4
+        // (FLAGS) comes out empty while the others are populated, the
+        // FOR/IF expansion isn't unrolling into output.
+        {
+            int currentP = 0;
+            var perPage = new Dictionary<int, int>();
+            foreach (var k in expandedKeys)
+            {
+                string ck = k.Key.Trim().ToUpperInvariant();
+                if (ck == "PAGE" && int.TryParse(k.Arg.Trim(), out int np))
+                {
+                    currentP = np;
+                    continue;
+                }
+                perPage[currentP] = perPage.GetValueOrDefault(currentP) + 1;
+            }
+            _logger.LogDebug("[dialog_expand] id={Id} keys={Total} pages={Pages}",
+                dialogId, expandedKeys.Count,
+                string.Join(", ", perPage.Select(kv => $"p{kv.Key}:{kv.Value}")));
+        }
+
+        foreach (var key in expandedKeys)
+        {
+            string cmd = key.Key.Trim().ToUpperInvariant();
+            string args = key.Arg;
+            switch (cmd)
+            {
+                case "NOMOVE":
+                    gump.SetNoMove();
+                    break;
+                case "NOCLOSE":
+                    gump.SetNoClose();
+                    break;
+                case "NODISPOSE":
+                    gump.SetNoDispose();
+                    break;
+                case "PAGE":
+                {
+                    // UO page model is CLIENT-side: every page element
+                    // lives in the same gump packet, the client switches
+                    // visibility when a page-nav button fires. Emit a
+                    // `{ page N }` marker and let every subsequent
+                    // element render under that tag. Previously this
+                    // filtered out later pages server-side — the client
+                    // saw only page 1 so the STATS/SKILLS/FLAGS tabs had
+                    // nothing to switch to.
+                    int pageNo = ParseIntToken(args);
+                    gump.SetPage(pageNo);
+                    currentPageVisible = true;
+                    originX = 0; originY = 0;
+                    cursorX = 0; cursorY = 0;
+                    rowCursorX = 0; rowCursorY = 0;
+                    break;
+                }
+                case "DORIGIN":
+                {
+                    var parts = SplitTokens(args, 2);
+                    if (parts.Length >= 2)
+                    {
+                        originX = ParseIntToken(parts[0]);
+                        originY = ParseIntToken(parts[1]);
+                        cursorX = 0;
+                        cursorY = 0;
+                        rowCursorX = 0;
+                        rowCursorY = 0;
+                    }
+                    break;
+                }
+                case "RESIZEPIC":
+                {
+                    if (!currentPageVisible) break;
+                    var parts = SplitTokens(args, 5);
+                    if (parts.Length >= 5)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        gump.AddResizePic(x, y, ParseIntToken(parts[2]), ParseIntToken(parts[3]), ParseIntToken(parts[4]));
+                    }
+                    break;
+                }
+                case "GUMPIC":
+                {
+                    if (!currentPageVisible) break;
+                    var parts = SplitTokens(args, 4);
+                    if (parts.Length >= 3)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        int gumpId = ParseIntToken(parts[2]);
+                        int hue = parts.Length >= 4 ? ParseIntToken(parts[3]) : 0;
+                        gump.AddGumpPic(x, y, gumpId, hue);
+                    }
+                    break;
+                }
+                case "GUMPPICTILED":
+                {
+                    if (!currentPageVisible) break;
+                    var parts = SplitTokens(args, 5);
+                    if (parts.Length >= 5)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        gump.AddGumpPicTiled(x, y, ParseIntToken(parts[2]), ParseIntToken(parts[3]), ParseIntToken(parts[4]));
+                    }
+                    break;
+                }
+                case "BUTTON":
+                {
+                    if (!currentPageVisible) break;
+                    var parts = SplitTokens(args, 7);
+                    if (parts.Length >= 7)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        gump.AddButton(
+                            x, y,
+                            ParseIntToken(parts[2]),
+                            ParseIntToken(parts[3]),
+                            ParseIntToken(parts[6]),
+                            ParseIntToken(parts[4]),
+                            ParseIntToken(parts[5]));
+                    }
+                    break;
+                }
+                case "DHTMLGUMP":
+                {
+                    if (!currentPageVisible) break;
+                    var parts = SplitTokens(args, 6, keepRemainder: true);
+                    if (parts.Length >= 7)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        string html = ResolveDialogHtml(parts[6], _character);
+                        gump.AddHtmlGump(
+                            x, y,
+                            ParseIntToken(parts[2]),
+                            ParseIntToken(parts[3]),
+                            html,
+                            ParseIntToken(parts[4]) != 0,
+                            ParseIntToken(parts[5]) != 0);
+                    }
+                    break;
+                }
+                case "DCROPPEDTEXT":
+                {
+                    if (!currentPageVisible) break;
+                    var parts = SplitTokens(args, 5, keepRemainder: true);
+                    if (parts.Length >= 6)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        gump.AddCroppedText(
+                            x, y,
+                            ParseIntToken(parts[2]),
+                            ParseIntToken(parts[3]),
+                            ParseIntToken(parts[4]),
+                            ResolveDialogHtml(parts[5], _character));
+                    }
+                    break;
+                }
+                case "DTEXT":
+                case "TEXT":
+                {
+                    if (!currentPageVisible) break;
+                    // DTEXT x y hue text...
+                    var parts = SplitTokens(args, 3, keepRemainder: true);
+                    if (parts.Length >= 4)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        gump.AddText(x, y, ParseIntToken(parts[2]),
+                            ResolveDialogHtml(parts[3], _character));
+                    }
+                    break;
+                }
+                case "CHECKERTRANS":
+                {
+                    if (!currentPageVisible) break;
+                    // CHECKERTRANS x y w h
+                    var parts = SplitTokens(args, 4);
+                    if (parts.Length >= 4)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        gump.AddCheckerTrans(x, y,
+                            ParseIntToken(parts[2]),
+                            ParseIntToken(parts[3]));
+                    }
+                    break;
+                }
+                case "CHECKBOX":
+                {
+                    if (!currentPageVisible) break;
+                    // CHECKBOX x y uncheckedGumpId checkedGumpId initialState switchId
+                    var parts = SplitTokens(args, 6);
+                    if (parts.Length >= 6)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        gump.AddCheckbox(x, y,
+                            ParseIntToken(parts[2]),
+                            ParseIntToken(parts[3]),
+                            ParseIntToken(parts[4]) != 0,
+                            ParseIntToken(parts[5]));
+                    }
+                    break;
+                }
+                case "RADIO":
+                {
+                    if (!currentPageVisible) break;
+                    var parts = SplitTokens(args, 6);
+                    if (parts.Length >= 6)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        gump.AddRadio(x, y,
+                            ParseIntToken(parts[2]),
+                            ParseIntToken(parts[3]),
+                            ParseIntToken(parts[4]) != 0,
+                            ParseIntToken(parts[5]));
+                    }
+                    break;
+                }
+                case "DTEXTENTRY":
+                case "TEXTENTRY":
+                {
+                    if (!currentPageVisible) break;
+                    // DTEXTENTRY x y w h hue entryId initialText...
+                    var parts = SplitTokens(args, 6, keepRemainder: true);
+                    if (parts.Length >= 7)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        gump.AddTextEntry(x, y,
+                            ParseIntToken(parts[2]),
+                            ParseIntToken(parts[3]),
+                            ParseIntToken(parts[4]),
+                            ParseIntToken(parts[5]),
+                            ResolveDialogHtml(parts[6], _character));
+                    }
+                    break;
+                }
+                case "DTEXTENTRYLIMITED":
+                case "TEXTENTRYLIMITED":
+                {
+                    if (!currentPageVisible) break;
+                    // DTEXTENTRYLIMITED x y w h hue entryId maxChars initialText...
+                    // (client doesn't enforce maxChars server-side; we just reuse textentry)
+                    var parts = SplitTokens(args, 7, keepRemainder: true);
+                    if (parts.Length >= 8)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        gump.AddTextEntry(x, y,
+                            ParseIntToken(parts[2]),
+                            ParseIntToken(parts[3]),
+                            ParseIntToken(parts[4]),
+                            ParseIntToken(parts[5]),
+                            ResolveDialogHtml(parts[7], _character));
+                    }
+                    break;
+                }
+                case "TILEPIC":
+                {
+                    if (!currentPageVisible) break;
+                    var parts = SplitTokens(args, 3);
+                    if (parts.Length >= 3)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        gump.AddTilePic(x, y, ParseIntToken(parts[2]));
+                    }
+                    break;
+                }
+                case "TILEPICHUE":
+                {
+                    if (!currentPageVisible) break;
+                    var parts = SplitTokens(args, 4);
+                    if (parts.Length >= 4)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        gump.AddTilePicHue(x, y,
+                            ParseIntToken(parts[2]),
+                            ParseIntToken(parts[3]));
+                    }
+                    break;
+                }
+                case "GROUP":
+                {
+                    int g = ParseIntToken(args);
+                    gump.AddGroup(g);
+                    break;
+                }
+            }
+        }
+
+        SendGump(gump, (buttonId, switches, textEntries) =>
+        {
+            if (_character == null)
+                return;
+            if (buttonId == 0)
+                return;
+
+            // Try the script's [Dialog d_xxx Button] handler first. If a matching
+            // ON=buttonId block exists, its body runs and we're done. Otherwise
+            // fall back to page navigation behaviour so the old in-dialog page
+            // buttons still work.
+            if (TryRunScriptDialogButton(dialogId, (int)buttonId, switches, textEntries))
+                return;
+
+            if (buttonId is >= 1 and <= 5000)
+                TryShowScriptDialog(dialogId, (int)buttonId);
+        });
+
+        return true;
+    }
+
+    /// <summary>Execute the script's <c>[Dialog d_xxx Button]</c> <c>ON=buttonId</c>
+    /// handler. Wires the dialog response (buttonId, switches, text entries)
+    /// into the expression parser so <c>&lt;ArgN&gt;</c>, <c>&lt;Argtxt[N]&gt;</c>
+    /// and <c>&lt;Argchk[N]&gt;</c> resolve correctly during evaluation.</summary>
+    private bool TryRunScriptDialogButton(string dialogId, int buttonId,
+        uint[] switches, (ushort Id, string Text)[] textEntries)
+    {
+        if (_character == null) return false;
+        if (_triggerDispatcher?.Runner == null || _commands?.Resources == null) return false;
+
+        if (!TryFindDialogButtonSection(dialogId, out var buttonSection))
+            return false;
+
+        // Build a lookup for Argtxt[N] / Argchk[N].
+        var textById = new Dictionary<ushort, string>();
+        foreach (var te in textEntries)
+            textById[te.Id] = te.Text;
+        var switchSet = new HashSet<uint>(switches);
+
+        string? Resolve(string varExpr)
+        {
+            string upper = varExpr.ToUpperInvariant();
+            if (upper == "ARGN") return buttonId.ToString();
+            if (upper == "ARGV") return buttonId.ToString();
+            // ARGCHK (no brackets) — 1 if any switch is flipped, 0 else.
+            // ARGCHKID — the ID of the first selected switch (0 if none).
+            // Sphere dialogs rely on these two to gate "OK" handlers:
+            //   elseif !(<argchk>) src.sysmessage You did not select …
+            //   local.n=<eval <argchkid>-1>
+            if (upper == "ARGCHK") return switchSet.Count > 0 ? "1" : "0";
+            if (upper == "ARGCHKID")
+            {
+                uint first = 0;
+                foreach (var s in switchSet) { if (first == 0 || s < first) first = s; }
+                return first.ToString();
+            }
+
+            if (TryParseIndexedAccessor(upper, "ARGTXT", out int txtIdx))
+                return textById.TryGetValue((ushort)txtIdx, out var txt) ? txt : "";
+            if (TryParseIndexedAccessor(upper, "ARGCHK", out int chkIdx))
+                return switchSet.Contains((uint)chkIdx) ? "1" : "0";
+            // ARGV[N] falls through to the interpreter's default handling
+            // so the updated args.ArgString (from a script-side "args=…"
+            // assignment) is tokenised, not the button id.
+            return null;
+        }
+
+        var parser = _triggerDispatcher.Runner.Interpreter.Expressions;
+        if (parser == null) return false;
+
+        var prev = parser.DialogArgResolver;
+        parser.DialogArgResolver = Resolve;
+        try
+        {
+            var trigArgs = new SphereNet.Scripting.Execution.TriggerArgs(_character)
+            {
+                Number1 = buttonId,
+                ArgString = buttonId.ToString(),
+            };
+
+            // Snapshot visible character state BEFORE the handler runs so
+            // any property assignment (src.p=…, src.body=…, src.hue=…,
+            // src.flags=…) can be broadcast as a concrete view update
+            // afterwards. Without this the TrySetProperty path silently
+            // updates private fields and nearby clients keep rendering
+            // the old snapshot.
+            var posBefore = _character.Position;
+            ushort bodyBefore = _character.BodyId;
+            ushort hueBefore = _character.Hue.Value;
+            var flagsBefore = _character.StatFlags;
+
+            bool ran = _triggerDispatcher.Runner.TryRunDialogButton(
+                buttonSection, buttonId, _character, this, trigArgs);
+            if (ran && _character != null)
+            {
+                bool moved = !_character.Position.Equals(posBefore);
+                bool appearance =
+                    _character.BodyId != bodyBefore ||
+                    _character.Hue.Value != hueBefore ||
+                    _character.StatFlags != flagsBefore;
+
+                if (moved)
+                {
+                    _world.MoveCharacter(_character, _character.Position);
+                    Resync();
+                    _mountEngine?.EnsureMountedState(_character);
+                    BroadcastDrawObject(_character);
+                }
+                else if (appearance)
+                {
+                    // No teleport, but body / hue / flag changed (e.g.
+                    // statf_hidden via |=). Re-send DrawObject so the
+                    // client reflects the new appearance without a
+                    // full resync.
+                    BroadcastDrawObject(_character);
+                }
+            }
+            return ran;
+        }
+        finally
+        {
+            parser.DialogArgResolver = prev;
+        }
+    }
+
+    private static bool TryParseIndexedAccessor(string upperVar, string prefix, out int index)
+    {
+        index = 0;
+        if (!upperVar.StartsWith(prefix + "[", StringComparison.Ordinal)) return false;
+        int close = upperVar.IndexOf(']');
+        if (close <= prefix.Length + 1) return false;
+        string num = upperVar.Substring(prefix.Length + 1, close - prefix.Length - 1);
+        return int.TryParse(num, out index);
+    }
+
+    /// <summary>Pre-expand FOR / WHILE / IF / LOCAL blocks in a dialog's
+    /// key sequence. Dialog scripts mix render verbs (BUTTON, DTEXT, …)
+    /// with control-flow verbs Sphere's interpreter otherwise handles at
+    /// runtime. The outer parser walks the section linearly, so we flatten
+    /// loops into their rendered copies and evaluate IFs up front.
+    /// <paramref name="locals"/> is shared with the caller so LOCAL.x=
+    /// assignments stay visible to later expression resolution.</summary>
+    private List<SphereNet.Scripting.Parsing.ScriptKey> ExpandDialogScriptKeys(
+        IReadOnlyList<SphereNet.Scripting.Parsing.ScriptKey> input,
+        Dictionary<string, string> locals,
+        int dialogArgN1)
+    {
+        var output = new List<SphereNet.Scripting.Parsing.ScriptKey>(input.Count);
+        ExpandRange(input, 0, input.Count, output, locals, dialogArgN1);
+        return output;
+    }
+
+    private void ExpandRange(
+        IReadOnlyList<SphereNet.Scripting.Parsing.ScriptKey> input, int start, int end,
+        List<SphereNet.Scripting.Parsing.ScriptKey> output,
+        Dictionary<string, string> locals,
+        int dialogArgN1)
+    {
+        int i = start;
+        while (i < end)
+        {
+            var k = input[i];
+            string cmd = k.Key.Trim().ToUpperInvariant();
+            string args = k.Arg;
+
+            if (cmd == "IF")
+            {
+                int ifEnd = FindBlockEnd(input, i + 1, end, "IF", "ENDIF");
+                if (ifEnd < 0) { i = end; break; }
+                // Split the IF body into IF / ELIF / ELSE branches.
+                var branches = SplitIfBranches(input, i + 1, ifEnd);
+                string resolvedCond = ResolveInlineExpressions(args, locals, dialogArgN1);
+                bool taken = EvaluateDialogCondition(resolvedCond);
+                int chosenStart = -1, chosenEnd = -1;
+                if (taken) { chosenStart = branches[0].Start; chosenEnd = branches[0].End; }
+                else
+                {
+                    for (int b = 1; b < branches.Count && chosenStart < 0; b++)
+                    {
+                        var br = branches[b];
+                        if (br.Keyword == "ELSE")
+                        { chosenStart = br.Start; chosenEnd = br.End; break; }
+                        if (br.Keyword == "ELIF" || br.Keyword == "ELSEIF")
+                        {
+                            string elifCond = ResolveInlineExpressions(br.Condition!, locals, dialogArgN1);
+                            if (EvaluateDialogCondition(elifCond))
+                            { chosenStart = br.Start; chosenEnd = br.End; break; }
+                        }
+                    }
+                }
+                if (chosenStart >= 0)
+                    ExpandRange(input, chosenStart, chosenEnd, output, locals, dialogArgN1);
+                i = ifEnd + 1;
+                continue;
+            }
+
+            if (cmd == "FOR")
+            {
+                // FOR N  or  FOR START END — count loops using iterator _for.
+                int forEnd = FindBlockEnd(input, i + 1, end, "FOR", "ENDFOR");
+                if (forEnd < 0) { i = end; break; }
+                string resolved = ResolveInlineExpressions(args, locals, dialogArgN1);
+                ParseForRange(resolved, out long from, out long to);
+                const long maxIter = 500;
+                long count = Math.Min(maxIter, to - from + 1);
+                string? savedFor = locals.TryGetValue("_FOR", out var sf) ? sf : null;
+                for (long it = 0; it < count; it++)
+                {
+                    locals["_FOR"] = (from + it).ToString();
+                    ExpandRange(input, i + 1, forEnd, output, locals, dialogArgN1);
+                }
+                if (savedFor != null) locals["_FOR"] = savedFor; else locals.Remove("_FOR");
+                i = forEnd + 1;
+                continue;
+            }
+
+            if (cmd == "WHILE")
+            {
+                int whileEnd = FindBlockEnd(input, i + 1, end, "WHILE", "ENDWHILE");
+                if (whileEnd < 0) { i = end; break; }
+                const int maxIter = 500;
+                int iter = 0;
+                while (iter < maxIter)
+                {
+                    string resolved = ResolveInlineExpressions(args, locals, dialogArgN1);
+                    if (!EvaluateDialogCondition(resolved)) break;
+                    ExpandRange(input, i + 1, whileEnd, output, locals, dialogArgN1);
+                    iter++;
+                }
+                i = whileEnd + 1;
+                continue;
+            }
+
+            // REFn = <uid> — scope-local object reference. Storage
+            // lives in the same `locals` dict under the key "REFn" so
+            // subsequent <REFn> / <REFn.property> lookups see it.
+            // Scripts like the admin panel rely on this to point rows
+            // at account / character objects:
+            //   REF1=<SERV.ACCOUNT.<Eval <CTag0.Dialog.Admin.Index>+1>>
+            //   <DEF.admin_flag_1>: <REF1.NAME>
+            if (cmd.Length > 3 && cmd.StartsWith("REF", StringComparison.OrdinalIgnoreCase) &&
+                char.IsDigit(cmd[3]) && !cmd.Contains('.'))
+            {
+                string resolved = string.IsNullOrEmpty(args) ? "" : ResolveInlineExpressions(args, locals, dialogArgN1);
+                locals[cmd.ToUpperInvariant()] = resolved;
+                i++;
+                continue;
+            }
+
+            if (cmd.StartsWith("LOCAL.", StringComparison.OrdinalIgnoreCase))
+            {
+                // LOCAL.x = value  or  LOCAL.x += N
+                string nameAndOp = cmd[6..]; // after "LOCAL."
+                // Detect compound operator in args: "+= 1", "= 5", "1", etc.
+                string varName = nameAndOp;
+                string valueExpr = args;
+                char opCh = ' ';
+                if (valueExpr.Length > 0)
+                {
+                    var trimmed = valueExpr.TrimStart();
+                    if (trimmed.StartsWith("+=", StringComparison.Ordinal)) { opCh = '+'; valueExpr = trimmed[2..]; }
+                    else if (trimmed.StartsWith("-=", StringComparison.Ordinal)) { opCh = '-'; valueExpr = trimmed[2..]; }
+                    else if (trimmed.StartsWith("=", StringComparison.Ordinal)) { opCh = '='; valueExpr = trimmed[1..]; }
+                }
+                string resolved = ResolveInlineExpressions(valueExpr.Trim(), locals, dialogArgN1);
+                long num = ParseLongToken(resolved);
+                long current = locals.TryGetValue(varName, out var cur) && long.TryParse(cur, out long pv) ? pv : 0;
+                long next = opCh switch
+                {
+                    '+' => current + num,
+                    '-' => current - num,
+                    _ => num,
+                };
+                locals[varName] = next.ToString();
+                i++;
+                continue;
+            }
+
+            // Render command — inline-resolve the args and emit. Local
+            // scope flows into the args via ResolveInlineExpressions so
+            // <local.x> / <eval …> inside BUTTON / DTEXT / RADIO /
+            // RESIZEPIC coordinates come out as concrete numbers.
+            string resolvedArg = string.IsNullOrEmpty(args)
+                ? args
+                : ResolveInlineExpressions(args, locals, dialogArgN1);
+            output.Add(new SphereNet.Scripting.Parsing.ScriptKey(k.Key, resolvedArg));
+            i++;
+        }
+    }
+
+    /// <summary>Find the matching end keyword, honouring nested blocks.
+    /// Returns the absolute index of the end keyword, or -1 if unmatched.</summary>
+    private static int FindBlockEnd(
+        IReadOnlyList<SphereNet.Scripting.Parsing.ScriptKey> input, int start, int end,
+        string openKeyword, string endKeyword)
+    {
+        int depth = 1;
+        for (int i = start; i < end; i++)
+        {
+            string k = input[i].Key.Trim().ToUpperInvariant();
+            if (k == openKeyword) depth++;
+            else if (k == endKeyword) { depth--; if (depth == 0) return i; }
+        }
+        return -1;
+    }
+
+    private readonly record struct IfBranch(string Keyword, int Start, int End, string? Condition);
+
+    private static List<IfBranch> SplitIfBranches(
+        IReadOnlyList<SphereNet.Scripting.Parsing.ScriptKey> input, int start, int end)
+    {
+        // Branch boundaries at ELIF / ELSEIF / ELSE at depth 0 (relative
+        // to the outer IF we're inside). Nested IFs count as depth.
+        var list = new List<IfBranch>();
+        int depth = 0;
+        int segStart = start;
+        string curKeyword = "IF";
+        string? curCondition = null;
+        for (int i = start; i < end; i++)
+        {
+            string k = input[i].Key.Trim().ToUpperInvariant();
+            if (k == "IF") { depth++; continue; }
+            if (k == "ENDIF") { depth--; continue; }
+            if (depth != 0) continue;
+            if (k == "ELSE" || k == "ELIF" || k == "ELSEIF")
+            {
+                list.Add(new IfBranch(curKeyword, segStart, i, curCondition));
+                curKeyword = k;
+                curCondition = (k != "ELSE") ? input[i].Arg : null;
+                segStart = i + 1;
+            }
+        }
+        list.Add(new IfBranch(curKeyword, segStart, end, curCondition));
+        return list;
+    }
+
+    private static void ParseForRange(string expr, out long from, out long to)
+    {
+        from = 0; to = 0;
+        var parts = expr.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 1)
+        {
+            // FOR N — loops 0 to N-1 in Sphere.
+            long.TryParse(parts[0], out long n);
+            to = n - 1;
+        }
+        else if (parts.Length >= 2)
+        {
+            long.TryParse(parts[0], out from);
+            long.TryParse(parts[1], out to);
+        }
+    }
+
+    private static long ParseLongToken(string s)
+    {
+        s = s.Trim();
+        if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+            long.TryParse(s.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out long hv))
+            return hv;
+        return long.TryParse(s, out long v) ? v : 0;
+    }
+
+    /// <summary>Cheap-and-cheerful truthiness for IF / WHILE. An expression
+    /// is truthy if it evaluates to non-zero; strings compare as text.
+    /// The Sphere parser accepts relational operators, which
+    /// ExpressionParser already understands — we just evaluate through it.</summary>
+    private bool EvaluateDialogCondition(string condition)
+    {
+        string c = condition.Trim();
+        if (string.IsNullOrEmpty(c)) return false;
+        if (c.Length >= 2 && c[0] == '(' && c[^1] == ')')
+            c = c[1..^1].Trim();
+        if (string.IsNullOrEmpty(c) || c == "0")
+        {
+            _logger.LogDebug("[if_eval] raw='{Raw}' → false (empty/zero)", condition);
+            return false;
+        }
+
+        bool hasOperator = c.AsSpan().IndexOfAny("!+-*/%&|()<>=~^") >= 0;
+
+        var parser = new ExpressionParser();
+        long v = parser.Evaluate(c.AsSpan());
+        if (v != 0)
+        {
+            _logger.LogDebug("[if_eval] raw='{Raw}' stripped='{C}' parser={V} → true", condition, c, v);
+            return true;
+        }
+        if (hasOperator)
+        {
+            _logger.LogDebug("[if_eval] raw='{Raw}' stripped='{C}' parser=0 hasOp=true → false", condition, c);
+            return false;
+        }
+        bool truthy = !long.TryParse(c, System.Globalization.NumberStyles.Any,
+            System.Globalization.CultureInfo.InvariantCulture, out _);
+        _logger.LogDebug("[if_eval] raw='{Raw}' stripped='{C}' parser=0 hasOp=false → {Truthy}", condition, c, truthy);
+        return truthy;
+    }
+
+    /// <summary>Resolve &lt;local.x&gt; / &lt;dlocal.x&gt; / &lt;eval …&gt;
+    /// / &lt;def0.…&gt; / &lt;src.…&gt; etc. in an argument string, using
+    /// the dialog-local scope for LOCAL references. <paramref name="dialogArgN1"/>
+    /// feeds &lt;argn1&gt; / &lt;argn&gt; so the Sphere "page &lt;argn1&gt;"
+    /// pattern in dialog layouts resolves to the page the dialog was
+    /// opened on (e.g. sdialog d_moongates &lt;eval &lt;src.p.m&gt;+1&gt;).</summary>
+    private string ResolveInlineExpressions(string input, Dictionary<string, string> locals, int dialogArgN1 = 0)
+    {
+        if (string.IsNullOrEmpty(input) || input.IndexOf('<') < 0) return input;
+
+        var servResolver = _triggerDispatcher?.Runner?.Interpreter?.ServerPropertyResolver;
+        var parser = new ExpressionParser
+        {
+            VariableResolver = varName =>
+            {
+                string upper = varName.ToUpperInvariant();
+                if (upper == "ARGN" || upper == "ARGN1")
+                    return dialogArgN1.ToString();
+                // Uninitialised LOCAL / DLOCAL return "0" per Sphere
+                // convention — scripts read them as zero before the first
+                // assignment (common pattern: "while <dlocal.n>" where the
+                // counter is bumped inside the body).
+                if (upper.StartsWith("LOCAL."))
+                    return locals.TryGetValue(upper[6..], out var lv) ? lv : "0";
+                if (upper.StartsWith("DLOCAL."))
+                    return locals.TryGetValue(upper[7..], out var dlv) ? dlv : "0";
+
+                // REFn and REFn.property — dialog-scoped object references.
+                // REF1..REF999 are stored in the same locals dict keyed as
+                // "REFN" (upper). `<REFn>` returns the stored reference
+                // string (usually a UID); `<REFn.property>` looks up the
+                // referenced object via the REF_GET protocol so its
+                // properties flow into the rendered layout.
+                if (upper.Length > 3 && upper.StartsWith("REF", StringComparison.Ordinal) &&
+                    char.IsDigit(upper[3]))
+                {
+                    int dotIdx = upper.IndexOf('.');
+                    string refKey = dotIdx > 0 ? upper[..dotIdx] : upper;
+                    string? refVal = locals.TryGetValue(refKey, out var rv) ? rv : null;
+                    if (dotIdx < 0) return refVal ?? "0";
+                    if (string.IsNullOrEmpty(refVal) || refVal == "0") return "0";
+                    string subProp = upper[(dotIdx + 1)..];
+                    return servResolver?.Invoke($"_REF_GET={refVal}|{subProp}") ?? "0";
+                }
+
+                // CTAG0.X / CTAG.X on the current character. Reads from
+                // the client-session CTag map (Source-X CClient::m_TagDefs
+                // parity), not the persistent TAG storage. Defaults to
+                // "0" when unset — Sphere convention.
+                if (upper.StartsWith("CTAG0.") || upper.StartsWith("CTAG."))
+                {
+                    int dot = upper.IndexOf('.');
+                    string tagKey = upper[(dot + 1)..];
+                    string? tagVal = _character?.CTags.Get(tagKey);
+                    return tagVal ?? "0";
+                }
+                if ((upper.StartsWith("DEF.") || upper.StartsWith("DEF0.")) &&
+                    _commands?.Resources != null)
+                {
+                    string origKey = varName.StartsWith("DEF.", StringComparison.OrdinalIgnoreCase)
+                        ? varName[4..]
+                        : varName[5..];
+                    if (_commands.Resources.TryGetDefValue(origKey, out string defTextVal))
+                    {
+                        string stripped = StripSurroundingQuotes(defTextVal);
+                        _logger.LogDebug("[def_get] varName='{V}' key='{Key}' raw='{Raw}' out='{Out}'",
+                            varName, origKey, defTextVal, stripped);
+                        return stripped;
+                    }
+                    var defRid = _commands.Resources.ResolveDefName(origKey);
+                    if (defRid.IsValid) return defRid.Index.ToString();
+                    _logger.LogDebug("[def_miss] varName='{V}' key='{Key}' prefix={Prefix}",
+                        varName, origKey, upper.StartsWith("DEF.") ? "DEF." : "DEF0.");
+                    return "0";
+                }
+                if ((upper.StartsWith("SRC.") || upper.StartsWith("DSRC.")) && _character != null)
+                {
+                    int d = upper.IndexOf('.');
+                    if (_character.TryGetProperty(upper[(d + 1)..], out string srcVal))
+                        return srcVal;
+                }
+                if (upper.StartsWith("SERV.") && servResolver != null)
+                    return servResolver(upper[5..]);
+
+                // Dialog subject (CLIMODE_DIALOG pObj) wins over GM
+                // properties for bare reads — <BODY>, <STR>, <NAME>
+                // inside d_charprop1 refer to the inspected target,
+                // not the GM. Fall back to GM when subject misses so
+                // admin-style dialogs keep their existing behaviour.
+                if (_dialogSubjectUid.IsValid)
+                {
+                    var subj = _world.FindObject(_dialogSubjectUid);
+                    if (subj != null)
+                    {
+                        // Sphere <I.*> alias = the subject itself.
+                        //   <I.STR> → subject STR, <I.0> → skill 0 level.
+                        // Character.TryGetProperty doesn't know the "I."
+                        // prefix, so strip it here and delegate the rest.
+                        string lookup = upper.StartsWith("I.", StringComparison.Ordinal)
+                            ? upper[2..]
+                            : upper;
+                        // A bare number on Character resolves to that skill's
+                        // current level — matches Source-X CChar::r_WriteVal
+                        // on an integer key.
+                        if (subj is Character subjCh && int.TryParse(lookup, out int skillIdx)
+                            && skillIdx >= 0 && skillIdx < (int)SkillType.Qty)
+                            return subjCh.GetSkill((SkillType)skillIdx).ToString();
+                        if (subj.TryGetProperty(lookup, out string subjProp))
+                            return subjProp;
+                    }
+                }
+                if (_character != null && _character.TryGetProperty(upper, out string charProp))
+                    return charProp;
+
+                // Last-resort delegation: the same resolver the script
+                // interpreter uses at runtime covers ACCOUNT.x,
+                // ISEVENT.x, ISDIALOGOPEN.x, VAR0.x, GETREFTYPE, and
+                // other dialog-common accessors.
+                if (_character != null &&
+                    TryResolveScriptVariable(upper, _character, null, out string fallback))
+                    return fallback;
+
+                return null;
+            },
+        };
+        return parser.EvaluateStr(input);
+    }
+
+    private bool TryFindDialogButtonSection(string dialogId, out SphereNet.Scripting.Parsing.ScriptSection buttonSection)
+    {
+        buttonSection = null!;
+        if (_commands?.Resources == null) return false;
+
+        foreach (var script in _commands.Resources.ScriptFiles)
+        {
+            var file = script.Open();
+            try
+            {
+                var sections = file.ReadAllSections();
+                foreach (var section in sections)
+                {
+                    if (!section.Name.Equals("DIALOG", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    // Header forms: "d_xxx BUTTON" / "d_xxx TEXT" / etc.
+                    // Split on whitespace and match (first=id, second=BUTTON).
+                    var parts = section.Argument.Split(
+                        new[] { ' ', '\t' },
+                        2,
+                        StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length < 2) continue;
+                    if (!parts[0].Equals(dialogId, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!parts[1].Equals("BUTTON", StringComparison.OrdinalIgnoreCase)) continue;
+
+                    buttonSection = section;
+                    return true;
+                }
+            }
+            finally
+            {
+                script.Close();
+            }
+        }
+        return false;
+    }
+
+    private bool TryFindDialogSections(string dialogId, out SphereNet.Scripting.Parsing.ScriptSection layoutSection)
+    {
+        layoutSection = null!;
+        if (_commands?.Resources == null)
+            return false;
+
+        foreach (var script in _commands.Resources.ScriptFiles)
+        {
+            var file = script.Open();
+            try
+            {
+                var sections = file.ReadAllSections();
+                foreach (var section in sections)
+                {
+                    if (!section.Name.Equals("DIALOG", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    string arg = section.Argument.Trim();
+                    if (arg.Equals(dialogId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        layoutSection = section;
+                        return true;
+                    }
+                }
+            }
+            finally
+            {
+                script.Close();
+            }
+        }
+
+        return false;
+    }
+
+    private bool TryFindMenuSection(string menuDefname, out SphereNet.Scripting.Parsing.ScriptSection menuSection)
+    {
+        menuSection = null!;
+        if (_commands?.Resources == null)
+            return false;
+
+        foreach (var script in _commands.Resources.ScriptFiles)
+        {
+            var file = script.Open();
+            try
+            {
+                var sections = file.ReadAllSections();
+                foreach (var section in sections)
+                {
+                    if (!section.Name.Equals("MENU", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    string arg = section.Argument.Trim();
+                    if (arg.Equals(menuDefname, StringComparison.OrdinalIgnoreCase))
+                    {
+                        menuSection = section;
+                        return true;
+                    }
+                }
+            }
+            finally
+            {
+                script.Close();
+            }
+        }
+
+        return false;
+    }
+
+    private string ResolveDialogHtml(string html, IScriptObj target)
+    {
+        // Delegate through the same resolver chain the interpreter uses.
+        // SERV.*, RTIME, RTICKS, REFn.property, etc. all live on the server
+        // property resolver — without routing dialog text through it we lost
+        // the most common Sphere gump substitutions (<Serv.Servname>, …).
+        var servResolver = _triggerDispatcher?.Runner?.Interpreter?.ServerPropertyResolver;
+        var parser = new ExpressionParser
+        {
+            VariableResolver = varName =>
+            {
+                if (varName.StartsWith("DEF.", StringComparison.OrdinalIgnoreCase) &&
+                    _commands?.Resources != null &&
+                    _commands.Resources.TryGetDefValue(varName[4..], out string defVal))
+                {
+                    return defVal;
+                }
+
+                if (TryResolveScriptVariable(varName, target, null, out string runtimeVal))
+                    return runtimeVal;
+
+                // Source/target routing: Src.X resolves through the admin's
+                // own character. Admin dialogs reference <Src.Version>,
+                // <Src.Account>, <Src.CTag0.…>, etc.
+                if (varName.StartsWith("SRC.", StringComparison.OrdinalIgnoreCase))
+                {
+                    string subProp = varName[4..];
+                    if (_character != null && _character.TryGetProperty(subProp, out string srcProp))
+                        return srcProp;
+                }
+
+                if (target.TryGetProperty(varName, out string prop))
+                    return prop;
+
+                // SERV.* / RTIME / RTICKS — delegate to the runtime resolver.
+                if (servResolver != null)
+                {
+                    if (varName.StartsWith("SERV.", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string servProp = varName[5..];
+                        string? servVal = servResolver(servProp);
+                        if (servVal != null) return servVal;
+                    }
+                    if (varName.StartsWith("RTIME", StringComparison.OrdinalIgnoreCase) ||
+                        varName.StartsWith("RTICKS", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string? rVal = servResolver(varName);
+                        if (rVal != null) return rVal;
+                    }
+                    // Bare server metrics (CLIENTS, ACCOUNTS, CHARS, ITEMS, VERSION,
+                    // SERVNAME, TIME, SAVECOUNT, MEM, REGEN0-3) as fallback.
+                    string? bare = servResolver(varName);
+                    if (bare != null) return bare;
+                }
+
+                return null;
+            }
+        };
+
+        return parser.EvaluateStr(html);
+    }
+
+    /// <summary>Resolve a dialog coordinate token.
+    /// Formats:
+    ///   N      — absolute (resets cursor to N)
+    ///   +N     — cursor += N
+    ///   *N     — rowCursor += N; cursor = rowCursor (next-row step, independent
+    ///            of the +/- column walk)
+    /// <paramref name="rowCursor"/> may alias <paramref name="cursor"/> when the
+    /// caller hasn't wired a separate row tracker (old call sites).</summary>
+    private static int ResolveDialogCoord(string token, ref int cursor, ref int rowCursor)
+    {
+        token = token.Trim();
+        if (token.StartsWith('+'))
+        {
+            int delta = ParseIntToken(token[1..]);
+            cursor += delta;
+            return cursor;
+        }
+        if (token.StartsWith('*'))
+        {
+            int delta = ParseIntToken(token[1..]);
+            rowCursor += delta;
+            cursor = rowCursor;
+            return cursor;
+        }
+
+        cursor = ParseIntToken(token);
+        rowCursor = cursor;
+        return cursor;
+    }
+
+    private static int ResolveDialogCoord(string token, ref int cursor)
+    {
+        int dummy = cursor;
+        return ResolveDialogCoord(token, ref cursor, ref dummy);
+    }
+
+    /// <summary>DEFNAME text values in Sphere scripts often ship wrapped
+    /// in double quotes (<c>CharFlag.1 "Invulnerable"</c>). The quotes
+    /// are a Sphere source-lexer convention, not part of the payload —
+    /// strip a single matched pair when resolving so the gump label
+    /// reads "Invulnerable" instead of <c>"Invulnerable"</c>.</summary>
+    private static string StripSurroundingQuotes(string s)
+    {
+        if (s.Length >= 2 && s[0] == '"' && s[^1] == '"')
+            return s[1..^1];
+        return s;
+    }
+
+    private static int ParseIntToken(string token)
+    {
+        token = token.Trim();
+        if (token.Length == 0)
+            return 0;
+
+        if (int.TryParse(token, out int dec))
+            return dec;
+
+        if (token.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(token[2..], System.Globalization.NumberStyles.HexNumber, null, out int hex))
+            return hex;
+
+        if (token.StartsWith('0') && token.Length > 1 &&
+            int.TryParse(token, System.Globalization.NumberStyles.HexNumber, null, out int legacyHex))
+            return legacyHex;
+
+        return 0;
+    }
+
+    private static string[] SplitTokens(string input, int minLeadingTokens, bool keepRemainder = false)
+    {
+        if (!keepRemainder)
+            return input.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        var parts = new List<string>();
+        string text = input.Trim();
+        int i = 0;
+        while (i < text.Length && parts.Count < minLeadingTokens)
+        {
+            while (i < text.Length && char.IsWhiteSpace(text[i])) i++;
+            if (i >= text.Length) break;
+            int start = i;
+            while (i < text.Length && !char.IsWhiteSpace(text[i])) i++;
+            parts.Add(text[start..i]);
+        }
+
+        while (i < text.Length && char.IsWhiteSpace(text[i])) i++;
+        parts.Add(i < text.Length ? text[i..] : "");
+        return parts.ToArray();
+    }
+
+    private bool CanSendStatusFor(Character ch)
+    {
+        if (_character == null)
+            return false;
+        if (ch == _character)
+            return true;
+        if (ch.MapIndex != _character.MapIndex)
+            return false;
+
+        int range = Math.Max(5, (int)_netState.ViewRange);
+        return _character.Position.GetDistanceTo(ch.Position) <= range;
+    }
+
+    private static string ResolveStatusName(Character ch)
+    {
+        string name = ch.GetName()
+            .Replace("\0", string.Empty, StringComparison.Ordinal)
+            .Trim();
+
+        if (name.Length > 0)
+            return name;
+
+        var def = DefinitionLoader.GetCharDef(ch.BaseId);
+        name = def?.Name?.Trim() ?? "";
+        if (name.Length == 0)
+            name = def?.DefName?.Trim() ?? "";
+
+        if (name.Length == 0)
+            name = ch.IsPlayer ? "Player" : $"NPC_{ch.BodyId:X}";
+
+        return name.Length > 30 ? name[..30] : name;
+    }
+
+    private void SendSkillList()
+    {
+        if (_character == null) return;
+
+        var skills = new List<(ushort Id, ushort Value, ushort RawValue, byte Lock, ushort Cap)>();
+        for (int i = 0; i < (int)SkillType.Qty && i < 58; i++)
+        {
+            ushort val = _character.GetSkill((SkillType)i);
+            byte lockState = _character.GetSkillLock((SkillType)i);
+            skills.Add(((ushort)i, val, val, lockState, 1000)); // cap=100.0 (1000 in tenths)
+        }
+        _netState.Send(new PacketSkillList(skills.ToArray()));
+    }
+
+    private void SendPickupFailed(byte reason)
+    {
+        var buf = new PacketBuffer(2);
+        buf.WriteByte(0x27);
+        buf.WriteByte(reason);
+        _netState.Send(buf);
+    }
+
+    private static (uint Serial, ushort ItemId, byte Layer, ushort Hue)[] BuildEquipmentList(Character ch)
+    {
+        var list = new List<(uint, ushort, byte, ushort)>();
+        for (int i = 0; i <= (int)Layer.Horse; i++)
+        {
+            var item = ch.GetEquippedItem((Layer)i);
+            if (item == null) continue;
+            list.Add((item.Uid.Value, item.DispIdFull, (byte)i, item.Hue));
+        }
+        return list.ToArray();
+    }
+
+    private static byte BuildMobileFlags(Character ch)
+    {
+        byte flags = 0;
+        if (ch.IsInvisible) flags |= 0x80;
+        if (ch.IsInWarMode) flags |= 0x40;
+        if (ch.IsDead) flags |= 0x02;
+        if (ch.IsStatFlag(StatFlag.Freeze)) flags |= 0x01;
+        return flags;
+    }
+
+    private bool TryHandleCommandSpeech(string text)
+    {
+        if (_character == null || _commands == null)
+            return false;
+
+        // Some clients may prepend invisible/null whitespace-like chars in unicode speech.
+        // Normalize before checking command prefix to keep command parsing resilient.
+        string normalized = text
+            .Replace("\0", string.Empty, StringComparison.Ordinal)
+            .TrimStart(' ', '\t', '\r', '\n');
+        if (normalized.Length <= 1)
+            return false;
+
+        char prefix = _commands.CommandPrefix;
+        // Accept '.' and '/' regardless of configured prefix for Source-X compatibility.
+        if (normalized[0] != prefix && normalized[0] != '.' && normalized[0] != '/')
+            return false;
+
+        string commandLine = normalized[1..]
+            .Replace("\0", string.Empty, StringComparison.Ordinal)
+            .Trim();
+        if (string.IsNullOrEmpty(commandLine))
+            return true;
+
+        _logger.LogDebug("[command_dispatch] account={Account} char=0x{Char:X8} raw='{Raw}' normalized='{Norm}' prefix='{Prefix}' cmd='{Cmd}'",
+            _account?.Name ?? "?", _character.Uid.Value, text, normalized, prefix, commandLine);
+
+        var posBefore = _character.Position;
+        var result = _commands.TryExecute(_character, commandLine);
+        switch (result)
+        {
+            case CommandResult.Executed:
+                if (!_character.Position.Equals(posBefore))
+                {
+                    // Teleport-like commands (.GO, .JAIL, script-based moves, etc.) must
+                    // force a client-side world refresh so the player actually relocates.
+                    Resync();
+                    _mountEngine?.EnsureMountedState(_character);
+                    BroadcastDrawObject(_character);
+                }
+                return true;
+
+            case CommandResult.InsufficientPriv:
+                var required = _commands.GetRequiredPrivLevel(commandLine) ?? PrivLevel.Counsel;
+                SysMessage(ServerMessages.GetFormatted("gm_insuf_priv", required, _character.PrivLevel));
+                _logger.LogDebug("[command_priv_reject] account={Account} char=0x{Char:X8} cmd='{Cmd}' required={Req} has={Has}",
+                    _account?.Name ?? "?", _character.Uid.Value, commandLine, required, _character.PrivLevel);
+                return true;
+
+            case CommandResult.NotFound:
+                SysMessage(ServerMessages.GetFormatted("cmd_invalid", commandLine));
+                _logger.LogDebug("[speech_fallback] account={Account} char=0x{Char:X8} unknownCmd='{Cmd}'",
+                    _account?.Name ?? "?", _character.Uid.Value, commandLine);
+                return true;
+
+            case CommandResult.Failed:
+                _logger.LogDebug("[command_failed] account={Account} char=0x{Char:X8} cmd='{Cmd}'",
+                    _account?.Name ?? "?", _character.Uid.Value, commandLine);
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    private void SetWarMode(bool warMode, bool syncClients, bool preserveTarget)
+    {
+        if (_character == null) return;
+
+        bool oldState = _character.IsInWarMode;
+        if (warMode)
+            _character.SetStatFlag(StatFlag.War);
+        else
+            _character.ClearStatFlag(StatFlag.War);
+
+        if (!warMode && !preserveTarget)
+        {
+            _character.FightTarget = Serial.Invalid;
+            _character.NextAttackTime = 0;
+        }
+
+        if (!syncClients) return;
+
+        // Send 0x72 war mode confirmation — client expects this to actually toggle
+        _netState.Send(new PacketWarModeResponse(warMode));
+
+        // Broadcast appearance update to nearby players
+        byte warFlags = BuildMobileFlags(_character);
+        byte warNoto = GetNotoriety(_character);
+        BroadcastNearby?.Invoke(_character.Position, UpdateRange,
+            new PacketMobileMoving(_character.Uid.Value, _character.BodyId,
+                _character.X, _character.Y, _character.Z, (byte)_character.Direction,
+                _character.Hue, warFlags, warNoto),
+            _character.Uid.Value);
+
+        _logger.LogDebug("[war_mode] client={ClientId} char=0x{Char:X8} {Old}->{New}",
+            _netState.Id, _character.Uid.Value, oldState ? "war" : "peace", _character.IsInWarMode ? "war" : "peace");
+    }
+
+    private static int GetSwingDelayMs(Character attacker, Item? weapon)
+    {
+        // Temporary Source-X-like pacing until full weapon speed formula is ported.
+        int baseDelay = attacker.IsMounted ? 900 : 1200;
+        if (weapon == null) return baseDelay;
+        return Math.Max(600, baseDelay - 100);
+    }
+
+    /// <summary>Map a weapon (or bare fists) to the correct humanoid
+    /// 0x6E animation action index. Ranged weapons trigger the nock/fire
+    /// action; blades use the slash; blunt/maces use the overhead swing;
+    /// unarmed uses the wrestling punch. Exact values come from
+    /// ServUO MobileAnimation / Source-X AnimationRange tables.</summary>
+    private static ushort GetSwingAction(Character attacker, Item? weapon)
+    {
+        if (weapon == null)
+            return 31; // wrestling punch
+        return weapon.ItemType switch
+        {
+            Core.Enums.ItemType.WeaponBow => 18,       // bow draw
+            Core.Enums.ItemType.WeaponXBow => 19,      // crossbow
+            Core.Enums.ItemType.WeaponSword or
+            Core.Enums.ItemType.WeaponAxe => 9,        // slash
+            Core.Enums.ItemType.WeaponFence => 13,     // thrust / pierce
+            Core.Enums.ItemType.WeaponMaceSmith or
+            Core.Enums.ItemType.WeaponMaceSharp or
+            Core.Enums.ItemType.WeaponMaceStaff or
+            Core.Enums.ItemType.WeaponMaceCrook or
+            Core.Enums.ItemType.WeaponMacePick or
+            Core.Enums.ItemType.WeaponWhip => 11,      // bash
+            Core.Enums.ItemType.WeaponThrowing => 12,  // throw
+            _ => 9,
+        };
+    }
+
+    /// <summary>Swing-start sound (the whoosh / draw sound that plays
+    /// when the attacker actually swings, separate from the hit-land
+    /// sound that plays at the target when the blow connects).</summary>
+    private static ushort GetSwingSound(Item? weapon)
+    {
+        if (weapon == null)
+            return 0x023A; // unarmed whoosh
+        return weapon.ItemType switch
+        {
+            Core.Enums.ItemType.WeaponBow or
+            Core.Enums.ItemType.WeaponXBow => 0x0223,  // bow draw
+            Core.Enums.ItemType.WeaponSword or
+            Core.Enums.ItemType.WeaponAxe or
+            Core.Enums.ItemType.WeaponFence => 0x023B, // blade swing
+            Core.Enums.ItemType.WeaponMaceSmith or
+            Core.Enums.ItemType.WeaponMaceSharp or
+            Core.Enums.ItemType.WeaponMaceStaff or
+            Core.Enums.ItemType.WeaponMaceCrook or
+            Core.Enums.ItemType.WeaponMacePick or
+            Core.Enums.ItemType.WeaponWhip => 0x023D,  // mace swing
+            Core.Enums.ItemType.WeaponThrowing => 0x0238,
+            _ => 0x023B,
+        };
+    }
+
+    /// <summary>Compute the UO notoriety byte for <paramref name="ch"/> as
+    /// seen by this client's character. The client reads this byte (part of
+    /// 0x77/0x78/etc.) to pick the overhead-name hue:
+    /// 1=blue/innocent, 2=green/friend, 3=grey/neutral NPC,
+    /// 4=grey/criminal, 5=orange/enemy-guild, 6=red/murderer,
+    /// 7=yellow/invul. Returning 1 for everyone (as we did until now)
+    /// rendered every mobile in neutral grey. Source-X:
+    /// CChar::Noto_GetFlag / Noto_CalcFlag in CCharNotoriety.cpp.</summary>
+    private byte GetNotoriety(Character ch)
+    {
+        if (_character == null || ch == _character)
+            return 1; // self reads as innocent (blue)
+
+        // Invulnerable first — always yellow regardless of karma/guild.
+        if (ch.IsStatFlag(StatFlag.Invul))
+            return 7;
+
+        // Murderers are red even if they share a guild with the viewer.
+        // Threshold mirrors Character.MurderMinCount (sphere.ini).
+        if (ch.IsMurderer)
+            return 6;
+
+        // Active criminal flag from MakeCriminal() — grey with "flagged"
+        // bit. 4 triggers the client's criminal highlight in newer
+        // expansions; older clients fall back to plain grey anyway.
+        if (ch.IsCriminal || ch.IsStatFlag(StatFlag.Criminal))
+            return 4;
+
+        // Guild relations: same guild / ally = green, at-war = orange.
+        // Resolved via the guild manager static delegate; when a guild
+        // system is not loaded this falls through to innocent.
+        var guildMgr = Character.ResolveGuildManager?.Invoke(_character.Uid);
+        if (guildMgr != null)
+        {
+            var myGuild = guildMgr.FindGuildFor(_character.Uid);
+            var theirGuild = guildMgr.FindGuildFor(ch.Uid);
+            if (myGuild != null && theirGuild != null)
+            {
+                if (myGuild == theirGuild) return 2; // same guild → green
+                if (myGuild.IsAlliedWith(theirGuild.StoneUid)) return 2; // ally → green
+                if (myGuild.IsAtWarWith(theirGuild.StoneUid)) return 5; // enemy → orange
+            }
+        }
+
+        // Party members read as green.
+        var myParty = Character.ResolvePartyFinder?.Invoke(_character.Uid);
+        if (myParty != null && myParty.IsMember(ch.Uid))
+            return 2;
+
+        // Legacy Sphere saves don't always write the ISPLAYER flag, but
+        // any character with a linked ACCOUNT tag is authoritatively a
+        // player — treat that case as IsPlayer for the overhead hue.
+        // (WorldLoader now sets IsPlayer=true during account linking,
+        // so this branch only matters for shards already running off
+        // a pre-fix world file.)
+        bool isActuallyPlayer = ch.IsPlayer || ch.TryGetTag("ACCOUNT", out _);
+        if (!isActuallyPlayer)
+            return GetNpcNotoriety(ch);
+
+        return 1; // default player → innocent / blue
+    }
+
+    /// <summary>Notoriety for non-player mobiles. Source-X Noto_CalcFlag
+    /// for NPCs mixes brain type and karma:
+    ///  - monster / berserk / dragon brain → red (always hostile)
+    ///  - healer / banker → yellow (protected / invul-by-role)
+    ///  - vendor / stable / guard / human → blue (friendly townfolk)
+    ///  - animal → grey (neutral wildlife, huntable)
+    ///  - karma overrides: very negative → red, negative → grey criminal,
+    ///    very positive → blue — lets scripts flip a normally-blue
+    ///    townsfolk into a red renegade via SET KARMA.</summary>
+    private static byte GetNpcNotoriety(Character ch)
+    {
+        // Karma-based override comes first — a scripted peaceful NPC
+        // turned murderer via SET KARMA should read as red even though
+        // its brain is "human".
+        if (ch.Karma <= -2000) return 6; // murderer / red
+        if (ch.Karma <= -500) return 4;  // criminal / grey flagged
+
+        switch (ch.NpcBrain)
+        {
+            case Core.Enums.NpcBrainType.Monster:
+            case Core.Enums.NpcBrainType.Berserk:
+            case Core.Enums.NpcBrainType.Dragon:
+                return 6; // red — attacks on sight
+            case Core.Enums.NpcBrainType.Healer:
+            case Core.Enums.NpcBrainType.Banker:
+                return 7; // yellow — invul by role
+            case Core.Enums.NpcBrainType.Guard:
+            case Core.Enums.NpcBrainType.Vendor:
+            case Core.Enums.NpcBrainType.Stable:
+            case Core.Enums.NpcBrainType.Human:
+                return 1; // blue — friendly townfolk
+            case Core.Enums.NpcBrainType.Animal:
+                return 3; // grey — wild animal, neutral
+            default:
+                return ch.Karma > 500 ? (byte)1 : (byte)3;
+        }
+    }
+
+    // ==================== ITextConsole ====================
+
+    public PrivLevel GetPrivLevel() => _account?.PrivLevel ?? PrivLevel.Guest;
+
+    public void SysMessage(string text)
+    {
+        string msg = ResolveMessage(text);
+        _netState.Send(new PacketSpeechUnicodeOut(
+            0xFFFFFFFF, 0xFFFF, 6, 0x0035, 3, "TRK", "System", msg
+        ));
+    }
+
+    public void SysMessage(string text, ushort hue)
+    {
+        string msg = ResolveMessage(text);
+        _netState.Send(new PacketSpeechUnicodeOut(
+            0xFFFFFFFF, 0xFFFF, 6, hue, 3, "TRK", "System", msg
+        ));
+    }
+
+    /// <summary>Send speech from an NPC to this client (overhead text above the NPC).</summary>
+    private void NpcSpeech(Character npc, string text)
+    {
+        var packet = new PacketSpeechOut(
+            npc.Uid.Value, npc.BodyId, 0, 0x03B2, 3, npc.GetName(), text);
+        _netState.Send(packet);
+        BroadcastNearby?.Invoke(npc.Position, 18, packet, npc.Uid.Value);
+    }
+
+    public string GetName() => _account?.Name ?? "?";
+
+    public bool TryExecuteScriptCommand(IScriptObj target, string key, string args, ITriggerArgs? triggerArgs)
+    {
+        if (_character == null) return false;
+
+        string cmd = key.Trim();
+        string upper = cmd.ToUpperInvariant();
+
+        if (upper == "OBJ")
+        {
+            if (triggerArgs?.Object1 is Character objCh)
+                _character.SetTag("OBJ", $"0{objCh.Uid.Value:X}");
+            else if (triggerArgs?.Object1 is Item objItem)
+                _character.SetTag("OBJ", $"0{objItem.Uid.Value:X}");
+            return true;
+        }
+
+        // Sphere MESSAGE command: overhead text on the target object.
+        // Syntax: message @<hue>[,<type>,<font>] <text>
+        //   e.g.  message @0481,1,1 [Nimloth]
+        //   e.g.  message @080a [Invis]
+        if (upper == "MESSAGE")
+        {
+            string raw = args.Trim();
+            ushort hue = 0x03B2;
+            byte speechType = 0; // normal overhead speech
+            ushort font = 3;
+            string text = raw;
+
+            if (raw.StartsWith('@'))
+            {
+                int spaceIdx = raw.IndexOf(' ');
+                string colorSpec = spaceIdx > 0 ? raw[1..spaceIdx] : raw[1..];
+                text = spaceIdx > 0 ? raw[(spaceIdx + 1)..].Trim() : "";
+
+                var colorParts = colorSpec.Split(',');
+                if (colorParts.Length >= 1)
+                {
+                    string huePart = colorParts[0].Trim();
+                    if (huePart.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+                        ushort.TryParse(huePart.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out ushort hx))
+                    {
+                        hue = hx;
+                    }
+                    else if (ushort.TryParse(huePart, System.Globalization.NumberStyles.HexNumber, null, out ushort hHex))
+                    {
+                        hue = hHex;
+                    }
+                    else if (ushort.TryParse(huePart, out ushort hDec))
+                    {
+                        hue = hDec;
+                    }
+                }
+                if (colorParts.Length >= 2 && byte.TryParse(colorParts[1], out byte t))
+                    speechType = t;
+                if (colorParts.Length >= 3 && ushort.TryParse(colorParts[2], out ushort f))
+                    font = f;
+            }
+
+            // Sphere compatibility: MESSAGE should appear overhead on target.
+            // Many script packs use type=1 or type=6 here, but UO clients can render
+            // those as system/label text instead of overhead speech.
+            if (speechType is 1 or 6)
+                speechType = 0;
+
+            if (text.Length > 0)
+            {
+                uint serial = _character.Uid.Value;
+                ushort bodyId = _character.BodyId;
+                Point3D origin = _character.Position;
+                if (target is Character ch)
+                {
+                    serial = ch.Uid.Value;
+                    bodyId = ch.BodyId;
+                    origin = ch.Position;
+                }
+                else if (target is Item item)
+                {
+                    serial = item.Uid.Value;
+                    bodyId = 0;
+                    origin = item.Position;
+                }
+                var packet = new PacketSpeechOut(serial, bodyId, speechType, hue, font,
+                    target.GetName(), text);
+                _netState.Send(packet);
+                BroadcastNearby?.Invoke(origin, 18, packet, _character.Uid.Value);
+            }
+            return true;
+        }
+
+        // SAYUA — overhead speech with hue/type/font/lang
+        // Format: sayua <hue>,<type>,<font>,<lang> <text>
+        if (upper == "SAYUA")
+        {
+            string raw = args.Trim();
+            int firstSpace = raw.IndexOf(' ');
+            ushort hue = 0x03B2;
+            byte speechType = 0;
+            ushort font = 3;
+            string text = raw;
+
+            if (firstSpace > 0)
+            {
+                string paramsPart = raw[..firstSpace];
+                text = raw[(firstSpace + 1)..].TrimStart();
+                string[] parms = paramsPart.Split(',');
+                if (parms.Length > 0 && ushort.TryParse(parms[0], out ushort h)) hue = h;
+                if (parms.Length > 1 && byte.TryParse(parms[1], out byte t)) speechType = t;
+                if (parms.Length > 2 && ushort.TryParse(parms[2], out ushort f)) font = f;
+            }
+
+            if (text.Length > 0)
+            {
+                uint serial = _character.Uid.Value;
+                ushort bodyId = _character.BodyId;
+                Point3D origin = _character.Position;
+                if (target is Character ch)
+                {
+                    serial = ch.Uid.Value;
+                    bodyId = ch.BodyId;
+                    origin = ch.Position;
+                }
+                else if (target is Item item)
+                {
+                    serial = item.Uid.Value;
+                    bodyId = 0;
+                    origin = item.Position;
+                }
+                var packet = new PacketSpeechOut(serial, bodyId, speechType, hue, font,
+                    target.GetName(), text);
+                _netState.Send(packet);
+                BroadcastNearby?.Invoke(origin, 18, packet, _character.Uid.Value);
+            }
+            return true;
+        }
+
+        if (upper == "TRYSRC")
+        {
+            // Source-X compatibility: execute the provided verb line against SRC,
+            // but never fail the caller when the verb is missing.
+            string payload = args.Trim();
+            if (payload.Length == 0)
+                return true;
+
+            if (payload[0] is '.' or '/')
+                payload = payload[1..].TrimStart();
+
+            if (_commands != null)
+            {
+                _ = _commands.TryExecute(_character, payload);
+                return true;
+            }
+
+            int firstSpace = payload.IndexOf(' ');
+            string subCmd = firstSpace > 0 ? payload[..firstSpace] : payload;
+            string subArg = firstSpace > 0 ? payload[(firstSpace + 1)..].Trim() : "";
+            IScriptObj srcObj = triggerArgs?.Source ?? target;
+            if (subCmd.Length > 0)
+            {
+                if (srcObj.TrySetProperty(subCmd, subArg))
+                    return true;
+                if (srcObj.TryExecuteCommand(subCmd, subArg, this))
+                    return true;
+                _ = TryExecuteScriptCommand(srcObj, subCmd, subArg, triggerArgs);
+            }
+            return true;
+        }
+
+        if (upper is "TARGETF" or "TARGETFG")
+        {
+            string[] parts = args.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) return true;
+            if (_targetCursorActive)
+                return true;
+            ClearPendingTargetState();
+            _pendingTargetFunction = parts[0];
+            _pendingTargetArgs = parts.Length > 1 ? parts[1].Trim() : "";
+            _pendingTargetAllowGround = upper == "TARGETFG";
+            _pendingTargetItemUid = target is Item ti ? ti.Uid : Serial.Invalid;
+            _targetCursorActive = true;
+            _netState.Send(new PacketTarget(1, (uint)Random.Shared.Next(1, int.MaxValue)));
+            return true;
+        }
+
+        if (upper is "TARGET" or "TARGETG")
+        {
+            if (_targetCursorActive)
+                return true;
+            ClearPendingTargetState();
+            _targetCursorActive = true;
+            _netState.Send(new PacketTarget(1, (uint)Random.Shared.Next(1, int.MaxValue)));
+            return true;
+        }
+
+        if (upper == "MENU")
+        {
+            string menuDefname = args.Trim();
+            if (string.IsNullOrWhiteSpace(menuDefname))
+            {
+                _logger.LogWarning("[menu] MENU command with no argument");
+                return true;
+            }
+
+            if (!TryFindMenuSection(menuDefname, out var menuSection))
+            {
+                _logger.LogWarning("[menu] Section [MENU {Defname}] not found", menuDefname);
+                return true;
+            }
+
+            // Parse the MENU section:
+            //   First key = title/question
+            //   ON=0 text          → text-based item (modelId=0, hue=0)
+            //   ON=baseid text     → item-based
+            //   ON=baseid @hue, text → item-based with hue
+            //   Lines after ON until next ON = script to execute
+
+            var keys = menuSection.Keys;
+            if (keys.Count == 0)
+            {
+                _logger.LogWarning("[menu] Empty MENU section {Defname}", menuDefname);
+                return true;
+            }
+
+            string question = keys[0].Arg.Length > 0 ? $"{keys[0].Key} {keys[0].Arg}" : keys[0].Key;
+            var options = new List<MenuOptionEntry>();
+            MenuOptionEntry? current = null;
+
+            for (int i = 1; i < keys.Count; i++)
+            {
+                var k = keys[i];
+                if (k.Key.StartsWith("ON", StringComparison.OrdinalIgnoreCase) && k.Key.Length == 2)
+                {
+                    // Flush previous option
+                    if (current != null) options.Add(current);
+
+                    // Parse: ON=baseid text  or  ON=baseid @hue, text  or  ON=0 text
+                    string onArg = k.Arg.Trim();
+                    ushort modelId = 0;
+                    ushort hue = 0;
+                    string text = "";
+
+                    int firstSpace = onArg.IndexOf(' ');
+                    if (firstSpace < 0)
+                    {
+                        // ON=baseid with no text
+                        _ = ushort.TryParse(onArg, System.Globalization.NumberStyles.HexNumber, null, out modelId);
+                    }
+                    else
+                    {
+                        string idPart = onArg[..firstSpace].Trim();
+                        string rest = onArg[(firstSpace + 1)..].Trim();
+
+                        if (idPart.StartsWith("0x", StringComparison.OrdinalIgnoreCase) || idPart.StartsWith("0", StringComparison.OrdinalIgnoreCase))
+                            _ = ushort.TryParse(idPart.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? idPart[2..] : idPart, System.Globalization.NumberStyles.HexNumber, null, out modelId);
+                        else
+                            _ = ushort.TryParse(idPart, out modelId);
+
+                        // Check for @hue prefix: @hue, text  or  @hue text
+                        if (rest.StartsWith('@'))
+                        {
+                            int comma = rest.IndexOf(',');
+                            int space = rest.IndexOf(' ');
+                            int sep = comma >= 0 ? comma : space;
+                            if (sep > 1)
+                            {
+                                string huePart = rest[1..sep];
+                                _ = ushort.TryParse(huePart, System.Globalization.NumberStyles.HexNumber, null, out hue);
+                                text = rest[(sep + 1)..].TrimStart(' ', ',');
+                            }
+                            else
+                            {
+                                text = rest;
+                            }
+                        }
+                        else
+                        {
+                            text = rest;
+                        }
+                    }
+
+                    current = new MenuOptionEntry(modelId, hue, text, []);
+                }
+                else if (current != null)
+                {
+                    // Script line belonging to current ON block
+                    current.Script.Add(k);
+                }
+            }
+            if (current != null) options.Add(current);
+
+            if (options.Count == 0)
+            {
+                _logger.LogWarning("[menu] MENU {Defname} has no ON entries", menuDefname);
+                return true;
+            }
+
+            // Store pending state
+            _pendingMenuId = (ushort)(Math.Abs(menuDefname.GetHashCode()) & 0xFFFF);
+            _pendingMenuDefname = menuDefname;
+            _pendingMenuOptions = options;
+
+            // Build and send 0x7C packet
+            var items = new List<MenuItemEntry>(options.Count);
+            foreach (var opt in options)
+                items.Add(new MenuItemEntry(opt.ModelId, opt.Hue, opt.Text));
+
+            _netState.Send(new PacketMenuDisplay(_character.Uid.Value, _pendingMenuId, question, items));
+            return true;
+        }
+
+        if (upper == "DIALOGCLOSE")
+        {
+            // Compatibility bridge: many scripts call DIALOGCLOSE before reopening.
+            // We don't currently keep a server-side open-dialog registry, so treat as no-op.
+            return true;
+        }
+
+        // SDIALOG = "send dialog", a Sphere alias for DIALOG used by some
+        // shards' script packs. Accept both so imported scripts don't
+        // need to be rewritten.
+        if (upper == "DIALOG" || upper == "SDIALOG")
+        {
+            string raw = args.Trim();
+            string dialogId = "script_dialog";
+            string closeSpec = "";
+            int requestedPage = 1;
+
+            if (!string.IsNullOrWhiteSpace(raw))
+            {
+                int sep = raw.IndexOfAny([' ', ',']);
+                if (sep < 0)
+                {
+                    dialogId = raw;
+                }
+                else
+                {
+                    dialogId = raw[..sep];
+                    closeSpec = raw[(sep + 1)..].TrimStart(' ', ',');
+                }
+            }
+
+            dialogId = dialogId.Trim().Trim(',', ';');
+            if (string.IsNullOrWhiteSpace(dialogId))
+                dialogId = "script_dialog";
+
+            if (!string.IsNullOrWhiteSpace(closeSpec))
+            {
+                string[] dialogTokens = closeSpec.Split([',', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (dialogTokens.Length > 0 && int.TryParse(dialogTokens[0], out int parsedPage))
+                    requestedPage = parsedPage;
+            }
+
+            // Native bridge for legacy help dialog pack (dialog_helppage.scp).
+            if (dialogId.Equals("d_helppage", StringComparison.OrdinalIgnoreCase))
+            {
+                ShowHelpPageDialog(requestedPage);
+                return true;
+            }
+
+            if (TryShowScriptDialog(dialogId, requestedPage))
+                return true;
+
+            string closeFn = "";
+            if (!string.IsNullOrWhiteSpace(closeSpec))
+            {
+                string[] tokens = closeSpec.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (tokens.Length > 0)
+                {
+                    if (tokens[0].Equals("DIALOGCLOSE", StringComparison.OrdinalIgnoreCase))
+                    {
+                        closeFn = tokens.Length > 1 ? tokens[1] : "";
+                    }
+                    else
+                    {
+                        closeFn = tokens[0];
+                    }
+                }
+            }
+
+            _pendingDialogCloseFunction = string.IsNullOrWhiteSpace(closeFn)
+                ? $"f_dialogclose_{dialogId}"
+                : closeFn.Trim().Trim(',', ';');
+            _pendingDialogArgs = dialogId;
+            string title = $"Dialog {dialogId}";
+
+            uint gumpId = (uint)Math.Abs(dialogId.GetHashCode());
+            var gump = new GumpBuilder(_character.Uid.Value, gumpId, 360, 180);
+            gump.AddResizePic(0, 0, 5054, 360, 180);
+            gump.AddText(20, 20, 0, title);
+            gump.AddText(20, 60, 0, $"[{dialogId}]");
+            gump.AddButton(140, 130, 4005, 4007, 1);
+            SendGump(gump);
+            return true;
+        }
+
+        if (upper == "GO" && target is Character goChar)
+        {
+            if (TryParsePoint(args, goChar.Position, out var dst))
+            {
+                _world.MoveCharacter(goChar, dst);
+                if (goChar == _character)
+                {
+                    Resync();
+                    BroadcastDrawObject(_character);
+                }
+            }
+            return true;
+        }
+
+        if (upper == "GONAME" && target is Character goNameChar)
+        {
+            string targetName = args.Trim();
+            if (targetName.Length > 0)
+            {
+                var dst = _world.GetAllObjects()
+                    .OfType<Character>()
+                    .FirstOrDefault(c => c.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
+                if (dst != null)
+                {
+                    _world.MoveCharacter(goNameChar, dst.Position);
+                    if (goNameChar == _character)
+                        Resync();
+                }
+            }
+            return true;
+        }
+
+        if (upper == "SERV.NEWITEM")
+        {
+            string defName = args.Trim();
+            if (_commands?.Resources == null || defName.Length == 0)
+                return true;
+            var rid = _commands.Resources.ResolveDefName(defName);
+            if (!rid.IsValid) return true;
+
+            var item = _world.CreateItem();
+            item.BaseId = (ushort)rid.Index;
+            item.Name = defName;
+            _pendingScriptNewItem = item;
+            return true;
+        }
+
+        if (upper.StartsWith("NEW.", StringComparison.Ordinal))
+        {
+            if (_pendingScriptNewItem == null) return true;
+            string sub = cmd[4..].ToUpperInvariant();
+            switch (sub)
+            {
+                case "EQUIP":
+                    _character.Backpack ??= _world.CreateItem();
+                    _character.Backpack.Name = "Backpack";
+                    _character.Equip(_character.Backpack, Layer.Pack);
+                    _character.Backpack.AddItem(_pendingScriptNewItem);
+                    _pendingScriptNewItem = null;
+                    return true;
+                case "CONT":
+                    _character.Backpack ??= _world.CreateItem();
+                    _character.Backpack.AddItem(_pendingScriptNewItem);
+                    return true;
+                case "AMOUNT":
+                    if (ushort.TryParse(args, out ushort amt))
+                        _pendingScriptNewItem.Amount = amt;
+                    return true;
+            }
+            return true;
+        }
+
+        if (upper == "SERV.ALLCLIENTS" || upper.StartsWith("SERV.ALLCLIENTS ", StringComparison.Ordinal))
+        {
+            string payload = args.Trim();
+            if (upper.StartsWith("SERV.ALLCLIENTS ", StringComparison.Ordinal))
+                payload = cmd["SERV.ALLCLIENTS ".Length..] + (string.IsNullOrEmpty(args) ? "" : $" {args}");
+
+            if (payload.StartsWith("SOUND", StringComparison.OrdinalIgnoreCase))
+            {
+                string[] ps = payload.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (ps.Length >= 2 && ushort.TryParse(ps[1], out ushort snd))
+                {
+                    var pkt = new PacketSound(snd, _character.X, _character.Y, _character.Z);
+                    BroadcastNearby?.Invoke(_character.Position, 9999, pkt, 0);
+                }
+            }
+            else if (payload.Length > 0)
+            {
+                // Source-X parity: SERV.ALLCLIENTS <function> runs the function once
+                // for each online player character as target, with SRC as current char.
+                int firstSpace = payload.IndexOf(' ');
+                string funcName = firstSpace > 0 ? payload[..firstSpace].Trim() : payload.Trim();
+                string funcArgs = firstSpace > 0 ? payload[(firstSpace + 1)..].Trim() : "";
+
+                var runner = _triggerDispatcher?.Runner;
+                if (runner != null && funcName.Length > 0)
+                {
+                    foreach (var player in _world.GetAllObjects().OfType<Character>())
+                    {
+                        if (!player.IsPlayer || !player.IsOnline)
+                            continue;
+
+                        var callArgs = new ExecTriggerArgs(_character, 0, 0, funcArgs)
+                        {
+                            Object1 = player,
+                            Object2 = _character
+                        };
+
+                        _ = runner.TryRunFunction(funcName, player, this, callArgs, out _);
+                    }
+                }
+                else
+                {
+                    string msg = payload.StartsWith("SYSMESSAGE", StringComparison.OrdinalIgnoreCase)
+                        ? payload["SYSMESSAGE".Length..].Trim()
+                        : payload;
+                    SysMessage(msg);
+                }
+            }
+            else
+            {
+                string msg = payload.StartsWith("SYSMESSAGE", StringComparison.OrdinalIgnoreCase)
+                    ? payload["SYSMESSAGE".Length..].Trim()
+                    : payload;
+                SysMessage(msg);
+            }
+            return true;
+        }
+
+        if (upper == "SERV.LOG" || upper.StartsWith("SERV.LOG ", StringComparison.Ordinal))
+        {
+            string msg = upper == "SERV.LOG" ? args : cmd["SERV.LOG ".Length..] + (string.IsNullOrEmpty(args) ? "" : $" {args}");
+            _logger.LogInformation("[SCRIPT] {Message}", msg.Trim());
+            return true;
+        }
+
+        if (upper == "BANKSELF")
+        {
+            OpenBankBox();
+            return true;
+        }
+
+        if (upper == "BUY")
+        {
+            // Vendor buy — placeholder until full vendor buy/sell packet support
+            return true;
+        }
+
+        if (upper == "BYE")
+        {
+            // End NPC interaction
+            return true;
+        }
+
+        if (upper.StartsWith("SERV.", StringComparison.Ordinal))
+        {
+            // Known but not yet fully implemented service verbs should not crash scripts.
+            _logger.LogDebug("Script SERV verb not fully implemented: {Verb} {Args}", key, args);
+            return true;
+        }
+
+        if (upper.StartsWith("FILE.", StringComparison.Ordinal))
+        {
+            if (_scriptFile == null)
+            {
+                _logger.LogWarning("FILE commands not enabled (OF_FileCommands not set in OptionFlags).");
+                return true;
+            }
+
+            string fileVerb = upper.Length > 5 ? upper[5..] : "";
+            switch (fileVerb)
+            {
+                case "OPEN":
+                    _scriptFile.Open(args);
+                    return true;
+                case "CLOSE":
+                    _scriptFile.Close();
+                    return true;
+                case "WRITE":
+                    _scriptFile.Write(args);
+                    return true;
+                case "WRITELINE":
+                    _scriptFile.WriteLine(args);
+                    return true;
+                case "WRITECHR":
+                    if (int.TryParse(args, out int chrVal))
+                        _scriptFile.WriteChr(chrVal);
+                    return true;
+                case "FLUSH":
+                    _scriptFile.Flush();
+                    return true;
+                case "DELETEFILE":
+                    ScriptFileHandle.DeleteFile(_scriptFile.FilePath != "" ? Path.GetDirectoryName(_scriptFile.FilePath) ?? "" : "", args);
+                    return true;
+                case "MODE.APPEND":
+                    _scriptFile.ModeAppend = args != "0";
+                    return true;
+                case "MODE.CREATE":
+                    _scriptFile.ModeCreate = args != "0";
+                    return true;
+                case "MODE.READFLAG":
+                    _scriptFile.ModeRead = args != "0";
+                    return true;
+                case "MODE.WRITEFLAG":
+                    _scriptFile.ModeWrite = args != "0";
+                    return true;
+                case "MODE.SETDEFAULT":
+                    _scriptFile.SetModeDefault();
+                    return true;
+            }
+            return true;
+        }
+
+        if (upper.StartsWith("DB.", StringComparison.Ordinal))
+        {
+            if (_scriptDb == null)
+            {
+                _logger.LogWarning("DB adapter is not configured for script runtime.");
+                return true;
+            }
+
+            string dbVerb = upper.Length > 3 ? upper[3..] : "";
+            switch (dbVerb)
+            {
+                case "CONNECT":
+                {
+                    bool ok;
+                    string err;
+                    string[] dbArgs = args.Split('|', 2, StringSplitOptions.TrimEntries);
+                    if (dbArgs.Length == 2)
+                        ok = _scriptDb.Connect(dbArgs[0], dbArgs[1], out err);
+                    else
+                        ok = _scriptDb.ConnectDefault(out err);
+                    if (!ok)
+                        SysMessage(ServerMessages.GetFormatted("db_connect_fail", err));
+                    return true;
+                }
+                case "CLOSE":
+                    _scriptDb.Close();
+                    return true;
+                case "QUERY":
+                {
+                    bool ok = _scriptDb.Query(args, out int rows, out string err);
+                    if (!ok)
+                        SysMessage(ServerMessages.GetFormatted("db_query_fail", err));
+                    else
+                        _logger.LogDebug("DB.QUERY returned {Rows} rows", rows);
+                    return true;
+                }
+                case "EXECUTE":
+                {
+                    bool ok = _scriptDb.Execute(args, out int affected, out string err);
+                    if (!ok)
+                        SysMessage(ServerMessages.GetFormatted("db_execute_fail", err));
+                    else
+                        _logger.LogDebug("DB.EXECUTE affected {Rows} rows", affected);
+                    return true;
+                }
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool TryResolveScriptVariable(string varName, IScriptObj target, ITriggerArgs? triggerArgs, out string value)
+    {
+        value = "";
+        if (_character == null) return false;
+
+        // Common Sphere runtime constants used by admin/dialog scripts.
+        if (varName.Equals("GETREFTYPE", StringComparison.OrdinalIgnoreCase))
+        {
+            // We execute command scripts in character context, not server context.
+            value = "1";
+            return true;
+        }
+        if (varName.Equals("DEF.TREF_SERV", StringComparison.OrdinalIgnoreCase))
+        {
+            value = "0";
+            return true;
+        }
+
+        // Generic DEF.X / DEF0.X lookup — covers everything in a [DEFNAME ...]
+        // section (admin_hidehighpriv, admin_flag_1, tcolor_orange, …). Admin
+        // dialogs hit these for virtually every label; without this every
+        // <Def.X> fell back to unresolved = empty string, leaving the gump
+        // full of gaps.
+        if (varName.StartsWith("DEF.", StringComparison.OrdinalIgnoreCase) ||
+            varName.StartsWith("DEF0.", StringComparison.OrdinalIgnoreCase))
+        {
+            int dot = varName.IndexOf('.');
+            string defKey = varName[(dot + 1)..];
+            bool asNumeric = varName[..dot].Equals("DEF0", StringComparison.OrdinalIgnoreCase);
+
+            if (_commands?.Resources != null)
+            {
+                // String defs (admin_flag_X = "Invulnerability", etc.)
+                if (_commands.Resources.TryGetDefValue(defKey, out string defVal))
+                {
+                    value = defVal;
+                    return true;
+                }
+                // Numeric defs (Admin_Hidehighpriv 1) — stored as ResourceId index.
+                var rid = _commands.Resources.ResolveDefName(defKey);
+                if (rid.IsValid)
+                {
+                    value = asNumeric
+                        ? rid.Index.ToString()
+                        : $"0{rid.Index:X}"; // <Def.X> legacy-hex form
+                    return true;
+                }
+            }
+            value = "0";
+            return true; // answered as "0" rather than unresolved — matches Sphere behaviour
+        }
+        if (varName.StartsWith("ISDIALOGOPEN.", StringComparison.OrdinalIgnoreCase))
+        {
+            // We currently don't track open dialogs server-side; keep compatibility checks false.
+            value = "0";
+            return true;
+        }
+
+        if (varName.StartsWith("FILE.", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_scriptFile == null)
+            {
+                value = "0";
+                return true;
+            }
+
+            string fileProp = varName[5..].ToUpperInvariant();
+            switch (fileProp)
+            {
+                case "OPEN":
+                {
+                    // FILE.OPEN as read property — returns "1" if file is open
+                    value = _scriptFile.IsOpen ? "1" : "0";
+                    return true;
+                }
+                case "INUSE":
+                    value = _scriptFile.IsOpen ? "1" : "0";
+                    return true;
+                case "ISEOF":
+                    value = _scriptFile.IsEof ? "1" : "0";
+                    return true;
+                case "FILEPATH":
+                    value = _scriptFile.FilePath;
+                    return true;
+                case "POSITION":
+                    value = _scriptFile.Position.ToString();
+                    return true;
+                case "LENGTH":
+                    value = _scriptFile.Length.ToString();
+                    return true;
+                case "READCHAR":
+                    value = _scriptFile.ReadChar();
+                    return true;
+                case "READBYTE":
+                    value = _scriptFile.ReadByte();
+                    return true;
+                case "MODE.APPEND":
+                    value = _scriptFile.ModeAppend ? "1" : "0";
+                    return true;
+                case "MODE.CREATE":
+                    value = _scriptFile.ModeCreate ? "1" : "0";
+                    return true;
+                case "MODE.READFLAG":
+                    value = _scriptFile.ModeRead ? "1" : "0";
+                    return true;
+                case "MODE.WRITEFLAG":
+                    value = _scriptFile.ModeWrite ? "1" : "0";
+                    return true;
+                default:
+                    // FILE.READLINE n, FILE.SEEK pos, FILE.FILELINES path, FILE.FILEEXIST path
+                    if (fileProp.StartsWith("READLINE"))
+                    {
+                        string lineArg = fileProp.Length > 8 ? fileProp[8..].Trim() : "";
+                        // Argument may also come after space: FILE.READLINE 3
+                        if (string.IsNullOrEmpty(lineArg) && varName.Length > 13)
+                            lineArg = varName[13..].Trim();
+                        int lineNum = 0;
+                        if (!string.IsNullOrEmpty(lineArg))
+                            int.TryParse(lineArg, out lineNum);
+                        value = _scriptFile.ReadLine(lineNum);
+                        return true;
+                    }
+                    if (fileProp.StartsWith("SEEK"))
+                    {
+                        string seekArg = fileProp.Length > 4 ? fileProp[4..].Trim() : "";
+                        if (string.IsNullOrEmpty(seekArg) && varName.Length > 9)
+                            seekArg = varName[9..].Trim();
+                        _scriptFile.Seek(seekArg);
+                        value = _scriptFile.Position.ToString();
+                        return true;
+                    }
+                    if (fileProp.StartsWith("FILELINES"))
+                    {
+                        string flArg = fileProp.Length > 9 ? fileProp[9..].Trim() : "";
+                        if (string.IsNullOrEmpty(flArg) && varName.Length > 14)
+                            flArg = varName[14..].Trim();
+                        value = ScriptFileHandle.GetFileLines(
+                            Path.GetDirectoryName(_scriptFile.FilePath) ?? "", flArg).ToString();
+                        return true;
+                    }
+                    if (fileProp.StartsWith("FILEEXIST"))
+                    {
+                        string feArg = fileProp.Length > 9 ? fileProp[9..].Trim() : "";
+                        if (string.IsNullOrEmpty(feArg) && varName.Length > 14)
+                            feArg = varName[14..].Trim();
+                        value = ScriptFileHandle.FileExists(
+                            Path.GetDirectoryName(_scriptFile.FilePath) ?? "", feArg) ? "1" : "0";
+                        return true;
+                    }
+                    break;
+            }
+            value = "0";
+            return true;
+        }
+
+        if (varName.Equals("DB.CONNECTED", StringComparison.OrdinalIgnoreCase))
+        {
+            value = _scriptDb?.IsConnected == true ? "1" : "0";
+            return true;
+        }
+        if (_scriptDb != null && _scriptDb.TryResolveRowValue(varName, out string dbVal))
+        {
+            value = dbVal;
+            return true;
+        }
+        if (varName.StartsWith("ACCOUNT.", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_account != null && _account.TryGetProperty(varName["ACCOUNT.".Length..], out string acctVal))
+            {
+                value = acctVal;
+                return true;
+            }
+            return false;
+        }
+
+        if (varName.Equals("TARGP", StringComparison.OrdinalIgnoreCase))
+        {
+            var p = _lastScriptTargetPoint ?? _character.Position;
+            value = $"{p.X},{p.Y},{p.Z},{p.Map}";
+            return true;
+        }
+
+        if (varName.StartsWith("CTAG0.", StringComparison.OrdinalIgnoreCase) ||
+            varName.StartsWith("CTAG.", StringComparison.OrdinalIgnoreCase))
+        {
+            int dot = varName.IndexOf('.');
+            if (dot > 0)
+            {
+                string tagName = varName[(dot + 1)..].Trim().Trim(',', ';');
+                string? tagVal = _character.CTags.Get(tagName);
+                if (tagVal != null)
+                {
+                    value = tagVal;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        int objDot = varName.IndexOf('.');
+        if (objDot > 0)
+        {
+            string root = varName[..objDot].Trim();
+            string prop = varName[(objDot + 1)..].Trim();
+            if (_character.TryGetProperty($"TAG.{root}", out string objRef) && TryFindObjectByScriptRef(objRef, out var scopedObj))
+            {
+                if (scopedObj.TryGetProperty(prop, out string scopedVal))
+                {
+                    value = scopedVal;
+                    return true;
+                }
+            }
+        }
+
+        if (varName.StartsWith("ARGO.", StringComparison.OrdinalIgnoreCase) ||
+            varName.StartsWith("ACT.", StringComparison.OrdinalIgnoreCase) ||
+            varName.StartsWith("LINK.", StringComparison.OrdinalIgnoreCase))
+        {
+            IScriptObj? obj = null;
+            int dot = varName.IndexOf('.');
+            string root = dot > 0 ? varName[..dot].ToUpperInvariant() : varName.ToUpperInvariant();
+            string sub = dot > 0 ? varName[(dot + 1)..] : "";
+            if (root == "ARGO") obj = triggerArgs?.Object1;
+            else if (root is "ACT" or "LINK") obj = triggerArgs?.Object2;
+
+            if (obj == null) return false;
+
+            if (sub.StartsWith("ACCOUNT.", StringComparison.OrdinalIgnoreCase) && obj is Character chAcct)
+            {
+                var acct = Character.ResolveAccountForChar?.Invoke(chAcct.Uid);
+                if (acct != null && acct.TryGetProperty(sub["ACCOUNT.".Length..], out string acctVal))
+                {
+                    value = acctVal;
+                    return true;
+                }
+                return false;
+            }
+            if (obj.TryGetProperty(sub, out string propVal))
+            {
+                value = propVal;
+                return true;
+            }
+        }
+
+        // Resolve object-scoped locals like OBJ.ISPLAYER where OBJ contains a UID string.
+        int localDot = varName.IndexOf('.');
+        if (localDot > 0)
+        {
+            string localName = varName[..localDot];
+            if (triggerArgs != null && target.TryGetProperty($"TAG.{localName}", out string tagVal) && TryFindObjectByScriptRef(tagVal, out var refObj))
+            {
+                if (refObj.TryGetProperty(varName[(localDot + 1)..], out string scopedVal))
+                {
+                    value = scopedVal;
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    public IReadOnlyList<IScriptObj> QueryScriptObjects(string query, IScriptObj target, string args, ITriggerArgs? triggerArgs)
+    {
+        if (_character == null) return Array.Empty<IScriptObj>();
+
+        if (query.Equals("FORPLAYERS", StringComparison.OrdinalIgnoreCase))
+        {
+            int range = 18;
+            _ = int.TryParse(args, out range);
+            range = Math.Clamp(range, 1, 9999);
+            return _world.GetAllObjects()
+                .OfType<Character>()
+                .Where(c => c.IsPlayer && c.MapIndex == _character.MapIndex &&
+                            c.Position.GetDistanceTo(_character.Position) <= range)
+                .Cast<IScriptObj>()
+                .ToList();
+        }
+
+        if (query.Equals("FORINSTANCES", StringComparison.OrdinalIgnoreCase))
+        {
+            string def = args.Trim();
+            if (def.Length == 0) return Array.Empty<IScriptObj>();
+
+            int? itemBase = null;
+            int? charBase = null;
+            var rid = _commands?.Resources?.ResolveDefName(def) ?? ResourceId.Invalid;
+            if (rid.IsValid)
+            {
+                if (rid.Type == Core.Enums.ResType.ItemDef) itemBase = rid.Index;
+                else if (rid.Type == Core.Enums.ResType.CharDef) charBase = rid.Index;
+            }
+            else if (int.TryParse(def.Replace("0x", "", StringComparison.OrdinalIgnoreCase), System.Globalization.NumberStyles.HexNumber, null, out int parsed))
+            {
+                itemBase = parsed;
+                charBase = parsed;
+            }
+
+            return _world.GetAllObjects()
+                .Where(o =>
+                    (o is Item it && itemBase.HasValue && it.BaseId == (ushort)itemBase.Value) ||
+                    (o is Character ch && charBase.HasValue && ch.BaseId == (ushort)charBase.Value))
+                .Cast<IScriptObj>()
+                .ToList();
+        }
+
+        // FORCHARS — all characters (players + NPCs) within radius
+        if (query.Equals("FORCHARS", StringComparison.OrdinalIgnoreCase))
+        {
+            int range = 18;
+            _ = int.TryParse(args, out range);
+            range = Math.Clamp(range, 1, 9999);
+            var center = (target as ObjBase)?.Position ?? _character.Position;
+            byte map = (target as ObjBase)?.MapIndex ?? _character.MapIndex;
+            return _world.GetAllObjects()
+                .OfType<Character>()
+                .Where(c => !c.IsDeleted && c.MapIndex == map &&
+                            center.GetDistanceTo(c.Position) <= range)
+                .Cast<IScriptObj>()
+                .ToList();
+        }
+
+        // FORCLIENTS — only online player characters within radius
+        if (query.Equals("FORCLIENTS", StringComparison.OrdinalIgnoreCase))
+        {
+            int range = 18;
+            _ = int.TryParse(args, out range);
+            range = Math.Clamp(range, 1, 9999);
+            var center = (target as ObjBase)?.Position ?? _character.Position;
+            byte map = (target as ObjBase)?.MapIndex ?? _character.MapIndex;
+            return _world.GetAllObjects()
+                .OfType<Character>()
+                .Where(c => c.IsPlayer && c.IsOnline && !c.IsDeleted &&
+                            c.MapIndex == map && center.GetDistanceTo(c.Position) <= range)
+                .Cast<IScriptObj>()
+                .ToList();
+        }
+
+        // FORITEMS — all ground items within radius
+        if (query.Equals("FORITEMS", StringComparison.OrdinalIgnoreCase))
+        {
+            int range = 18;
+            _ = int.TryParse(args, out range);
+            range = Math.Clamp(range, 1, 9999);
+            var center = (target as ObjBase)?.Position ?? _character.Position;
+            byte map = (target as ObjBase)?.MapIndex ?? _character.MapIndex;
+            return _world.GetAllObjects()
+                .OfType<Item>()
+                .Where(it => !it.IsDeleted && it.IsOnGround &&
+                             it.MapIndex == map && center.GetDistanceTo(it.Position) <= range)
+                .Cast<IScriptObj>()
+                .ToList();
+        }
+
+        // FOROBJS — all characters + items within radius
+        if (query.Equals("FOROBJS", StringComparison.OrdinalIgnoreCase))
+        {
+            int range = 18;
+            _ = int.TryParse(args, out range);
+            range = Math.Clamp(range, 1, 9999);
+            var center = (target as ObjBase)?.Position ?? _character.Position;
+            byte map = (target as ObjBase)?.MapIndex ?? _character.MapIndex;
+            var result = new List<IScriptObj>();
+            foreach (var obj in _world.GetAllObjects())
+            {
+                if (obj.IsDeleted) continue;
+                if (obj.MapIndex != map) continue;
+                if (center.GetDistanceTo(obj.Position) > range) continue;
+                if (obj is Item it && !it.IsOnGround) continue;
+                result.Add(obj);
+            }
+            return result;
+        }
+
+        // FORCONT — all items inside a container (args: "uid [depth]")
+        if (query.Equals("FORCONT", StringComparison.OrdinalIgnoreCase))
+        {
+            var parts = args.Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) return Array.Empty<IScriptObj>();
+            if (!TryFindObjectByScriptRef(parts[0], out var contObj) || contObj is not Item container)
+                return Array.Empty<IScriptObj>();
+            int depth = parts.Length > 1 && int.TryParse(parts[1], out int d) ? d : 0;
+            var result = new List<IScriptObj>();
+            CollectContainerItems(container, depth, result);
+            return result;
+        }
+
+        // FORCONTID — items in current target's backpack matching a BASEID (args: "baseid [depth]")
+        if (query.Equals("FORCONTID", StringComparison.OrdinalIgnoreCase))
+        {
+            var parts = args.Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) return Array.Empty<IScriptObj>();
+            string defName = parts[0];
+            int depth = parts.Length > 1 && int.TryParse(parts[1], out int d) ? d : 0;
+            ushort? targetBaseId = ResolveBaseId(defName);
+            if (!targetBaseId.HasValue) return Array.Empty<IScriptObj>();
+
+            // Iterate the target character's backpack, or the target item as container
+            Item? container = target is Character ch ? ch.Backpack : target as Item;
+            if (container == null) return Array.Empty<IScriptObj>();
+            var result = new List<IScriptObj>();
+            CollectContainerItems(container, depth, result, baseIdFilter: targetBaseId.Value);
+            return result;
+        }
+
+        // FORCONTTYPE — items in current target's backpack matching a TYPE (args: "type [depth]")
+        if (query.Equals("FORCONTTYPE", StringComparison.OrdinalIgnoreCase))
+        {
+            var parts = args.Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) return Array.Empty<IScriptObj>();
+            string typeName = parts[0];
+            int depth = parts.Length > 1 && int.TryParse(parts[1], out int d) ? d : 0;
+            int? typeFilter = ResolveItemType(typeName);
+            if (!typeFilter.HasValue) return Array.Empty<IScriptObj>();
+
+            Item? container = target is Character ch ? ch.Backpack : target as Item;
+            if (container == null) return Array.Empty<IScriptObj>();
+            var result = new List<IScriptObj>();
+            CollectContainerItems(container, depth, result, typeFilter: typeFilter.Value);
+            return result;
+        }
+
+        // FORCHARLAYER — items on a specific equipment layer of the target character
+        if (query.Equals("FORCHARLAYER", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!int.TryParse(args.Trim(), out int layerNum)) return Array.Empty<IScriptObj>();
+            Character? ch = target as Character ?? _character;
+            var item = ch.GetEquippedItem((Layer)layerNum);
+            if (item == null) return Array.Empty<IScriptObj>();
+            // Layer 30 (Special) can contain multiple memory items; single item for other layers
+            return new List<IScriptObj> { item };
+        }
+
+        // FORCHARMEMORYTYPE — memory items on layer 30 matching flag (stub: no memory system yet)
+        if (query.Equals("FORCHARMEMORYTYPE", StringComparison.OrdinalIgnoreCase))
+        {
+            // Memory item system not yet implemented — return empty
+            return Array.Empty<IScriptObj>();
+        }
+
+        return Array.Empty<IScriptObj>();
+    }
+
+    private void CollectContainerItems(Item container, int depth, List<IScriptObj> result,
+        ushort? baseIdFilter = null, int? typeFilter = null)
+    {
+        foreach (var item in container.Contents)
+        {
+            if (item.IsDeleted) continue;
+            bool matches = true;
+            if (baseIdFilter.HasValue && item.BaseId != baseIdFilter.Value) matches = false;
+            if (typeFilter.HasValue && (int)item.ItemType != typeFilter.Value) matches = false;
+            if (matches) result.Add(item);
+            if (depth > 0 && item.ContentCount > 0)
+                CollectContainerItems(item, depth - 1, result, baseIdFilter, typeFilter);
+        }
+    }
+
+    private ushort? ResolveBaseId(string defName)
+    {
+        var rid = _commands?.Resources?.ResolveDefName(defName) ?? ResourceId.Invalid;
+        if (rid.IsValid) return (ushort)rid.Index;
+        if (ushort.TryParse(defName.Replace("0x", "", StringComparison.OrdinalIgnoreCase),
+            System.Globalization.NumberStyles.HexNumber, null, out ushort v))
+            return v;
+        return null;
+    }
+
+    private int? ResolveItemType(string typeName)
+    {
+        // Try as enum name (e.g. "t_spellbook" → strip "t_" prefix, parse as ItemType)
+        string name = typeName.TrimStart();
+        if (name.StartsWith("t_", StringComparison.OrdinalIgnoreCase))
+            name = name[2..];
+        if (Enum.TryParse<Core.Enums.ItemType>(name, ignoreCase: true, out var itemType))
+            return (int)itemType;
+        // Try as numeric
+        if (int.TryParse(typeName, out int num))
+            return num;
+        return null;
+    }
+
+    private bool TryFindObjectByScriptRef(string value, out IScriptObj obj)
+    {
+        obj = null!;
+        string v = value.Trim();
+        if (v.StartsWith("0", StringComparison.OrdinalIgnoreCase))
+            v = v[1..];
+        if (!uint.TryParse(v, System.Globalization.NumberStyles.HexNumber, null, out uint uid))
+            return false;
+        var found = _world.FindObject(new Serial(uid));
+        if (found == null) return false;
+        obj = found;
+        return true;
+    }
+
+    private string ResolveMessage(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || _defMessageLookup == null)
+            return text;
+
+        string key = text.Trim();
+        if (key.StartsWith('@'))
+            key = key[1..];
+        if (key.StartsWith("DEFMSG.", StringComparison.OrdinalIgnoreCase))
+            key = key[7..];
+        if (key.Contains(' '))
+            return text;
+
+        return _defMessageLookup(key) ?? text;
+    }
+
+    private static bool TryParsePoint(string args, Point3D current, out Point3D point)
+    {
+        point = current;
+        var parts = args.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2) return false;
+        if (!short.TryParse(parts[0], out short x) || !short.TryParse(parts[1], out short y))
+            return false;
+        sbyte z = parts.Length > 2 && sbyte.TryParse(parts[2], out sbyte tz) ? tz : current.Z;
+        byte map = parts.Length > 3 && byte.TryParse(parts[3], out byte tm) ? tm : current.Map;
+        point = new Point3D(x, y, z, map);
+        return true;
+    }
+
+    private static string EscapeHtml(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return "";
+        return value
+            .Replace("&", "&amp;", StringComparison.Ordinal)
+            .Replace("<", "&lt;", StringComparison.Ordinal)
+            .Replace(">", "&gt;", StringComparison.Ordinal);
+    }
+
+    // ==================== Phase 1: Critical Stability Handlers ====================
+
+    /// <summary>Handle death menu response (0x2C).</summary>
+    public void HandleDeathMenu(byte action)
+    {
+        if (_character == null) return;
+
+        switch (action)
+        {
+            case 0: // Client requesting death menu — ignore, we already sent it
+                break;
+            case 1: // Resurrect
+                _logger.LogDebug("[death_menu] char=0x{Uid:X8} chose resurrect", _character.Uid.Value);
+                OnResurrect();
+                break;
+            case 2: // Stay as ghost
+                _logger.LogDebug("[death_menu] char=0x{Uid:X8} chose ghost", _character.Uid.Value);
+                break;
+        }
+    }
+
+    /// <summary>Handle character delete from char select screen (0x83).</summary>
+    public void HandleCharDelete(int charIndex, string password)
+    {
+        if (_account == null) return;
+
+        // Verify password
+        if (!_account.CheckPassword(password))
+        {
+            _netState.Send(new PacketCharDeleteResult(1)); // 1=bad password
+            return;
+        }
+
+        var charUid = _account.GetCharSlot(charIndex);
+        if (!charUid.IsValid)
+        {
+            _netState.Send(new PacketCharDeleteResult(1));
+            return;
+        }
+
+        var ch = _world.FindChar(charUid);
+        if (ch != null)
+        {
+            if (ch.IsOnline)
+            {
+                _netState.Send(new PacketCharDeleteResult(5)); // 5=char in world
+                return;
+            }
+
+            _logger.LogInformation("Deleting character '{Name}' (0x{Uid:X8}) from account '{Acct}'",
+                ch.Name, charUid.Value, _account.Name);
+            ch.Delete();
+            _world.DeleteObject(ch);
+        }
+
+        _account.SetCharSlot(charIndex, Serial.Invalid);
+
+        // Send success + new char list
+        _netState.Send(new PacketCharDeleteResult(0));
+        var charNames = _account.GetCharNames(uid => _world.FindChar(uid)?.GetName());
+        _netState.Send(new PacketCharList(charNames).Build());
+    }
+
+    /// <summary>Handle dye response from color picker (0x95).</summary>
+    public void HandleDyeResponse(uint itemSerial, ushort hue)
+    {
+        if (_character == null) return;
+
+        var item = _world.FindItem(new Serial(itemSerial));
+        if (item == null) return;
+
+        // Only GM can dye any item; players need a dye vat interaction (handled by script)
+        if (_account?.PrivLevel < PrivLevel.GM)
+        {
+            SysMessage(ServerMessages.Get("itemuse_dye_fail"));
+            return;
+        }
+
+        _logger.LogDebug("[dye_response] char=0x{Uid:X8} item=0x{Item:X8} hue={Hue}",
+            _character.Uid.Value, itemSerial, hue);
+        item.Hue = new Core.Types.Color(hue);
+
+        // Refresh item for nearby clients
+        var itemPacket = new PacketWorldItem(
+            item.Uid.Value, item.DispIdFull, item.Amount,
+            item.X, item.Y, item.Z, item.Hue);
+        BroadcastNearby?.Invoke(item.Position, UpdateRange, itemPacket, 0);
+    }
+
+    private Action<uint, uint, uint, string>? _pendingPromptCallback;
+    private uint _pendingPromptId;
+
+    /// <summary>Send a text prompt to the client and register a callback for the response.</summary>
+    public void SendPrompt(uint promptId, string message, Action<uint, uint, uint, string>? callback = null)
+    {
+        if (_character == null) return;
+        _pendingPromptId = promptId;
+        _pendingPromptCallback = callback;
+        _netState.Send(new PacketPromptRequest(_character.Uid.Value, promptId, message).Build());
+    }
+
+    /// <summary>Handle prompt response (0x9A) — rune names, house signs, etc.</summary>
+    public void HandlePromptResponse(uint serial, uint promptId, uint type, string text)
+    {
+        if (_character == null) return;
+
+        _logger.LogDebug("[prompt_response] char=0x{Uid:X8} promptId={PromptId} type={Type} text='{Text}'",
+            _character.Uid.Value, promptId, type, text);
+
+        if (type == 0)
+        {
+            // Cancelled
+            _pendingPromptCallback = null;
+            return;
+        }
+
+        // Dispatch to pending callback
+        if (_pendingPromptCallback != null)
+        {
+            _pendingPromptCallback(serial, promptId, type, text);
+            _pendingPromptCallback = null;
+            return;
+        }
+
+        // Default: try to set the name of the target item (rune, house sign)
+        var item = _world.FindItem(new Serial(serial));
+        if (item != null && !string.IsNullOrWhiteSpace(text))
+        {
+            item.Name = text.Trim();
+            SysMessage(ServerMessages.GetFormatted("msg_name_set", item.Name));
+        }
+    }
+
+    /// <summary>Handle old-style menu choice response (0x7D).</summary>
+    public void HandleMenuChoice(uint serial, ushort menuId, ushort index, ushort modelId)
+    {
+        if (_character == null) return;
+
+        _logger.LogDebug("[menu_choice] char=0x{Uid:X8} serial=0x{Serial:X8} menuId={MenuId} index={Index} modelId=0x{Model:X4}",
+            _character.Uid.Value, serial, menuId, index, modelId);
+
+        var options = _pendingMenuOptions;
+        var defname = _pendingMenuDefname;
+        _pendingMenuOptions = null;
+        _pendingMenuDefname = "";
+
+        if (index == 0)
+        {
+            // Cancel — fire @Cancel trigger if a MENU section trigger handler exists
+            _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.UserExtCmd,
+                new TriggerArgs { CharSrc = _character, S1 = $"menu_{defname}_cancel" });
+            return;
+        }
+
+        if (options != null && index >= 1 && index <= options.Count)
+        {
+            var chosen = options[index - 1];
+            foreach (var scriptKey in chosen.Script)
+            {
+                TryExecuteScriptCommand(_character, scriptKey.Key, scriptKey.Arg, null);
+            }
+            return;
+        }
+
+        // Fallback: generic trigger for unhandled menus
+        _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.UserExtCmd,
+            new TriggerArgs { CharSrc = _character, S1 = $"menu_{menuId}_{index}" });
+    }
+
+    // ==================== Phase 2: Content Feature Handlers ====================
+
+    /// <summary>Handle book page read/write (0x66).</summary>
+    public void HandleBookPage(uint serial, List<(ushort PageNum, string[] Lines)> pages)
+    {
+        if (_character == null) return;
+
+        var item = _world.FindItem(new Serial(serial));
+        if (item == null) return;
+
+        foreach (var (pageNum, lines) in pages)
+        {
+            if (lines.Length == 0)
+            {
+                // Read request — send page content from tags
+                if (item.TryGetTag($"PAGE_{pageNum}", out string? content))
+                {
+                    _logger.LogDebug("[book_page_read] item=0x{Item:X8} page={Page}", serial, pageNum);
+                }
+                continue;
+            }
+
+            // Write request — store page content in tags
+            string pageContent = string.Join("\n", lines);
+            item.SetTag($"PAGE_{pageNum}", pageContent);
+            _logger.LogDebug("[book_page_write] item=0x{Item:X8} page={Page} lines={Lines}",
+                serial, pageNum, lines.Length);
+        }
+    }
+
+    /// <summary>Handle book header change (0x93).</summary>
+    public void HandleBookHeader(uint serial, bool writable, string title, string author)
+    {
+        if (_character == null) return;
+
+        var item = _world.FindItem(new Serial(serial));
+        if (item == null) return;
+
+        _logger.LogDebug("[book_header] item=0x{Item:X8} title='{Title}' author='{Author}'",
+            serial, title, author);
+
+        if (writable)
+        {
+            item.SetTag("BOOK_TITLE", title);
+            item.SetTag("BOOK_AUTHOR", author);
+        }
+    }
+
+    /// <summary>Handle bulletin board list request (0x71 sub 3).</summary>
+    public void HandleBulletinBoardRequestList(uint boardSerial)
+    {
+        if (_character == null) return;
+        _logger.LogDebug("[bboard_list] char=0x{Uid:X8} board=0x{Board:X8}",
+            _character.Uid.Value, boardSerial);
+        // Bulletin board content is managed via scripts/TAGs
+    }
+
+    /// <summary>Handle bulletin board message read (0x71 sub 4).</summary>
+    public void HandleBulletinBoardRequestMessage(uint boardSerial, uint msgSerial)
+    {
+        if (_character == null) return;
+        _logger.LogDebug("[bboard_read] board=0x{Board:X8} msg=0x{Msg:X8}", boardSerial, msgSerial);
+    }
+
+    /// <summary>Handle bulletin board post (0x71 sub 5).</summary>
+    public void HandleBulletinBoardPost(uint boardSerial, uint replyTo, string subject, string[] bodyLines)
+    {
+        if (_character == null) return;
+        _logger.LogDebug("[bboard_post] board=0x{Board:X8} subject='{Subject}' lines={Lines}",
+            boardSerial, subject, bodyLines.Length);
+        SysMessage(ServerMessages.Get("msg_message_posted"));
+    }
+
+    /// <summary>Handle bulletin board delete (0x71 sub 6).</summary>
+    public void HandleBulletinBoardDelete(uint boardSerial, uint msgSerial)
+    {
+        if (_character == null) return;
+        _logger.LogDebug("[bboard_delete] board=0x{Board:X8} msg=0x{Msg:X8}", boardSerial, msgSerial);
+    }
+
+    /// <summary>Handle map detail request (0x90).</summary>
+    public void HandleMapDetail(uint serial)
+    {
+        if (_character == null) return;
+        _logger.LogDebug("[map_detail] char=0x{Uid:X8} map=0x{Serial:X8}",
+            _character.Uid.Value, serial);
+        // Map detail rendering is handled client-side with MUL data
+    }
+
+    /// <summary>Handle map pin edit (0x56).</summary>
+    public void HandleMapPinEdit(uint serial, byte action, byte pinId, ushort x, ushort y)
+    {
+        if (_character == null) return;
+
+        var item = _world.FindItem(new Serial(serial));
+        if (item == null) return;
+
+        _logger.LogDebug("[map_pin] item=0x{Item:X8} action={Action} pin={PinId} x={X} y={Y}",
+            serial, action, pinId, x, y);
+
+        switch (action)
+        {
+            case 1: // Add pin
+                item.SetTag($"PIN_{pinId}", $"{x},{y}");
+                break;
+            case 6: // Insert pin
+                item.SetTag($"PIN_{pinId}", $"{x},{y}");
+                break;
+            case 7: // Move pin
+                item.SetTag($"PIN_{pinId}", $"{x},{y}");
+                break;
+        }
+    }
+
+    // ==================== Phase 3: Client Compatibility Handlers ====================
+
+    /// <summary>Handle gump text entry reply (0xAC).</summary>
+    public void HandleGumpTextEntry(uint serial, uint gumpId, uint buttonId, string text)
+    {
+        if (_character == null) return;
+
+        _logger.LogDebug("[gump_text_entry] char=0x{Uid:X8} gumpId=0x{Gump:X8} button={Button} text='{Text}'",
+            _character.Uid.Value, gumpId, buttonId, text);
+
+        // Route through gump response handler with the text as a text entry
+        HandleGumpResponse(serial, gumpId, buttonId, Array.Empty<uint>(),
+            new (ushort, string)[] { (0, text) });
+    }
+
+    /// <summary>Handle all names request (0x98).</summary>
+    public void HandleAllNamesRequest(uint serial)
+    {
+        if (_character == null) return;
+
+        var ch = _world.FindChar(new Serial(serial));
+        if (ch != null)
+        {
+            _netState.Send(new PacketAllNamesResponse(serial, ch.GetName()).Build());
+            return;
+        }
+
+        var item = _world.FindItem(new Serial(serial));
+        if (item != null)
+        {
+            _netState.Send(new PacketAllNamesResponse(serial, item.GetName()).Build());
+        }
+    }
+
+    // ==================== Helpers ====================
+
+    private static void GetDirectionDelta(Direction dir, out short dx, out short dy)
+    {
+        dx = 0; dy = 0;
+        switch (dir)
+        {
+            case Direction.North: dy = -1; break;
+            case Direction.NorthEast: dx = 1; dy = -1; break;
+            case Direction.East: dx = 1; break;
+            case Direction.SouthEast: dx = 1; dy = 1; break;
+            case Direction.South: dy = 1; break;
+            case Direction.SouthWest: dx = -1; dy = 1; break;
+            case Direction.West: dx = -1; break;
+            case Direction.NorthWest: dx = -1; dy = -1; break;
+        }
+    }
+}
