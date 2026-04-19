@@ -16,6 +16,7 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
     public static Action<string>? OnNameChangeWarning;
 
     private Serial _uid;
+    private Guid _uuid = Guid.CreateVersion7();
     private string _name = "";
     private Point3D _position;
     private ushort _baseId;
@@ -56,6 +57,12 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
 
     public Serial Uid => _uid;
     public ref Serial UidRef => ref _uid;
+
+    public Guid Uuid
+    {
+        get => _uuid;
+        set => _uuid = value;
+    }
 
     public string Name
     {
@@ -134,6 +141,7 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
         switch (key.ToUpperInvariant())
         {
             case "UID": value = $"0{_uid.Value:X}"; return true;
+            case "UUID": value = _uuid.ToString("D"); return true;
             case "NAME": value = _name; return true;
             case "P": value = _position.ToString(); return true;
             case "X": value = _position.X.ToString(); return true;

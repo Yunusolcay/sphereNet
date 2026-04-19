@@ -21,6 +21,7 @@ public sealed class GameWorld
 {
     private readonly UidTable _uidTable = new();
     private readonly Dictionary<uint, ObjBase> _objects = [];
+    private readonly Dictionary<Guid, ObjBase> _uuidIndex = [];
     private readonly Dictionary<uint, List<Item>> _containerIndex = [];
     private readonly Dictionary<int, Sector[,]> _sectors = [];
     private readonly List<Region> _regions = [];
@@ -210,6 +211,7 @@ public sealed class GameWorld
         item.SetUid(uid);
         item.SetDirtyNotify(NotifyDirty);
         _objects[uid.Value] = item;
+        _uuidIndex[item.Uuid] = item;
         _totalItems++;
         LastNewItem = uid;
         ObjectCreated?.Invoke(item);
@@ -223,6 +225,7 @@ public sealed class GameWorld
         ch.SetUid(uid);
         ch.SetDirtyNotify(NotifyDirty);
         _objects[uid.Value] = ch;
+        _uuidIndex[ch.Uuid] = ch;
         _totalChars++;
         LastNewChar = uid;
         ObjectCreated?.Invoke(ch);
@@ -237,6 +240,7 @@ public sealed class GameWorld
             if (obj.IsChar) _totalChars--;
             else if (obj.IsItem) _totalItems--;
         }
+        _uuidIndex.Remove(obj.Uuid);
         _uidTable.Free(obj.Uid);
 
         if (obj is Item delItem && delItem.ContainedIn.IsValid)
@@ -277,6 +281,16 @@ public sealed class GameWorld
 
     public Character? FindChar(Serial uid) =>
         _objects.GetValueOrDefault(uid.Value) as Character;
+
+    public ObjBase? FindByUuid(Guid uuid) =>
+        _uuidIndex.GetValueOrDefault(uuid);
+
+    /// <summary>Update the UUID index when an object's UUID changes (e.g. on load).</summary>
+    public void ReIndexUuid(ObjBase obj, Guid oldUuid)
+    {
+        _uuidIndex.Remove(oldUuid);
+        _uuidIndex[obj.Uuid] = obj;
+    }
 
     // --- Placement ---
 

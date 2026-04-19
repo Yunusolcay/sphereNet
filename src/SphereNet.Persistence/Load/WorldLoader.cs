@@ -18,6 +18,7 @@ namespace SphereNet.Persistence.Load;
 public sealed class WorldLoader
 {
     private readonly ILogger<WorldLoader> _logger;
+    private int _migratedUuids;
 
     public WorldLoader(ILoggerFactory loggerFactory)
     {
@@ -128,6 +129,11 @@ public sealed class WorldLoader
 
         _logger.LogInformation("World loaded: {Items} items, {Chars} chars, {Contained} contained/equipped in {Elapsed}s",
             itemCount, charCount, containedCount, sw.Elapsed.TotalSeconds.ToString("F1"));
+
+        if (_migratedUuids > 0)
+            _logger.LogInformation("UUID migration: {Count} objects had no UUID — auto-generated (will persist on next save)",
+                _migratedUuids);
+
         return (itemCount, charCount);
     }
 
@@ -181,6 +187,7 @@ public sealed class WorldLoader
             Serial contSerial = Serial.Invalid;
             byte layer = 0;
 
+            bool hasUuid = false;
             while (reader.NextProperty(out string key, out string val))
             {
                 string upper = key.ToUpperInvariant();
@@ -190,6 +197,17 @@ public sealed class WorldLoader
                     {
                         var oldUid = item.Uid;
                         world.ReRegisterObject(item, oldUid, new Serial(serial));
+                    }
+                    continue;
+                }
+                if (upper == "UUID")
+                {
+                    if (Guid.TryParse(val, out Guid uuid))
+                    {
+                        var oldUuid = item.Uuid;
+                        item.Uuid = uuid;
+                        world.ReIndexUuid(item, oldUuid);
+                        hasUuid = true;
                     }
                     continue;
                 }
@@ -206,6 +224,8 @@ public sealed class WorldLoader
                 }
                 ApplyItemProperty(item, key, val);
             }
+            if (!hasUuid)
+                _migratedUuids++;
 
             if (contSerial.IsValid)
                 contLinks.Add((item, contSerial, layer));
@@ -236,6 +256,7 @@ public sealed class WorldLoader
 
             var ch = world.CreateCharacter();
             string? accountName = null;
+            bool charHasUuid = false;
 
             while (reader.NextProperty(out string key, out string val))
             {
@@ -245,6 +266,18 @@ public sealed class WorldLoader
                     {
                         var oldUid = ch.Uid;
                         world.ReRegisterObject(ch, oldUid, new Serial(serial));
+                    }
+                    continue;
+                }
+
+                if (key.Equals("UUID", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (Guid.TryParse(val, out Guid uuid))
+                    {
+                        var oldUuid = ch.Uuid;
+                        ch.Uuid = uuid;
+                        world.ReIndexUuid(ch, oldUuid);
+                        charHasUuid = true;
                     }
                     continue;
                 }
@@ -260,6 +293,8 @@ public sealed class WorldLoader
 
                 ApplyCharProperty(ch, key, val);
             }
+            if (!charHasUuid)
+                _migratedUuids++;
 
             world.PlaceCharacter(ch, ch.Position);
             if (!string.IsNullOrEmpty(accountName))

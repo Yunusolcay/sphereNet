@@ -296,6 +296,7 @@ public sealed class WorldSaver
     {
         w.BeginRecord("WORLDITEM");
         w.WriteProperty("SERIAL", $"0{item.Uid.Value:X8}");
+        w.WriteProperty("UUID", item.Uuid.ToString("D"));
         w.WriteProperty("ID", $"0{item.BaseId:X}");
         w.WriteProperty("NAME", item.Name);
         w.WriteProperty("P", item.Position.ToString());
@@ -329,6 +330,7 @@ public sealed class WorldSaver
     {
         w.BeginRecord("WORLDCHAR");
         w.WriteProperty("SERIAL", $"0{ch.Uid.Value:X8}");
+        w.WriteProperty("UUID", ch.Uuid.ToString("D"));
         w.WriteProperty("NAME", ch.Name);
         w.WriteProperty("P", ch.Position.ToString());
         w.WriteProperty("BODY", $"0{ch.BodyId:X}");

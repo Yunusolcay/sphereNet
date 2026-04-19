@@ -4,6 +4,22 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-20] - UUID sistemi, eski save otomatik migrasyon
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - Tum objelere (item + karakter) UUID (v7, zaman-sirali) ataniyor.
+    Mevcut 32-bit Serial (UO protokolu icin) korunuyor, UUID ek tanimlayici
+    olarak calisiyor. Save dosyasinda UUID= property olarak yaziliyor.
+    Eski save dosyalari yuklendiginde UUID olmayan objeler icin otomatik
+    UUID olusturuluyor — bir sonraki save'de kalici olarak yazilir.
+    Script'ten <UUID> ile erisilebilir. GameWorld.FindByUuid() ile lookup.
+    (UUID v7 (time-sortable) assigned to all objects (items + characters).
+    Existing 32-bit Serial preserved for UO protocol. UUID written as
+    UUID= property in save files. Old saves without UUID get auto-generated
+    UUIDs on load — persisted on next save. Accessible via <UUID> in scripts.
+    GameWorld.FindByUuid() for lookup.)
+
 [2026-04-20] - ToolTipMode=0 single-click fix
 ----------------------------------------
 
