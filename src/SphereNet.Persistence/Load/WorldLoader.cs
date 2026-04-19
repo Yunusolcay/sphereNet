@@ -60,7 +60,7 @@ public sealed class WorldLoader
         finally
         {
             world.SuppressDirtyNotify = false;
-            world.DrainDirtyObjects();
+            world.ConsumeDirtyObjects();
         }
 
         // Post-load: link accounts to characters (only if not already linked via CHARUID)

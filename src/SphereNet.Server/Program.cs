@@ -110,6 +110,7 @@ public static class Program
     private static int _tickCounter;
     private static DateTime _serverStartTime;
     private static int _saveCount;
+    private static readonly List<GameClient> _reusableClientSnapshot = [];
     private static long _telemetrySnapshotUs;
     private static long _telemetryComputeUs;
     private static long _telemetryApplyUs;
@@ -419,6 +420,7 @@ public static class Program
         _world.MaxContainerItems = _config.ContainerMaxItems;
         _world.MaxBankItems      = _config.BankMaxItems;
         _world.MaxBankWeight     = _config.BankMaxWeight;
+        _world.ToolTipMode       = _config.ToolTipMode;
         foreach (var mapDef in _config.Maps)
         {
             _world.InitMap(mapDef.MapSendId, mapDef.MaxX, mapDef.MaxY);
@@ -493,18 +495,8 @@ public static class Program
         var scriptInterpreter = new ScriptInterpreter(exprParser, _loggerFactory.CreateLogger<ScriptInterpreter>());
         _triggerRunner = new TriggerRunner(scriptInterpreter, _resources, _loggerFactory.CreateLogger<TriggerRunner>());
         _systemHooks = new ScriptSystemHooks(_triggerRunner, _loggerFactory.CreateLogger<ScriptSystemHooks>());
-        _scriptDb = new ScriptDbAdapter(_loggerFactory.CreateLogger<ScriptDbAdapter>())
-        {
-            DefaultProvider = ResolveDbProvider(_config),
-            DefaultConnectionString = ResolveDbConnectionString(_config)
-        };
-        if (!string.IsNullOrWhiteSpace(_scriptDb.DefaultProvider) && !string.IsNullOrWhiteSpace(_scriptDb.DefaultConnectionString))
-        {
-            if (!_scriptDb.ConnectDefault(out string dbError))
-                _log.LogWarning("Script DB auto-connect failed: {Error}", dbError);
-            else
-                _log.LogInformation("Script DB connected using provider {Provider}", _scriptDb.DefaultProvider);
-        }
+        _scriptDb = new ScriptDbAdapter(_loggerFactory.CreateLogger<ScriptDbAdapter>());
+        InitDbConnections(_config, _scriptDb);
         if (_config.HasFileCommands)
         {
             string fileBasePath = Path.Combine(Path.GetDirectoryName(_config.ScpFilesDir) ?? ".", "files");
@@ -1212,10 +1204,7 @@ public static class Program
                     if (client.IsPlaying)
                         client.UpdateClientView();
                 }
-                var fastDirty = _world.DrainDirtyObjects();
-                if (fastDirty != null)
-                    foreach (var obj in fastDirty)
-                        obj.ConsumeDirty();
+                _world.ConsumeDirtyObjects();
             }
 
             // Stress-test batch generation / cleanup — both are cooperative:
@@ -2076,25 +2065,29 @@ public static class Program
         return _resources.TryGetDefMessage(key, out var message) ? message : null;
     }
 
-    private static string ResolveDbProvider(SphereConfig config)
+    private static void InitDbConnections(SphereConfig config, ScriptDbAdapter db)
     {
-        if (config.MySQL != 0)
-            return "MySqlConnector";
-        return "";
-    }
-
-    private static string ResolveDbConnectionString(SphereConfig config)
-    {
-        if (config.MySQL != 0)
+        if (config.DbConnections.Count == 0)
         {
-            if (string.IsNullOrWhiteSpace(config.MySQLHost) ||
-                string.IsNullOrWhiteSpace(config.MySQLUser) ||
-                string.IsNullOrWhiteSpace(config.MySQLDatabase))
-                return "";
-
-            return $"Server={config.MySQLHost};User ID={config.MySQLUser};Password={config.MySQLPassword};Database={config.MySQLDatabase};";
+            _log.LogDebug("No DB connections configured.");
+            return;
         }
-        return "";
+
+        foreach (var connCfg in config.DbConnections)
+        {
+            db.RegisterConnection(connCfg);
+
+            if (connCfg.AutoConnect)
+            {
+                if (db.Connect(connCfg.Name, out string err))
+                    _log.LogInformation("DB '{Name}' connected ({Host}/{Db})",
+                        connCfg.Name, connCfg.Host, connCfg.Database);
+                else
+                    _log.LogWarning("DB '{Name}' auto-connect failed: {Error}", connCfg.Name, err);
+            }
+        }
+
+        _log.LogInformation("Registered {Count} DB connection(s)", config.DbConnections.Count);
     }
 
     private static HashSet<byte>? ParseDebugPacketOpcodes(string raw)
@@ -2918,10 +2911,7 @@ public static class Program
         }
 
         // Reset dirty flags so objects can be re-notified on next change
-        var dirtyObjects = _world.DrainDirtyObjects();
-        if (dirtyObjects != null)
-            foreach (var obj in dirtyObjects)
-                obj.ConsumeDirty();
+        _world.ConsumeDirtyObjects();
 
         _telemetryApplyUs = ToMicroseconds(Stopwatch.GetTimestamp() - p1);
 
@@ -2950,7 +2940,13 @@ public static class Program
         // NPC AI via timer wheel
         var npcSnapshot = _npcTimerWheel.Advance(Environment.TickCount64);
 
-        var clientSnapshot = _clients.Values.Where(c => c.IsPlaying).OrderBy(c => c.NetState.Id).ToList();
+        _reusableClientSnapshot.Clear();
+        foreach (var c in _clients.Values)
+        {
+            if (c.IsPlaying)
+                _reusableClientSnapshot.Add(c);
+        }
+        var clientSnapshot = _reusableClientSnapshot;
         _telemetrySnapshotUs = ToMicroseconds(Stopwatch.GetTimestamp() - p0);
 
         long p1 = Stopwatch.GetTimestamp();
@@ -2980,7 +2976,9 @@ public static class Program
         _telemetryComputeUs = ToMicroseconds(Stopwatch.GetTimestamp() - p1);
 
         long p2 = Stopwatch.GetTimestamp();
-        foreach (var decision in npcDecisions.OrderBy(d => d.NpcUid))
+        var sortedDecisions = npcDecisions.ToArray();
+        Array.Sort(sortedDecisions, (a, b) => a.NpcUid.CompareTo(b.NpcUid));
+        foreach (var decision in sortedDecisions)
             _npcAI.ApplyDecision(decision);
 
         foreach (var client in clientSnapshot)
@@ -2991,10 +2989,7 @@ public static class Program
         _telemetryApplyUs = ToMicroseconds(Stopwatch.GetTimestamp() - p2);
 
         // Reset dirty flags
-        var dirtyObjects = _world.DrainDirtyObjects();
-        if (dirtyObjects != null)
-            foreach (var obj in dirtyObjects)
-                obj.ConsumeDirty();
+        _world.ConsumeDirtyObjects();
 
         // Re-schedule NPCs into timer wheel after decisions applied
         if (_npcTimerWheel != null)

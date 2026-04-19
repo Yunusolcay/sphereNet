@@ -367,13 +367,76 @@ Komut once loader ile mevcut save'i okur, sonra yeni formatta yazar, eski dosyal
 
 ### Veritabani / Database (`sphere.ini`)
 
-| Anahtar / Key | Aciklama / Description |
-|---------|----------|
-| `MySQL` | MySQL aktif/pasif (1/0) / Enable/disable |
-| `MySQLHost` | Sunucu adresi / Server address |
-| `MySQLUser` | Kullanici adi / Username |
-| `MySQLPassword` | Sifre / Password |
-| `MySQLDatabase` | Veritabani adi / Database name |
+#### Eski Tek Baglanti (Legacy) / Legacy Single Connection
+
+Mevcut Source-X uyumlu ayarlar hala calisir — otomatik olarak `default` isimli baglantiya donusturulur.
+Existing Source-X compatible settings still work — automatically mapped to a connection named `default`.
+
+```ini
+[SPHERE]
+MySQL=1
+MySQLHost=localhost
+MySQLUser=root
+MySQLPassword=secret
+MySQLDatabase=sphere
+```
+
+#### Coklu Baglanti / Multi-Connection
+
+Birden fazla veritabanina ayni anda baglanabilirsiniz. Her baglanti kendi ayarlarina sahiptir.
+You can connect to multiple databases simultaneously. Each connection has its own settings.
+
+```ini
+[MYSQL default]
+Host=localhost
+Port=3306
+User=root
+Password=secret
+Database=sphere
+KeepAlive=1
+AutoConnect=1
+ConnectTimeout=30
+ReadTimeout=30
+WriteTimeout=30
+UseThread=0
+
+[MYSQL logging]
+Host=10.0.0.2
+Port=3306
+User=logger
+Password=logpass
+Database=logs
+AutoConnect=1
+KeepAlive=0
+ConnectTimeout=10
+ReadTimeout=10
+WriteTimeout=10
+UseThread=1
+
+[MYSQL analytics]
+Host=192.168.1.50
+User=analyst
+Password=pass123
+Database=analytics
+AutoConnect=0
+UseThread=1
+ReadTimeout=60
+```
+
+| Anahtar / Key | Varsayilan / Default | Aciklama / Description |
+|---------|------------|----------|
+| `Host` | `localhost` | Sunucu adresi / Server address |
+| `Port` | `3306` | MySQL portu / MySQL port |
+| `User` | — | Kullanici adi / Username |
+| `Password` | — | Sifre / Password |
+| `Database` | — | Veritabani adi / Database name |
+| `Provider` | `MySqlConnector` | ADO.NET provider adi / ADO.NET provider name |
+| `KeepAlive` | `0` | Baglanti surekli acik kalsin (1/0) / Keep connection persistent |
+| `AutoConnect` | `0` | Sunucu basladiginda otomatik baglan (1/0) / Auto-connect on server start |
+| `ConnectTimeout` | `30` | Baglanti zaman asimi (sn) / Connection timeout (sec) |
+| `ReadTimeout` | `30` | Okuma zaman asimi (sn) / Read/command timeout (sec) |
+| `WriteTimeout` | `30` | Yazma zaman asimi (sn) / Write timeout (sec) |
+| `UseThread` | `0` | Ayri is parcaciginda calistir (1/0) / Run queries on dedicated thread |
 
 ---
 
@@ -417,13 +480,84 @@ ON=@Equip
 
 ### Veritabani Entegrasyonu / Database Integration
 
+#### Temel Kullanim (Varsayilan Baglanti) / Basic Usage (Default Connection)
+
 ```
-db.connect             // Varsayilan baglanti / Default connection
-db.execute "INSERT..." // SQL calistir / Execute SQL
-db.query "SELECT..."   // Sorgu calistir / Run query
-db.row.numrows         // Sonuc satir sayisi / Result row count
-db.row.0.name          // Ilk satirin sutunu / First row column
-db.close               // Baglanti kapat / Close connection
+db.connect                     // Varsayilan baglantiya baglan / Connect to default
+db.execute "INSERT INTO ..."   // SQL calistir / Execute SQL
+db.query "SELECT * FROM ..."   // Sorgu calistir / Run query
+<db.row.numrows>               // Sonuc satir sayisi / Result row count
+<db.row.0.name>                // Ilk satirin 'name' sutunu / First row 'name' column
+<db.row.0.0>                   // Ilk satirin ilk sutunu (index) / First row first column
+db.close                       // Baglanti kapat / Close connection
+```
+
+#### Coklu Baglanti / Multi-Connection
+
+```
+// Isimli baglantilara baglan / Connect named connections
+db.connect default
+db.connect logging
+db.connect analytics
+
+// Aktif baglanti degistir / Switch active connection
+db.select logging
+db.execute "INSERT INTO logs (msg) VALUES ('test')"
+
+// Baska baglantiya gec / Switch to another
+db.select default
+db.query "SELECT * FROM users WHERE id=1"
+
+// Baglanti durumu kontrol / Check connection status
+if (<db.connected>)              // Aktif baglanti acik mi / Is active connected?
+if (<db.connected.logging>)      // Isimli baglanti acik mi / Is named one connected?
+<db.active>                      // Aktif baglanti adi / Active connection name
+
+// Tek bir baglanti kapat / Close single connection
+db.close logging
+
+// Tum baglantilari kapat / Close all connections
+db.close *
+```
+
+#### Ornek: Oyuncu giris log'u / Example: Player login logging
+
+```ini
+[FUNCTION f_onaccount_login]
+   db.select logging
+   db.execute "INSERT INTO login_log (account, ip, time) VALUES ('<account>', '<ip>', NOW())"
+   db.select default
+
+[FUNCTION f_player_stats]
+   db.select analytics
+   db.query "SELECT kills, deaths FROM player_stats WHERE uid=<uid>"
+   if (<db.row.numrows> > 0)
+      sysmessage Kills: <db.row.0.kills> / Deaths: <db.row.0.deaths>
+   endif
+   db.select default
+```
+
+#### Ornek: KeepAlive ile surekli baglanti / Example: Persistent connection with KeepAlive
+
+```ini
+// sphere.ini
+[MYSQL websync]
+Host=web-server.example.com
+User=sync_user
+Password=syncpass
+Database=website
+KeepAlive=1        // Baglanti kopmasin / Keep alive
+AutoConnect=1      // Sunucu acilinca baglan / Connect on server start
+UseThread=1        // Ayri thread'de calis / Run on dedicated thread
+ReadTimeout=60     // Uzun sorgular icin / For long queries
+```
+
+```ini
+// Script'te kullanim / Usage in script
+[FUNCTION f_sync_player_online]
+   db.select websync
+   db.execute "UPDATE online_players SET status=1 WHERE account='<account>'"
+   db.select default
 ```
 
 ---

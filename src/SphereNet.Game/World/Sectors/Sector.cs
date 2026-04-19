@@ -76,20 +76,24 @@ public sealed class Sector : IScriptObj
 
     public void RemoveItem(Item item) => _items.Remove(item);
 
-    /// <summary>Get all objects within a range from a point inside this sector.</summary>
+    /// <summary>Get all objects within a range from a point inside this sector.
+    /// Safe for concurrent reads when no writes are in progress (multicore compute phase).</summary>
     public IEnumerable<ObjBase> GetObjectsInRange(Point3D center, int range)
     {
-        // Snapshot to avoid "Collection was modified" when AI ticks move characters
-        var chars = _characters.ToArray();
-        var items = _items.ToArray();
-
-        foreach (var ch in chars)
+        // Index-based iteration avoids ToArray allocation. Safe during the
+        // parallel compute phase because sector mutations only happen in
+        // the sequential tick/apply phases.
+        for (int i = _characters.Count - 1; i >= 0; i--)
         {
+            if (i >= _characters.Count) continue;
+            var ch = _characters[i];
             if (!ch.IsDeleted && center.GetDistanceTo(ch.Position) <= range)
                 yield return ch;
         }
-        foreach (var item in items)
+        for (int i = _items.Count - 1; i >= 0; i--)
         {
+            if (i >= _items.Count) continue;
+            var item = _items[i];
             if (!item.IsDeleted && item.IsOnGround && center.GetDistanceTo(item.Position) <= range)
                 yield return item;
         }

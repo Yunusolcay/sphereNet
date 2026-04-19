@@ -4,6 +4,57 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-20] - Multi-DB connections, ToolTipMode, ClearCTags fix, GC optimizations
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - Coklu veritabani baglanti destegi: [MYSQL name] INI section'lari ile birden
+    fazla veritabanina ayni anda baglanma. Her baglanti icin KeepAlive, timeout
+    (connect/read/write), AutoConnect, UseThread (ayri is parcacigi) ayarlari.
+    Eski tek-baglanti MySQL ayarlari (MySQLHost/MySQLUser/...) otomatik olarak
+    "default" baglantiya donusturulur (backward compat).
+    (Multi-database connection support: [MYSQL name] INI sections allow simultaneous
+    connections to multiple databases. Per-connection KeepAlive, timeouts
+    (connect/read/write), AutoConnect, UseThread settings. Legacy single-connection
+    MySQL* keys auto-map to a "default" connection for backward compatibility.)
+
+  - Yeni script komutlari: DB.CONNECT <name>, DB.SELECT <name>, DB.CLOSE <name>,
+    DB.CLOSE *, <DB.CONNECTED.name>, <DB.ACTIVE>
+    (New script commands: DB.CONNECT <name>, DB.SELECT <name>, DB.CLOSE <name>,
+    DB.CLOSE *, <DB.CONNECTED.name>, <DB.ACTIVE>)
+
+  - TOOLTIPMODE INI ayari: 0=kapali (varsayilan), 1=AOS tooltipleri aktif.
+    Config'den okunur, runtime'da GameWorld.ToolTipMode uzerinden kullanilir.
+    (TOOLTIPMODE INI setting: 0=off (default), 1=AOS tooltips active.
+    Read from config, used at runtime via GameWorld.ToolTipMode.)
+
+DUZELTMELER / FIXES:
+  - Dialog button 0 (kapat) handler'i: TryRunScriptDialogButton artik buttonId==0
+    return'den ONCE cagiriliyor. ClearCTags gibi ON=0 handler'lari artik calisiyor,
+    admin dialog'da tekrar eden karakter listesi sorunu duzeltildi.
+    (Dialog button 0 (close) handler: TryRunScriptDialogButton now fires BEFORE the
+    buttonId==0 early return. ON=0 handlers like ClearCTags now execute, fixing
+    duplicate character list in admin dialogs.)
+
+PERFORMANS / PERFORMANCE:
+  - Sector.GetObjectsInRange: ToArray() kaldirildi, index-tabanli ters iterasyon
+    ile sifir alokasyon. Multicore compute fazinda guvenli.
+    (Sector.GetObjectsInRange: removed ToArray(), zero-allocation index-based
+    reverse iteration. Safe during multicore compute phase.)
+
+  - Program.cs: Reusable client snapshot listesi — her tick yeni List<> olusturmak
+    yerine Clear() + yeniden doldurma. LINQ OrderBy yerine Array.Sort.
+    (Reusable client snapshot list — Clear() + refill instead of new List<> per tick.
+    Array.Sort replaces LINQ OrderBy for NPC decisions.)
+
+  - GameWorld: Reusable _tickSectors/_tickSectorsSeen koleksiyonlari.
+    ConsumeDirtyObjects() sifir alokasyonlu dirty-set drain methodu.
+    (Reusable _tickSectors/_tickSectorsSeen collections.
+    ConsumeDirtyObjects() zero-allocation dirty-set drain method.)
+
+  - WorldLoader/StressTestEngine: DrainDirtyObjects -> ConsumeDirtyObjects guncellendi.
+    (Updated DrainDirtyObjects -> ConsumeDirtyObjects across all call sites.)
+
 [2026-04-20] - Item drop fix, Unicode speech, CHARDEF features, Sentry, name tracking
 ----------------------------------------
 

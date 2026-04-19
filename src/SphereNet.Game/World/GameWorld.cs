@@ -42,6 +42,10 @@ public sealed class GameWorld
     // --- Delta-based update: dirty object tracking ---
     private readonly ConcurrentDictionary<uint, ObjBase> _dirtyObjects = new();
 
+    // Reusable collections for OnTickParallel to avoid per-tick allocation
+    private readonly List<Sector> _tickSectors = new(256);
+    private readonly HashSet<Sector> _tickSectorsSeen = new(256);
+
     /// <summary>World clock: in-game minutes since epoch. 1 real second = configurable game minutes.</summary>
     private long _worldClock;
     private long _lastClockUpdate;
@@ -62,6 +66,8 @@ public sealed class GameWorld
     public int MaxBankItems { get; set; } = 125;
     /// <summary>Max total weight (stones) allowed in a bank box. sphere.ini BANKMAXWEIGHT.</summary>
     public int MaxBankWeight { get; set; } = 1600;
+    /// <summary>AOS tooltip mode. 0=off, 1=enabled. sphere.ini TOOLTIPMODE.</summary>
+    public int ToolTipMode { get; set; }
 
     /// <summary>Currently online, in-world players. Used to compute the set of
     /// active sectors each tick so that uninhabited regions don't iterate
@@ -141,7 +147,16 @@ public sealed class GameWorld
     /// <summary>O(1) check — true if any object has pending delta updates.</summary>
     public bool HasDirty => !_dirtyObjects.IsEmpty;
 
+    /// <summary>Consume all dirty objects and clear the set. Call once per tick after mutations.</summary>
+    public void ConsumeDirtyObjects()
+    {
+        foreach (var kvp in _dirtyObjects)
+            kvp.Value.ConsumeDirty();
+        _dirtyObjects.Clear();
+    }
+
     /// <summary>Snapshot and clear dirty set. Call once per tick after mutations.</summary>
+    [Obsolete("Use ConsumeDirtyObjects() to avoid allocation")]
     public List<ObjBase> DrainDirtyObjects()
     {
         var list = new List<ObjBase>(_dirtyObjects.Count);
@@ -537,8 +552,8 @@ public sealed class GameWorld
 
         // Sector sleep (parallel variant): only include active sectors.
         // 5x5 window — see TickActiveSectors comment for rationale.
-        var sectors = new List<Sector>(_onlinePlayers.Count * 25);
-        var seen = new HashSet<Sector>();
+        _tickSectors.Clear();
+        _tickSectorsSeen.Clear();
         foreach (var player in _onlinePlayers)
         {
             if (player.IsDeleted || !player.IsOnline) continue;
@@ -549,10 +564,11 @@ public sealed class GameWorld
                 for (int dy = -ActiveSectorRadius; dy <= ActiveSectorRadius; dy++)
                 {
                     var s = GetSector(player.MapIndex, sx + dx, sy + dy);
-                    if (s != null && seen.Add(s)) sectors.Add(s);
+                    if (s != null && _tickSectorsSeen.Add(s)) _tickSectors.Add(s);
                 }
             }
         }
+        var sectors = _tickSectors;
 
         var po = new ParallelOptions
         {

@@ -155,7 +155,7 @@ public sealed class StressTestEngine
         // as 150-500ms ping spikes while .stress runs. The dirty set is
         // cleared explicitly so in-flight fast-path work doesn't lag behind.
         _world.SuppressDirtyNotify = true;
-        _world.DrainDirtyObjects();
+        _world.ConsumeDirtyObjects();
 
         _logger.LogInformation(
             "[STRESS] Queued generation: {Items} items, {Npcs} NPCs (batch {IB}/{NB} per iter, dirty-notify suppressed)",
@@ -196,7 +196,7 @@ public sealed class StressTestEngine
         {
             // Re-enable dirty propagation so normal gameplay resumes.
             _world.SuppressDirtyNotify = false;
-            _world.DrainDirtyObjects();
+            _world.ConsumeDirtyObjects();
 
             long totalMs = now - _startTimeMs;
             string done = $"[STRESS] Generation complete in {totalMs / 1000}s. " +
@@ -306,7 +306,7 @@ public sealed class StressTestEngine
         // generation — DeleteObject / sector removal shouldn't drown the
         // fast-path in millions of one-shot dirty entries.
         _world.SuppressDirtyNotify = true;
-        _world.DrainDirtyObjects();
+        _world.ConsumeDirtyObjects();
         _startTimeMs = Environment.TickCount64;
         _lastProgressLogMs = _startTimeMs;
         _cleanupInitial = queued;
@@ -354,7 +354,7 @@ public sealed class StressTestEngine
         if (_cleanupQueue.Count == 0)
         {
             _world.SuppressDirtyNotify = false;
-            _world.DrainDirtyObjects();
+            _world.ConsumeDirtyObjects();
 
             string line = "[STRESS] Cleanup complete. Running GC to release memory.";
             _logger.LogInformation("{Line}", line);

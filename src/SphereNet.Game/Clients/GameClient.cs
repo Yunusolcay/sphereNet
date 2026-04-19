@@ -3489,6 +3489,7 @@ public sealed class GameClient : ITextConsole
     public void HandleAOSTooltip(uint serial)
     {
         if (_character == null) return;
+        if (_world.ToolTipMode == 0) return;
 
         var obj = _world.FindObject(new Serial(serial));
         if (obj == null) return;
@@ -5237,14 +5238,15 @@ public sealed class GameClient : ITextConsole
         {
             if (_character == null)
                 return;
-            if (buttonId == 0)
-                return;
-
             // Try the script's [Dialog d_xxx Button] handler first. If a matching
             // ON=buttonId block exists, its body runs and we're done. Otherwise
             // fall back to page navigation behaviour so the old in-dialog page
-            // buttons still work.
+            // buttons still work. Button 0 = close/escape — still needs to run
+            // the ON=0 handler (e.g. ClearCTags).
             if (TryRunScriptDialogButton(dialogId, (int)buttonId, switches, textEntries))
+                return;
+
+            if (buttonId == 0)
                 return;
 
             if (buttonId is >= 1 and <= 5000)
@@ -7008,9 +7010,12 @@ public sealed class GameClient : ITextConsole
                 {
                     bool ok;
                     string err;
-                    string[] dbArgs = args.Split('|', 2, StringSplitOptions.TrimEntries);
+                    string trimmed = args.Trim();
+                    string[] dbArgs = trimmed.Split('|', 2, StringSplitOptions.TrimEntries);
                     if (dbArgs.Length == 2)
                         ok = _scriptDb.Connect(dbArgs[0], dbArgs[1], out err);
+                    else if (!string.IsNullOrWhiteSpace(trimmed) && !trimmed.Contains('='))
+                        ok = _scriptDb.Connect(trimmed, out err);
                     else
                         ok = _scriptDb.ConnectDefault(out err);
                     if (!ok)
@@ -7018,8 +7023,23 @@ public sealed class GameClient : ITextConsole
                     return true;
                 }
                 case "CLOSE":
-                    _scriptDb.Close();
+                {
+                    string name = args.Trim();
+                    if (string.IsNullOrWhiteSpace(name))
+                        _scriptDb.Close();
+                    else if (name.Equals("*", StringComparison.Ordinal))
+                        _scriptDb.CloseAll();
+                    else
+                        _scriptDb.Close(name);
                     return true;
+                }
+                case "SELECT":
+                {
+                    string name = args.Trim();
+                    if (!_scriptDb.Select(name, out string err))
+                        SysMessage(err);
+                    return true;
+                }
                 case "QUERY":
                 {
                     bool ok = _scriptDb.Query(args, out int rows, out string err);
@@ -7203,6 +7223,17 @@ public sealed class GameClient : ITextConsole
         if (varName.Equals("DB.CONNECTED", StringComparison.OrdinalIgnoreCase))
         {
             value = _scriptDb?.IsConnected == true ? "1" : "0";
+            return true;
+        }
+        if (varName.StartsWith("DB.CONNECTED.", StringComparison.OrdinalIgnoreCase) && _scriptDb != null)
+        {
+            string connName = varName[13..];
+            value = _scriptDb.IsConnected_Named(connName) ? "1" : "0";
+            return true;
+        }
+        if (varName.Equals("DB.ACTIVE", StringComparison.OrdinalIgnoreCase))
+        {
+            value = _scriptDb?.ActiveSessionName ?? "";
             return true;
         }
         if (_scriptDb != null && _scriptDb.TryResolveRowValue(varName, out string dbVal))

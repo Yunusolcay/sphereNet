@@ -138,6 +138,9 @@ public sealed class SphereConfig
     public int FeatureTOL { get; set; }
     public int FeatureExtra { get; set; }
 
+    // Tooltip
+    public int ToolTipMode { get; set; } // 0=off (default), 1=AOS tooltips
+
     // Experimental / Option flags
     public int Experimental { get; set; }
     public int OptionFlags { get; set; }
@@ -178,12 +181,15 @@ public sealed class SphereConfig
     public string CommandPrefix { get; set; } = ".";
     public int DefaultCommandLevel { get; set; }
 
-    // Source-X style MySQL settings
+    // Source-X style MySQL settings (legacy single-connection)
     public int MySQL { get; set; }
     public string MySQLHost { get; set; } = "";
     public string MySQLUser { get; set; } = "";
     public string MySQLPassword { get; set; } = "";
     public string MySQLDatabase { get; set; } = "";
+
+    // Multi-connection database settings
+    public List<DbConnectionConfig> DbConnections { get; set; } = [];
 
     // Distances
     public int DistanceWhisper { get; set; } = 3;
@@ -309,6 +315,8 @@ public sealed class SphereConfig
         FeatureTOL = ini.GetInt(section, "FeatureTOL", FeatureTOL);
         FeatureExtra = ini.GetInt(section, "FeatureExtra", FeatureExtra);
 
+        ToolTipMode = ini.GetInt(section, "ToolTipMode", ToolTipMode);
+
         Experimental = ini.GetInt(section, "Experimental", Experimental);
         OptionFlags = ini.GetInt(section, "OptionFlags", OptionFlags);
 
@@ -340,6 +348,64 @@ public sealed class SphereConfig
         UseHttp = ini.GetBool(section, "UseHttp", UseHttp);
 
         SentryDsn = ini.GetValue(section, "SentryDsn") ?? SentryDsn;
+
+        LoadDbConnections(ini);
+    }
+
+    private void LoadDbConnections(IniParser ini)
+    {
+        // Synthesize a "default" connection from legacy [SPHERE] MySQL* keys
+        if (MySQL != 0 && !string.IsNullOrWhiteSpace(MySQLHost))
+        {
+            DbConnections.Add(new DbConnectionConfig
+            {
+                Name = "default",
+                Host = MySQLHost,
+                User = MySQLUser,
+                Password = MySQLPassword,
+                Database = MySQLDatabase,
+                AutoConnect = true
+            });
+        }
+
+        // Parse [MYSQL name] sections
+        foreach (var kvp in ini.Sections)
+        {
+            if (!kvp.Key.StartsWith("MYSQL ", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            string connName = kvp.Key[6..].Trim();
+            if (string.IsNullOrWhiteSpace(connName)) continue;
+
+            // Skip if legacy default already added with same name
+            if (connName.Equals("default", StringComparison.OrdinalIgnoreCase) &&
+                DbConnections.Count > 0 && DbConnections[0].Name == "default")
+            {
+                // Override the legacy one with explicit section values
+                ApplyDbSectionValues(DbConnections[0], ini, kvp.Key);
+                continue;
+            }
+
+            var cfg = new DbConnectionConfig { Name = connName };
+            ApplyDbSectionValues(cfg, ini, kvp.Key);
+            DbConnections.Add(cfg);
+        }
+    }
+
+    private static void ApplyDbSectionValues(DbConnectionConfig cfg, IniParser ini, string section)
+    {
+        cfg.Provider = ini.GetValue(section, "Provider") ?? cfg.Provider;
+        cfg.Host = ini.GetValue(section, "Host") ?? cfg.Host;
+        cfg.Port = ini.GetInt(section, "Port", cfg.Port);
+        cfg.User = ini.GetValue(section, "User") ?? cfg.User;
+        cfg.Password = ini.GetValue(section, "Password") ?? cfg.Password;
+        cfg.Database = ini.GetValue(section, "Database") ?? cfg.Database;
+        cfg.KeepAlive = ini.GetBool(section, "KeepAlive", cfg.KeepAlive);
+        cfg.ConnectTimeout = ini.GetInt(section, "ConnectTimeout", cfg.ConnectTimeout);
+        cfg.ReadTimeout = ini.GetInt(section, "ReadTimeout", cfg.ReadTimeout);
+        cfg.WriteTimeout = ini.GetInt(section, "WriteTimeout", cfg.WriteTimeout);
+        cfg.UseThread = ini.GetBool(section, "UseThread", cfg.UseThread);
+        cfg.AutoConnect = ini.GetBool(section, "AutoConnect", cfg.AutoConnect);
     }
 
     private void LoadMapDefinitions(IniParser ini, string section)
