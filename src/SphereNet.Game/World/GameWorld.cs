@@ -584,12 +584,23 @@ public sealed class GameWorld
         }
         var sectors = _tickSectors;
 
-        var po = new ParallelOptions
+        // Below ~50 sectors the thread-pool overhead (context switches,
+        // work-stealing, lambda capture) exceeds the actual work.
+        // Fall back to sequential to avoid 50-60ms spikes on light loads.
+        if (sectors.Count < 50)
         {
-            MaxDegreeOfParallelism = workerCount > 0 ? workerCount : Environment.ProcessorCount,
-            CancellationToken = cancellationToken
-        };
-        Parallel.ForEach(sectors, po, sector => sector.OnTick(currentTime));
+            foreach (var sector in sectors)
+                sector.OnTick(currentTime);
+        }
+        else
+        {
+            var po = new ParallelOptions
+            {
+                MaxDegreeOfParallelism = workerCount > 0 ? workerCount : Environment.ProcessorCount,
+                CancellationToken = cancellationToken
+            };
+            Parallel.ForEach(sectors, po, sector => sector.OnTick(currentTime));
+        }
     }
 
     /// <summary>
