@@ -152,6 +152,13 @@ public class Character : ObjBase
     private short _resPoison;
     private short _resEnergy;
 
+    // Elemental damage percentages (Source-X: DAM_FIRE, DAM_COLD, etc.)
+    private short _damPhysical = 100;
+    private short _damFire;
+    private short _damCold;
+    private short _damPoison;
+    private short _damEnergy;
+
     // Poison state
     private byte _poisonLevel; // 0=none, 1=lesser, 2=normal, 3=greater, 4=deadly, 5=lethal
     private long _nextPoisonTick;
@@ -344,6 +351,13 @@ public class Character : ObjBase
     public short ResCold { get => _resCold; set => _resCold = value; }
     public short ResPoison { get => _resPoison; set => _resPoison = value; }
     public short ResEnergy { get => _resEnergy; set => _resEnergy = value; }
+
+    // Elemental damage percentages (total should be 100%)
+    public short DamPhysical { get => _damPhysical; set => _damPhysical = value; }
+    public short DamFire { get => _damFire; set => _damFire = value; }
+    public short DamCold { get => _damCold; set => _damCold = value; }
+    public short DamPoison { get => _damPoison; set => _damPoison = value; }
+    public short DamEnergy { get => _damEnergy; set => _damEnergy = value; }
 
     // Poison
     public byte PoisonLevel { get => _poisonLevel; set => _poisonLevel = value; }
@@ -773,6 +787,11 @@ public class Character : ObjBase
             case "RESCOLDMAX": value = _resColdMax.ToString(); return true;
             case "RESPOISONMAX": value = _resPoisonMax.ToString(); return true;
             case "RESENERGYMAX": value = _resEnergyMax.ToString(); return true;
+            case "DAMPHYSICAL": value = _damPhysical.ToString(); return true;
+            case "DAMFIRE": value = _damFire.ToString(); return true;
+            case "DAMCOLD": value = _damCold.ToString(); return true;
+            case "DAMPOISON": value = _damPoison.ToString(); return true;
+            case "DAMENERGY": value = _damEnergy.ToString(); return true;
             case "VISUALRANGE": value = _visualRange.ToString(); return true;
             case "EMOTEACT": value = _emoteAct ? "1" : "0"; return true;
             case "FONT": value = _font.ToString(); return true;
@@ -1197,6 +1216,13 @@ public class Character : ObjBase
         if (TryGetPartyProperty(key, out value))
             return true;
 
+        // Skill name-based read (MAGICRESISTANCE, TACTICS, etc.)
+        if (_skillNameMap.TryGetValue(upper, out var readSkill))
+        {
+            value = GetSkill(readSkill).ToString();
+            return true;
+        }
+
         return base.TryGetProperty(key, out value);
     }
 
@@ -1330,6 +1356,11 @@ public class Character : ObjBase
             case "RESCOLDMAX": if (short.TryParse(normalized, out short rcmv)) _resColdMax = rcmv; return true;
             case "RESPOISONMAX": if (short.TryParse(normalized, out short rpmv)) _resPoisonMax = rpmv; return true;
             case "RESENERGYMAX": if (short.TryParse(normalized, out short remv)) _resEnergyMax = remv; return true;
+            case "DAMPHYSICAL": if (short.TryParse(normalized, out short dpv)) _damPhysical = dpv; return true;
+            case "DAMFIRE": if (short.TryParse(normalized, out short dfv)) _damFire = dfv; return true;
+            case "DAMCOLD": if (short.TryParse(normalized, out short dcv)) _damCold = dcv; return true;
+            case "DAMPOISON": if (short.TryParse(normalized, out short dpov)) _damPoison = dpov; return true;
+            case "DAMENERGY": if (short.TryParse(normalized, out short dev)) _damEnergy = dev; return true;
             case "VISUALRANGE": if (byte.TryParse(normalized, out byte vrv)) _visualRange = vrv; return true;
             case "EMOTEACT":
                 _emoteAct = normalized != "0" && !string.IsNullOrEmpty(normalized);
@@ -1434,6 +1465,10 @@ public class Character : ObjBase
         if (TrySetPartyProperty(key, normalized))
             return true;
 
+        // Skill name-based assignment (MAGICRESISTANCE={84.0 100.0}, TACTICS=97.0, etc.)
+        if (TrySetSkillByName(upperKey, normalized))
+            return true;
+
         return base.TrySetProperty(key, value);
     }
 
@@ -1463,6 +1498,45 @@ public class Character : ObjBase
             return true;
         }
 
+        return true;
+    }
+
+    private static readonly Dictionary<string, SkillType> _skillNameMap = BuildSkillNameMap();
+
+    private static Dictionary<string, SkillType> BuildSkillNameMap()
+    {
+        var map = new Dictionary<string, SkillType>(StringComparer.OrdinalIgnoreCase);
+        foreach (SkillType st in Enum.GetValues<SkillType>())
+        {
+            if (st == SkillType.None || st == SkillType.Qty) continue;
+            map[st.ToString()] = st;
+        }
+        // Source-X alternate names
+        map["ANIMALLORE"] = SkillType.AnimalLore;
+        map["ARMSLORE"] = SkillType.ArmsLore;
+        map["DETECTINGHIDDEN"] = SkillType.DetectingHidden;
+        map["DETECTHIDDEN"] = SkillType.DetectingHidden;
+        map["EVALINT"] = SkillType.EvalInt;
+        map["EVALUATINGINTELLIGENCE"] = SkillType.EvalInt;
+        map["EVALUATEINTEL"] = SkillType.EvalInt;
+        map["ITEMID"] = SkillType.ItemId;
+        map["ITEMIDENTIFICATION"] = SkillType.ItemId;
+        map["MACEFIGHTING"] = SkillType.MaceFighting;
+        map["MAGICRESISTANCE"] = SkillType.MagicResistance;
+        map["RESISTINGSPELLS"] = SkillType.MagicResistance;
+        map["REMOVETRAP"] = SkillType.RemoveTrap;
+        map["SPIRITSPEAK"] = SkillType.SpiritSpeak;
+        map["TASTEID"] = SkillType.TasteId;
+        map["TASTEIDENTIFICATION"] = SkillType.TasteId;
+        return map;
+    }
+
+    private bool TrySetSkillByName(string upperKey, string normalized)
+    {
+        if (!_skillNameMap.TryGetValue(upperKey, out var skillType))
+            return false;
+        if (ushort.TryParse(normalized, out ushort skillVal))
+            SetSkill(skillType, skillVal);
         return true;
     }
 
@@ -2371,7 +2445,7 @@ public class Character : ObjBase
                 pack.BaseId = 0x0E75;
                 Equip(pack, Core.Enums.Layer.Pack);
             }
-            item.ContainedIn = pack.Uid;
+            pack.AddItem(item);
         }
         else
         {
@@ -2507,7 +2581,7 @@ public class Character : ObjBase
                 item.Name = idef.Name;
             if (entryAmount > 1)
                 item.Amount = (ushort)Math.Min(entryAmount, ushort.MaxValue);
-            item.ContainedIn = pack.Uid;
+            pack.AddItem(item);
         }
 
         SetTag("VENDOR_LAST_RESTOCK", Environment.TickCount64.ToString());

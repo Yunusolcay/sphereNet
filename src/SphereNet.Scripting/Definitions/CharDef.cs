@@ -73,6 +73,14 @@ public sealed class CharDef : BaseDef
 
     /// <summary>Loot category name for CATEGORY= from scripts.</summary>
     public string Category { get; set; } = "";
+    public string Subsection { get; set; } = "";
+    public string Description { get; set; } = "";
+    public int FollowerSlots { get; set; } = 1;
+    public short DamPhysical { get; set; }
+    public short DamFire { get; set; }
+    public short DamCold { get; set; }
+    public short DamPoison { get; set; }
+    public short DamEnergy { get; set; }
 
     public CharDef(ResourceId id) : base(id) { }
 
@@ -137,6 +145,14 @@ public sealed class CharDef : BaseDef
                 break;
             case "DESIRES": ParseResourceList(value, Desires); break;
             case "AVERSIONS": ParseResourceList(value, Aversions); break;
+            case "SUBSECTION": Subsection = value.Trim(); break;
+            case "DESCRIPTION": Description = value.Trim(); break;
+            case "FOLLOWERSLOTS": int.TryParse(value, out int fs); FollowerSlots = fs; break;
+            case "DAMPHYSICAL": short.TryParse(value, out short dpv); DamPhysical = dpv; break;
+            case "DAMFIRE": short.TryParse(value, out short dfv); DamFire = dfv; break;
+            case "DAMCOLD": short.TryParse(value, out short dcv); DamCold = dcv; break;
+            case "DAMPOISON": short.TryParse(value, out short dpov); DamPoison = dpov; break;
+            case "DAMENERGY": short.TryParse(value, out short dev); DamEnergy = dev; break;
             case "SPEECH":
                 SpeechResource = ResourceId.FromString(value);
                 var speechRid = ResourceId.FromString(value, ResType.Speech);

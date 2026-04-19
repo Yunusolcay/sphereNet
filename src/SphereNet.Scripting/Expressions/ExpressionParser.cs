@@ -691,6 +691,8 @@ public sealed class ExpressionParser
         // D — force decimal evaluation
         if (varExpr.Length > 1 && (varExpr[0] == 'D' || varExpr[0] == 'd') &&
             !varExpr.StartsWith("DEFMSG", StringComparison.OrdinalIgnoreCase) &&
+            !varExpr.StartsWith("DEF.", StringComparison.OrdinalIgnoreCase) &&
+            !varExpr.StartsWith("DEF0.", StringComparison.OrdinalIgnoreCase) &&
             (char.IsUpper(varExpr[1]) || char.IsDigit(varExpr[1]) || varExpr[1] == '<' || varExpr[1] == '0'))
         {
             // <Dproperty> or <D expression> — evaluate and return as decimal

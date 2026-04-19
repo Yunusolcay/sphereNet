@@ -151,7 +151,7 @@ public sealed class SkillHandlers
             ore.Name = "iron ore";
             ore.Amount = (ushort)new Random().Next(1, 3);
             if (ch.Backpack != null)
-                ore.ContainedIn = ch.Backpack.Uid;
+                ch.Backpack.AddItem(ore);
             else
                 _world.PlaceItemWithDecay(ore, ch.Position);
         }
@@ -176,7 +176,7 @@ public sealed class SkillHandlers
             fish.Name = "fish";
             fish.Amount = 1;
             if (ch.Backpack != null)
-                fish.ContainedIn = ch.Backpack.Uid;
+                ch.Backpack.AddItem(fish);
             else
                 _world.PlaceItemWithDecay(fish, ch.Position);
         }
@@ -201,7 +201,7 @@ public sealed class SkillHandlers
             logs.Name = "logs";
             logs.Amount = (ushort)new Random().Next(1, 5);
             if (ch.Backpack != null)
-                logs.ContainedIn = ch.Backpack.Uid;
+                ch.Backpack.AddItem(logs);
             else
                 _world.PlaceItemWithDecay(logs, ch.Position);
         }
@@ -322,7 +322,7 @@ public sealed class SkillHandlers
             gold.Name = "Gold";
             gold.ItemType = ItemType.Gold;
             gold.Amount = (ushort)new Random().Next(1, 10);
-            gold.ContainedIn = ch.Backpack.Uid;
+            ch.Backpack.AddItem(gold);
         }
         return success;
     }

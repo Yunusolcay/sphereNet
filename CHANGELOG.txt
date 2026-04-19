@@ -4,6 +4,78 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-20] - Item drop fix, Unicode speech, CHARDEF features, Sentry, name tracking
+----------------------------------------
+
+DUZELTMELER / FIXES:
+  - 0x08 Drop paketi: post-6.0.1.7 client grid index byte'i atlanmiyordu,
+    container serial 1 byte kayiyordu — item cantaya dusmuyordu, yere
+    dusuyordu. Artik IsClientPost6017 kontroluyle grid index okunuyor.
+    (Drop packet 0x08: grid index byte was not skipped for post-6.0.1.7
+    clients, causing container serial to be read shifted by 1 byte —
+    items fell to ground instead of container. Fixed with IsClientPost6017 check.)
+
+  - Tum speech cikislari ASCII (0x1C) yerine Unicode (0xAE) kullanacak
+    sekilde guncellendi. Turkce karakterler (s, c, g, i, o, u) artik
+    dogru gorunuyor: player konusmasi, NPC speech, single-click label,
+    MESSAGE ve SAYUA komutlari.
+    (All speech output switched from ASCII PacketSpeechOut (0x1C) to Unicode
+    PacketSpeechUnicodeOut (0xAE). Turkish characters now display correctly
+    in player speech, NPC speech, labels, MESSAGE and SAYUA commands.)
+
+  - .add komutu: hedef container/karakter secildiginde item artik cantaya
+    dusuyor (PlaceAddedItem akisi). Onceden her zaman yere dusuyordu.
+    (.add command: when targeting a container or character, item now goes
+    into the pack via PlaceAddedItem flow instead of always dropping to ground.)
+
+  - ContainedIn dogrudan atama yerine AddItem() kullaniliyor: GatheringEngine,
+    SkillHandlers, TradeEngine, vendor restock, NPC equip. Container _contents
+    listesi artik tutarli.
+    (Replaced direct ContainedIn assignment with AddItem() across gathering,
+    skills, trade, vendor restock, and NPC equip — container contents list
+    now stays consistent.)
+
+  - Drop trigger reject (DropOn_Item/Self/Char) durumunda item kaybolmuyordu
+    ama PlaceItemInPack ile cantaya bounce ediliyor artik.
+    (Drop trigger rejection now bounces item back to pack via PlaceItemInPack
+    instead of silently losing it.)
+
+  - ExpressionParser: DEF./DEF0. ile baslayan degiskenler artik 'D' prefix
+    (decimal force) olarak yanlis yorumlanmiyor.
+    (ExpressionParser: DEF./DEF0. prefixed variables no longer misinterpreted
+    as decimal-force 'D' prefix.)
+
+YENI OZELLIKLER / NEW FEATURES:
+  - CHARDEF skill adi ile property atama: MAGICRESISTANCE, TACTICS vb. skill
+    isimleri artik dogrudan CHARDEF'te ve script property olarak kullanilabiliyor.
+    Alternatif isimler destekleniyor (RESISTINGSPELLS, EVALINT, DETECTHIDDEN vb.).
+    (Skill name-based property assignment: MAGICRESISTANCE, TACTICS etc. can be
+    used directly in CHARDEF and script properties. Alternate names supported.)
+
+  - @CreateLoot trigger: @Create'den sonra ateslenip loot spawn icin kullaniliyor.
+    (@CreateLoot trigger: fires after @Create for loot spawning.)
+
+  - Elemental damage yuzdeleri: DAMPHYSICAL/DAMFIRE/DAMCOLD/DAMPOISON/DAMENERGY
+    CHARDEF'te ve runtime'da destekleniyor. CombatEngine elemental split ile
+    per-element resist uyguluyor.
+    (Elemental damage percentages: DAM* properties supported in CHARDEF and
+    runtime. CombatEngine applies per-element resist via damage split.)
+
+  - CHARDEF: SUBSECTION, DESCRIPTION, FOLLOWERSLOTS property'leri eklendi.
+    (CHARDEF: added SUBSECTION, DESCRIPTION, FOLLOWERSLOTS properties.)
+
+  - Karakter isim degisiklik takibi: Name setter ve TrySetProperty("NAME")
+    uzerinden yapilan tum degisiklikler [NAME_CHANGE] warning logu atiyor.
+    (Character name change tracking: all name changes via Name setter and
+    TrySetProperty logged as [NAME_CHANGE] warning.)
+
+  - Sentry entegrasyonu: SentryDsn INI ayari ile Warning+ seviye eventler
+    Sentry'ye gonderiliyor. DSN bossa Sentry devre disi.
+    (Sentry integration: Warning+ level events sent to Sentry via SentryDsn
+    INI setting. Sentry disabled when DSN is empty.)
+
+================================================================================
+
 [2026-04-19] - DEF lookup miss icin debug log
 ----------------------------------------
 

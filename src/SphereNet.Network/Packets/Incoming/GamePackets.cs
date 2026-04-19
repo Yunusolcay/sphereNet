@@ -50,6 +50,8 @@ public sealed class PacketItemDrop : PacketHandler
         short x = buffer.ReadInt16();
         short y = buffer.ReadInt16();
         sbyte z = buffer.ReadSByte();
+        if (state.IsClientPost6017)
+            buffer.ReadByte(); // grid index (6.0.1.7+)
         uint container = buffer.ReadUInt32();
         state.OnItemDrop(serial, x, y, z, container);
     }

@@ -13,6 +13,8 @@ namespace SphereNet.Game.Objects;
 /// </summary>
 public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
 {
+    public static Action<string>? OnNameChangeWarning;
+
     private Serial _uid;
     private string _name = "";
     private Point3D _position;
@@ -58,7 +60,15 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
     public string Name
     {
         get => _name;
-        set { _name = value ?? ""; MarkDirty(DirtyFlag.Name); }
+        set
+        {
+            string newName = value ?? "";
+            if (IsChar && _name.Length > 0 && !_name.Equals(newName, StringComparison.Ordinal))
+                OnNameChangeWarning?.Invoke(
+                    $"0x{_uid.Value:X8} '{_name}' -> '{newName}' via Name setter");
+            _name = newName;
+            MarkDirty(DirtyFlag.Name);
+        }
     }
 
     public Point3D Position
@@ -245,7 +255,12 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
     {
         switch (key.ToUpperInvariant())
         {
-            case "NAME": _name = value; return true;
+            case "NAME":
+                if (IsChar && _name.Length > 0 && !_name.Equals(value, StringComparison.Ordinal))
+                    OnNameChangeWarning?.Invoke(
+                        $"0x{_uid.Value:X8} '{_name}' -> '{value}' via TrySetProperty");
+                _name = value;
+                return true;
             case "COLOR":
                 {
                     string v = value.Trim();

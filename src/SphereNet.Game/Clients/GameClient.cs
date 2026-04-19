@@ -809,9 +809,9 @@ public sealed class GameClient : ITextConsole
             _ => 18  // say
         };
 
-        var speechPacket = new PacketSpeechOut(
+        var speechPacket = new PacketSpeechUnicodeOut(
             _character.Uid.Value, _character.BodyId,
-            type, hue, font, _character.Name, text
+            type, hue, font, "TRK", _character.Name, text
         );
         // Send to self first (speaker should see their own message)
         Send(speechPacket);
@@ -2816,9 +2816,9 @@ public sealed class GameClient : ITextConsole
         ushort nameHue = 0x03B2;
         if (obj is Character labelCh)
             nameHue = NotoToHue(GetNotoriety(labelCh));
-        _netState.Send(new PacketSpeechOut(
+        _netState.Send(new PacketSpeechUnicodeOut(
             uid, (ushort)(obj is Character c ? c.BodyId : 0),
-            6, nameHue, 3, "", obj.GetName()));
+            6, nameHue, 3, "TRK", "", obj.GetName()));
     }
 
     /// <summary>Convert a notoriety byte (1-7) to the hue used for
@@ -2959,7 +2959,12 @@ public sealed class GameClient : ITextConsole
                 {
                     var result = _triggerDispatcher.FireItemTrigger(item, ItemTrigger.DropOnItem,
                         new TriggerArgs { CharSrc = _character, ItemSrc = item, O1 = container });
-                    if (result == TriggerResult.True) { _netState.Send(new PacketDropAck()); return; }
+                    if (result == TriggerResult.True)
+                    {
+                        PlaceItemInPack(_character, item);
+                        _netState.Send(new PacketDropAck());
+                        return;
+                    }
                 }
                 container.AddItem(item);
                 item.Position = new Point3D(x, y, 0, _character.MapIndex);
@@ -2983,7 +2988,12 @@ public sealed class GameClient : ITextConsole
                 {
                     var result = _triggerDispatcher.FireItemTrigger(item, ItemTrigger.DropOnSelf,
                         new TriggerArgs { CharSrc = _character, ItemSrc = item });
-                    if (result == TriggerResult.True) { _netState.Send(new PacketDropAck()); return; }
+                    if (result == TriggerResult.True)
+                    {
+                        PlaceItemInPack(_character, item);
+                        _netState.Send(new PacketDropAck());
+                        return;
+                    }
                 }
                 PlaceItemInPack(_character, item);
                 _netState.Send(new PacketDropAck());
@@ -2996,7 +3006,12 @@ public sealed class GameClient : ITextConsole
                 {
                     var result = _triggerDispatcher.FireItemTrigger(item, ItemTrigger.DropOnChar,
                         new TriggerArgs { CharSrc = _character, ItemSrc = item, O1 = charTarget });
-                    if (result == TriggerResult.True) { _netState.Send(new PacketDropAck()); return; }
+                    if (result == TriggerResult.True)
+                    {
+                        PlaceItemInPack(_character, item);
+                        _netState.Send(new PacketDropAck());
+                        return;
+                    }
                 }
                 PlaceItemInPack(charTarget, item);
                 _netState.Send(new PacketDropAck());
@@ -3193,6 +3208,7 @@ public sealed class GameClient : ITextConsole
             _pendingAddToken = null;
 
             Point3D targetPos = new Point3D(x, y, z, _character.MapIndex);
+            uint targetSerial = serial;
             if (serial != 0 && serial != 0xFFFFFFFF)
             {
                 var obj = _world.FindObject(new Serial(serial));
@@ -3200,7 +3216,7 @@ public sealed class GameClient : ITextConsole
                     targetPos = obj.Position;
             }
 
-            if (!TryAddAtTarget(addToken, targetPos))
+            if (!TryAddAtTarget(addToken, targetPos, targetSerial))
                 SysMessage(ServerMessages.GetFormatted("gm_unknown_add", addToken));
             return;
         }
@@ -4179,7 +4195,7 @@ public sealed class GameClient : ITextConsole
         ushort gumpId = 0x003C; // default bag gump
         _netState.Send(new PacketOpenContainer(container.Uid.Value, gumpId, _netState.IsClientPost7090));
 
-        foreach (var child in container.Contents)
+        foreach (var child in _world.GetContainerContents(container.Uid))
         {
             _netState.Send(new PacketContainerItem(
                 child.Uid.Value, child.DispIdFull, 0,
@@ -4355,7 +4371,7 @@ public sealed class GameClient : ITextConsole
         return false;
     }
 
-    private bool TryAddAtTarget(string token, Point3D targetPos)
+    private bool TryAddAtTarget(string token, Point3D targetPos, uint targetSerial = 0)
     {
         if (_character == null || _commands?.Resources == null)
             return false;
@@ -4372,11 +4388,6 @@ public sealed class GameClient : ITextConsole
         {
             if (rid.Type == ResType.ItemDef)
             {
-                // Resolve the graphic (DispIndex) by walking the itemdef
-                // chain — a named itemdef can inherit its ID from another
-                // itemdef ("id=i_moongate_blue"). Without this, BaseId
-                // ends up as the string-hash index of the defname, which
-                // is not a valid UO art ID and the client renders nothing.
                 ushort dispId = ResolveItemDispId(rid.Index);
                 if (dispId == 0)
                 {
@@ -4388,9 +4399,6 @@ public sealed class GameClient : ITextConsole
                 item.BaseId = dispId;
                 item.Name = cleaned;
 
-                // Apply TYPE + NAME from the named itemdef so scripted
-                // items (e.g. moongates with type=t_script) keep their
-                // behaviour when created via .add.
                 var namedDef = DefinitionLoader.GetItemDef(rid.Index);
                 if (namedDef != null)
                 {
@@ -4401,17 +4409,11 @@ public sealed class GameClient : ITextConsole
                         if (!item.Events.Contains(ev))
                             item.Events.Add(ev);
 
-                    // Named itemdef has its own triggers (@DClick, @Step, ...)
-                    // that live on the scripted def's index, not on the
-                    // resolved graphic's. Without this tag TriggerDispatcher
-                    // would only look up ITEMDEF(BaseId=0xF6C) and miss
-                    // every trigger written under [ITEMDEF i_moongate].
-                    // Persisted through save/load as any other TAG.
                     if (rid.Index != dispId)
                         item.SetTag("SCRIPTDEF", rid.Index.ToString());
                 }
 
-                _world.PlaceItem(item, targetPos);
+                PlaceAddedItem(item, targetPos, targetSerial);
                 SysMessage(ServerMessages.GetFormatted("gm_item_created", cleaned, $"{dispId:X}"));
                 return true;
             }
@@ -4421,6 +4423,7 @@ public sealed class GameClient : ITextConsole
                 var npc = CreateNpcFromDef(rid.Index, cleaned);
                 _world.PlaceCharacter(npc, targetPos);
                 _triggerDispatcher?.FireCharTrigger(npc, CharTrigger.Create, new TriggerArgs { CharSrc = _character });
+                _triggerDispatcher?.FireCharTrigger(npc, CharTrigger.CreateLoot, new TriggerArgs { CharSrc = _character });
                 BroadcastDrawObject(npc);
                 SysMessage(ServerMessages.GetFormatted("gm_npc_created2", npc.Name, $"{rid.Index:X}", targetPos));
                 return true;
@@ -4440,7 +4443,7 @@ public sealed class GameClient : ITextConsole
             var item = _world.CreateItem();
             item.BaseId = idHex;
             item.Name = $"Item_{idHex:X}";
-            _world.PlaceItem(item, targetPos);
+            PlaceAddedItem(item, targetPos, targetSerial);
             SysMessage(ServerMessages.GetFormatted("gm_item_created_hex", $"{idHex:X}", targetPos));
             return true;
         }
@@ -4448,9 +4451,35 @@ public sealed class GameClient : ITextConsole
         var createdNpc = CreateNpcFromDef(idHex, $"NPC_{idHex:X}");
         _world.PlaceCharacter(createdNpc, targetPos);
         _triggerDispatcher?.FireCharTrigger(createdNpc, CharTrigger.Create, new TriggerArgs { CharSrc = _character });
+        _triggerDispatcher?.FireCharTrigger(createdNpc, CharTrigger.CreateLoot, new TriggerArgs { CharSrc = _character });
         BroadcastDrawObject(createdNpc);
         SysMessage(ServerMessages.GetFormatted("gm_npc_created_hex", createdNpc.Name, $"{idHex:X}", targetPos));
         return true;
+    }
+
+    private void PlaceAddedItem(Item item, Point3D groundPos, uint targetSerial)
+    {
+        if (targetSerial != 0 && targetSerial != 0xFFFFFFFF)
+        {
+            var targetChar = _world.FindChar(new Serial(targetSerial));
+            if (targetChar != null)
+            {
+                PlaceItemInPack(targetChar, item);
+                return;
+            }
+            var targetContainer = _world.FindItem(new Serial(targetSerial));
+            if (targetContainer != null && targetContainer.ItemType is ItemType.Container or ItemType.ContainerLocked)
+            {
+                targetContainer.AddItem(item);
+                _netState.Send(new PacketContainerItem(
+                    item.Uid.Value, item.DispIdFull, 0,
+                    item.Amount, item.X, item.Y,
+                    targetContainer.Uid.Value, item.Hue,
+                    _netState.IsClientPost6017));
+                return;
+            }
+        }
+        _world.PlaceItem(item, groundPos);
     }
 
     /// <summary>Walk the ITEMDEF chain to find the concrete UO art ID.
@@ -4532,6 +4561,15 @@ public sealed class GameClient : ITextConsole
             string? colorText = charDef.TagDefs.Get("COLOR");
             if (TryParseHue(colorText, out ushort hue))
                 npc.Hue = new Color(hue);
+
+            // Elemental damage percentages
+            if (charDef.DamFire != 0) npc.DamFire = charDef.DamFire;
+            if (charDef.DamCold != 0) npc.DamCold = charDef.DamCold;
+            if (charDef.DamPoison != 0) npc.DamPoison = charDef.DamPoison;
+            if (charDef.DamEnergy != 0) npc.DamEnergy = charDef.DamEnergy;
+            if (charDef.DamPhysical != 0) npc.DamPhysical = charDef.DamPhysical;
+            else if (charDef.DamFire != 0 || charDef.DamCold != 0 || charDef.DamPoison != 0 || charDef.DamEnergy != 0)
+                npc.DamPhysical = (short)(100 - charDef.DamFire - charDef.DamCold - charDef.DamPoison - charDef.DamEnergy);
 
             // Equip ITEMNEWBIE items
             EquipNewbieItems(npc, charDef);
@@ -4664,7 +4702,7 @@ public sealed class GameClient : ITextConsole
                     pack.BaseId = 0x0E75;
                     npc.Equip(pack, Layer.Pack);
                 }
-                item.ContainedIn = pack.Uid;
+                pack.AddItem(item);
             }
             else
             {
@@ -6339,8 +6377,8 @@ public sealed class GameClient : ITextConsole
     /// <summary>Send speech from an NPC to this client (overhead text above the NPC).</summary>
     private void NpcSpeech(Character npc, string text)
     {
-        var packet = new PacketSpeechOut(
-            npc.Uid.Value, npc.BodyId, 0, 0x03B2, 3, npc.GetName(), text);
+        var packet = new PacketSpeechUnicodeOut(
+            npc.Uid.Value, npc.BodyId, 0, 0x03B2, 3, "TRK", npc.GetName(), text);
         _netState.Send(packet);
         BroadcastNearby?.Invoke(npc.Position, 18, packet, npc.Uid.Value);
     }
@@ -6428,8 +6466,8 @@ public sealed class GameClient : ITextConsole
                     bodyId = 0;
                     origin = item.Position;
                 }
-                var packet = new PacketSpeechOut(serial, bodyId, speechType, hue, font,
-                    target.GetName(), text);
+                var packet = new PacketSpeechUnicodeOut(serial, bodyId, speechType, hue, font,
+                    "TRK", target.GetName(), text);
                 _netState.Send(packet);
                 BroadcastNearby?.Invoke(origin, 18, packet, _character.Uid.Value);
             }
@@ -6474,8 +6512,8 @@ public sealed class GameClient : ITextConsole
                     bodyId = 0;
                     origin = item.Position;
                 }
-                var packet = new PacketSpeechOut(serial, bodyId, speechType, hue, font,
-                    target.GetName(), text);
+                var packet = new PacketSpeechUnicodeOut(serial, bodyId, speechType, hue, font,
+                    "TRK", target.GetName(), text);
                 _netState.Send(packet);
                 BroadcastNearby?.Invoke(origin, 18, packet, _character.Uid.Value);
             }

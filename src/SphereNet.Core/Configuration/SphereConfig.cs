@@ -168,6 +168,9 @@ public sealed class SphereConfig
     // 2 = hybrid : SpinWait + Sleep(0) — ~1ms latency, moderate CPU usage. (default)
     public int TickSleepMode { get; set; } = 2;
 
+    // Sentry
+    public string SentryDsn { get; set; } = "";
+
     // Logging
     public int LogMask { get; set; } = 0x03F00;
     public bool DebugPackets { get; set; }
@@ -335,6 +338,8 @@ public sealed class SphereConfig
         DistanceYell = ini.GetInt(section, "DistanceYell", DistanceYell);
 
         UseHttp = ini.GetBool(section, "UseHttp", UseHttp);
+
+        SentryDsn = ini.GetValue(section, "SentryDsn") ?? SentryDsn;
     }
 
     private void LoadMapDefinitions(IniParser ini, string section)

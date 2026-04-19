@@ -124,7 +124,7 @@ public sealed class GatheringEngine
                 item.BaseId = itemId;
                 item.Amount = (ushort)amount;
                 if (ch.Backpack != null)
-                    item.ContainedIn = ch.Backpack.Uid;
+                    ch.Backpack.AddItem(item);
                 else
                     _world.PlaceItemWithDecay(item, ch.Position);
             }

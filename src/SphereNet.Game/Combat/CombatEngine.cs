@@ -234,9 +234,8 @@ public static class CombatEngine
         // Armor reduction
         if (flags.HasFlag(CombatFlags.ElementalEngine))
         {
-            // Elemental engine: apply per-element resist
-            var dmgType = GetWeaponDamageType(weapon);
-            damage = ApplyElementalResist(target, damage, dmgType);
+            // Split damage by attacker's elemental percentages, apply per-element resist
+            damage = ApplyElementalDamageSplit(attacker, target, damage, weapon);
         }
         else
         {
@@ -317,6 +316,30 @@ public static class CombatEngine
 
     /// <summary>
     /// Apply elemental resist to damage. Maps to COMBAT_ELEMENTAL_ENGINE in Source-X.
+    /// Splits damage by attacker's elemental percentages then applies per-element resist.
+    /// </summary>
+    public static int ApplyElementalDamageSplit(Character attacker, Character target, int damage, Item? weapon)
+    {
+        int physPct = attacker.DamPhysical;
+        int firePct = attacker.DamFire;
+        int coldPct = attacker.DamCold;
+        int poisonPct = attacker.DamPoison;
+        int energyPct = attacker.DamEnergy;
+
+        // If no elemental split defined, fall back to weapon damage type
+        if (firePct == 0 && coldPct == 0 && poisonPct == 0 && energyPct == 0)
+            return ApplyElementalResist(target, damage, GetWeaponDamageType(weapon));
+
+        int total = 0;
+        if (physPct > 0) total += ApplyElementalResist(target, damage * physPct / 100, DamageType.Physical);
+        if (firePct > 0) total += ApplyElementalResist(target, damage * firePct / 100, DamageType.Fire);
+        if (coldPct > 0) total += ApplyElementalResist(target, damage * coldPct / 100, DamageType.Cold);
+        if (poisonPct > 0) total += ApplyElementalResist(target, damage * poisonPct / 100, DamageType.Poison);
+        if (energyPct > 0) total += ApplyElementalResist(target, damage * energyPct / 100, DamageType.Energy);
+        return total;
+    }
+
+    /// <summary>
     /// Uses the highest matching resist for the damage type.
     /// </summary>
     public static int ApplyElementalResist(Character target, int damage, DamageType dmgType)

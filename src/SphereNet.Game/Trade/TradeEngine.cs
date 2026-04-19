@@ -108,15 +108,21 @@ public sealed class SecureTrade
 
         foreach (var item in _initiatorItems)
         {
-            item.ContainedIn = partnerBackpack?.Uid ?? _partner.Uid;
             item.IsEquipped = false;
+            if (partnerBackpack != null)
+                partnerBackpack.AddItem(item);
+            else
+                item.ContainedIn = _partner.Uid;
             item.Position = _partner.Position;
         }
 
         foreach (var item in _partnerItems)
         {
-            item.ContainedIn = initiatorBackpack?.Uid ?? _initiator.Uid;
             item.IsEquipped = false;
+            if (initiatorBackpack != null)
+                initiatorBackpack.AddItem(item);
+            else
+                item.ContainedIn = _initiator.Uid;
             item.Position = _initiator.Position;
         }
     }
@@ -168,7 +174,7 @@ public static class VendorEngine
                     newItem.Name = entry.Name;
                     newItem.Amount = 1;
                     if (backpack != null)
-                        newItem.ContainedIn = backpack.Uid;
+                        backpack.AddItem(newItem);
                 }
             }
         }
@@ -212,7 +218,7 @@ public static class VendorEngine
                 gold.ItemType = Core.Enums.ItemType.Gold;
                 gold.Amount = (ushort)Math.Min(totalValue, 60000);
                 gold.Name = "Gold";
-                gold.ContainedIn = backpack.Uid;
+                backpack.AddItem(gold);
             }
         }
 
@@ -323,7 +329,7 @@ public static class VendorEngine
             var newItem = World.CreateItem();
             newItem.BaseId = itemId;
             newItem.Amount = (ushort)Math.Min(deficit, 60000);
-            newItem.ContainedIn = backpack.Uid;
+            backpack.AddItem(newItem);
         }
 
         // Mark restock time

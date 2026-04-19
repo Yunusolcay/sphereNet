@@ -94,6 +94,7 @@ public enum CharTrigger : short
     ContextMenuRequest,
     ContextMenuSelect,
     Create,
+    CreateLoot,
     Criminal,
     DClick,
     Death,

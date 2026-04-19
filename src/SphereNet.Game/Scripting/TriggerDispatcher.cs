@@ -396,6 +396,7 @@ public sealed class TriggerDispatcher
         CharTrigger.Click => "Click",
         CharTrigger.DClick => "DClick",
         CharTrigger.Create => "Create",
+        CharTrigger.CreateLoot => "CreateLoot",
         CharTrigger.Death => "Death",
         CharTrigger.Destroy => "Destroy",
         CharTrigger.Kill => "Kill",

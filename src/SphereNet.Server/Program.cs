@@ -283,6 +283,17 @@ public static class Program
         _loggerFactory = LoggerFactory.Create(builder =>
         {
             builder.AddSerilog(dispose: true);
+            if (!string.IsNullOrWhiteSpace(_config.SentryDsn))
+            {
+                builder.AddSentry(o =>
+                {
+                    o.Dsn = _config.SentryDsn;
+                    o.MinimumBreadcrumbLevel = LogLevel.Warning;
+                    o.MinimumEventLevel = LogLevel.Warning;
+                    o.Release = "SphereNet@1.0.0";
+                    o.Environment = "production";
+                });
+            }
         });
         _log = _loggerFactory.CreateLogger("SphereNet");
 
@@ -951,6 +962,8 @@ public static class Program
         SphereNet.Game.Objects.Items.Item.ResolveShipEngine = () => _shipEngine;
         SphereNet.Game.Objects.Items.Item.ResolveWorld = () => _world;
         SphereNet.Game.Objects.ObjBase.ResolveWorld = () => _world;
+        SphereNet.Game.Objects.ObjBase.OnNameChangeWarning = msg =>
+            _log.LogWarning("[NAME_CHANGE] {Details}", msg);
 
         // Guild member properties
         SphereNet.Game.Objects.Characters.Character.ResolveGuildManager = _ => _guildManager;
@@ -2815,8 +2828,8 @@ public static class Program
         }
 
         // Send NPC speech response to nearby clients
-        var speechPacket = new PacketSpeechOut(
-            npc.Uid.Value, npc.BodyId, 0, 0x03B2, 3, npc.Name ?? "", response);
+        var speechPacket = new PacketSpeechUnicodeOut(
+            npc.Uid.Value, npc.BodyId, 0, 0x03B2, 3, "TRK", npc.Name ?? "", response);
         BroadcastNearby(npc.Position, 18, speechPacket, 0);
     }
 
