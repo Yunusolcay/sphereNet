@@ -4,6 +4,23 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-20] - ToolTipMode=0 single-click fix
+----------------------------------------
+
+DUZELTMELER / FIXES:
+  - ToolTipMode=0 oldugunda tek tiklama (single click) calismiyordu. Neden:
+    PacketCharList (0xA9) char list flags'te 0x20 (CLF_PALADIN_NECROMANCER_TOOLTIPS)
+    her zaman acikti. ClassicUO bu flag'i gorunce TooltipsEnabled=true yapip tek
+    tikta 0x09 SingleClick yerine 0xD6 tooltip request gonderiyor. Server
+    ToolTipMode=0'da 0xD6'yi yutuyordu — click tamamen sessiz kaliyordu.
+    Artik ToolTipMode=0'da char list flags'ten 0x20 bit'i kaldiriliyor, client
+    klasik 0x09 SingleClick paketi gonderiyor.
+    (ToolTipMode=0 single-click was silent. Root cause: PacketCharList (0xA9) always
+    sent 0x20 in char list flags. ClassicUO sets TooltipsEnabled=true on that bit and
+    sends 0xD6 tooltip requests instead of 0x09 SingleClick. Server dropped 0xD6 when
+    ToolTipMode=0, making clicks appear dead. Now the 0x20 bit is stripped from char
+    list flags when ToolTipMode=0, so the client sends classic 0x09 SingleClick.)
+
 [2026-04-20] - Multi-DB connections, ToolTipMode, ClearCTags fix, GC optimizations
 ----------------------------------------
 

@@ -86,6 +86,10 @@ public sealed class PacketCharList : PacketWriter
     private readonly string[] _charNames;
     private readonly int _maxChars;
 
+    /// <summary>When false, the 0x20 (AOS tooltips) bit is stripped from char
+    /// list flags so the client sends 0x09 single-click instead of 0xD6.</summary>
+    public static bool AosTooltipsEnabled { get; set; } = true;
+
     public PacketCharList(string[] charNames, int maxChars = 7) : base(0xA9)
     {
         _charNames = charNames;
@@ -148,6 +152,8 @@ public sealed class PacketCharList : PacketWriter
         // 0x1000 = 7th char slot
         // 0x4000 = new movement packets
         uint flags = 0x11E8; // popup + AOS + 6th slot + SE + ML + 7th slot
+        if (!AosTooltipsEnabled)
+            flags &= ~0x0020u;
         buf.WriteUInt32(flags);
 
         // Last character slot index (-1 = none)

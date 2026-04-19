@@ -421,6 +421,7 @@ public static class Program
         _world.MaxBankItems      = _config.BankMaxItems;
         _world.MaxBankWeight     = _config.BankMaxWeight;
         _world.ToolTipMode       = _config.ToolTipMode;
+        PacketCharList.AosTooltipsEnabled = _config.ToolTipMode != 0;
         foreach (var mapDef in _config.Maps)
         {
             _world.InitMap(mapDef.MapSendId, mapDef.MaxX, mapDef.MaxY);
