@@ -226,12 +226,14 @@ public sealed class House
         _decayStage = HouseDecayStage.LikeNew;
     }
 
-    /// <summary>Transfer ownership (deed back).</summary>
+    /// <summary>Transfer ownership (deed back). Preserves multi UUID in deed tag.</summary>
     public Item? Redeed(GameWorld world)
     {
         var deed = world.CreateItem();
         deed.BaseId = 0x14F0; // ITEMID_DEED1
         deed.Name = _multiItem.Name + " deed";
+        deed.SetTag("HOUSE_MULTI_UUID", _multiItem.Uuid.ToString("D"));
+        deed.SetTag("HOUSE_MULTI_BASEID", _multiItem.BaseId.ToString());
 
         // Remove all component items
         foreach (var compUid in _components)
@@ -533,6 +535,9 @@ public sealed class HousingEngine
         {
             var item = house.MultiItem;
             item.SetTag("HOUSE.OWNER", $"0{house.Owner.Value:X}");
+            var ownerObj = _world.FindObject(house.Owner);
+            if (ownerObj != null)
+                item.SetTag("HOUSE.OWNER_UUID", ownerObj.Uuid.ToString("D"));
             item.SetTag("HOUSE.TYPE", ((byte)house.Type).ToString());
             item.SetTag("HOUSE.STORAGE", house.BaseStorage.ToString());
             item.SetTag("HOUSE.DECAY_STAGE", ((byte)house.DecayStage).ToString());

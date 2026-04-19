@@ -4,6 +4,36 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-20] - UUID kimlik korumasi: mount, stable, corpse, house, ship, spawn
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - Tum donusum/shrink/expand senaryolarina UUID tabanli kimlik korumasi eklendi.
+    Obje Serial'i degisse bile UUID ile gercek kimlik korunuyor.
+    (UUID-based identity preservation added to all transformation scenarios.
+    Even if object Serial changes, true identity is preserved via UUID.)
+
+  Desteklenen senaryolar / Supported scenarios:
+    * Mount/dismount: MOUNT_NPC_UUID ile binek NPC kimlik korumasi
+      (mount NPC identity via MOUNT_NPC_UUID tag, Serial fallback)
+    * Stable (pet shrink): OriginalUuid alani ile stabled pet UUID korumasi,
+      claim sirasinda UUID geri yukleniyor
+      (StabledPet.OriginalUuid field, UUID restored on pet claim)
+    * Corpse/death: OWNER_UUID, KILLER_UUID tag'leri ile cesit sahibi ve katil
+      kimlik eslestirmesi (corpse owner/killer UUID tags for identity matching)
+    * Housing redeed: HOUSE_MULTI_UUID tag ile evi deed'e cevirirken multi UUID
+      korunuyor, HOUSE.OWNER_UUID serialize ediliyor
+      (multi UUID preserved in deed, owner UUID serialized)
+    * Ship redeed: SHIP_MULTI_UUID tag ile gemiyi deed'e cevirirken multi UUID
+      korunuyor, SHIP.OWNER_UUID serialize ediliyor
+      (multi UUID preserved in deed, owner UUID serialized)
+    * Summon/field: SUMMON_MASTER_UUID, FIELD_CASTER_UUID ile buyu sahibi
+      kimlik korumasi (spell caster UUID preserved)
+    * Spawn: SPAWN_POINT_UUID ile spawn edilen NPC/item'larin kaynak spawn
+      noktasina baglantisi (spawned entities linked to spawn point via UUID)
+    * Herding: HERD_MASTER_UUID ile hayvan surucusu kimlik korumasi
+      (herd master UUID preserved)
+
 [2026-04-20] - UUID sistemi, eski save otomatik migrasyon
 ----------------------------------------
 

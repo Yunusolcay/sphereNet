@@ -33,8 +33,9 @@ public sealed class MountEngine
         if (mountItemId == 0)
             return false;
 
-        // Store NPC serial so we can find the same NPC on dismount
+        // Store NPC identity so we can find the same NPC on dismount
         rider.Tags.Set("MOUNT_NPC_SERIAL", npc.Uid.Value.ToString());
+        rider.Tags.Set("MOUNT_NPC_UUID", npc.Uuid.ToString("D"));
 
         // Hide NPC: remove from sector so it is invisible and won't tick,
         // but keep it in the world object table so it survives save/load.
@@ -68,9 +69,15 @@ public sealed class MountEngine
         bool hasHorseItem = horseItem != null;
         bool hasMountedFlag = rider.IsMounted;
 
-        // Try to find mount NPC from saved serial tag
+        // Try to find mount NPC — UUID first (survives Serial recycling), then Serial fallback
         Character? mountNpc = null;
-        if (rider.TryGetTag("MOUNT_NPC_SERIAL", out string? serialStr) &&
+        if (rider.TryGetTag("MOUNT_NPC_UUID", out string? uuidStr) &&
+            Guid.TryParse(uuidStr, out Guid npcUuid))
+        {
+            mountNpc = _world.FindByUuid(npcUuid) as Character;
+        }
+        if (mountNpc == null &&
+            rider.TryGetTag("MOUNT_NPC_SERIAL", out string? serialStr) &&
             uint.TryParse(serialStr, out uint npcSerial) && npcSerial != 0)
         {
             mountNpc = _world.FindChar(new Serial(npcSerial));
@@ -182,16 +189,22 @@ public sealed class MountEngine
 
         rider.ClearStatFlag(StatFlag.OnHorse);
 
-        // Find the original NPC from saved serial
+        // Find the original NPC — UUID first, then Serial fallback
         Character? npc = null;
-        if (rider.TryGetTag("MOUNT_NPC_SERIAL", out string? serialStr) &&
+        if (rider.TryGetTag("MOUNT_NPC_UUID", out string? uuidStr) &&
+            Guid.TryParse(uuidStr, out Guid npcUuid))
+        {
+            npc = _world.FindByUuid(npcUuid) as Character;
+        }
+        if (npc == null &&
+            rider.TryGetTag("MOUNT_NPC_SERIAL", out string? serialStr) &&
             uint.TryParse(serialStr, out uint npcSerial) && npcSerial != 0)
         {
             npc = _world.FindChar(new Serial(npcSerial));
         }
 
         rider.RemoveTag("MOUNT_NPC_SERIAL");
-        // Clean up legacy tags if present
+        rider.RemoveTag("MOUNT_NPC_UUID");
         rider.RemoveTag("MOUNT_NPC_BODY");
         rider.RemoveTag("MOUNT_NPC_BASE");
         rider.RemoveTag("MOUNT_NPC_HUE");

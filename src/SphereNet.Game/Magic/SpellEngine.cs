@@ -434,6 +434,7 @@ public sealed class SpellEngine
         fieldItem.BaseId = def.EffectId;
         fieldItem.Name = def.Name + " field";
         fieldItem.SetTag("FIELD_CASTER", caster.Uid.Value.ToString());
+        fieldItem.SetTag("FIELD_CASTER_UUID", caster.Uuid.ToString("D"));
         fieldItem.SetTag("FIELD_DAMAGE", def.GetEffect(caster.GetSkill(def.GetPrimarySkill())).ToString());
         fieldItem.DecayTime = Environment.TickCount64 + 30_000; // 30s duration
         _world.PlaceItem(fieldItem, pos);
@@ -450,6 +451,7 @@ public sealed class SpellEngine
         int duration = def.GetDuration(skillLevel);
         creature.SetTag("SUMMON_DURATION", duration.ToString());
         creature.SetTag("SUMMON_MASTER", caster.Uid.Value.ToString());
+        creature.SetTag("SUMMON_MASTER_UUID", caster.Uuid.ToString("D"));
 
         _world.PlaceCharacter(creature, pos);
     }

@@ -79,9 +79,13 @@ public sealed class DeathEngine
         int decaySeconds = victim.IsPlayer ? CorpseDecayPlayer : CorpseDecayNPC;
         corpse.DecayTime = Environment.TickCount64 + decaySeconds * 1000;
         corpse.SetTag("OWNER_UID", victim.Uid.Value.ToString());
+        corpse.SetTag("OWNER_UUID", victim.Uuid.ToString("D"));
 
         if (killer != null)
+        {
             corpse.SetTag("KILLER_UID", killer.Uid.Value.ToString());
+            corpse.SetTag("KILLER_UUID", killer.Uuid.ToString("D"));
+        }
 
         // For NPCs, delete the character (players become ghosts)
         if (!victim.IsPlayer)
@@ -210,7 +214,12 @@ public sealed class DeathEngine
         if (!LootingIsACrime) return false;
         if (looter.PrivLevel >= PrivLevel.GM) return false;
 
-        // Own corpse is not criminal
+        // Own corpse is not criminal — UUID check first, then Serial fallback
+        if (corpse.TryGetTag("OWNER_UUID", out string? ownerUuidStr) &&
+            Guid.TryParse(ownerUuidStr, out Guid ownerUuid) &&
+            ownerUuid == looter.Uuid)
+            return false;
+
         if (corpse.TryGetTag("OWNER_UID", out string? ownerStr) &&
             uint.TryParse(ownerStr, out uint ownerUid) &&
             ownerUid == looter.Uid.Value)

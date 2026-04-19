@@ -113,10 +113,12 @@ public sealed class ShipEngine
         if (ship.Owner != requestor.Uid && requestor.PrivLevel < PrivLevel.GM)
             return null;
 
-        // Create deed
+        // Create deed — preserve ship UUID for identity continuity
         var deed = _world.CreateItem();
         deed.BaseId = 0x14F0; // ITEMID_DEED1
         deed.Name = ship.MultiItem.Name + " deed";
+        deed.SetTag("SHIP_MULTI_UUID", ship.MultiItem.Uuid.ToString("D"));
+        deed.SetTag("SHIP_MULTI_BASEID", ship.MultiItem.BaseId.ToString());
 
         // Remove all component items
         foreach (var compUid in ship.Components)
@@ -592,6 +594,9 @@ public sealed class ShipEngine
         {
             var item = ship.MultiItem;
             item.SetTag("SHIP.OWNER", $"0{ship.Owner.Value:X}");
+            var ownerObj = _world.FindObject(ship.Owner);
+            if (ownerObj != null)
+                item.SetTag("SHIP.OWNER_UUID", ownerObj.Uuid.ToString("D"));
             item.SetTag("SHIP.ANCHORED", ship.Anchored ? "1" : "0");
             item.SetTag("SHIP.DIRFACE", ((byte)ship.DirFace).ToString());
             item.SetTag("SHIP.SPEEDPERIOD", ship.SpeedPeriod.ToString());

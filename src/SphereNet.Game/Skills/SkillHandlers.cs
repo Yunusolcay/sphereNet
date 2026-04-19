@@ -451,6 +451,7 @@ public sealed class SkillHandlers
         {
             // Move animal toward caster's target direction
             animal.SetTag("HERD_MASTER", ch.Uid.Value.ToString());
+            animal.SetTag("HERD_MASTER_UUID", ch.Uuid.ToString("D"));
         }
         return success;
     }
@@ -466,6 +467,7 @@ public sealed class SkillHandlers
             campfire.BaseId = 0x0DE3; // campfire
             campfire.Position = ch.Position;
             campfire.SetTag("CAMPFIRE_OWNER", ch.Uid.Value.ToString());
+            campfire.SetTag("CAMPFIRE_OWNER_UUID", ch.Uuid.ToString("D"));
             campfire.SetTimeout(Environment.TickCount64 + 30000); // 30 sec duration
         }
         return success;

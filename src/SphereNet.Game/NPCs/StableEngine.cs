@@ -45,6 +45,7 @@ public sealed class StableEngine
             Int = pet.Int,
             Hits = pet.MaxHits,
             NpcBrain = pet.NpcBrain,
+            OriginalUuid = pet.Uuid,
         });
 
         world.DeleteObject(pet);
@@ -80,6 +81,13 @@ public sealed class StableEngine
         pet.NpcBrain = data.NpcBrain;
         pet.NpcMaster = owner.Uid;
 
+        if (data.OriginalUuid != Guid.Empty)
+        {
+            var oldUuid = pet.Uuid;
+            pet.Uuid = data.OriginalUuid;
+            world.ReIndexUuid(pet, oldUuid);
+        }
+
         world.PlaceCharacter(pet, pos);
         return pet;
     }
@@ -106,5 +114,6 @@ public sealed class StableEngine
         public short Int { get; set; }
         public short Hits { get; set; }
         public NpcBrainType NpcBrain { get; set; }
+        public Guid OriginalUuid { get; set; }
     }
 }

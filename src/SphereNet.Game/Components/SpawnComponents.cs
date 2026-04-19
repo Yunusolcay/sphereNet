@@ -144,6 +144,7 @@ public sealed class SpawnComponent
             _spawnItem.MapIndex
         );
 
+        ch.SetTag("SPAWN_POINT_UUID", _spawnItem.Uuid.ToString("D"));
         _world.PlaceCharacter(ch, pos);
         _spawnedUids.Add(ch.Uid);
     }
@@ -269,6 +270,7 @@ public sealed class ItemSpawnComponent
             _spawnItem.MapIndex
         );
 
+        item.SetTag("SPAWN_POINT_UUID", _spawnItem.Uuid.ToString("D"));
         _world.PlaceItem(item, pos);
         _spawnedUids.Add(item.Uid);
 
