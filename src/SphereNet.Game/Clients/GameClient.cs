@@ -3048,6 +3048,15 @@ public sealed class GameClient : ITextConsole
 
         var skill = (SkillType)skillId;
 
+        // Source-X parity: information skills prompt for a target before emitting
+        // any message. Route through the info-skill pipeline in BeginInfoSkill so
+        // the player sees the exact CClientTarg.cpp text sequence.
+        if (SkillHandlers.IsInfoSkill(skill))
+        {
+            BeginInfoSkill(skill, skillId);
+            return;
+        }
+
         // Fire @SkillPreStart — if script blocks, don't use skill
         if (_triggerDispatcher != null)
         {
@@ -4076,6 +4085,83 @@ public sealed class GameClient : ITextConsole
     {
         _pendingTargetCallback = callback;
         _netState.Send(new PacketTarget(1, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    // ==================== Information Skills ====================
+
+    /// <summary>
+    /// Fires trigger chain (PreStart/Start/Stroke) for the information skill,
+    /// then asks the client for a target cursor. Selected target is resolved
+    /// to the actual Character/Item and pushed into <see cref="SkillHandlers.UseInfoSkill"/>.
+    /// </summary>
+    private void BeginInfoSkill(SkillType skill, int skillId)
+    {
+        if (_character == null) return;
+
+        if (_triggerDispatcher != null)
+        {
+            var pre = _triggerDispatcher.FireCharTrigger(_character, CharTrigger.SkillPreStart,
+                new TriggerArgs { CharSrc = _character, N1 = skillId });
+            if (pre == TriggerResult.True) return;
+
+            var start = _triggerDispatcher.FireCharTrigger(_character, CharTrigger.SkillStart,
+                new TriggerArgs { CharSrc = _character, N1 = skillId });
+            if (start == TriggerResult.True) return;
+        }
+
+        SysMessage($"What do you wish to use your {skill} skill on?");
+        SetPendingTarget((serial, x, y, z, graphic) =>
+        {
+            if (_character == null) return;
+
+            var uid = new Serial(serial);
+            Objects.ObjBase? target = uid.IsValid ? _world.FindObject(uid) : null;
+
+            _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.SkillStroke,
+                new TriggerArgs { CharSrc = _character, N1 = skillId });
+
+            var sink = new InfoSkillSink(this, _character);
+            bool ok = _skillHandlers?.UseInfoSkill(sink, skill, target) ?? false;
+
+            if (_triggerDispatcher != null)
+            {
+                var trigger = ok ? CharTrigger.SkillSuccess : CharTrigger.SkillFail;
+                _triggerDispatcher.FireCharTrigger(_character, trigger,
+                    new TriggerArgs { CharSrc = _character, N1 = skillId });
+            }
+        });
+    }
+
+    /// <summary>Glue between the info-skill engine and the client's network layer.</summary>
+    private sealed class InfoSkillSink : Skills.Information.IInfoSkillSink
+    {
+        private readonly GameClient _client;
+        public InfoSkillSink(GameClient client, Character self) { _client = client; Self = self; }
+        public Character Self { get; }
+        public Random Random => System.Random.Shared;
+        public void SysMessage(string text) => _client.SysMessage(text);
+        public void ObjectMessage(Objects.ObjBase target, string text) => _client.ObjectMessage(target, text);
+    }
+
+    /// <summary>Source-X addObjMessage: overhead speech over any ObjBase.</summary>
+    internal void ObjectMessage(Objects.ObjBase target, string text)
+    {
+        uint uid;
+        ushort body;
+        string name;
+        switch (target)
+        {
+            case Character ch:
+                uid = ch.Uid.Value; body = ch.BodyId; name = ch.GetName();
+                break;
+            case Item it:
+                uid = it.Uid.Value; body = it.BaseId; name = it.Name ?? "";
+                break;
+            default:
+                SysMessage(text); return;
+        }
+        var packet = new PacketSpeechUnicodeOut(uid, body, 0, 0x03B2, 3, "ENU", name, text);
+        _netState.Send(packet);
     }
 
     // ==================== Help Menu ====================

@@ -4,6 +4,115 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-20] - Source-X DEFMSG parite katmani + bilgi skill motoru
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - Source-X defmessages.tbl'den 1165 DEFMSG_* anahtarinin tamami kod
+    jeneratoru ile ServerMessages'a yuklendi. Mevcut override mekanizmasi
+    bozulmadan default'lar onceden kayit ediliyor.
+    (All 1165 DEFMSG_* keys imported from Source-X defmessages.tbl via code
+     generator; existing override mechanism still takes precedence.)
+
+  - tools/GenerateDefMsg.ps1: deterministik kod uretici. Jeneratör
+    ServerMessages.Generated.cs, Msg.cs (tip-guvenli sabit anahtarlar) ve
+    MessageCategory.Generated.cs dosyalarini uretir.
+    (Deterministic generator emitting ServerMessages.Generated.cs, Msg.cs
+     type-safe constants, and MessageCategory.Generated.cs.)
+
+  - ServerMessages.GetFormatted C-style printf specifier donusumu geldi:
+    %s, %d, %i, %u, %c, %x/X, %ld/%lu/%lx, %lld/%llu/%llx destekleniyor;
+    ayni sablon icindeki sus parantezleri .NET string.Format icin escape
+    ediliyor. FormatException durumunda ham sablona dusuyor.
+    (printf-to-.NET converter handles %s/%d/%i/%u/%c/%x/%ld/%lld families
+     with brace escaping and graceful fallback on format mismatch.)
+
+  - MessageMacros.Resolve: Source-X <SEX male/female> ve <NAME> tag'lerini
+    karakter cinsiyet/ad baglamina gore cozer. Context struct'i ile cagri
+    sitelerinde tekrar kullanilir.
+    (Resolves <SEX male/female> and <NAME> tokens against a character
+     context struct.)
+
+  - MessageCategory enum + MessageCategoryMap: her DEFMSG anahtari
+    Skill/ItemUse/Npc*/Combat/Movement/Ship/Multi/Tooltip/... kategorilerine
+    esleniyor. Log filtreleme ve toplu override icin veri tabani sagliyor.
+    (Each DEFMSG key is mapped to a MessageCategory for log filtering and
+     bulk override targeting.)
+
+  - Bilgi skilleri icin IInfoSkillSink arayuzu + InfoSkillEngine motoru:
+    Anatomy, AnimalLore, ArmsLore, EvalInt, Forensics, ItemID, TasteID
+    artik Source-X CClientTarg.cpp dal sirasi, bant tablolari ve mesaj
+    kanallariyla (SysMessage vs. addObjMessage) birebir calisiyor.
+    (Information skills now mirror CClientTarg.cpp exactly: branch order,
+     band tables, and SysMessage vs. overhead addObjMessage channels.)
+
+  Skill detaylari / Skill specifics:
+    * Anatomy: STR/DEX 10 bantli overhead satiri + StatFlag.Conjured icin
+      ANATOMY_MAGIC ikinci satiri (ANATOMY_MAGIC second line on conjured).
+    * AnimalLore: individual trade name, master/free satiri, MSG_PET_FOOD
+      ve MSG_FOOD_LVL 8-band yiyecek seviyesi (pet vs. wild ayrimi).
+    * ArmsLore: ARMSLORE_DEF/DAM + repair durumu + REP_0, ITEM_MAGIC/
+      NEWBIE/REPAIR bayraklari, silahlarda ARMSLORE_PSN_1..10 zehir bandi.
+    * EvalInt: EVALINT_INT bantlari; >400 skill icin EVALINT_MAG/MAN ikinci
+      satir (Magery/Necromancy max'i kullanilir).
+    * Forensics: corpse/reach kontrolu, sleeping ghost, carved, timer
+      durumlari; katil varsa ...NAME, yoksa ...FAILNAME.
+    * ItemID: ATTR_IDENTIFIED damgasi, ITEMID_GOLD/NOVAL, >400 skill'de
+      ITEMID_MADEOF ile baz kaynak listesi.
+    * TasteID: potion POTION_SPELL=Poison + quality, food/raw/fruit/meat
+      ve bicak zehiri ARMSLORE_PSN bandina eslenir; fallback TASTEID_RESULT.
+
+  - InfoSkillExtensions: Character/Item icin Source-X uyumlu aksesorler
+    (GetPronoun, GetPossessPronoun, GetTradeName, IsIndividualName,
+     GetPetOwner, IsTypeArmorWeapon, GetArmorDefense, GetWeaponAttack,
+     GetArmorRepairDesc, GetHitsCur/Max, GetPoisonSkill, GetNameFull).
+    (Source-X-compatible accessors bridging SphereNet's Character/Item API.)
+
+  - SkillHandlers.UseInfoSkill + SkillHandlers.IsInfoSkill: bilgi
+    skillerini Point3D akisindan ayirip obje hedefli dispatcher'a
+    yonlendiriyor; gain icin SkillEngine.UseQuick hala calisir.
+    (Routes information skills to the object-targeted dispatcher while
+     keeping the underlying UseQuick gain path.)
+
+  - GameClient.BeginInfoSkill: bilgi skill tespit edildiginde target
+    cursor'u acar, secilen Serial'i Character veya Item olarak resolve
+    eder, SkillPreStart/Start/Stroke/Success/Fail trigger zincirini
+    dogru sirayla emit eder ve InfoSkillSink uzerinden motora baglar.
+    (Opens a target cursor on info-skill request, resolves the selected
+     Serial, preserves the SkillPre/Start/Stroke/Success/Fail trigger
+     sequence, and wires the engine through InfoSkillSink.)
+
+  - GameClient.ObjectMessage: Source-X addObjMessage karsiligi. Karakter
+    veya item uzerine uygun Uid/BodyId/Name ile PacketSpeechUnicodeOut
+    paketi gonderir.
+    (addObjMessage equivalent: unicode overhead speech packet with correct
+     Uid/BodyId/Name for Character or Item targets.)
+
+DUZELTMELER / FIXES:
+  - ServerMessages.GetFormatted artik %lld ve %lu gibi uzun specifier'lari
+    once tanir, %d ile carpismaz; ayni sablondaki literal { karakterleri
+    .NET format'a uygun sekilde escape edilir.
+    (Longer printf specifiers like %lld/%lu are matched before %d; literal
+     braces in the same template are escaped for .NET string.Format.)
+
+TESTLER / TESTS:
+  - ServerMessagesTests (27 test) + InfoSkillEngineTests (11 test):
+    DEFMSG sayilari, override onceligi, printf donusumu, <SEX>/<NAME>
+    resolve, bilgi skill mesaj kanallari ve bant secimi dogrulaniyor.
+    (27 ServerMessages tests + 11 InfoSkillEngine tests covering DEFMSG
+     counts, override precedence, printf conversion, macro resolution,
+     and info-skill channel/band selection.)
+
+GELISTIRICILER ICIN / FOR DEVELOPERS:
+  - Kod ureteci yeniden calistirilabilir: `pwsh tools/GenerateDefMsg.ps1`
+    (defmessages.tbl'den deterministik cikti; upstream senkronunda tekrar
+     calistirin).
+    (Re-runnable: `pwsh tools/GenerateDefMsg.ps1` regenerates output from
+     defmessages.tbl after any upstream sync.)
+  - SphereNet.Game.csproj'a `InternalsVisibleTo("SphereNet.Tests")` eklendi;
+    ConvertFormatPlaceholders gibi internal yardimcilar test edilebilir.
+    (InternalsVisibleTo added so internal helpers are testable.)
+
 [2026-04-20] - UUID kimlik korumasi: mount, stable, corpse, house, ship, spawn
 ----------------------------------------
 

@@ -1,8 +1,10 @@
 using SphereNet.Core.Enums;
 using SphereNet.Core.Types;
 using SphereNet.Game.Definitions;
+using SphereNet.Game.Objects;
 using SphereNet.Game.Objects.Characters;
 using SphereNet.Game.Objects.Items;
+using SphereNet.Game.Skills.Information;
 using SphereNet.Game.World;
 
 namespace SphereNet.Game.Skills;
@@ -29,6 +31,92 @@ public sealed class SkillHandlers
         _gatheringEngine = gatheringEngine;
         RegisterAll();
     }
+
+    /// <summary>
+    /// Information skills (Anatomy, AnimalLore, ArmsLore, EvalInt, Forensics,
+    /// ItemID, TasteID) require a selected target to produce their Source-X
+    /// message output. <see cref="GameClient.HandleUseSkill"/> detects these
+    /// skills, opens a target cursor, and routes the resolved object here.
+    ///
+    /// Returns true when the underlying skill check succeeded (gain applies);
+    /// regardless, the sink has already received the Source-X text.
+    /// </summary>
+    public bool UseInfoSkill(IInfoSkillSink sink, SkillType skill, ObjBase? target)
+    {
+        var ch = sink.Self;
+        if (ch.IsDead) return false;
+
+        int level = ch.GetSkill(skill);
+        switch (skill)
+        {
+            case SkillType.Anatomy:
+                InfoSkillEngine.Anatomy(sink, target as Character ?? ch, level);
+                return SkillEngine.UseQuick(ch, skill, 30);
+
+            case SkillType.AnimalLore:
+                InfoSkillEngine.AnimalLore(sink, target as Character ?? ch, _world, level);
+                return SkillEngine.UseQuick(ch, skill, 30);
+
+            case SkillType.ArmsLore:
+                InfoSkillEngine.ArmsLore(sink, target as Item, level);
+                return SkillEngine.UseQuick(ch, skill, 30);
+
+            case SkillType.EvalInt:
+                InfoSkillEngine.EvalInt(sink, target as Character ?? ch, level);
+                return SkillEngine.UseQuick(ch, skill, 30);
+
+            case SkillType.Forensics:
+                if (target is Item corpse && corpse.ItemType == ItemType.Corpse)
+                {
+                    Serial killerUid = ResolveKillerUid(corpse);
+                    Character? killer = killerUid.IsValid ? _world.FindChar(killerUid) : null;
+                    long secs = corpse.TryGetTag("DEATH_TIME", out string? ds) && long.TryParse(ds, out long dt)
+                        ? Math.Max(0, (Environment.TickCount64 - dt) / 1000)
+                        : 0;
+                    bool sleeping = corpse.TryGetTag("CORPSE_SLEEPING", out string? sv) && sv == "1";
+                    bool carved = corpse.TryGetTag("CORPSE_CARVED", out string? cv) && cv == "1";
+                    InfoSkillEngine.Forensics(sink, corpse, killer, secs, sleeping, carved, level);
+                }
+                else
+                {
+                    InfoSkillEngine.Forensics(sink, target as Item, null, 0, false, false, level);
+                }
+                return SkillEngine.UseQuick(ch, skill, 30);
+
+            case SkillType.ItemId:
+                InfoSkillEngine.ItemID(sink, (object?)target ?? ch, level);
+                return SkillEngine.UseQuick(ch, skill, 30);
+
+            case SkillType.TasteId:
+                InfoSkillEngine.TasteID(sink, (object?)target ?? ch, level);
+                return SkillEngine.UseQuick(ch, skill, 30);
+
+            default:
+                return UseSkill(ch, skill, null);
+        }
+    }
+
+    private static Serial ResolveKillerUid(Item corpse)
+    {
+        if (corpse.TryGetTag("CORPSE_KILLER", out string? kv) && !string.IsNullOrEmpty(kv))
+        {
+            string t = kv.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? kv[2..] : kv;
+            if (uint.TryParse(t, System.Globalization.NumberStyles.HexNumber, null, out uint hx))
+                return new Serial(hx);
+            if (uint.TryParse(kv, out uint dec))
+                return new Serial(dec);
+        }
+        return Serial.Zero;
+    }
+
+    /// <summary>Source-X list of skills that prompt for a target and emit only descriptive text.</summary>
+    public static bool IsInfoSkill(SkillType skill) => skill switch
+    {
+        SkillType.Anatomy or SkillType.AnimalLore or SkillType.ArmsLore or
+        SkillType.EvalInt or SkillType.Forensics or SkillType.ItemId or
+        SkillType.TasteId => true,
+        _ => false,
+    };
 
     public bool UseSkill(Character ch, SkillType skill, Point3D? target = null)
     {

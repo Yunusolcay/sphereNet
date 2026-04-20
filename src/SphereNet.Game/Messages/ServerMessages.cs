@@ -1,13 +1,23 @@
+using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace SphereNet.Game.Messages;
 
 /// <summary>
 /// Central registry for server messages. Provides default values that can be
-/// overridden by DEFMESSAGE entries in sphere_msgs.scp (or any script file).
-/// Maps to the defmessages.tbl / DEFMSG_ system in Source-X.
+/// overridden by [DEFMESSAGE ...] entries in any script file (messages.scp etc.),
+/// the same way Source-X handles g_Cfg.GetDefaultMsg(DEFMSG_*).
+///
+/// Defaults are loaded in two layers:
+///   1. RegisterSphereDefaults() (generated, partial) - all 1165 Source-X DEFMSG_* keys
+///      ported verbatim from oldSphere/Source-X-full/src/tables/defmessages.tbl.
+///   2. RegisterCustomDefaults() - SphereNet-specific extension keys (gm_*, db_*,
+///      msg_stuck_script, ...) that do not exist upstream. These are applied AFTER
+///      the Source-X layer so they win for shared key names.
+/// Script overrides loaded via <see cref="LoadOverrides"/> always win over defaults.
 /// </summary>
-public static class ServerMessages
+public static partial class ServerMessages
 {
     private static readonly Dictionary<string, string> _defaults = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, string> _overrides = new(StringComparer.OrdinalIgnoreCase);
@@ -18,6 +28,12 @@ public static class ServerMessages
     /// <summary>Default system message font (SMSG_DEF_FONT).</summary>
     public static byte DefaultFont { get; private set; } = 3;
 
+    /// <summary>Total number of default keys currently registered (Source-X + custom).</summary>
+    public static int DefaultCount => _defaults.Count;
+
+    /// <summary>All registered default keys (snapshot; for diagnostics/tests).</summary>
+    public static IReadOnlyCollection<string> AllKeys => _defaults.Keys.ToArray();
+
     static ServerMessages()
     {
         RegisterDefaults();
@@ -25,7 +41,8 @@ public static class ServerMessages
 
     /// <summary>
     /// Get a message by key. Returns override if present, otherwise default.
-    /// If key is unknown, returns the key itself.
+    /// If key is unknown, returns the key itself (Source-X behaviour: missing
+    /// DEFMSG keys surface as the symbolic name so they are easy to spot in-game).
     /// </summary>
     public static string Get(string key)
     {
@@ -37,8 +54,11 @@ public static class ServerMessages
     }
 
     /// <summary>
-    /// Get a formatted message. Supports C-style %s/%d/%i placeholders
-    /// as well as {0}/{1} .NET-style placeholders.
+    /// Get a formatted message. Supports the C-style printf placeholders used
+    /// throughout Source-X (<c>%s %d %i %u %ld %lld %lu %llu %c %x %X %lx %llx</c>)
+    /// as well as .NET <c>{0}/{1}</c> placeholders. Placeholders are consumed in
+    /// left-to-right order; mixing styles in the same template is allowed but the
+    /// shared positional index advances across both.
     /// </summary>
     public static string GetFormatted(string key, params object[] args)
     {
@@ -46,25 +66,20 @@ public static class ServerMessages
         if (args.Length == 0)
             return template;
 
-        // Convert C-style placeholders to {N} format
-        int idx = 0;
-        string converted = Regex.Replace(template, @"%[sdi]", _ => $"{{{idx++}}}");
-        // Also handle %lld (used in some vendor messages)
-        idx = 0;
-        converted = Regex.Replace(converted, @"%lld", _ => $"{{{idx++}}}");
+        string converted = ConvertFormatPlaceholders(template);
 
         try
         {
-            return string.Format(converted, args);
+            return string.Format(CultureInfo.InvariantCulture, converted, args);
         }
-        catch
+        catch (FormatException)
         {
             return template;
         }
     }
 
     /// <summary>
-    /// Set an override for a message key (from DEFMESSAGE script section).
+    /// Set an override for a message key (typically from a [DEFMESSAGE ...] script block).
     /// </summary>
     public static void SetOverride(string key, string value)
     {
@@ -112,28 +127,100 @@ public static class ServerMessages
 
     private static void RegisterDefaults()
     {
-        // ===== Combat =====
+        RegisterSphereDefaults();
+        RegisterCustomDefaults();
+    }
+
+    /// <summary>
+    /// Convert printf-style placeholders to .NET <c>{N[:X]}</c> form. Order matters:
+    /// longer modifiers (lld/llu/llx) are consumed before shorter ones (ld/lu/lx),
+    /// otherwise %lld would be partially eaten as %ld + "d".
+    /// </summary>
+    private static readonly Regex s_placeholderRx = new(
+        @"%(?:%|" +
+        @"ll[dux]|" +    // %lld %llu %llx
+        @"l[dux]|" +     // %ld %lu %lx
+        @"[sdiucxX])",
+        RegexOptions.Compiled);
+
+    internal static string ConvertFormatPlaceholders(string template)
+    {
+        if (string.IsNullOrEmpty(template))
+            return template;
+
+        // Quick reject: no '%' and no embedded '{' to escape -> nothing to do.
+        if (template.IndexOf('%') < 0 && template.IndexOf('{') < 0)
+            return template;
+
+        var sb = new StringBuilder(template.Length + 8);
+        int idx = 0;
+        int last = 0;
+
+        // First pass: replace printf placeholders with {N[:X]} tokens, escaping any
+        // literal '{' / '}' that appear in the template so string.Format does not choke.
+        var matches = s_placeholderRx.Matches(template);
+        foreach (Match m in matches)
+        {
+            // Append literal text between last match and this one, escaping braces.
+            AppendEscaped(sb, template, last, m.Index);
+
+            string spec = m.Value;
+            if (spec == "%%")
+            {
+                sb.Append('%');
+            }
+            else
+            {
+                bool isHex = spec.EndsWith('x') || spec.EndsWith('X');
+                bool upper = spec.EndsWith('X');
+                if (isHex)
+                {
+                    sb.Append('{').Append(idx).Append(':').Append(upper ? 'X' : 'x').Append('}');
+                }
+                else
+                {
+                    sb.Append('{').Append(idx).Append('}');
+                }
+                idx++;
+            }
+
+            last = m.Index + m.Length;
+        }
+
+        AppendEscaped(sb, template, last, template.Length);
+        return sb.ToString();
+    }
+
+    private static void AppendEscaped(StringBuilder sb, string src, int from, int to)
+    {
+        for (int i = from; i < to; i++)
+        {
+            char c = src[i];
+            if (c == '{') sb.Append("{{");
+            else if (c == '}') sb.Append("}}");
+            else sb.Append(c);
+        }
+    }
+
+    /// <summary>
+    /// SphereNet-only default messages. Kept separate from the Source-X parity
+    /// layer so we can re-generate ServerMessages.Generated.cs without touching
+    /// our extensions, and so it is obvious at a glance which keys are local.
+    /// </summary>
+    private static void RegisterCustomDefaults()
+    {
+        // ===== SphereNet combat extras =====
         Def("combat_nopvp", "You cannot attack players in this area.");
         Def("combat_dead", "You have died. Seek a healer to be resurrected.");
         Def("combat_resurrected", "You have been resurrected.");
         Def("combat_resurrected_with_corpse", "You have been resurrected and your belongings restored.");
         Def("combat_warmode_on", "You are now in war mode.");
         Def("combat_warmode_off", "You are now in peace mode.");
-        Def("combat_arch_noammo", "You have no ammunition.");
-        Def("combat_arch_tooclose", "You are too close.");
-        Def("combat_parry", "Your attack was parried!");
 
-        // ===== Spell / Magic =====
+        // ===== Spell / Magic helpers (Source-X uses spell_*; our shorter aliases) =====
         Def("spell_cant_cast", "You cannot cast that spell.");
         Def("spell_cast_ok", "You cast %s.");
         Def("spell_gen_fizzles", "The spell fizzles");
-        Def("spell_try_nomana", "You lack sufficient mana for this spell");
-        Def("spell_try_noregs", "You lack %s for this spell");
-        Def("spell_try_busyhands", "Your hands must be free to cast spells or meditate.");
-        Def("spell_try_frozenhands", "You cannot cast spells while your hands are frozen.");
-        Def("spell_try_nobook", "You don't have a spellbook handy.");
-        Def("spell_try_dead", "This is beyond your ability.");
-        Def("spell_gate_open", "You open a magical gate to another location.");
 
         // ===== Death / Resurrect =====
         Def("death_cant_while_dead", "You cannot do that while dead.");
@@ -141,12 +228,11 @@ public static class ServerMessages
         // ===== Mount =====
         Def("mount_already_riding", "You are already riding.");
 
-        // ===== Item Use =====
+        // ===== Item Use shortcuts =====
         Def("itemuse_locked", "This item is locked.");
         Def("itemuse_eat_food", "You eat the food.");
-        Def("itemuse_dye_fail", "The dye just drips off this.");
 
-        // ===== Housing =====
+        // ===== Housing (Source-X handles via house_* but mortechUO scripts use these) =====
         Def("house_placed", "House placed.");
         Def("house_cant_place", "Cannot place house here.");
         Def("house_not_house", "This does not belong to any house.");
@@ -186,30 +272,12 @@ public static class ServerMessages
         Def("house_unbanned", "%s has been unbanned.");
         Def("house_not_banned", "That player is not banned.");
 
-        // ===== Crafting =====
+        // ===== Crafting helpers =====
         Def("craft_no_recipes", "There are no recipes available for this craft.");
         Def("craft_fail", "You fail to create the item. Some materials are lost.");
         Def("craft_success", "You create %s.");
-        Def("cant_make", "You can't make that.");
 
-        // ===== Vendor / Trade (Source-X: npc_vendor_*) =====
-        Def("npc_vendor_no_goods", "Sorry I have no goods to sell");
-        Def("npc_vendor_nothing_buy", "You have nothing I'm interested in");
-        Def("npc_vendor_nothing_sell", "Sorry I have nothing of interest to you.");
-        Def("npc_vendor_nomoney1", "Begging thy pardon, but thou canst not afford that.");
-        Def("npc_vendor_b1", "That will be %s gold coin%s. ");
-        Def("npc_vendor_sell_ty", "Here you are, %s gold coin%s. I thank thee for thy business.");
-        Def("npc_vendor_ty", "I thank thee for thy business.");
-        Def("npc_vendor_ca", "s");
-        Def("npc_vendor_buy_nothing", "Thou hast bought nothing!");
-        Def("npc_vendor_cantafford", "I cannot afford any more at the moment");
-        Def("npc_vendor_cantfulfill", "Your order cannot be fulfilled, please try again.");
-        Def("npc_vendor_cantreach", "You can't reach the Vendor");
-        Def("npc_vendor_cantbuy", "You cannot buy that.");
-        Def("npc_vendor_cantsell", "You cannot sell that.");
-        Def("npc_vendor_buyfast", "You are buying too fast.");
-        Def("npc_vendor_sellfast", "You are selling too fast.");
-        Def("npc_vendor_nomoney", "Alas I have run out of money.");
+        // ===== Vendor / Trade SphereNet extras =====
         Def("vendor_what_sell", "What would you like to sell?");
         Def("vendor_bank_unavailable", "Your bank box is not available yet.");
 
@@ -221,10 +289,9 @@ public static class ServerMessages
 
         // ===== Rename =====
         Def("rename_no_permission", "You do not have permission to rename.");
-        Def("msg_rename_success", "%s renamed: %s");
         Def("rename_item_ok", "Item renamed to '%s'.");
 
-        // ===== Guild =====
+        // ===== Guild (mortechUO scripts) =====
         Def("guild_join_request", "You have submitted a request to join the guild.");
         Def("guild_disbanded", "Guild has been disbanded.");
         Def("guild_left", "You have left the guild.");
@@ -244,15 +311,6 @@ public static class ServerMessages
         Def("guild_charter_updated", "Guild charter updated.");
         Def("guild_already_member", "You are already a member of a guild. Resign first.");
 
-        // ===== Party (Source-X: party_*) =====
-        Def("party_is_full", "You may only have 10 in your party.");
-        Def("party_notleader", "You may only add members to the party if you are the leader.");
-        Def("party_leave_1", "%s has been removed from your party.");
-        Def("party_added", "You have been added to the party.");
-        Def("party_decline_2", "You notify %s that you do not wish to join the party.");
-        Def("party_invite", "You have invited %s to join the party.");
-        Def("party_msg", "[PARTY]: %s");
-
         // ===== Potion =====
         Def("potion_cured", "You have been cured of poison.");
         Def("potion_heal", "You feel better. (+%s HP)");
@@ -261,25 +319,18 @@ public static class ServerMessages
         Def("potion_dex", "You feel more agile.");
         Def("potion_drink", "You drink the potion.");
 
-        // ===== Skill Use =====
+        // ===== Skill Use generic =====
         Def("skill_use_ok", "You use %s.");
         Def("skill_use_fail", "You fail to use %s.");
 
-        // ===== Target =====
-        Def("target_cancel_1", "Targeting cancelled.");
+        // ===== Target generic =====
         Def("target_invalid", "Invalid target.");
         Def("target_must_object", "You must target an object.");
         Def("target_cant_remove", "Target is invalid or cannot be removed.");
 
-        // ===== Pet Commands =====
+        // ===== Pet Commands shortcuts =====
         Def("pet_all_cmd", "All pets: %s");
         Def("pet_cmd", "%s: %s");
-
-        // ===== Misc / GM =====
-        Def("msg_serial_required", "Serial required.");
-        Def("msg_message_posted", "Message posted.");
-        Def("msg_name_set", "Name set to: %s");
-        Def("msg_invalid_target", "Invalid target.");
 
         // ===== GM Commands (SpeechEngine) =====
         Def("gm_add_usage", "Usage: .ADD <itemid|charid|DEFNAME>");
