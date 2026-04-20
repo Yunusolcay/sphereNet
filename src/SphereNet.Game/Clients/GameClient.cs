@@ -4081,7 +4081,9 @@ public sealed class GameClient : ITextConsole
                     int maxItems = isBank ? _world.MaxBankItems : _world.MaxContainerItems;
                     if (currentCount >= maxItems)
                     {
-                        SysMessage(isBank ? "Your bank box is full." : "That container is full.");
+                        // Source-X CClient::Item_DropContainer parity: bank vs
+                        // generic container produce different DEFMSG strings.
+                        SysMessage(ServerMessages.Get(isBank ? Msg.BvboxFullItems : Msg.ContFullItems));
                         PlaceItemInPack(_character, item);
                         _netState.Send(new PacketDropAck());
                         return;
@@ -4093,7 +4095,7 @@ public sealed class GameClient : ITextConsole
                             totalWeight += Math.Max(1, (int)b.Amount);
                         if (totalWeight + Math.Max(1, (int)item.Amount) > _world.MaxBankWeight)
                         {
-                            SysMessage("Your bank box is too heavy.");
+                            SysMessage(ServerMessages.Get(Msg.BvboxFullWeight));
                             PlaceItemInPack(_character, item);
                             _netState.Send(new PacketDropAck());
                             return;

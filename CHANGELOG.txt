@@ -4,6 +4,23 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-20] - Container reddi: bvbox / cont_full mesajlari Source-X paritesine cevrildi
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - GameClient.HandleItemDrop: konteyner doluysa hardcoded ingilizce
+    string yerine Source-X CClient::Item_DropContainer mesajlari kullaniliyor.
+    Bank icin BVBOX_FULL_ITEMS, normal konteyner icin CONT_FULL_ITEMS,
+    bank agirlik asiliyorsa BVBOX_FULL_WEIGHT mesaji gonderiliyor.
+
+NEW FEATURES (EN):
+  - GameClient.HandleItemDrop: replaced hardcoded English bank/container
+    full strings with Source-X DEFMSG keys. Banks now bark
+    BVBOX_FULL_ITEMS / BVBOX_FULL_WEIGHT and ordinary containers reply
+    CONT_FULL_ITEMS, matching CClient::Item_DropContainer.
+
+================================================================================
+
 [2026-04-20] - Tillerman konusmalari: anchor up/down, stop, hareket reddi
 ----------------------------------------
 
