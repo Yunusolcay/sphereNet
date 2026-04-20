@@ -18,6 +18,12 @@ public sealed class MovementEngine
     /// <summary>Optional SpellEngine for interrupting casts on movement.</summary>
     public SpellEngine? SpellEngine { get; set; }
 
+    /// <summary>Source-X CClient::SysMessage hook used by region enter/leave
+    /// announcements. Program.cs wires this so the moving character receives
+    /// MSG_REGION_ENTER / MSG_REGION_GUARDED / MSG_REGION_PVPSAFE strings on
+    /// the matching client only.</summary>
+    public Action<Objects.Characters.Character, string>? OnSysMessage { get; set; }
+
     private const int WalkDelayFoot = 400;
     private const int WalkDelayMount = 200;
     private const int RunDelayFoot = 200;
@@ -272,6 +278,24 @@ public sealed class MovementEngine
                 {
                     _triggerDispatcher.FireRegionEvents(newRegion, "Enter", ch,
                         new TriggerArgs { CharSrc = ch, S1 = newRegion.Name });
+                }
+
+                // Source-X CCharBase::Region_Notify: announce region entry
+                // and any special flags (guards/PvP) to the moving client.
+                if (newRegion != null && OnSysMessage != null && ch.IsPlayer)
+                {
+                    OnSysMessage(ch, SphereNet.Game.Messages.ServerMessages.GetFormatted(
+                        SphereNet.Game.Messages.Msg.MsgRegionEnter, newRegion.Name));
+                    if (newRegion.IsFlag(RegionFlag.Guarded))
+                    {
+                        OnSysMessage(ch, SphereNet.Game.Messages.ServerMessages.Get(
+                            SphereNet.Game.Messages.Msg.MsgRegionGuards1));
+                    }
+                    if (newRegion.IsFlag(RegionFlag.NoPvP))
+                    {
+                        OnSysMessage(ch, SphereNet.Game.Messages.ServerMessages.Get(
+                            SphereNet.Game.Messages.Msg.MsgRegionPvpsafe));
+                    }
                 }
 
                 // Optional global hook — silently skip if not defined in scripts.

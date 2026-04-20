@@ -469,6 +469,23 @@ public sealed class GameClient : ITextConsole
         _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.LogIn, new TriggerArgs { CharSrc = _character });
         _systemHooks?.DispatchClient("add", _character, _account);
 
+        // Source-X CClient::Login: post LOGIN_PLAYER / LOGIN_PLAYERS so the new
+        // arrival sees how many fellow players are already in the shard.
+        int otherPlayers = 0;
+        foreach (var c in _world.OnlinePlayers)
+            if (c != _character && c.IsPlayer && c.IsOnline) otherPlayers++;
+        if (otherPlayers == 1)
+            SysMessage(ServerMessages.Get(Msg.LoginPlayer));
+        else if (otherPlayers > 1)
+            SysMessage(ServerMessages.GetFormatted(Msg.LoginPlayers, otherPlayers));
+
+        // Source-X also stamps the previous login timestamp via LOGIN_LASTLOGGED.
+        if (_account != null && _account.LastLogin > DateTime.MinValue)
+        {
+            SysMessage(ServerMessages.GetFormatted(Msg.LoginLastlogged,
+                _account.LastLogin.ToString("yyyy-MM-dd HH:mm:ss")));
+        }
+
         // Ensure first world snapshot is fully consistent.
         // Some clients can show partially black map/chunk artifacts if they only
         // receive the minimal login packet set without a full nearby object refresh.

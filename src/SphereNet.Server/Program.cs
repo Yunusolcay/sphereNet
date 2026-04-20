@@ -578,6 +578,15 @@ public static class Program
         _terrain = new TerrainEngine(_mapData);
         _movement = new MovementEngine(_world, _triggerDispatcher);
         _movement.SpellEngine = _spellEngine;
+        _movement.OnSysMessage = (mover, text) =>
+        {
+            // Source-X CClient::SysMessage routes region-enter/PvP/guard text
+            // only to the moving player's own client.
+            foreach (var c in _clients.Values)
+            {
+                if (c.Character == mover) { c.SysMessage(text); break; }
+            }
+        };
         _partyManager = new PartyManager();
         _guildManager = new GuildManager();
         _guildManager.DeserializeFromWorld(_world);

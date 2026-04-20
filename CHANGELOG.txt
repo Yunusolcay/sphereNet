@@ -4,6 +4,33 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-20] - Region/login mesajlari: enter notify, guard/pvp banner, login_player + lastlogged
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - MovementEngine: OnSysMessage callback'i eklendi. Region degisiminde
+    Source-X CCharBase::Region_Notify paritesinde MSG_REGION_ENTER, guarded
+    bolgede MSG_REGION_GUARDS_1, NoPvP bolgede MSG_REGION_PVPSAFE bandi
+    moving player'in client'ina gonderiliyor.
+  - Program.cs: yeni MovementEngine.OnSysMessage'i hareket eden karakterin
+    GameClient'ina yonlendiriyor.
+  - GameClient.EnterWorld: login sonrasi LOGIN_PLAYER (1 oyuncu) veya
+    LOGIN_PLAYERS (>1 oyuncu) sayisi gonderiliyor; account.LastLogin
+    biliniyorsa LOGIN_LASTLOGGED zaman damgasi sys message olarak basiliyor.
+
+NEW FEATURES (EN):
+  - MovementEngine: added OnSysMessage callback. On region change it now
+    emits MSG_REGION_ENTER, plus MSG_REGION_GUARDS_1 inside guarded zones
+    and MSG_REGION_PVPSAFE inside NoPvP areas, mirroring Source-X
+    CCharBase::Region_Notify.
+  - Program.cs: routes the new MovementEngine.OnSysMessage to the moving
+    player's GameClient.
+  - GameClient.EnterWorld: after login posts LOGIN_PLAYER (1 player) or
+    LOGIN_PLAYERS (multi) count and, when the account knows a previous
+    login, the LOGIN_LASTLOGGED timestamp.
+
+================================================================================
+
 [2026-04-20] - Combat + Magery cilasi: archery ammo, attack emote, recall/gate/poison mesajlari
 ----------------------------------------
 
