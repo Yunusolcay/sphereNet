@@ -1115,6 +1115,23 @@ public static class Program
 
         // Ships
         _shipEngine = new SphereNet.Game.Ships.ShipEngine(_world, multiRegistry, _mapData);
+        _shipEngine.OnTillerSpeak = (ship, text) =>
+        {
+            // Source-X CItemShip::Speak uses CObjBase::Speak with COLOR_TEXT_DEF.
+            // Broadcast as overhead unicode text from the tillerman item so
+            // every client near the multi sees the line, mirroring upstream.
+            var origin = ship.MultiItem.Position;
+            var pkt = new PacketSpeechUnicodeOut(
+                ship.MultiItem.Uid.Value,
+                ship.MultiItem.DispIdFull,
+                0x06, // ASCII speech
+                0x0481, // grey hue
+                3, // small font
+                "ENU",
+                ship.MultiItem.Name ?? "Tillerman",
+                text);
+            BroadcastNearby(origin, 18, pkt, 0);
+        };
         _shipEngine.DeserializeFromWorld();
         if (_shipEngine.ShipCount > 0)
             _log.LogInformation("Restored {Count} ships from world save", _shipEngine.ShipCount);

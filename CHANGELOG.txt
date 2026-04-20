@@ -4,6 +4,29 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-20] - Tillerman konusmalari: anchor up/down, stop, hareket reddi
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - ShipEngine: OnTillerSpeak action eklendi (Source-X CItemShip::Speak
+    paritesi). DirMoveChange anchored gemide TILLER_ANCHOR_IS_DOWN, anchor
+    drop/raise idempotent edge'lerde TILLER_ANCHOR_IS_ALL_DOWN /
+    TILLER_ANCHOR_IS_ALL_UP, ilk dropta TILLER_ANCHOR_IS_DOWN, kalkista
+    TILLER_REPLY_1, SHIPSTOP icin TILLER_STOPPED uretiyor.
+  - Program.cs: yeni OnTillerSpeak callback'i tillerman item adina
+    PacketSpeechUnicodeOut overhead konusma yayini yapiyor.
+
+NEW FEATURES (EN):
+  - ShipEngine: new OnTillerSpeak hook mirrors Source-X CItemShip::Speak.
+    Anchored ships now bark TILLER_ANCHOR_IS_DOWN on movement attempts;
+    anchor drop/raise produce TILLER_ANCHOR_IS_ALL_DOWN /
+    TILLER_ANCHOR_IS_ALL_UP on idempotent edges, TILLER_ANCHOR_IS_DOWN on
+    first drop and TILLER_REPLY_1 on lift; SHIPSTOP emits TILLER_STOPPED.
+  - Program.cs: routes the hook into a PacketSpeechUnicodeOut overhead
+    broadcast from the tillerman item so nearby clients hear the line.
+
+================================================================================
+
 [2026-04-20] - Region/login mesajlari: enter notify, guard/pvp banner, login_player + lastlogged
 ----------------------------------------
 

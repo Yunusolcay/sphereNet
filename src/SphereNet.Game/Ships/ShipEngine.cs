@@ -33,6 +33,15 @@ public sealed class ShipEngine
     public int ShipCount => _ships.Count;
     public IEnumerable<Ship> AllShips => _ships.Values;
 
+    /// <summary>Source-X CItemShip::Speak hook. Args: (Ship ship, string text).
+    /// Program.cs delivers the tillerman line to nearby clients as a unicode
+    /// speech packet so confirmations like "Aye, captain!" or "I cannot turn
+    /// in such turbulent water" appear above the ship.</summary>
+    public Action<Ship, string>? OnTillerSpeak { get; set; }
+
+    private void TillerSpeak(Ship ship, string key) =>
+        OnTillerSpeak?.Invoke(ship, SphereNet.Game.Messages.ServerMessages.Get(key));
+
     // =====================================================================
     // Placement
     // =====================================================================
@@ -344,16 +353,29 @@ public sealed class ShipEngine
 
             // --- Anchor ---
             case "SHIPANCHORDROP":
+                if (ship.Anchored)
+                {
+                    TillerSpeak(ship, SphereNet.Game.Messages.Msg.TillerAnchorIsAllDown);
+                    return true;
+                }
                 ship.Anchored = true;
                 Stop(ship);
+                TillerSpeak(ship, SphereNet.Game.Messages.Msg.TillerAnchorIsDown);
                 return true;
             case "SHIPANCHORRAISE":
+                if (!ship.Anchored)
+                {
+                    TillerSpeak(ship, SphereNet.Game.Messages.Msg.TillerAnchorIsAllUp);
+                    return true;
+                }
                 ship.Anchored = false;
+                TillerSpeak(ship, SphereNet.Game.Messages.Msg.TillerReply1);
                 return true;
 
             // --- Stop ---
             case "SHIPSTOP":
                 Stop(ship);
+                TillerSpeak(ship, SphereNet.Game.Messages.Msg.TillerStopped);
                 return true;
 
             // --- Direct move/face ---
@@ -397,7 +419,13 @@ public sealed class ShipEngine
     /// </summary>
     private bool DirMoveChange(Ship ship, Direction dirFace, int offset)
     {
-        if (ship.Anchored) return true; // anchored ships can't move
+        if (ship.Anchored)
+        {
+            // Source-X CItemShip::OnSpeak: tillerman complains when player
+            // requests motion with the anchor down.
+            TillerSpeak(ship, SphereNet.Game.Messages.Msg.TillerAnchorIsDown);
+            return true;
+        }
         return SetMoveDir(ship, GetDirTurn(dirFace, offset), ShipMovementType.Normal);
     }
 
