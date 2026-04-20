@@ -869,13 +869,20 @@ public sealed class GameClient : ITextConsole
                 return;
         }
 
-        // Range check — set FightTarget so TickCombat auto-attacks when in range,
-        // but only swing now if already close enough
+        // Set initial swing delay so the first hit isn't instant
+        if (_character.NextAttackTime == 0)
+        {
+            var w = _character.GetEquippedItem(Layer.OneHanded)
+                 ?? _character.GetEquippedItem(Layer.TwoHanded);
+            _character.NextAttackTime = Environment.TickCount64 + GetSwingDelayMs(_character, w);
+        }
+
+        // Range check — only swing now if already close enough
         var atkWeapon = _character.GetEquippedItem(Layer.OneHanded)
                      ?? _character.GetEquippedItem(Layer.TwoHanded);
         int atkMaxRange = (atkWeapon != null &&
             (atkWeapon.ItemType == ItemType.WeaponBow || atkWeapon.ItemType == ItemType.WeaponXBow))
-            ? 10 : 2;
+            ? 10 : 1;
         int atkDist = Math.Max(Math.Abs(_character.X - target.X), Math.Abs(_character.Y - target.Y));
         if (atkDist > atkMaxRange)
             return;
@@ -907,12 +914,11 @@ public sealed class GameClient : ITextConsole
             return;
         }
 
-        // Range check — melee max 2 tiles, ranged by weapon range
         var weapon = _character.GetEquippedItem(Layer.OneHanded)
                   ?? _character.GetEquippedItem(Layer.TwoHanded);
         int maxRange = (weapon != null &&
             (weapon.ItemType == ItemType.WeaponBow || weapon.ItemType == ItemType.WeaponXBow))
-            ? 10 : 2;
+            ? 10 : 1;
         int dist = Math.Max(Math.Abs(_character.X - target.X), Math.Abs(_character.Y - target.Y));
         if (dist > maxRange)
             return;
@@ -992,19 +998,8 @@ public sealed class GameClient : ITextConsole
                     new TriggerArgs { CharSrc = _character, O1 = target });
                 _triggerDispatcher?.FireCharTrigger(target, CharTrigger.Death,
                     new TriggerArgs { CharSrc = _character });
-                var corpse = _deathEngine.ProcessDeath(target, _character);
+                _deathEngine.ProcessDeath(target, _character);
                 _character.FightTarget = Serial.Invalid;
-
-                var deletePacket = new PacketDeleteObject(target.Uid.Value);
-                BroadcastNearby?.Invoke(target.Position, UpdateRange, deletePacket, 0);
-
-                if (corpse != null)
-                {
-                    var corpsePacket = new PacketWorldItem(
-                        corpse.Uid.Value, corpse.BaseId, corpse.Amount,
-                        corpse.X, corpse.Y, corpse.Z, corpse.Hue);
-                    BroadcastNearby?.Invoke(corpse.Position, UpdateRange, corpsePacket, 0);
-                }
             }
 
             // Reactive armor may have killed the attacker
@@ -1012,17 +1007,7 @@ public sealed class GameClient : ITextConsole
             {
                 _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.Death,
                     new TriggerArgs { CharSrc = target });
-                var attackerCorpse = _deathEngine.ProcessDeath(_character, target);
-                var delPkt = new PacketDeleteObject(_character.Uid.Value);
-                BroadcastNearby?.Invoke(_character.Position, UpdateRange, delPkt, 0);
-                if (attackerCorpse != null)
-                {
-                    var cPkt = new PacketWorldItem(
-                        attackerCorpse.Uid.Value, attackerCorpse.BaseId, attackerCorpse.Amount,
-                        attackerCorpse.X, attackerCorpse.Y, attackerCorpse.Z,
-                        attackerCorpse.Hue);
-                    BroadcastNearby?.Invoke(attackerCorpse.Position, UpdateRange, cPkt, 0);
-                }
+                _deathEngine.ProcessDeath(_character, target);
                 OnCharacterDeath();
             }
         }

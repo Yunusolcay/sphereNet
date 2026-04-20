@@ -860,19 +860,8 @@ public static class Program
                 new TriggerArgs { CharSrc = killer, O1 = victim });
             _triggerDispatcher?.FireCharTrigger(victim, CharTrigger.Death,
                 new TriggerArgs { CharSrc = killer });
-            var corpse = _deathEngine.ProcessDeath(victim, killer);
+            _deathEngine.ProcessDeath(victim, killer);
             killer.FightTarget = Serial.Invalid;
-
-            var deletePacket = new PacketDeleteObject(victim.Uid.Value);
-            BroadcastNearby(victim.Position, 18, deletePacket, 0);
-
-            if (corpse != null)
-            {
-                var corpsePacket = new PacketWorldItem(
-                    corpse.Uid.Value, corpse.BaseId, corpse.Amount,
-                    corpse.X, corpse.Y, corpse.Z, corpse.Hue);
-                BroadcastNearby(corpse.Position, 18, corpsePacket, 0);
-            }
 
             foreach (var c in _clients.Values)
             {

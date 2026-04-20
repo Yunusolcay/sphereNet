@@ -122,6 +122,7 @@ public sealed class DeathEngine
     {
         var corpse = _world.CreateItem();
         corpse.BaseId = 0x2006; // ITEMID_CORPSE
+        corpse.Amount = victim.BodyId; // body type for corpse display
         corpse.Name = $"corpse of {victim.Name}";
         corpse.ItemType = ItemType.Corpse;
         corpse.Hue = victim.Hue;
