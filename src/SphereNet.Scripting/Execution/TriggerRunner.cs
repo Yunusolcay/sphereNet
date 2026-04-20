@@ -82,13 +82,26 @@ public sealed class TriggerRunner
         ITextConsole? source,
         ITriggerArgs? args)
     {
+        // Verbose body tracing was needed during vendor-restock parser
+        // bring-up; now disabled to keep the log readable. Flip to true
+        // temporarily when investigating new trigger plumbing issues.
+        bool verbose = false;
+
         using var scriptFile = link.OpenAtStoredPosition();
         if (scriptFile == null)
+        {
+            if (verbose)
+                _logger.LogDebug(
+                    "[trig_runner] {Trig} on {Target}: scriptFile=null (link unresolved)",
+                    triggerName, target);
             return TriggerResult.Default;
+        }
 
         var sections = scriptFile.ReadAllSections();
+        int sectionsScanned = 0;
         foreach (var section in sections)
         {
+            sectionsScanned++;
             foreach (var key in section.Keys)
             {
                 if (key.Key.Equals("ON", StringComparison.OrdinalIgnoreCase) &&
@@ -97,12 +110,27 @@ public sealed class TriggerRunner
                     int startIdx = section.Keys.IndexOf(key) + 1;
                     var triggerLines = CollectTriggerBody(section.Keys, startIdx);
 
+                    if (verbose)
+                    {
+                        _logger.LogDebug(
+                            "[trig_runner] {Trig} matched section #{Idx} body lines={N}",
+                            triggerName, sectionsScanned, triggerLines.Count);
+                        foreach (var ln in triggerLines)
+                            _logger.LogDebug(
+                                "[trig_runner]   line key='{Key}' hasArg={HasArg} arg='{Arg}'",
+                                ln.Key, ln.HasArg, ln.Arg);
+                    }
+
                     var scope = new ScriptScope();
                     return _interpreter.Execute(triggerLines, target, source, args, scope);
                 }
             }
         }
 
+        if (verbose)
+            _logger.LogDebug(
+                "[trig_runner] {Trig} not found in any of {N} sections (target={Target})",
+                triggerName, sectionsScanned, target);
         return TriggerResult.Default;
     }
 

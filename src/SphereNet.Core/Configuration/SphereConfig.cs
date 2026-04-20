@@ -177,6 +177,27 @@ public sealed class SphereConfig
     // Logging
     public int LogMask { get; set; } = 0x03F00;
     public bool DebugPackets { get; set; }
+    /// <summary>
+    /// Severity filter for the rolling file sink (logs/spherenet-*.log).
+    /// The console sink keeps following <c>DebugPackets</c> (Information
+    /// by default) so live operators still see commands / connections /
+    /// script loads, while the on-disk log stays small and focused on
+    /// anomalies.
+    ///
+    /// Two syntaxes are supported:
+    ///   1) <b>Single value</b> = minimum-level threshold. Everything at
+    ///      that severity or higher reaches the file.
+    ///        <c>LogFileLevel=Warning</c>  → WRN, ERR, FTL
+    ///        <c>LogFileLevel=Error</c>    → ERR, FTL only
+    ///   2) <b>Pipe-separated whitelist</b> (or comma) = keep ONLY the
+    ///      listed levels — useful when you want, say, verbose traces
+    ///      plus errors but no Information/Warning noise.
+    ///        <c>LogFileLevel=Verbose | Warning | Error | Fatal</c>
+    ///
+    /// Accepted level names (case-insensitive): Verbose, Debug,
+    /// Information, Warning, Error, Fatal.  Default = "Warning".
+    /// </summary>
+    public string LogFileLevel { get; set; } = "Warning";
     public string DebugPacketOpcodes { get; set; } = "";
     public string CommandPrefix { get; set; } = ".";
     public int DefaultCommandLevel { get; set; }
@@ -333,6 +354,7 @@ public sealed class SphereConfig
 
         LogMask = ini.GetInt(section, "LogMask", LogMask);
         DebugPackets = ini.GetBool(section, "DebugPackets", DebugPackets);
+        LogFileLevel = ini.GetValue(section, "LogFileLevel") ?? LogFileLevel;
         DebugPacketOpcodes = ini.GetValue(section, "DebugPacketOpcodes") ?? DebugPacketOpcodes;
         CommandPrefix = ini.GetValue(section, "CommandPrefix") ?? CommandPrefix;
         DefaultCommandLevel = ini.GetInt(section, "DefaultCommandLevel", DefaultCommandLevel);

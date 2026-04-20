@@ -119,7 +119,26 @@ public sealed class CharDef : BaseDef
             case "HEIGHT": byte.TryParse(value, out byte h); Height = h; break;
             case "DEFNAME": DefName = value; break;
             case "FOODTYPE": Enum.TryParse(value, true, out ItemType ft); FoodType = ft; break;
-            case "NPCBRAIN": Enum.TryParse(value, true, out NpcBrainType nb); NpcBrain = nb; break;
+            case "NPC":
+            case "NPCBRAIN":
+                // Source-X CHARDEF accepts both "NPC=brain_vendor" (DEFNAME
+                // form, mortechUO) and "NPCBRAIN=Vendor" (numeric/legacy
+                // saves). Strip the brain_ / npc_ prefix so the matching
+                // enum value parses; without this c_alchemist & friends
+                // dropped to NpcBrain=None and the spawn pipeline fell back
+                // to Animal — no vendor speech / buy / sell dispatch.
+                {
+                    string raw = (value ?? string.Empty).Trim();
+                    if (raw.StartsWith("brain_", StringComparison.OrdinalIgnoreCase))
+                        raw = raw[6..];
+                    else if (raw.StartsWith("npc_", StringComparison.OrdinalIgnoreCase))
+                        raw = raw[4..];
+                    if (Enum.TryParse(raw, true, out NpcBrainType nb))
+                        NpcBrain = nb;
+                    else if (int.TryParse(raw, out int nbi))
+                        NpcBrain = (NpcBrainType)nbi;
+                }
+                break;
             case "CATEGORY": Category = value.Trim(); break;
             case "ANIM": Anim = ParseHexOrDecUInt(value); break;
             case "BLOODCOLOR": short.TryParse(value, out short bc); BloodColor = bc; break;

@@ -334,6 +334,12 @@ public sealed class WorldSaver
         w.WriteProperty("NAME", ch.Name);
         w.WriteProperty("P", ch.Position.ToString());
         w.WriteProperty("BODY", $"0{ch.BodyId:X}");
+        // Full-width chardef hash (24-bit). Without this, NPCs reload with
+        // CharDefIndex=0 → trigger / brain lookups fall back to BaseId
+        // (the truncated body id) and re-introduce the c_alchemist→c_man
+        // brain hijack on every restart.
+        if (ch.CharDefIndex != 0 && ch.CharDefIndex != ch.BaseId)
+            w.WriteProperty("CHARDEFINDEX", $"0{ch.CharDefIndex:X}");
         w.WriteProperty("COLOR", ch.Hue.Value.ToString());
         w.WriteProperty("DIR", ((byte)ch.Direction).ToString());
         w.WriteProperty("STR", ch.Str.ToString());

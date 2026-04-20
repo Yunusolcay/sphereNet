@@ -87,6 +87,10 @@ public sealed class SpawnComponent
         var ch = _world.CreateCharacter();
         ch.BaseId = bodyId;
         ch.BodyId = bodyId;
+        // CharDefIndex carries the full 24-bit defname hash so trigger /
+        // CharDef lookups (TriggerDispatcher / SpeechEngine) resolve to
+        // the actual spawned defname instead of being clamped to ushort.
+        ch.CharDefIndex = defIndex;
         ch.IsPlayer = false;
 
         var charDef = DefinitionLoader.GetCharDef(defIndex);
@@ -147,6 +151,12 @@ public sealed class SpawnComponent
         ch.SetTag("SPAWN_POINT_UUID", _spawnItem.Uuid.ToString("D"));
         _world.PlaceCharacter(ch, pos);
         _spawnedUids.Add(ch.Uid);
+
+        // Source-X parity: spawn-point NPCs need the same trigger
+        // sequence the manual ".add" path runs (@Create -> brain
+        // finalisation -> @NPCRestock -> @CreateLoot). The hook keeps
+        // the dispatcher dependency out of this component.
+        _world.OnNpcSpawned?.Invoke(ch);
     }
 
     private void CleanupDead()

@@ -343,6 +343,10 @@ public sealed class WorldLoader
                 if (TryParseHexOrDec(val, out uint body))
                     ch.BodyId = (ushort)body;
                 break;
+            case "CHARDEFINDEX":
+                if (TryParseHexOrDec(val, out uint cdi))
+                    ch.CharDefIndex = (int)cdi;
+                break;
             case "OBODY":
                 if (TryParseHexOrDec(val, out uint obody))
                     ch.OBody = (ushort)obody;

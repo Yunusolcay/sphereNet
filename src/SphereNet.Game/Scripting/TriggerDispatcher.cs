@@ -87,7 +87,7 @@ public sealed class TriggerDispatcher
         // 3. TEVENTS from CHARDEF definition (type-level event scripts)
         if (Resources != null && Runner != null)
         {
-            var charDef = Definitions.DefinitionLoader.GetCharDef(ch.BaseId);
+            var charDef = Definitions.DefinitionLoader.GetCharDef(ch.CharDefIndex);
             if (charDef != null)
             {
                 foreach (var tevRid in charDef.Events)
@@ -101,7 +101,7 @@ public sealed class TriggerDispatcher
             }
 
             // 4. CHARDEF own triggers (ON=@Trigger in the CHARDEF body)
-            var charDefLink = Resources.GetResource(ResType.CharDef, ch.BaseId);
+            var charDefLink = Resources.GetResource(ResType.CharDef, ch.CharDefIndex);
             if (charDefLink != null)
             {
                 // CHARDEF links may not have trigger bitmasks precomputed, so resolve by name.
@@ -229,7 +229,7 @@ public sealed class TriggerDispatcher
         if (Resources == null || Runner == null)
             return TriggerResult.Default;
 
-        var charDef = Definitions.DefinitionLoader.GetCharDef(npc.BaseId);
+        var charDef = Definitions.DefinitionLoader.GetCharDef(npc.CharDefIndex);
         if (charDef == null || charDef.SpeechResources.Count == 0)
             return TriggerResult.Default;
 

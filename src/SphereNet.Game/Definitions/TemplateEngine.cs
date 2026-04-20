@@ -124,10 +124,14 @@ public static class TemplateEngine
     {
         if (string.IsNullOrWhiteSpace(defname))
             yield break;
-        var tpl = DefinitionLoader.GetTemplateDef(defname.Trim());
+        var key = defname.Trim();
+        var tpl = DefinitionLoader.GetTemplateDef(key);
         if (tpl == null)
         {
-            yield return (defname.Trim(), 0);
+            // Unknown template name — Source-X behaviour treats this as a
+            // single direct itemdef pick. Yield as-is and let the caller
+            // try to resolve it through the regular ITEMDEF lookup.
+            yield return (key, 0);
             yield break;
         }
         if (tpl.ItemEntries.Count > 0)
@@ -142,16 +146,60 @@ public static class TemplateEngine
             yield return (picked, 0);
     }
 
-    /// <summary>Resolve a single-item defname to a concrete ItemDef
-    /// index using the resource holder. Returns 0 when the name is not
+    /// <summary>
+    /// Optional diagnostic sink — wired by Program.cs to bridge static
+    /// helpers into the central logger without forcing every static
+    /// method to plumb an ILogger argument.
+    /// </summary>
+    public static Action<string>? Diagnostic { get; set; }
+
+    /// <summary>Resolve a single-item defname to its full ItemDef
+    /// resource index (used as the key into DefinitionLoader._itemDefs).
+    /// For numeric ITEMDEFs (<c>[ITEMDEF 0xF0E]</c>) this equals the
+    /// graphic ID; for string-named ITEMDEFs (<c>[ITEMDEF i_potion_refresh]</c>)
+    /// it's a 32-bit string hash and DOES NOT equal the wire graphic —
+    /// callers must do <c>DefinitionLoader.GetItemDef(rid).DispIndex</c>
+    /// to get the actual UO graphic. Returns 0 when the name is not
     /// an ItemDef (e.g. still a Template, or unknown).</summary>
-    public static ushort ResolveItemId(ResourceHolder resources, string defname)
+    public static int ResolveItemDefIndex(ResourceHolder resources, string defname)
     {
         if (string.IsNullOrWhiteSpace(defname) || resources == null)
             return 0;
         var rid = resources.ResolveDefName(defname.Trim());
-        return rid.IsValid && rid.Type == ResType.ItemDef ? (ushort)rid.Index : (ushort)0;
+        return rid.IsValid && rid.Type == ResType.ItemDef ? rid.Index : 0;
     }
+
+    /// <summary>Resolve a single-item defname to its wire-side UO
+    /// graphic (DispIdFull). Honors Source-X <c>ID=</c> / <c>DISPID=</c>
+    /// (becomes <c>ItemDef.DispIndex</c>) and <c>DUPEITEM=</c> alias
+    /// chains; falls back to the numeric resource index for plain
+    /// <c>[ITEMDEF 0xNNNN]</c> blocks. Returns 0 when the defname is
+    /// unknown / not an ItemDef.</summary>
+    public static ushort ResolveDispId(ResourceHolder resources, string defname)
+    {
+        int idx = ResolveItemDefIndex(resources, defname);
+        if (idx == 0) return 0;
+        var idef = DefinitionLoader.GetItemDef(idx);
+        if (idef != null)
+        {
+            if (idef.DispIndex != 0) return idef.DispIndex;
+            if (idef.DupItemId != 0) return idef.DupItemId;
+        }
+        // Plain numeric [ITEMDEF 0xNNNN] — index IS the graphic, but
+        // only when it fits in 16 bits. String-hash indexes (>0xFFFF)
+        // would otherwise truncate to garbage graphics (e.g. lava /
+        // window-shutter / elven-plate were classic symptoms of this
+        // exact bug — i_potion_refresh hashed to 0x40B2C7E1, the
+        // (ushort) cast yielded 0xC7E1 which happens to be a random
+        // valid UO tile). Refuse to truncate.
+        return idx <= 0xFFFF ? (ushort)idx : (ushort)0;
+    }
+
+    /// <summary>Backwards-compat alias. Prefer <see cref="ResolveDispId"/>
+    /// (returns the wire graphic) or <see cref="ResolveItemDefIndex"/>
+    /// (returns the def storage key) at new call-sites.</summary>
+    public static ushort ResolveItemId(ResourceHolder resources, string defname)
+        => ResolveDispId(resources, defname);
 
     private static string PickByWeight(List<TemplateEntry> pool)
     {

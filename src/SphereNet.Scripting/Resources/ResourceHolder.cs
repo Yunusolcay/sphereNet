@@ -84,7 +84,7 @@ public sealed class ResourceHolder
     /// for fast access by DefinitionLoader (avoids re-reading script files).
     /// </summary>
     private static bool IsDefinitionType(ResType t) => t is
-        ResType.ItemDef or ResType.CharDef or ResType.SpellDef or ResType.SkillClass or ResType.SkillDef or ResType.Names or ResType.Speech;
+        ResType.ItemDef or ResType.CharDef or ResType.SpellDef or ResType.SkillClass or ResType.SkillDef or ResType.Names or ResType.Speech or ResType.Template;
 
     /// <summary>
     /// Load all sections from a script file.

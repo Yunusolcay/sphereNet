@@ -2712,36 +2712,146 @@ public sealed class GameClient : ITextConsole
         });
     }
 
+    /// <summary>
+    /// Source-X CClient::Cmd_VendorBuy parity. Public entry used when the
+    /// player triggers buy via speech ("vendor buy", "buy") or by clicking
+    /// the buy gump button. Wraps the private packet-formatting helper so
+    /// callers outside this client (e.g. NPC speech dispatch in Program.cs)
+    /// don't need to poke private members.
+    /// </summary>
+    public void OpenVendorBuy(Character vendor) => SendVendorBuyList(vendor);
+
+    /// <summary>
+    /// Source-X CClient::Cmd_VendorSell parity. Public entry used when the
+    /// player triggers sell via speech or via the vendor gump button.
+    /// </summary>
+    public void OpenVendorSell(Character vendor) => SendVendorSellList(vendor);
+
     /// <summary>Send the vendor's buy list (items available for purchase) to the client.</summary>
     private void SendVendorBuyList(Character vendor)
     {
         if (_character == null) return;
 
-        // Auto-restock if needed
+        // Auto-restock if needed (TAG.VENDORINV path — used by GM-set
+        // inventory definitions).
         if (VendorEngine.NeedsRestock(vendor))
             VendorEngine.RestockVendor(vendor);
 
+        // Source-X parity: vendors restock from their @NPCRestock
+        // trigger (SELL=VENDOR_S_*, BUY=VENDOR_B_*) when their stock
+        // pack is empty. The spawn-time hook fires this on freshly
+        // spawned NPCs, but vendors that were loaded from a prior
+        // world save never went through that path. Re-fire on demand
+        // so legacy persisted vendors get a stock list as soon as a
+        // player tries to buy from them.
+        // Vendor's stock lives on LAYER_VENDOR_STOCK (26). ClassicUO's
+        // BuyList handler hard-rejects any other layer (Backpack = 21
+        // is silently dropped), so we MUST source / reference the
+        // dedicated vendor stock container.
+        var stockContainer = vendor.GetEquippedItem(Layer.VendorStock);
+        if (stockContainer == null ||
+            !_world.GetContainerContents(stockContainer.Uid).Any())
+        {
+            _triggerDispatcher?.FireCharTrigger(vendor,
+                SphereNet.Core.Enums.CharTrigger.NPCRestock,
+                new SphereNet.Game.Scripting.TriggerArgs { CharSrc = _character });
+            // Refresh after restock — the trigger may have created it.
+            stockContainer = vendor.GetEquippedItem(Layer.VendorStock);
+        }
+
         // Collect vendor inventory items (items in vendor's "sell" container / buy pack)
         var vendorItems = GetVendorBuyInventory(vendor);
-        if (vendorItems.Count == 0)
+        if (vendorItems.Count == 0 || stockContainer == null)
         {
             NpcSpeech(vendor, ServerMessages.Get("npc_vendor_no_goods"));
             return;
         }
 
-        // Send container contents first (items the vendor has for sale)
-        foreach (var vi in vendorItems)
+        // Source-X / RunUO order (CClient::addVendorBuy):
+        //   1) 0x2E equip the vendor stock container at LAYER_VENDOR_STOCK
+        //      (=ClassicUO Layer.ShopBuyRestock 0x1A) so the client knows
+        //      the entity exists.
+        //   2) 0x3C container contents — every item that the buy list will
+        //      reference. The client uses these entries to look up
+        //      itemId/hue/amount when drawing each row of the buy window;
+        //      without it the rows are blank.
+        //   3) 0x74 vendor buy list — prices + descriptions. ClassicUO's
+        //      BuyList(0x74) handler ONLY decorates the items with prices
+        //      and display names; it does NOT push them into the
+        //      ShopGump's display list. (See ShopGump.Update —
+        //      `if (_shopItems.Count == 0) Dispose()` will close the
+        //      gump after one frame if nothing was added.)
+        //   4) 0x24 OpenContainer with gumpId=0x0030 + VENDOR MOBILE serial
+        //      — THIS is what actually opens and populates the buy gump.
+        //      The client's OpenContainer handler iterates
+        //      vendor.FindItemByLayer(Layer.ShopBuyRestock..ShopBuy) and
+        //      calls ShopGump.AddItem for every child item. Skipping this
+        //      step is exactly why our buy menu used to "vanish" — the
+        //      gump did spawn briefly and then auto-disposed because
+        //      `_shopItems` stayed empty.
+        var buyPack = stockContainer;
+        uint buyContainerSerial = buyPack.Uid.Value;
+
+        // (0) PRE-SYNC the vendor stock container as a worn item.
+        //     Equipping at LAYER_VENDOR_STOCK (26 == ClassicUO
+        //     Layer.ShopBuyRestock 0x1A) is mandatory: ClassicUO's
+        //     BuyList(0x74) handler explicitly checks
+        //     `container.Layer == Layer.ShopBuyRestock || == Layer.ShopBuy`
+        //     and silently bails out for any other layer (including
+        //     Backpack = 0x15).
+        _netState.Send(new PacketWornItem(
+            buyPack.Uid.Value, buyPack.BaseId, (byte)Layer.VendorStock,
+            vendor.Uid.Value, buyPack.Hue.Value));
+
+        // (0b) ALSO equip a container at LAYER_VENDOR_EXTRA (27 ==
+        //      ClassicUO Layer.ShopBuy 0x1B). ClassicUO's OpenContainer
+        //      handler for gump 0x0030 unconditionally iterates BOTH
+        //      ShopBuyRestock and ShopBuy layers and calls `item.Items`
+        //      on each — without a NULL-check. If the second layer is
+        //      empty, `vendor.FindItemByLayer(Layer.ShopBuy)` returns
+        //      null and the client CRASHES with NullReferenceException
+        //      the moment we send our 0x24 to open the buy gump.
+        //      Source-X NPCs always have both stock containers (LAYER
+        //      26 + LAYER 27) for exactly this reason; we lazily mint
+        //      the second one here so legacy / freshly-spawned vendors
+        //      don't crash the client.
+        var extraContainer = vendor.GetEquippedItem(Layer.VendorExtra);
+        if (extraContainer == null)
         {
-            _netState.Send(new PacketContainerItem(
-                vi.Serial, vi.ItemId, 0, vi.Amount, 0, 0,
-                vendor.Uid.Value | 0x40000000, vi.Hue, _netState.IsClientPost6017));
+            extraContainer = _world.CreateItem();
+            extraContainer.BaseId = 0x408D; // i_vendor_box (Source-X stock graphic)
+            vendor.Equip(extraContainer, Layer.VendorExtra);
         }
+        _netState.Send(new PacketWornItem(
+            extraContainer.Uid.Value, extraContainer.BaseId, (byte)Layer.VendorExtra,
+            vendor.Uid.Value, extraContainer.Hue.Value));
 
-        // Send the buy list with prices
-        _netState.Send(new PacketVendorBuyList(vendor.Uid.Value, vendorItems));
+        var contentEntries = new List<PacketContainerContents.Entry>(vendorItems.Count);
+        for (int i = 0; i < vendorItems.Count; i++)
+        {
+            var vi = vendorItems[i];
+            // Cascade items inside the buy pack so the client can render
+            // distinct rows. Five-wide grid matches Source-X / RunUO layout.
+            short x = (short)(20 + (i % 5) * 30);
+            short y = (short)(20 + (i / 5) * 20);
+            contentEntries.Add(new PacketContainerContents.Entry(
+                vi.Serial, vi.ItemId, 0, vi.Amount,
+                x, y, buyContainerSerial, vi.Hue, (byte)i));
+        }
+        _netState.Send(new PacketContainerContents(contentEntries, _netState.IsClientPost6017));
+        _netState.Send(new PacketVendorBuyList(buyContainerSerial, vendorItems));
 
-        // Open the buy container gump
-        _netState.Send(new PacketOpenContainer(vendor.Uid.Value | 0x40000000, 0x0030, _netState.IsClientPost7090)); // buy gump
+        // (4) Open the buy gump. ClassicUO's OpenContainer handler with
+        //     gumpId=0x0030 walks vendor.FindItemByLayer(Layer.ShopBuyRestock
+        //     .. Layer.ShopBuy), pulls every child item out, and calls
+        //     ShopGump.AddItem. Without this packet, the gump that BuyList
+        //     creates auto-disposes one frame later because its
+        //     `_shopItems` dictionary is empty (see ShopGump.Update).
+        //     Note: the serial here is the VENDOR MOBILE — not the
+        //     container — because the handler does
+        //     `World.Mobiles.Get(serial)`.
+        _netState.Send(new PacketOpenContainer(vendor.Uid.Value, 0x0030,
+            _netState.IsClientPost7090));
     }
 
     /// <summary>Send the sell list (items player can sell to this vendor) to the client.</summary>
@@ -2796,8 +2906,11 @@ public sealed class GameClient : ITextConsole
     {
         var items = new List<VendorItem>();
 
-        // Look for items in vendor's backpack (vendor stock)
-        var vendorPack = vendor.Backpack;
+        // Items live on LAYER_VENDOR_STOCK (Source-X parity). ClassicUO
+        // BuyList(0x74) only accepts containers equipped at that layer
+        // (or LAYER_VENDOR_EXTRA = 27) — Backpack-based stock is dropped.
+        var vendorPack = vendor.GetEquippedItem(Layer.VendorStock)
+                         ?? vendor.GetEquippedItem(Layer.VendorExtra);
         if (vendorPack != null)
         {
             foreach (var item in _world.GetContainerContents(vendorPack.Uid))
@@ -5720,7 +5833,38 @@ public sealed class GameClient : ITextConsole
 
     private void SendOpenContainer(Item container)
     {
-        ushort gumpId = 0x003C; // default bag gump
+        // Source-X CClient::addContainerSetup parity: before opening
+        // any container the client must already know about that
+        // container as either a worn item (0x2E) or a world item
+        // (0x1A). Otherwise the 0x24 OpenContainer is silently
+        // dropped because the client can't resolve the serial.
+        // Bank box / backpack open from a fresh login (or right after
+        // we lazily-create the bank box) is the common case where this
+        // pre-broadcast is missing.
+        var parentChar = container.ContainedIn.IsValid
+            ? _world.FindChar(container.ContainedIn)
+            : null;
+        if (parentChar != null)
+        {
+            byte layer = (byte)container.EquipLayer;
+            _netState.Send(new PacketWornItem(
+                container.Uid.Value, container.BaseId, layer,
+                parentChar.Uid.Value, container.Hue.Value));
+        }
+
+        // Per-container gump selection (Source-X CItemBase::IsTypeContainer
+        // returns m_ttContainer.m_idGump = TDATA2; ServUO does the equivalent
+        // via Data/containers.cfg ItemID→GumpID lookup).
+        //
+        // Resolution order:
+        //   1) ITEMDEF.TDATA2 if the script supplied one — script wins.
+        //   2) Built-in fallback table for the well-known UO container
+        //      graphics (matches ServUO's Data/containers.cfg shipped table).
+        //   3) Bank-box layer fallback to 0x004A (silver bank chest, used
+        //      with item ids 0xE7C / 0x9AB) — keeps GM-spawned bank boxes
+        //      that have no itemdef render correctly.
+        //   4) Generic bag fallback 0x003C.
+        ushort gumpId = ResolveContainerGump(container);
         _netState.Send(new PacketOpenContainer(container.Uid.Value, gumpId, _netState.IsClientPost7090));
 
         foreach (var child in _world.GetContainerContents(container.Uid))
@@ -5732,6 +5876,83 @@ public sealed class GameClient : ITextConsole
                 _netState.IsClientPost6017
             ));
         }
+    }
+
+    /// <summary>
+    /// Resolve the container gump (0x24 second word) for a given container item.
+    /// Mirrors Source-X CItemBase::IsTypeContainer (TDATA2 = m_idGump) and the
+    /// ServUO Data/containers.cfg fallback table. Adding a new container ID to
+    /// the built-in table or to ITEMDEF.TDATA2 in script is enough — no other
+    /// code path needs to know about it.
+    /// </summary>
+    private static ushort ResolveContainerGump(Item container)
+    {
+        // 1) Script-supplied TDATA2 wins.
+        var idef = Definitions.DefinitionLoader.GetItemDef(container.BaseId);
+        if (idef != null && idef.TData2 != 0)
+            return (ushort)(idef.TData2 & 0xFFFF);
+
+        // 2) Built-in ItemID -> GumpID table. Mirrors the ServUO
+        // Data/containers.cfg shipped table; covers the well-known UO
+        // container graphics so vanilla content renders correctly even
+        // when no scripted ITEMDEF is loaded.
+        switch (container.BaseId)
+        {
+            // 0x4A — silver bank chest (BankBox)
+            case 0xE7C:
+            case 0x9AB:
+                return 0x004A;
+            // 0x3D — small wooden chest with iron bands
+            case 0xE76:
+            case 0x2256:
+            case 0x2257:
+                return 0x003D;
+            // 0x3E — wooden box (no banding)
+            case 0xE77:
+            case 0xE7F:
+                return 0x003E;
+            // 0x3F — gold-banded chest
+            case 0xE7A:
+            case 0x24D5:
+            case 0x24D6:
+            case 0x24D9:
+            case 0x24DA:
+                return 0x003F;
+            // 0x42 — pouch / standard backpack
+            case 0xE40:
+            case 0xE41:
+                return 0x0042;
+            // 0x43 — wooden chest with no bands
+            case 0xE7D:
+            case 0x9AA:
+                return 0x0043;
+            // 0x44 — large wood box
+            case 0xE7E:
+            case 0x9A9:
+            case 0xE3C:
+            case 0xE3D:
+            case 0xE3E:
+            case 0xE3F:
+                return 0x0044;
+            // 0x49 — small wooden chest gilt edges
+            case 0xE42:
+            case 0xE43:
+                return 0x0049;
+            // 0x4B — large metal chest
+            case 0xE80:
+            case 0x9A8:
+                return 0x004B;
+            default:
+                break;
+        }
+
+        // 3) Layer-based bank-box fallback (covers GM-spawned bank boxes
+        // whose itemId we don't recognize).
+        if (container.EquipLayer == Layer.BankBox)
+            return 0x004A;
+
+        // 4) Generic bag.
+        return 0x003C;
     }
 
     /// <summary>
@@ -5953,8 +6174,13 @@ public sealed class GameClient : ITextConsole
             {
                 var npc = CreateNpcFromDef(rid.Index, cleaned);
                 _world.PlaceCharacter(npc, targetPos);
+                var preCreateBrain = npc.NpcBrain;
                 _triggerDispatcher?.FireCharTrigger(npc, CharTrigger.Create, new TriggerArgs { CharSrc = _character });
+                FinalizeNpcBrain(npc);
                 _triggerDispatcher?.FireCharTrigger(npc, CharTrigger.CreateLoot, new TriggerArgs { CharSrc = _character });
+                _logger.LogDebug(
+                    "[npc_spawn] def='{Def}' name='{Name}' brainBefore={Pre} brainAfter={Post}",
+                    cleaned, npc.Name, preCreateBrain, npc.NpcBrain);
                 BroadcastDrawObject(npc);
                 SysMessage(ServerMessages.GetFormatted("gm_npc_created2", npc.Name, $"{rid.Index:X}", targetPos));
                 return true;
@@ -5982,6 +6208,7 @@ public sealed class GameClient : ITextConsole
         var createdNpc = CreateNpcFromDef(idHex, $"NPC_{idHex:X}");
         _world.PlaceCharacter(createdNpc, targetPos);
         _triggerDispatcher?.FireCharTrigger(createdNpc, CharTrigger.Create, new TriggerArgs { CharSrc = _character });
+        FinalizeNpcBrain(createdNpc);
         _triggerDispatcher?.FireCharTrigger(createdNpc, CharTrigger.CreateLoot, new TriggerArgs { CharSrc = _character });
         BroadcastDrawObject(createdNpc);
         SysMessage(ServerMessages.GetFormatted("gm_npc_created_hex", createdNpc.Name, $"{idHex:X}", targetPos));
@@ -6055,6 +6282,10 @@ public sealed class GameClient : ITextConsole
         var npc = _world.CreateCharacter();
         ushort safeBaseId = (ushort)Math.Clamp(defIndexOrBaseId, 0, ushort.MaxValue);
         npc.BaseId = safeBaseId;
+        // Trigger / CharDef lookups need the full 24-bit defname hash, the
+        // ushort BaseId truncates it and routes c_alchemist's @Create to
+        // c_man (brain=Human) and misses c_banker entirely (brain=Animal).
+        npc.CharDefIndex = defIndexOrBaseId;
         npc.Name = fallbackName;
         npc.BodyId = safeBaseId;
         npc.IsPlayer = false;
@@ -6064,7 +6295,11 @@ public sealed class GameClient : ITextConsole
         {
             ushort resolvedBody = ResolveCharBodyId(charDef, safeBaseId);
             npc.BodyId = resolvedBody;
-            // Keep BaseId compatible with systems that key by body/base id (mounting, click behavior, etc).
+            // BaseId mirrors the resolved display body for legacy
+            // consumers (mounting / click behaviour). Trigger / CharDef
+            // lookups now go through CharDefIndex (full 24-bit defname
+            // hash), so the c_alchemist→c_man aliasing no longer
+            // hijacks @Create or brain selection.
             npc.BaseId = resolvedBody;
             if (!string.IsNullOrWhiteSpace(charDef.Name))
                 npc.Name = DefinitionLoader.ResolveNames(charDef.Name);
@@ -6113,19 +6348,29 @@ public sealed class GameClient : ITextConsole
             npc.MaxStam = 50; npc.Stam = 50;
         }
 
+        // Brain finalisation (Animal fallback + @NPCRestock for vendors)
+        // intentionally happens AFTER @Create runs — see FinalizeNpcBrain.
+        // mortechUO sets NPC=brain_vendor inside ON=@Create, so the brain
+        // is only known once that trigger has executed.
+
+        return npc;
+    }
+
+    /// <summary>
+    /// Apply the post-@Create brain rules: default to Animal when nothing
+    /// set a brain, and fire @NPCRestock for vendors so they come stocked.
+    /// Call this AFTER FireCharTrigger(Create), never before.
+    /// </summary>
+    private void FinalizeNpcBrain(Character npc)
+    {
         if (npc.NpcBrain == NpcBrainType.None)
             npc.NpcBrain = NpcBrainType.Animal;
 
-        // Fire @NPCRestock right after NPC creation so vendors come
-        // dressed AND stocked. Script body uses SELL= / BUY= verbs
-        // that are now handled in Character.TryExecuteCommand.
         if (npc.NpcBrain == NpcBrainType.Vendor)
         {
             _triggerDispatcher?.FireCharTrigger(npc, CharTrigger.NPCRestock,
                 new TriggerArgs { CharSrc = npc });
         }
-
-        return npc;
     }
 
     private ushort ResolveCharBodyId(CharDef charDef, ushort fallbackBaseId)
@@ -6188,9 +6433,24 @@ public sealed class GameClient : ITextConsole
                 continue;
 
             var item = _world.CreateItem();
-            item.BaseId = (ushort)rid.Index;
-
             var itemDef = DefinitionLoader.GetItemDef(rid.Index);
+            // Defname ITEMDEFs (i_shirt_plain, …) live under a 32-bit
+            // string hash, but their wire graphic is in DispIndex —
+            // see TemplateEngine.ResolveDispId. Truncating rid.Index
+            // to ushort previously gave newbies random-tile clothing
+            // (lava breastplates, window-shutter shirts).
+            ushort dispId = 0;
+            if (itemDef != null)
+            {
+                if (itemDef.DispIndex != 0) dispId = itemDef.DispIndex;
+                else if (itemDef.DupItemId != 0) dispId = itemDef.DupItemId;
+            }
+            if (dispId == 0 && rid.Index <= 0xFFFF) dispId = (ushort)rid.Index;
+            if (dispId == 0) continue;
+            item.BaseId = dispId;
+
+            // Store raw NAME= template; Item.GetName() resolves
+            // %plural/singular% markers per Amount on every read.
             if (itemDef != null && !string.IsNullOrWhiteSpace(itemDef.Name))
                 item.Name = itemDef.Name;
 
@@ -7572,7 +7832,7 @@ public sealed class GameClient : ITextConsole
         if (name.Length > 0)
             return name;
 
-        var def = DefinitionLoader.GetCharDef(ch.BaseId);
+        var def = DefinitionLoader.GetCharDef(ch.CharDefIndex);
         name = def?.Name?.Trim() ?? "";
         if (name.Length == 0)
             name = def?.DefName?.Trim() ?? "";

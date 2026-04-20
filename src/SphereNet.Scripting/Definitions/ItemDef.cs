@@ -205,4 +205,54 @@ public sealed class ItemDef : BaseDef
 
         return ItemType.Normal;
     }
+
+    /// <summary>
+    /// Apply Source-X's <c>%plural/singular%</c> name template rules to
+    /// produce the runtime display name for the given amount. Mirrors
+    /// <c>CItemBase::GetNamePluralize</c> in <c>CItemBase.cpp</c>:
+    ///   • <c>%</c> toggles "inside" mode and resets to plural section.
+    ///   • <c>/</c> inside switches to the singular section.
+    ///   • Inside characters are kept only when they belong to the
+    ///     side selected by <paramref name="pluralize"/>.
+    /// Examples:
+    ///   • <c>"Black Pearl%s%"</c> → "Black Pearl" / "Black Pearls"
+    ///   • <c>"%shoes/shoe%"</c> → "shoes" / "shoe"
+    ///   • <c>"loa%ves/f%"</c> → "loaves" / "loaf"
+    /// </summary>
+    public static string Pluralize(string? nameTemplate, bool pluralize)
+    {
+        if (string.IsNullOrEmpty(nameTemplate))
+            return string.Empty;
+        if (nameTemplate.IndexOf('%') < 0)
+            return nameTemplate; // no template, fast path
+
+        var sb = new System.Text.StringBuilder(nameTemplate.Length);
+        bool inside = false;
+        bool plural = false;
+        foreach (char c in nameTemplate)
+        {
+            if (c == '%')
+            {
+                inside = !inside;
+                plural = true;
+                continue;
+            }
+            if (inside)
+            {
+                if (c == '/')
+                {
+                    plural = false;
+                    continue;
+                }
+                if (pluralize ? !plural : plural)
+                    continue;
+            }
+            sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>Convenience overload — picks plural form when amount &gt; 1.</summary>
+    public static string Pluralize(string? nameTemplate, int amount)
+        => Pluralize(nameTemplate, amount != 1);
 }

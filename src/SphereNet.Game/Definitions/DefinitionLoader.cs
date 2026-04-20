@@ -14,6 +14,11 @@ namespace SphereNet.Game.Definitions;
 /// </summary>
 public sealed class DefinitionLoader
 {
+    /// <summary>Optional diagnostic sink — wired by host (Program.cs)
+    /// so script-load tracing reaches the central logger without
+    /// every loader needing an ILogger field.</summary>
+    public static Action<string>? Diagnostic { get; set; }
+
     private readonly ResourceHolder _resources;
     private readonly SpellRegistry _spells;
 
@@ -139,6 +144,14 @@ public sealed class DefinitionLoader
         var keys = link.StoredKeys;
         if (keys == null || keys.Count == 0)
         {
+            // Some script loaders only stash a position pointer and
+            // expect callers to re-open the file. If StoredKeys is empty
+            // the template body never reaches our parser, so the
+            // TemplateDef stays empty and vendor restock yields nothing.
+            // Log it so we can tell the two failure modes apart.
+            if (!string.IsNullOrEmpty(link.DefName))
+                Diagnostic?.Invoke(
+                    $"[tpl_load] '{link.DefName}' StoredKeys empty; template will yield 0 entries");
             _templateDefs[link.Id.Index] = def;
             return;
         }
@@ -167,6 +180,30 @@ public sealed class DefinitionLoader
                 int amount = 0;
                 if (parts.Length >= 2 && int.TryParse(parts[1], out int a) && a > 0)
                     amount = a;
+                def.ItemEntries.Add(new TemplateEntry { DefName = parts[0], Amount = amount });
+            }
+            else if (upper == "SELL" || upper == "BUY")
+            {
+                // Source-X parity: VENDOR_S_*/VENDOR_B_* vendor templates
+                // store their stock as a series of "SELL=defname,{min max}"
+                // (or "BUY=...") lines instead of plain ITEM=. The numeric
+                // arg is "{lo hi}" — a Sphere dice expression. Strip the
+                // braces so EnumerateSequential / PopulateVendorStock get
+                // a clean "lo hi" pair, then take the upper bound as the
+                // restock amount (matches CCharNPC::NPC_OnTrigRestock,
+                // which spawns up to the high end of the dice range).
+                var parts = key.Arg.Split(',', 2, StringSplitOptions.TrimEntries);
+                if (parts.Length == 0 || string.IsNullOrEmpty(parts[0])) continue;
+                int amount = 1;
+                if (parts.Length >= 2)
+                {
+                    string raw = parts[1].Trim().TrimStart('{').TrimEnd('}').Trim();
+                    var range = raw.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    if (range.Length == 1 && int.TryParse(range[0], out int single) && single > 0)
+                        amount = single;
+                    else if (range.Length >= 2 && int.TryParse(range[^1], out int hi) && hi > 0)
+                        amount = hi;
+                }
                 def.ItemEntries.Add(new TemplateEntry { DefName = parts[0], Amount = amount });
             }
             else if (upper == "DEFNAME")
@@ -207,15 +244,36 @@ public sealed class DefinitionLoader
         var keys = link.StoredKeys;
         if (keys == null || keys.Count == 0) { CharDefsLoaded++; return; }
 
+        // Walk the section, but stop at the first ON=@... trigger header so
+        // the body keys (which belong to that trigger and run dynamically
+        // via TriggerRunner) don't bleed into the static CharDef state.
+        // mortechUO puts NPC=brain_vendor inside ON=@Create — that line is
+        // applied at spawn time by the trigger interpreter against the
+        // Character instance, NOT against the shared CharDef template.
+        bool insideTrigger = false;
         foreach (var key in keys)
         {
             if (key.Key.Equals("ON", StringComparison.OrdinalIgnoreCase))
+            {
+                if (key.HasArg && key.Arg.StartsWith('@'))
+                    insideTrigger = true;
+                continue;
+            }
+            if (insideTrigger)
                 continue;
             def.LoadFromKey(key.Key, key.Arg);
         }
 
         if (!string.IsNullOrEmpty(def.DefName))
             _resources.RegisterDefName(def.DefName, link.Id);
+
+        if (_charDefs.TryGetValue(link.Id.Index, out var existing))
+        {
+            // Index collision: another CHARDEF already lives here. Log so
+            // we can spot accidental overwrites caused by alias collisions.
+            System.Diagnostics.Debug.WriteLine(
+                $"[chardef_collision] index={link.Id.Index:X} previous='{existing.DefName}' brain={existing.NpcBrain} new='{def.DefName}' brain={def.NpcBrain}");
+        }
 
         _charDefs[link.Id.Index] = def;
         CharDefsLoaded++;

@@ -322,6 +322,17 @@ public sealed class GameWorld
     /// regardless of the call path. Args: (character, oldRegion, newRegion).</summary>
     public Action<Character, Regions.Region?, Regions.Region?>? OnRegionChanged { get; set; }
 
+    /// <summary>
+    /// Source-X parity: fired after an NPC has been placed into the world
+    /// by an automated spawner (CItemSpawn / IT_SPAWN_CHAR). The handler
+    /// is expected to fire @Create, finalise the NPC brain (Animal
+    /// fallback for None) and run @NPCRestock + @CreateLoot, mirroring
+    /// the manual ".add" path in <c>GameClient.CreateNpcFromDef</c>.
+    /// Routing this through a hook keeps the trigger-dispatch dependency
+    /// out of the spawn component itself.
+    /// </summary>
+    public Action<Character>? OnNpcSpawned { get; set; }
+
     /// <summary>Move a character to a new position.</summary>
     public void MoveCharacter(Character ch, Point3D newPos)
     {
@@ -347,8 +358,40 @@ public sealed class GameWorld
         }
         ch.Position = newPos;
         var newRegion = FindRegion(newPos);
+        if (ch.IsPlayer && _logger.IsEnabled(LogLevel.Debug))
+        {
+            // Temporary diagnostic — every player MoveCharacter call logs the
+            // region lookup so we can see whether AREADEF rects are matching.
+            // Also list every overlapping AREADEF (smallest first) so we can
+            // catch parser bugs where regions from other maps leak into the
+            // hit set.
+            var matches = FindAllRegions(newPos).Take(5).ToList();
+            var overlapDesc = matches.Count == 0
+                ? "<none>"
+                : string.Join(", ", matches.Select(m => $"{m.Region.Name}(map={m.Region.MapIndex},rects={m.Region.Rects.Count},area={m.Area})"));
+            _logger.LogDebug(
+                "[REGION_LOOKUP] {Name} pos={X},{Y},{Z} map={Map} regions={Total} old={Old} new={New} matches=[{Matches}]",
+                ch.Name, newPos.X, newPos.Y, newPos.Z, newPos.Map,
+                _regions.Count,
+                oldRegion?.Name ?? "<null>",
+                newRegion?.Name ?? "<null>",
+                overlapDesc);
+        }
         if (oldRegion != newRegion)
+        {
+            // Source-X CChar::Region_Update parity: keep the character's
+            // CURRENT_REGION / CURRENT_REGION_UID tags in sync regardless of
+            // how the move was triggered (walk via MovementEngine, .go
+            // teleport, recall, gate, NPC drift). MovementEngine also writes
+            // these tags on the walk path because it needs the previous value
+            // for trigger comparisons; the assignments here keep the tags
+            // truthful when MovementEngine is bypassed (otherwise the admin
+            // menu / <REGION.NAME> macro shows stale data such as "Solen Hive"
+            // after teleporting into Britain).
+            ch.SetTag("CURRENT_REGION", newRegion?.Name ?? "");
+            ch.SetTag("CURRENT_REGION_UID", newRegion?.Uid.ToString() ?? "");
             OnRegionChanged?.Invoke(ch, oldRegion, newRegion);
+        }
     }
 
     /// <summary>Place a character in the world.</summary>
@@ -390,12 +433,52 @@ public sealed class GameWorld
 
     public Region? FindRegion(Point3D pt)
     {
+        // Source-X CSector::GetRegion parity: when AREADEFs overlap (a small
+        // landmark inside a wider continent definition, e.g. "Britain Castle"
+        // inside "Britain"), the most-specific = smallest-total-area region
+        // wins. Returning the first iteration match used to mask every nested
+        // landmark behind whichever big region happened to load first
+        // (observed: every coordinate on Trammel resolved to "Solen Hive"
+        // because that AREADEF preceded the city/dungeon defs).
+        Region? best = null;
+        long bestArea = long.MaxValue;
         foreach (var region in _regions)
         {
-            if (region.Contains(pt))
-                return region;
+            if (!region.Contains(pt)) continue;
+            long area = 0;
+            foreach (var r in region.Rects)
+                area += (long)(r.X2 - r.X1 + 1) * (r.Y2 - r.Y1 + 1);
+            // Skip rect-less regions: they would otherwise win with area = 0
+            // even though Region.Contains would never have returned true for
+            // them. Defensive: guards against future Region.Contains changes.
+            if (area <= 0) continue;
+            if (area < bestArea)
+            {
+                bestArea = area;
+                best = region;
+            }
         }
-        return null;
+        return best;
+    }
+
+    /// <summary>
+    /// Diagnostic helper: returns every region whose rect set contains the
+    /// given point, ordered by total rect area ascending. Used by the region
+    /// lookup tracer to expose AREADEF overlaps.
+    /// </summary>
+    public IEnumerable<(Region Region, long Area)> FindAllRegions(Point3D pt)
+    {
+        var list = new List<(Region Region, long Area)>();
+        foreach (var region in _regions)
+        {
+            if (!region.Contains(pt)) continue;
+            long area = 0;
+            foreach (var r in region.Rects)
+                area += (long)(r.X2 - r.X1 + 1) * (r.Y2 - r.Y1 + 1);
+            list.Add((region, area));
+        }
+        list.Sort((a, b) => a.Area.CompareTo(b.Area));
+        return list;
     }
 
     public Region? FindRegionByUid(uint uid)

@@ -51,6 +51,15 @@ public sealed class SpeechEngine
     /// <summary>Fired when an NPC hears speech (for keyword response).</summary>
     public event Action<Character, Character, string, TalkMode>? OnNpcHear;
 
+    /// <summary>
+    /// Fired exactly once per player utterance, before any per-NPC dispatch.
+    /// Used by global keyword handlers (e.g. "guards" / "help guards") that
+    /// need to react to the speaker's region rather than to each listener
+    /// independently. Source-X equivalent: CClient::Event_TalkBroadcast's
+    /// region-level keyword check.
+    /// </summary>
+    public event Action<Character, string, TalkMode>? OnPlayerSpeech;
+
     /// <summary>Fired when guild/party message should be routed.</summary>
     public event Action<Character, string, TalkMode>? OnChannelMessage;
 
@@ -76,6 +85,12 @@ public sealed class SpeechEngine
 
         // Command dispatch is handled centrally in GameClient.HandleSpeech.
         // SpeechEngine is kept focused on non-command speech routing.
+
+        // Player-only global keywords ("guards", "help guards", ...) fire here
+        // exactly once. Per-NPC OnNpcHear below still runs so vendors/healers
+        // can react to the same utterance independently.
+        if (speaker.IsPlayer)
+            OnPlayerSpeech?.Invoke(speaker, text, mode);
 
         // Guild/Alliance chat: not spatial, routed separately
         if (mode == TalkMode.Guild || mode == TalkMode.Alliance)
@@ -1069,7 +1084,7 @@ public sealed class CommandHandler
         List<ResourceId>? tevList = null;
         if (target is Character tch)
         {
-            var charDef = DefinitionLoader.GetCharDef(tch.BaseId);
+            var charDef = DefinitionLoader.GetCharDef(tch.CharDefIndex);
             if (charDef?.Events.Count > 0) tevList = charDef.Events;
         }
         else if (target is SphereNet.Game.Objects.Items.Item tit)

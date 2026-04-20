@@ -120,6 +120,11 @@ public static class Program
     private static DateTime _serverStartTime;
     private static int _saveCount;
     private static readonly List<GameClient> _reusableClientSnapshot = [];
+    // Reuse compute-phase buffers across ticks to keep gen-0 GC pressure
+    // low. The dictionary/bag allocations were measurable on low-core
+    // VDS hosts (~30–100 ms slow-tick spikes when GC kicked in).
+    private static readonly List<NpcAI.NpcDecision> _reusableDecisionList = [];
+    private static readonly Dictionary<int, GameClient.ClientViewDelta> _reusableClientDeltas = [];
     private static long _telemetrySnapshotUs;
     private static long _telemetryComputeUs;
     private static long _telemetryApplyUs;
@@ -285,10 +290,35 @@ public static class Program
                 outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}",
                 theme: WarningConsoleTheme);
 
-        serilogConfig = serilogConfig.WriteTo.File(
-                Path.Combine(basePath, "logs", "spherenet-.log"),
+        // File sink keeps its own filtering, independent of the live
+        // console. Two syntaxes are supported via [SPHERE] LogFileLevel:
+        //   "Warning"                            → minimum threshold
+        //                                          (Warning + Error + Fatal)
+        //   "Verbose | Warning | Error | Fatal"  → exact whitelist; only
+        //                                          those levels are kept
+        // The whitelist form is useful when you want raw traces + real
+        // failures but none of the Information/Debug noise that lands
+        // there during normal play.
+        ParseLogFileLevel(_config.LogFileLevel, out var fileLogMinLevel,
+            out var fileLogWhitelist);
+        string filePath = Path.Combine(basePath, "logs", "spherenet-.log");
+        const string fileTemplate = "[{Timestamp:yyyy-MM-dd HH:mm:ss} {Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}";
+        serilogConfig = serilogConfig.WriteTo.Logger(lc =>
+        {
+            // Sub-logger lets us add a per-event Filter that only
+            // applies to the file output, not the console sink.
+            lc = lc.MinimumLevel.Verbose();
+            if (fileLogWhitelist != null)
+            {
+                var allowed = fileLogWhitelist;
+                lc = lc.Filter.ByIncludingOnly(e => allowed.Contains(e.Level));
+            }
+            lc.WriteTo.File(
+                filePath,
+                restrictedToMinimumLevel: fileLogMinLevel,
                 rollingInterval: RollingInterval.Day,
-                outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss} {Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}");
+                outputTemplate: fileTemplate);
+        });
 
         Log.Logger = serilogConfig.CreateLogger();
         _loggerFactory = LoggerFactory.Create(builder =>
@@ -592,21 +622,91 @@ public static class Program
         // walk, .go teleport, recall and gate all hit one notify path.
         _world.OnRegionChanged = (mover, oldRegion, newRegion) =>
         {
+            _log.LogDebug(
+                "[REGION_CHANGE] {Name} {Old} -> {New} player={IsPlayer}",
+                mover.Name,
+                oldRegion?.Name ?? "<null>",
+                newRegion?.Name ?? "<null>",
+                mover.IsPlayer);
+
             if (!mover.IsPlayer || newRegion == null) return;
             SphereNet.Game.Clients.GameClient? gc = null;
             foreach (var c in _clients.Values)
                 if (c.Character == mover) { gc = c; break; }
-            if (gc == null) return;
+            if (gc == null) { _log.LogDebug("[REGION_CHANGE] no GameClient for {Name}", mover.Name); return; }
 
             gc.SysMessage(SphereNet.Game.Messages.ServerMessages.GetFormatted(
                 SphereNet.Game.Messages.Msg.MsgRegionEnter, newRegion.Name));
             if (newRegion.IsFlag(SphereNet.Core.Enums.RegionFlag.Guarded))
-                gc.SysMessage(SphereNet.Game.Messages.ServerMessages.Get(
-                    SphereNet.Game.Messages.Msg.MsgRegionGuards1));
+            {
+                // Source-X CChar::Region_Notify: SysMessagef(DEFMSG_REGION_GUARDS_1,
+                // <GUARDOWNER tag value>). When the AREADEF omits TAG.GUARDOWNER
+                // it falls back to DEFMSG_REGION_GUARD_ART ("the") so the literal
+                // "%s" never reaches the player.
+                string guardOwner;
+                if (!newRegion.TryGetTag("GUARDOWNER", out var owner) || string.IsNullOrEmpty(owner))
+                    guardOwner = SphereNet.Game.Messages.ServerMessages.Get(
+                        SphereNet.Game.Messages.Msg.MsgRegionGuardArt);
+                else
+                    guardOwner = owner!;
+                gc.SysMessage(SphereNet.Game.Messages.ServerMessages.GetFormatted(
+                    SphereNet.Game.Messages.Msg.MsgRegionGuards1, guardOwner));
+            }
             if (newRegion.IsFlag(SphereNet.Core.Enums.RegionFlag.NoPvP))
                 gc.SysMessage(SphereNet.Game.Messages.ServerMessages.Get(
                     SphereNet.Game.Messages.Msg.MsgRegionPvpsafe));
+
+            // Source-X also fires DEFMSG_REGION_GUARDS_2 when leaving a guarded
+            // zone for an unguarded one — keeps the "you have left the
+            // protection of the city guards" callout symmetric.
+            if (oldRegion != null &&
+                oldRegion.IsFlag(SphereNet.Core.Enums.RegionFlag.Guarded) &&
+                !newRegion.IsFlag(SphereNet.Core.Enums.RegionFlag.Guarded))
+            {
+                string guardOwner;
+                if (!oldRegion.TryGetTag("GUARDOWNER", out var owner) || string.IsNullOrEmpty(owner))
+                    guardOwner = SphereNet.Game.Messages.ServerMessages.Get(
+                        SphereNet.Game.Messages.Msg.MsgRegionGuardArt);
+                else
+                    guardOwner = owner!;
+                gc.SysMessage(SphereNet.Game.Messages.ServerMessages.GetFormatted(
+                    SphereNet.Game.Messages.Msg.MsgRegionGuards2, guardOwner));
+            }
         };
+
+        // Source-X parity: spawn-driven NPCs (CItemSpawn) need the same
+        // trigger sequence the manual ".add" pipeline runs. Without this
+        // hook a vendor that comes from a SPAWN never fires @NPCRestock,
+        // so its stock list stays empty and "buy" responds with "no
+        // goods". Mirrors the GameClient.CreateNpcFromDef ordering.
+        _world.OnNpcSpawned = npc =>
+        {
+            try
+            {
+                _triggerDispatcher?.FireCharTrigger(
+                    npc, SphereNet.Core.Enums.CharTrigger.Create,
+                    new SphereNet.Game.Scripting.TriggerArgs { CharSrc = npc });
+
+                if (npc.NpcBrain == SphereNet.Core.Enums.NpcBrainType.None)
+                    npc.NpcBrain = SphereNet.Core.Enums.NpcBrainType.Animal;
+
+                if (npc.NpcBrain == SphereNet.Core.Enums.NpcBrainType.Vendor)
+                {
+                    _triggerDispatcher?.FireCharTrigger(
+                        npc, SphereNet.Core.Enums.CharTrigger.NPCRestock,
+                        new SphereNet.Game.Scripting.TriggerArgs { CharSrc = npc });
+                }
+
+                _triggerDispatcher?.FireCharTrigger(
+                    npc, SphereNet.Core.Enums.CharTrigger.CreateLoot,
+                    new SphereNet.Game.Scripting.TriggerArgs { CharSrc = npc });
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "[spawn_hook] failed for {Name}", npc.Name);
+            }
+        };
+
         _partyManager = new PartyManager();
         _guildManager = new GuildManager();
         _guildManager.DeserializeFromWorld(_world);
@@ -616,6 +716,7 @@ public static class Program
         _speech.PartyManager = _partyManager;
         _speech.GuildManager = _guildManager;
         _speech.OnNpcHear += OnNpcHearSpeech;
+        _speech.OnPlayerSpeech += OnPlayerSpeech;
         _commands = new CommandHandler();
         _commands.TriggerDispatcher = _triggerDispatcher;
         _commands.CommandPrefix = string.IsNullOrEmpty(_config.CommandPrefix) ? '.' : _config.CommandPrefix[0];
@@ -1187,6 +1288,15 @@ public static class Program
         SphereNet.Game.Objects.ObjBase.OnNameChangeWarning = msg =>
             _log.LogWarning("[NAME_CHANGE] {Details}", msg);
 
+        // Route Character-emitted diagnostic lines (vendor restock,
+        // trigger verb dispatch, etc.) into the main logger so they
+        // appear next to the trig_runner / npc_spawn traces we already
+        // rely on while debugging service NPC behaviour.
+        SphereNet.Game.Objects.Characters.Character.Diagnostic = msg =>
+            _log.LogDebug("{Details}", msg);
+        SphereNet.Game.Definitions.TemplateEngine.Diagnostic = msg =>
+            _log.LogDebug("{Details}", msg);
+
         // Guild member properties
         SphereNet.Game.Objects.Characters.Character.ResolveGuildManager = _ => _guildManager;
 
@@ -1251,6 +1361,9 @@ public static class Program
 
         // Load spell/item/char definitions from scripts
         var defSw = Stopwatch.StartNew();
+        // Wire diagnostic BEFORE the loader runs — script-load tracing
+        // (template body inspection, etc.) only fires during LoadAll.
+        DefinitionLoader.Diagnostic = msg => _log.LogDebug("{Details}", msg);
         var defLoader = new DefinitionLoader(_resources, _spellRegistry);
         defLoader.LoadAll();
         defSw.Stop();
@@ -2994,9 +3107,297 @@ public static class Program
     /// NPC keyword/conversation handler. Routes speech to NPCs for keyword responses.
     /// Maps to Source-X NPC_OnHear / @NPCHearGreeting / @NPCHearUnknown triggers.
     /// </summary>
+    /// <summary>Look up the GameClient that owns the given character (player only).</summary>
+    private static SphereNet.Game.Clients.GameClient? FindGameClient(Character ch)
+    {
+        if (!ch.IsPlayer) return null;
+        foreach (var c in _clients.Values)
+            if (c.Character == ch) return c;
+        return null;
+    }
+
+    /// <summary>Resolve a defmessage by key, returning empty string if missing.</summary>
+    private static string SafeMsg(string key)
+    {
+        try { return SphereNet.Game.Messages.ServerMessages.Get(key) ?? string.Empty; }
+        catch { return string.Empty; }
+    }
+
+    /// <summary>
+    /// Pre-empt service-NPC well-known keywords before the SPEECH script
+    /// chain runs. Returns true when a service action was dispatched
+    /// (vendor menu opened, bank box opened, withdrawal completed, ...);
+    /// false when the brain doesn't match or none of the keywords applied
+    /// — in which case OnNpcHearSpeech keeps walking the chain.
+    /// We also send the matching defmessage (NpcVendorBuyfast / "Here are
+    /// thy N gold piece(s)." / ...) so the NPC speaks the same line a
+    /// real Source-X server would.
+    /// </summary>
+    private static bool TryDispatchServiceKeyword(Character speaker, Character npc, string text)
+    {
+        string lower = text.ToLowerInvariant();
+        string lowerName = (npc.Name ?? "").ToLowerInvariant();
+        NpcBrainType brain = npc.NpcBrain;
+
+        // Mirror the legacy widening: NPC=NPC_HUMAN service NPCs whose
+        // names carry the role keyword should still respond as the
+        // matching brain (banker / vendor / healer / stable).
+        if (brain is NpcBrainType.Human or NpcBrainType.None)
+        {
+            if (lowerName.Contains("banker")) brain = NpcBrainType.Banker;
+            else if (lowerName.Contains("vendor") || lowerName.Contains("shopkeep") ||
+                     lowerName.Contains("merchant")) brain = NpcBrainType.Vendor;
+        }
+
+        if (brain == NpcBrainType.Vendor)
+        {
+            if (lower.Contains("buy") || lower.Contains("purchase"))
+            {
+                var gc = FindGameClient(speaker);
+                _log.LogDebug(
+                    "[svc_kw] VENDOR_BUY speaker={Speaker} npc={Npc} client={HasClient}",
+                    speaker.Name, npc.Name, gc != null);
+                gc?.OpenVendorBuy(npc);
+                NpcSpeak(npc, SafeMsg(SphereNet.Game.Messages.Msg.NpcVendorBuyfast)
+                    ?? "Take a look at my goods.");
+                return true;
+            }
+            if (lower.Contains("sell"))
+            {
+                var gc = FindGameClient(speaker);
+                _log.LogDebug(
+                    "[svc_kw] VENDOR_SELL speaker={Speaker} npc={Npc} client={HasClient}",
+                    speaker.Name, npc.Name, gc != null);
+                gc?.OpenVendorSell(npc);
+                NpcSpeak(npc, SafeMsg(SphereNet.Game.Messages.Msg.NpcVendorSellfast)
+                    ?? "Show me what you have to sell.");
+                return true;
+            }
+        }
+
+        if (brain == NpcBrainType.Banker)
+        {
+            int withdrawAmount = TryParseAmountAfter(lower, "withdraw");
+            int checkAmount = TryParseAmountAfter(lower, "check");
+            bool wantBank = lower.Contains("bank") || lower == "deposit"
+                            || lower.StartsWith("deposit ");
+
+            if (lower.Contains("balance"))
+            {
+                long banked = CountBankGold(speaker);
+                NpcSpeak(npc, $"Thou hast {banked} gold piece(s) in our care.");
+                return true;
+            }
+            if (withdrawAmount > 0)
+            {
+                long banked = CountBankGold(speaker);
+                if (banked < withdrawAmount)
+                {
+                    NpcSpeak(npc, $"You have only {banked} gold piece(s) in our care.");
+                    return true;
+                }
+                RemoveBankGold(speaker, withdrawAmount);
+                DepositGoldToBackpack(speaker, withdrawAmount);
+                NpcSpeak(npc, $"Here are thy {withdrawAmount} gold piece(s).");
+                FindGameClient(speaker)?.OpenBankBox();
+                return true;
+            }
+            if (checkAmount > 0)
+            {
+                NpcSpeak(npc, "I am unable to issue a check for that amount right now.");
+                return true;
+            }
+            if (wantBank)
+            {
+                _log.LogDebug("[svc_kw] BANK_OPEN speaker={Speaker} npc={Npc}",
+                    speaker.Name, npc.Name);
+                FindGameClient(speaker)?.OpenBankBox();
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Service NPC keyword response. We don't yet have a dedicated NPC
+    /// overhead-speech broadcast, so the line is delivered as a system
+    /// message to the player who triggered it. Source-X parity behaviour
+    /// (overhead bubble + nearby clients see the line) will land once
+    /// SpeechEngine grows a SendNpcSpeech helper.
+    /// </summary>
+    private static void NpcSpeak(Character npc, string line)
+    {
+        if (string.IsNullOrEmpty(line)) return;
+        // Heard-by-everyone path: walk the world and SysMessage every
+        // online player in hearing range. Keeps the response visible to
+        // nearby observers without requiring the NPC overhead packet
+        // wired up.
+        var listeners = _world?.GetCharsInRange(npc.Position, 14);
+        if (listeners == null) return;
+        string prefixed = $"{npc.Name}: {line}";
+        foreach (var ch in listeners)
+        {
+            if (!ch.IsPlayer) continue;
+            FindGameClient(ch)?.SysMessage(prefixed);
+        }
+    }
+
+    /// <summary>
+    /// Parse an integer amount that follows a keyword in a speech string,
+    /// e.g. TryParseAmountAfter("withdraw 100", "withdraw") returns 100.
+    /// Returns 0 when the keyword is missing, no amount follows, or the
+    /// amount is non-positive. Tolerant of extra whitespace and trailing
+    /// punctuation ("withdraw 100 gold").
+    /// </summary>
+    private static int TryParseAmountAfter(string text, string keyword)
+    {
+        if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(keyword)) return 0;
+        int idx = text.IndexOf(keyword, StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return 0;
+        int cur = idx + keyword.Length;
+        while (cur < text.Length && !char.IsDigit(text[cur])) cur++;
+        int start = cur;
+        while (cur < text.Length && char.IsDigit(text[cur])) cur++;
+        if (cur == start) return 0;
+        if (!int.TryParse(text.AsSpan(start, cur - start), out int amount)) return 0;
+        return amount > 0 ? amount : 0;
+    }
+
+    /// <summary>Total gold (item type Gold or 0x0EED) inside a character's bank box.</summary>
+    private static long CountBankGold(Character ch)
+    {
+        var bank = ch.GetEquippedItem(SphereNet.Core.Enums.Layer.BankBox);
+        if (bank == null) return 0;
+        long total = 0;
+        foreach (var item in _world.GetContainerContents(bank.Uid))
+        {
+            if (item.ItemType == SphereNet.Core.Enums.ItemType.Gold || item.BaseId == 0x0EED)
+                total += item.Amount;
+        }
+        return total;
+    }
+
+    /// <summary>
+    /// Withdraw N gold from a character's bank box. Walks gold piles from
+    /// largest first (mirrors Source-X behaviour where the smallest number
+    /// of stacks is consumed). Caller must check CountBankGold first.
+    /// </summary>
+    private static void RemoveBankGold(Character ch, int amount)
+    {
+        var bank = ch.GetEquippedItem(SphereNet.Core.Enums.Layer.BankBox);
+        if (bank == null || amount <= 0) return;
+        int remaining = amount;
+        foreach (var item in _world.GetContainerContents(bank.Uid).ToList())
+        {
+            if (remaining <= 0) break;
+            if (item.ItemType != SphereNet.Core.Enums.ItemType.Gold && item.BaseId != 0x0EED)
+                continue;
+
+            if (item.Amount <= remaining)
+            {
+                remaining -= item.Amount;
+                item.Delete();
+            }
+            else
+            {
+                item.Amount -= (ushort)remaining;
+                remaining = 0;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Drop a fresh gold pile into a character's backpack. Splits into 60k
+    /// stacks (UO max amount per pile) so very large withdrawals still fit.
+    /// </summary>
+    private static void DepositGoldToBackpack(Character ch, int amount)
+    {
+        var pack = ch.Backpack;
+        if (pack == null || amount <= 0) return;
+        while (amount > 0)
+        {
+            ushort slice = (ushort)Math.Min(amount, 60000);
+            var gold = _world.CreateItem();
+            gold.BaseId = 0x0EED;
+            gold.Name = "Gold";
+            gold.ItemType = SphereNet.Core.Enums.ItemType.Gold;
+            gold.Amount = slice;
+            pack.AddItem(gold);
+            amount -= slice;
+        }
+    }
+
+    /// <summary>
+    /// Source-X CClient::Event_TalkBroadcast region keyword check. Fires exactly
+    /// once per player utterance — currently handles "guards" / "help guards"
+    /// inside REGION_FLAG_GUARDED zones. Future global keywords (e.g. "i resign
+    /// from my guild" outside guild stones) hook in here too.
+    /// </summary>
+    private static void OnPlayerSpeech(Character speaker, string text, TalkMode mode)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        string lower = text.ToLowerInvariant();
+        bool calledGuards = lower.Contains("guards") || lower == "help" || lower.Contains("help guards");
+        if (!calledGuards) return;
+
+        var region = _world.FindRegion(speaker.Position);
+        if (region == null || !region.IsFlag(SphereNet.Core.Enums.RegionFlag.Guarded))
+        {
+            // Not a guarded zone — nothing to summon. Source-X is silent here
+            // (NPC guard NPCs may still echo if any are within hearing range
+            // via OnNpcHearSpeech), but the speaker gets no callback.
+            return;
+        }
+
+        // Find a hostile NPC near the speaker that the city guards can target.
+        // Pets, players, dead chars and other guards are excluded — only
+        // monsters/berserk/dragon brains qualify as legitimate threats.
+        Character? hostile = null;
+        foreach (var ch in _world.GetCharsInRange(speaker.Position, 14))
+        {
+            if (ch == speaker || ch.IsPlayer || ch.IsDead) continue;
+            if (ch.NpcMaster != Serial.Invalid) continue; // someone's pet
+            switch (ch.NpcBrain)
+            {
+                case NpcBrainType.Monster:
+                case NpcBrainType.Berserk:
+                case NpcBrainType.Dragon:
+                    hostile = ch;
+                    break;
+            }
+            if (hostile != null) break;
+        }
+
+        var gc = FindGameClient(speaker);
+        if (hostile == null)
+        {
+            // No legitimate target — Source-X plays an "all looks quiet"
+            // SysMessage. We don't have a 1:1 defmessage so use the closest
+            // semantic match.
+            gc?.SysMessage("All looks quiet here.");
+            return;
+        }
+
+        // Source-X CRegionWorld::CallGuards: NPC guard NPCs nearby attack the
+        // hostile; if none are within range an invul guard NPC is teleported
+        // in. We don't yet spawn templates from script, so stage 1 just notes
+        // the call so AI engines / region trigger scripts can react via the
+        // standard hostile-detection path. Stage 2 (actual summon) will tie
+        // into VendorEngine-style spawning once we have a CHARDEF for the
+        // city's guard template.
+        gc?.SysMessage("The guards have been called.");
+        _log.LogDebug(
+            "[guards] {Speaker} called guards in region '{Region}' against hostile 0x{HUid:X} ({HName})",
+            speaker.Name, region.Name, hostile.Uid.Value, hostile.Name ?? "?");
+    }
+
     private static void OnNpcHearSpeech(Character speaker, Character npc, string text, TalkMode mode)
     {
         string lower = text.ToLowerInvariant();
+        _log.LogDebug(
+            "[npc_hear] {Speaker} -> {Npc} brain={Brain} text='{Text}'",
+            speaker.Name, npc.Name, npc.NpcBrain, text);
 
         // Source-X global speech function hook — silent when missing.
         // Many imported script packs don't define this; warning on every
@@ -3016,12 +3417,31 @@ public static class Program
         var trigResult = _triggerDispatcher?.FireCharTrigger(npc, CharTrigger.NPCHearGreeting,
             new TriggerArgs { CharSrc = speaker, S1 = text });
         if (trigResult == TriggerResult.True)
-            return; // Script handled it
+        {
+            _log.LogDebug("[npc_hear] {Npc} @NPCHearGreeting consumed text='{Text}'", npc.Name, text);
+            return;
+        }
+
+        // Service-NPC well-known keywords (buy/sell/bank/balance/withdraw/
+        // heal/stable/...) are handled by the built-in dispatcher BEFORE
+        // the SPEECH script chain. mortechUO ships TSPEECH=spk_jobSHOPKEEP
+        // / spk_jobBANKER bodies whose verbs (actserv.dialog, ...) aren't
+        // fully wired in our interpreter yet — letting the script "handle"
+        // those keywords would silently swallow the request and the
+        // vendor / bank window would never open. Pre-empting them here
+        // keeps service NPCs functional until SPEECH bodies execute end
+        // to end. Other speech (greetings, custom keywords) still flows
+        // through FireSpeechTrigger below.
+        if (TryDispatchServiceKeyword(speaker, npc, text))
+            return;
 
         // Script-driven SPEECH triggers (from CHARDEF SPEECH/TSPEECH)
         var speechResult = _triggerDispatcher?.FireSpeechTrigger(npc, speaker, text);
         if (speechResult == TriggerResult.True)
-            return; // Speech script handled it
+        {
+            _log.LogDebug("[npc_hear] {Npc} SPEECH trigger consumed text='{Text}'", npc.Name, text);
+            return;
+        }
 
         // Built-in keyword responses. Legacy Sphere saves commonly set
         // NPC=NPC_HUMAN on bankers/vendors/healers/stablemasters and
@@ -3048,28 +3468,80 @@ public static class Program
         switch (inferredBrain)
         {
             case NpcBrainType.Vendor:
-                if (lower.Contains("buy") || lower.Contains("vendor") || lower.Contains("purchase"))
-                    response = $"Take a look at my goods.";
-                else if (lower.Contains("sell"))
-                    response = $"Show me what you have to sell.";
+                if (lower.Contains("buy") || lower.Contains("vendor buy") || lower.Contains("purchase"))
+                {
+                    // Source-X CClient::Event_TalkBroadcast → Cmd_VendorBuy:
+                    // open the vendor buy window on the speaker's client.
+                    var gc = FindGameClient(speaker);
+                    _log.LogDebug(
+                        "[vendor_speech] BUY speaker={Speaker} npc={Npc} brain={Brain} client={HasClient}",
+                        speaker.Name, npc.Name, npc.NpcBrain, gc != null);
+                    if (gc != null)
+                        gc.OpenVendorBuy(npc);
+                    response = SafeMsg(SphereNet.Game.Messages.Msg.NpcVendorBuyfast);
+                    if (string.IsNullOrEmpty(response))
+                        response = "Take a look at my goods.";
+                }
+                else if (lower.Contains("sell") || lower.Contains("vendor sell"))
+                {
+                    var gc = FindGameClient(speaker);
+                    _log.LogDebug(
+                        "[vendor_speech] SELL speaker={Speaker} npc={Npc} brain={Brain} client={HasClient}",
+                        speaker.Name, npc.Name, npc.NpcBrain, gc != null);
+                    if (gc != null)
+                        gc.OpenVendorSell(npc);
+                    response = SafeMsg(SphereNet.Game.Messages.Msg.NpcVendorSellfast);
+                    if (string.IsNullOrEmpty(response))
+                        response = "Show me what you have to sell.";
+                }
                 break;
 
             case NpcBrainType.Banker:
-                if (lower.Contains("bank") || lower.Contains("balance"))
                 {
-                    // Open bank box
-                    foreach (var c in _clients.Values)
+                    // Source-X CCharNPC::OnTriggerSpeech banker brain handles
+                    // a small set of keywords:
+                    //   bank / deposit  -> open the bank box
+                    //   balance         -> report the gold currently banked
+                    //   withdraw N      -> move N gold from the bank into the
+                    //                      speaker's backpack
+                    //   check N         -> issue a bank check (still TODO,
+                    //                      requires bank-check item template)
+                    var gc = FindGameClient(speaker);
+                    int withdrawAmount = TryParseAmountAfter(lower, "withdraw");
+                    int checkAmount = TryParseAmountAfter(lower, "check");
+                    bool wantBank = lower.Contains("bank") || lower == "deposit" || lower.StartsWith("deposit ");
+
+                    if (lower.Contains("balance"))
                     {
-                        if (c.Character == speaker)
+                        long banked = CountBankGold(speaker);
+                        response = $"Thou hast {banked} gold piece(s) in our care.";
+                    }
+                    else if (withdrawAmount > 0)
+                    {
+                        long banked = CountBankGold(speaker);
+                        if (banked < withdrawAmount)
+                            response = $"You have only {banked} gold piece(s) in our care.";
+                        else
                         {
-                            c.OpenBankBox();
-                            break;
+                            RemoveBankGold(speaker, withdrawAmount);
+                            DepositGoldToBackpack(speaker, withdrawAmount);
+                            response = $"Here are thy {withdrawAmount} gold piece(s).";
+                            // Ensure the backpack-side delta is visible immediately.
+                            gc?.OpenBankBox();
                         }
                     }
-                    response = "Here is your bank box.";
+                    else if (checkAmount > 0)
+                    {
+                        // Stage 1: refuse cleanly until the bank-check template
+                        // (i_bankcheck) is wired through the script defs.
+                        response = "I am unable to issue a check for that amount right now.";
+                    }
+                    else if (wantBank)
+                    {
+                        gc?.OpenBankBox();
+                        response = "Here is your bank box.";
+                    }
                 }
-                else if (lower.Contains("check"))
-                    response = "I can issue you a bank check.";
                 break;
 
             case NpcBrainType.Healer:
@@ -3252,16 +3724,19 @@ public static class Program
         MaybeRunDeterminismGuardrail();
     }
 
+    // Below this many work items, Parallel.ForEach is pure overhead
+    // (partitioner + worker ramp-up + lambda capture cost more than
+    // the actual loop body). Empirically a single 1-vCPU VDS handles
+    // 4 ticks/sec at ~5 ms when this threshold short-circuits the
+    // 1-client / 0-NPC steady state, vs 50–300 ms when forced through
+    // ParallelForEach. Mirrors GameWorld.OnTickParallel sector cutoff.
+    private const int ParallelComputeMinBatch = 16;
+
     private static void RunMulticoreTick()
     {
         int workerCount = _config.MulticoreWorkerCount > 0 ? _config.MulticoreWorkerCount : Environment.ProcessorCount;
         int timeoutMs = Math.Max(100, _config.MulticorePhaseTimeoutMs);
         using var cts = new CancellationTokenSource(timeoutMs);
-        var po = new ParallelOptions
-        {
-            MaxDegreeOfParallelism = workerCount,
-            CancellationToken = cts.Token
-        };
 
         long p0 = Stopwatch.GetTimestamp();
         _world.OnTickParallel(workerCount, cts.Token);
@@ -3281,13 +3756,37 @@ public static class Program
 
         long p1 = Stopwatch.GetTimestamp();
         long nowTick = Environment.TickCount64;
-        var npcDecisions = new ConcurrentBag<NpcAI.NpcDecision>();
-        Parallel.ForEach(npcSnapshot, po, npc =>
+
+        // Reuse buffers — both lists are cleared at end of tick. Avoids
+        // ConcurrentBag/ConcurrentDictionary allocation churn that was
+        // visible as slow_tick spikes on light loads.
+        var decisionList = _reusableDecisionList;
+        decisionList.Clear();
+        if (npcSnapshot.Count >= ParallelComputeMinBatch)
         {
-            var decision = _npcAI.BuildDecision(npc, nowTick);
-            if (decision.HasValue)
-                npcDecisions.Add(decision.Value);
-        });
+            var po = new ParallelOptions
+            {
+                MaxDegreeOfParallelism = workerCount,
+                CancellationToken = cts.Token
+            };
+            var bag = new ConcurrentBag<NpcAI.NpcDecision>();
+            Parallel.ForEach(npcSnapshot, po, npc =>
+            {
+                var decision = _npcAI.BuildDecision(npc, nowTick);
+                if (decision.HasValue)
+                    bag.Add(decision.Value);
+            });
+            decisionList.AddRange(bag);
+        }
+        else
+        {
+            foreach (var npc in npcSnapshot)
+            {
+                var decision = _npcAI.BuildDecision(npc, nowTick);
+                if (decision.HasValue)
+                    decisionList.Add(decision.Value);
+            }
+        }
 
         foreach (var client in clientSnapshot)
         {
@@ -3296,20 +3795,45 @@ public static class Program
             client.TickStatUpdate();
         }
 
-        // Full scan: parallel build, sequential apply
-        var clientDeltas = new ConcurrentDictionary<int, GameClient.ClientViewDelta>();
-        Parallel.ForEach(clientSnapshot, po, client =>
+        // View delta build: parallel only when there's enough work to
+        // amortize the partitioner setup. Single-client steady state
+        // (~95% of real shards) hits the sequential fast path.
+        var clientDeltas = _reusableClientDeltas;
+        clientDeltas.Clear();
+        if (clientSnapshot.Count >= ParallelComputeMinBatch)
         {
-            var delta = client.BuildViewDelta();
-            if (delta != null)
-                clientDeltas[client.NetState.Id] = delta;
-        });
+            var po = new ParallelOptions
+            {
+                MaxDegreeOfParallelism = workerCount,
+                CancellationToken = cts.Token
+            };
+            var concurrent = new ConcurrentDictionary<int, GameClient.ClientViewDelta>();
+            Parallel.ForEach(clientSnapshot, po, client =>
+            {
+                var delta = client.BuildViewDelta();
+                if (delta != null)
+                    concurrent[client.NetState.Id] = delta;
+            });
+            foreach (var kv in concurrent)
+                clientDeltas[kv.Key] = kv.Value;
+        }
+        else
+        {
+            foreach (var client in clientSnapshot)
+            {
+                var delta = client.BuildViewDelta();
+                if (delta != null)
+                    clientDeltas[client.NetState.Id] = delta;
+            }
+        }
         _telemetryComputeUs = ToMicroseconds(Stopwatch.GetTimestamp() - p1);
 
         long p2 = Stopwatch.GetTimestamp();
-        var sortedDecisions = npcDecisions.ToArray();
-        Array.Sort(sortedDecisions, (a, b) => a.NpcUid.CompareTo(b.NpcUid));
-        foreach (var decision in sortedDecisions)
+        // Determinism: NPCs apply in UID order. Sort in-place — the
+        // List<T>.Sort overload with Comparison<T> uses introsort and
+        // doesn't allocate (the lambda is cached by the JIT here).
+        decisionList.Sort(static (a, b) => a.NpcUid.CompareTo(b.NpcUid));
+        foreach (var decision in decisionList)
             _npcAI.ApplyDecision(decision);
 
         foreach (var client in clientSnapshot)
@@ -3442,6 +3966,69 @@ public static class Program
         return (long)(stopwatchTicks * (1_000_000.0 / Stopwatch.Frequency));
     }
 
+    /// <summary>
+    /// Parse the [SPHERE] LogFileLevel knob into either a single-value
+    /// minimum threshold OR a discrete whitelist set.
+    ///   "Warning"                            → minLevel=Warning, whitelist=null
+    ///   "Verbose | Warning | Error | Fatal"  → minLevel=Verbose,
+    ///                                          whitelist={Verbose, Warning,
+    ///                                                     Error, Fatal}
+    /// Unknown / empty input falls back to Warning-threshold.  When a
+    /// whitelist is returned the caller must wire a Serilog
+    /// <c>Filter.ByIncludingOnly</c> against it; the min-level is set to
+    /// the lowest whitelisted entry so the sink doesn't pre-drop those
+    /// events upstream.
+    /// </summary>
+    private static void ParseLogFileLevel(string raw,
+        out Serilog.Events.LogEventLevel minLevel,
+        out HashSet<Serilog.Events.LogEventLevel>? whitelist)
+    {
+        minLevel = Serilog.Events.LogEventLevel.Warning;
+        whitelist = null;
+
+        if (string.IsNullOrWhiteSpace(raw))
+            return;
+
+        // Accept '|', ',' and ';' as separators so the value reads
+        // naturally regardless of which convention the operator picks.
+        var parts = raw.Split(['|', ',', ';'],
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0)
+            return;
+
+        if (parts.Length == 1)
+        {
+            if (Enum.TryParse<Serilog.Events.LogEventLevel>(parts[0],
+                ignoreCase: true, out var single))
+            {
+                minLevel = single;
+            }
+            return;
+        }
+
+        var set = new HashSet<Serilog.Events.LogEventLevel>();
+        foreach (var token in parts)
+        {
+            if (Enum.TryParse<Serilog.Events.LogEventLevel>(token,
+                ignoreCase: true, out var lvl))
+            {
+                set.Add(lvl);
+            }
+        }
+        if (set.Count == 0)
+            return;
+
+        whitelist = set;
+        // Don't let restrictedToMinimumLevel filter out the lowest
+        // whitelisted entry before our ByIncludingOnly filter runs.
+        var lowest = Serilog.Events.LogEventLevel.Fatal;
+        foreach (var lvl in set)
+        {
+            if (lvl < lowest) lowest = lvl;
+        }
+        minLevel = lowest;
+    }
+
     /// <summary>Load ROOMDEF sections from script resources into GameWorld.</summary>
     private static void LoadRegionDefs()
     {
@@ -3460,12 +4047,21 @@ public static class Program
             var keys = link.StoredKeys;
             if (keys == null)
             {
+                // CRITICAL: ReadAllSections() walks from the section's start
+                // line to EOF and returns *every* section in between. We must
+                // consume only the first one — the resource link points at
+                // exactly one [AREADEF/ROOMDEF a_xxx] block. The previous code
+                // merged every following section's keys into this definition,
+                // so an early AREADEF inherited the RECTs of every later one
+                // in the file (observed: a single "Minax Stronghold" reported
+                // with 36/37/40/41/42 rects depending on file position,
+                // swallowing Britain because the cumulative rect set covered
+                // the city coordinates).
                 using var sf = link.OpenAtStoredPosition();
                 if (sf == null) continue;
                 var sections = sf.ReadAllSections();
-                keys = [];
-                foreach (var sec in sections)
-                    keys.AddRange(sec.Keys);
+                if (sections.Count == 0) continue;
+                keys = sections[0].Keys;
             }
 
             foreach (var key in keys)
@@ -3485,6 +4081,14 @@ public static class Program
                         {
                             byte pm = pp.Length > 3 && byte.TryParse(pp[3].Trim(), out byte pmap) ? pmap : (byte)0;
                             region.P = new SphereNet.Core.Types.Point3D(px, py, pz, pm);
+                            // Source-X CRegionWorld treats P's 4th component as the
+                            // map index; AREADEFs almost never carry an explicit MAP
+                            // line, so without this fallback every region defaulted
+                            // to map 0 and AREADEFs from Malas/Tokuno/Ilshenar leaked
+                            // into Felucca/Trammel lookups (e.g. Hanse's Hostel
+                            // shadowing Britain because both ended up on map 0).
+                            if (pm != 0)
+                                region.MapIndex = pm;
                         }
                         break;
                     case "MAP":
@@ -3500,11 +4104,19 @@ public static class Program
                             short.TryParse(parts[3].Trim(), out short y2))
                         {
                             region.AddRect(x1, y1, x2, y2);
+                            // Source-X RECT syntax: x1,y1,x2,y2[,m]. The optional
+                            // 5th value is the rect's map and also pins the region's
+                            // map when no MAP/P key was provided.
+                            if (parts.Length >= 5 &&
+                                byte.TryParse(parts[4].Trim(), out byte rectMap) &&
+                                rectMap != 0 && region.MapIndex == 0)
+                            {
+                                region.MapIndex = rectMap;
+                            }
                         }
                         break;
                     case "FLAGS":
-                        if (uint.TryParse(key.Arg, out uint flagsVal))
-                            region.Flags = (SphereNet.Core.Enums.RegionFlag)flagsVal;
+                        region.Flags = ParseRegionFlags(key.Arg);
                         break;
                     case "GROUP":
                         region.Group = key.Arg;
@@ -3538,6 +4150,54 @@ public static class Program
             _log.LogInformation("Loaded {Count} AREADEF definitions as regions", count);
     }
 
+    /// <summary>
+    /// Parse a Source-X FLAGS expression. Accepts numeric (decimal/hex) values
+    /// and pipe-separated symbol lists like
+    /// "REGION_FLAG_NOBUILDING|REGION_FLAG_GUARDED" used by mortechUO scripts.
+    /// </summary>
+    private static SphereNet.Core.Enums.RegionFlag ParseRegionFlags(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return SphereNet.Core.Enums.RegionFlag.None;
+
+        var trimmed = raw.Trim();
+        if (trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+            uint.TryParse(trimmed.AsSpan(2), System.Globalization.NumberStyles.HexNumber,
+                          System.Globalization.CultureInfo.InvariantCulture, out uint hexVal))
+            return (SphereNet.Core.Enums.RegionFlag)hexVal;
+        if (uint.TryParse(trimmed, System.Globalization.NumberStyles.Integer,
+                          System.Globalization.CultureInfo.InvariantCulture, out uint decVal))
+            return (SphereNet.Core.Enums.RegionFlag)decVal;
+
+        SphereNet.Core.Enums.RegionFlag result = SphereNet.Core.Enums.RegionFlag.None;
+        foreach (var token in trimmed.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            // Source-X DEF macro names are REGION_FLAG_<NAME>; the C# enum uses
+            // PascalCase. Strip the prefix and try a case-insensitive Enum.Parse
+            // with a couple of well known aliases.
+            var name = token;
+            if (name.StartsWith("REGION_FLAG_", StringComparison.OrdinalIgnoreCase))
+                name = name.Substring("REGION_FLAG_".Length);
+            name = name.Replace("_", string.Empty);
+
+            // Common aliases between Source-X define names and our enum members.
+            name = name switch
+            {
+                "NOBUILDING" => "NoBuild",
+                "GUARDEDOFF" => "GuardedOff",
+                "NOMAGIC" => "NoMagic",
+                "NOPVP" => "NoPvP",
+                "NOPERACRIME" => "NoPeraCrime",
+                "SAFEZONE" => "SafeZone",
+                _ => name
+            };
+
+            if (Enum.TryParse<SphereNet.Core.Enums.RegionFlag>(name, true, out var flag))
+                result |= flag;
+        }
+        return result;
+    }
+
     private static void LoadRoomDefs()
     {
         int count = 0;
@@ -3555,12 +4215,21 @@ public static class Program
             var keys = link.StoredKeys;
             if (keys == null)
             {
+                // CRITICAL: ReadAllSections() walks from the section's start
+                // line to EOF and returns *every* section in between. We must
+                // consume only the first one — the resource link points at
+                // exactly one [AREADEF/ROOMDEF a_xxx] block. The previous code
+                // merged every following section's keys into this definition,
+                // so an early AREADEF inherited the RECTs of every later one
+                // in the file (observed: a single "Minax Stronghold" reported
+                // with 36/37/40/41/42 rects depending on file position,
+                // swallowing Britain because the cumulative rect set covered
+                // the city coordinates).
                 using var sf = link.OpenAtStoredPosition();
                 if (sf == null) continue;
                 var sections = sf.ReadAllSections();
-                keys = [];
-                foreach (var sec in sections)
-                    keys.AddRange(sec.Keys);
+                if (sections.Count == 0) continue;
+                keys = sections[0].Keys;
             }
 
             foreach (var key in keys)

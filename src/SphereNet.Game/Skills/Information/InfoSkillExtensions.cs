@@ -46,7 +46,7 @@ internal static class InfoSkillExtensions
     /// <summary>Trade name == the chardef's display name (Source-X CCharDef::GetTradeName).</summary>
     public static string GetTradeName(this Character ch)
     {
-        var def = DefinitionLoader.GetCharDef(ch.BaseId);
+        var def = DefinitionLoader.GetCharDef(ch.CharDefIndex);
         if (def != null && !string.IsNullOrEmpty(def.Name))
             return def.Name;
         return ch.Name;
@@ -58,7 +58,7 @@ internal static class InfoSkillExtensions
     /// </summary>
     public static bool IsIndividualName(this Character ch)
     {
-        var def = DefinitionLoader.GetCharDef(ch.BaseId);
+        var def = DefinitionLoader.GetCharDef(ch.CharDefIndex);
         if (def == null || string.IsNullOrEmpty(def.Name)) return false;
         return !ch.Name.Equals(def.Name, StringComparison.OrdinalIgnoreCase);
     }

@@ -4,6 +4,140 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-20] - Vendor buy/sell pipeline, CharDef hash kimligi, isim pluralizasyonu, log ve tick optimizasyonlari
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - Vendor buy/sell akisi tamamlandi. Stok dedicated bir
+    LAYER_VENDOR_STOCK (0x1A) konteynerinde tutuluyor, LAYER_VENDOR_EXTRA
+    (0x1B) bos placeholder olarak donatiliyor. Buy menusu 0x2E (worn item)
+    + 0x3C (container contents) + 0x74 (buy list) + 0x24 (open container)
+    sirasinda gonderiliyor; 0x74 paketi gercek stok konteynerinin serial'ini
+    kullaniyor ve isim alani bos itemler icin nameLen=1+null yazip
+    ClassicUO'nun tiledata fallback'ini tetikliyor. Yeni 0x3C
+    PacketContainerContents struct'i eklendi (gridIndex destekli).
+  - VENDOR_S_* / VENDOR_B_* template'lerindeki SELL= / BUY= satirlari
+    DefinitionLoader tarafindan parse ediliyor; "{lo hi}" dice araliginin
+    ust degeri restock miktari olarak aliniyor.
+  - SpeechEngine.OnPlayerSpeech eventi: oyuncu konusmasi NPC dispatch'inden
+    once region seviyesinde tek seferlik tetikleniyor (guards / help guards
+    gibi global keyword'ler icin).
+  - CHARDEF parser "NPC=brain_vendor" ve "NPCBRAIN=Vendor" formlarinin
+    ikisini de kabul ediyor; "brain_" / "npc_" onekleri otomatik temizleniyor.
+  - LogFileLevel ayari iki sozdizimi destekliyor: tek deger (minimum esik)
+    veya pipe/virgul ile beyaz liste ("Verbose | Warning | Error | Fatal").
+    Whitelist modu Serilog sub-logger + Filter.ByIncludingOnly ile sarildi,
+    konsol cikti seviyesi etkilenmiyor.
+
+DUZELTMELER / FIXES:
+  - Item display ID resolution: TemplateEngine.ResolveItemDefIndex (32-bit
+    resource hash) ve ResolveDispId (16-bit wire grafigi) olarak ayrildi.
+    String-hash'li ITEMDEF index'lerinin (>0xFFFF) ushort cast'lenip
+    rastgele tile'a (lava / window-shutter / elven-plate) donusmesi
+    engellendi. ItemDef.DispIndex / DupItemId zinciri hala onceleniyor.
+  - ItemDef.Pluralize statik metodu eklendi (CItemBase::GetNamePluralize
+    paritesi). Item.GetName() override'i %plural/singular% sablonlarini
+    Amount'a gore runtime'da cozuyor — vendor listesi, click-name,
+    tooltip ve crafting menulerinde "Black Pearl%s%" ham sablonu artik
+    gorulmuyor (Corpse turu istisna, Source-X davranisi).
+  - Character.CharDefIndex (24-bit defname hash) eklendi ve
+    SpawnComponent / WorldSaver / WorldLoader (CHARDEFINDEX= property)
+    tarafindan korunuyor. TriggerDispatcher, SpeechEngine.CommandHandler
+    ve InfoSkillExtensions artik CharDef lookup'larinda BaseId yerine
+    CharDefIndex kullaniyor — c_alchemist gibi string-named NPC'lerin
+    body id'sine clamp edilip yanlis brain ile spawn olmasi giderildi.
+  - GameWorld.FindRegion en kucuk toplam alanli region'u seciyor
+    (CSector::GetRegion paritesi). AREADEF overlap'lerinde dis bolge
+    icteki landmark'i (kale, sehir, dungeon) maskeliyor olmasi giderildi.
+    OnRegionChanged hook'u CURRENT_REGION / CURRENT_REGION_UID tag'lerini
+    de guncelliyor; FindAllRegions diagnostik helper eklendi.
+  - DefinitionLoader.LoadCharDef ON=@ trigger headerlarinin ardindaki
+    body satirlarini static CharDef state'ine bulastirmiyor — trigger
+    govdesindeki NPC=... gibi atamalar artik CharDef template'ini degil,
+    @Create runtime'inda Character instance'ini etkiliyor.
+  - SpawnComponent NPC olusturduktan sonra OnNpcSpawned hook'unu firing
+    ediyor; .add ile esdeger trigger zinciri (@Create -> brain finalisation
+    -> @NPCRestock -> @CreateLoot) calisiyor. CharDefIndex spawn aninda
+    set ediliyor.
+  - WorldSaver/WorldLoader: CHARDEFINDEX kalici hale getirildi. Server
+    restart sonrasinda c_alchemist / c_man brain hijack'i yeniden olusmuyor.
+
+PERFORMANS / PERFORMANCE:
+  - Multicore tick compute fazi: NpcDecision listesi ve ClientViewDelta
+    dictionary'si static reusable buffer'lara cevrildi (per-tick gen-0 GC
+    basincini dusurur).
+  - ParallelComputeMinBatch=16 esigi: NPC veya client sayisi bu degerin
+    altindaysa Parallel.ForEach yerine sequential foreach calisiyor;
+    1-vCPU VDS host'larinda gozlemlenen 50-300 ms'lik thread pool ramp-up
+    spike'lari ortadan kalkiyor.
+  - Sub-loglama yapisi konsol sink'ini bloklamadan dosya filtresini
+    bagimsiz uyguluyor; rutin INF mesajlari (komut/script/baglanti)
+    artik logs/spherenet-*.log dosyasina yazilmiyor.
+
+NEW FEATURES (EN):
+  - Vendor buy/sell pipeline complete. Stock lives on a dedicated
+    LAYER_VENDOR_STOCK (0x1A) container with an empty LAYER_VENDOR_EXTRA
+    (0x1B) placeholder. Buy menu now sends 0x2E + 0x3C + 0x74 + 0x24 in
+    order using the real stock container serial; empty item names emit
+    nameLen=1+null so ClassicUO falls back to tiledata names. New
+    PacketContainerContents (0x3C) writer added with grid-index support.
+  - Vendor SELL= / BUY= rows in VENDOR_S_* / VENDOR_B_* templates are
+    parsed; the upper bound of the "{lo hi}" dice range becomes the
+    restock amount.
+  - SpeechEngine.OnPlayerSpeech fires once per player utterance before
+    per-NPC dispatch — used for region-level keywords (guards / help guards).
+  - CHARDEF parser accepts both "NPC=brain_vendor" and "NPCBRAIN=Vendor",
+    stripping "brain_" / "npc_" prefixes automatically.
+  - LogFileLevel supports two syntaxes: single value (minimum threshold)
+    or pipe/comma whitelist ("Verbose | Warning | Error | Fatal"). The
+    whitelist mode is wired through a Serilog sub-logger +
+    Filter.ByIncludingOnly so the console sink is unaffected.
+
+FIXES (EN):
+  - Item display ID resolution split into ResolveItemDefIndex (32-bit
+    resource hash) and ResolveDispId (16-bit wire graphic). String-hashed
+    ITEMDEF indices (>0xFFFF) no longer truncate via ushort cast into
+    random tiles (lava / window-shutter / elven-plate). DispIndex /
+    DupItemId chain still wins.
+  - ItemDef.Pluralize + Item.GetName() override resolve %plural/singular%
+    NAME= templates at read time using Amount. Vendor list, click-name,
+    tooltip and crafting menus no longer leak raw "Black Pearl%s%"
+    markers. Corpses skip pluralization to match Source-X.
+  - Character.CharDefIndex (24-bit defname hash) added and persisted via
+    SpawnComponent / WorldSaver / WorldLoader (CHARDEFINDEX=).
+    TriggerDispatcher, SpeechEngine.CommandHandler and
+    InfoSkillExtensions resolve CharDef via CharDefIndex instead of
+    BaseId, fixing brain hijacks where string-named NPCs (c_alchemist,
+    etc.) clamped to their body id and spawned with the wrong brain.
+  - GameWorld.FindRegion now returns the smallest-total-area region
+    matching the point (CSector::GetRegion parity). Overlapping AREADEFs
+    no longer mask nested landmarks (castle / city / dungeon).
+    OnRegionChanged also refreshes CURRENT_REGION / CURRENT_REGION_UID
+    tags; FindAllRegions diagnostic helper added.
+  - DefinitionLoader.LoadCharDef stops parsing keys after the first
+    ON=@ trigger header so trigger-body assignments (NPC=, etc.) no
+    longer pollute the static CharDef state — they apply to the
+    Character instance at @Create time instead.
+  - SpawnComponent invokes OnNpcSpawned after spawning so spawn-point
+    NPCs receive the same trigger sequence as .add (@Create -> brain
+    finalisation -> @NPCRestock -> @CreateLoot). CharDefIndex is set on
+    spawn.
+  - WorldSaver/WorldLoader persist CHARDEFINDEX. Restart no longer
+    re-introduces c_alchemist / c_man brain hijacks.
+
+PERFORMANCE (EN):
+  - Multicore tick compute phase reuses static buffers for NpcDecision
+    list and ClientViewDelta dictionary, lowering per-tick gen-0 GC
+    pressure.
+  - ParallelComputeMinBatch=16: when NPC or client count is below the
+    threshold, sequential foreach replaces Parallel.ForEach. Eliminates
+    50-300 ms thread-pool ramp-up spikes observed on 1-vCPU VDS hosts.
+  - File sink runs through a sub-logger so console verbosity stays
+    untouched; routine INF messages (commands / script loads /
+    connections) no longer reach logs/spherenet-*.log.
+
+================================================================================
+
 [2026-04-20] - Region notify merkeze tasindi: .go, recall, gate de banner aliyor
 ----------------------------------------
 

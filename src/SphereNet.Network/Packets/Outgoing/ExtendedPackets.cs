@@ -513,29 +513,43 @@ public readonly struct VendorItem
     public string Name { get; init; }
 }
 
-/// <summary>0x74 — Vendor buy item list. Sent to client to display purchasable items.</summary>
+/// <summary>0x74 — Vendor buy item list. Sent to client to display purchasable items.
+/// The container serial MUST be the real serial of the buy/stock container the
+/// vendor has equipped (Source-X: LAYER_VENDOR_STOCK; SphereNet: vendor backpack)
+/// — the same serial used by the preceding 0x3C container contents and trailing
+/// 0x24 open container packets. Otherwise the client cannot bind the prices to
+/// the inventory items and silently drops the buy gump.</summary>
 public sealed class PacketVendorBuyList : PacketWriter
 {
-    private readonly uint _vendorSerial;
+    private readonly uint _containerSerial;
     private readonly IReadOnlyList<VendorItem> _items;
 
-    public PacketVendorBuyList(uint vendorSerial, IReadOnlyList<VendorItem> items) : base(0x74)
+    public PacketVendorBuyList(uint containerSerial, IReadOnlyList<VendorItem> items) : base(0x74)
     {
-        _vendorSerial = vendorSerial;
+        _containerSerial = containerSerial;
         _items = items;
     }
 
     public override PacketBuffer Build()
     {
-        var buf = CreateVariable(256);
-        buf.WriteUInt32(_vendorSerial | 0x40000000); // container serial (vendor buy pack)
+        var buf = CreateVariable(8 + _items.Count * 16);
+        buf.WriteUInt32(_containerSerial);
         buf.WriteByte((byte)_items.Count);
         foreach (var item in _items)
         {
             buf.WriteUInt32((uint)item.Price);
-            byte nameLen = (byte)(item.Name.Length + 1);
+            // ClassicUO's BuyList handler treats an empty string as a
+            // signal to fall back to the static tiledata name
+            // (`it.Name = it.ItemData.Name`). Writing nameLen=1 with
+            // a single null byte yields ReadASCII(1) == "" on the
+            // client side and triggers exactly that fallback — which
+            // is what we want when the server-side ItemDef has no
+            // explicit NAME= directive (vast majority of stock items
+            // inherit their display name from tiledata).
+            string name = item.Name ?? string.Empty;
+            byte nameLen = (byte)(name.Length + 1);
             buf.WriteByte(nameLen);
-            buf.WriteAsciiNull(item.Name);
+            buf.WriteAsciiNull(name);
         }
         buf.WriteLengthAt(1);
         return buf;
@@ -755,6 +769,66 @@ public sealed class PacketWorldItem : PacketWriter
 
         buf.WriteLengthAt(1);
 
+        return buf;
+    }
+}
+
+/// <summary>0x3C — Container contents. Sent when a container is opened so the
+/// client knows every item to draw inside it. Also used by the vendor buy gump
+/// (Source-X CClient::addContents → PacketContainer); without this packet the
+/// 0x74 vendor buy list has no items to bind to and the menu never appears.
+/// Pre-6.0.1.7 clients expect 19 bytes per item, 6.0.1.7+ expect 20 bytes
+/// (extra grid index byte before the container serial).</summary>
+public sealed class PacketContainerContents : PacketWriter
+{
+    public readonly struct Entry
+    {
+        public Entry(uint serial, ushort itemId, byte stackOffset, ushort amount,
+            short x, short y, uint containerSerial, ushort hue, byte gridIndex = 0)
+        {
+            Serial = serial; ItemId = itemId; StackOffset = stackOffset; Amount = amount;
+            X = x; Y = y; ContainerSerial = containerSerial; Hue = hue; GridIndex = gridIndex;
+        }
+        public uint Serial { get; }
+        public ushort ItemId { get; }
+        public byte StackOffset { get; }
+        public ushort Amount { get; }
+        public short X { get; }
+        public short Y { get; }
+        public uint ContainerSerial { get; }
+        public ushort Hue { get; }
+        public byte GridIndex { get; }
+    }
+
+    private readonly IReadOnlyList<Entry> _items;
+    private readonly bool _useGridIndex;
+
+    public PacketContainerContents(IReadOnlyList<Entry> items, bool useGridIndex = true)
+        : base(0x3C)
+    {
+        _items = items;
+        _useGridIndex = useGridIndex;
+    }
+
+    public override PacketBuffer Build()
+    {
+        int perItem = _useGridIndex ? 20 : 19;
+        var buf = CreateVariable(5 + _items.Count * perItem);
+        buf.WriteUInt16((ushort)_items.Count);
+        foreach (var it in _items)
+        {
+            buf.WriteUInt32(it.Serial);
+            buf.WriteUInt16(it.ItemId);
+            buf.WriteByte(it.StackOffset);
+            buf.WriteUInt16(it.Amount);
+            buf.WriteInt16(it.X);
+            buf.WriteInt16(it.Y);
+            if (_useGridIndex)
+                buf.WriteByte(it.GridIndex);
+            buf.WriteUInt32(it.ContainerSerial);
+            buf.WriteUInt16(it.Hue);
+        }
+        buf.WriteLengthAt(1);
         return buf;
     }
 }

@@ -115,6 +115,25 @@ public class Item : ObjBase
     /// <summary>Full display id (BaseId, used in UO packet as item graphic).</summary>
     public ushort DispIdFull => BaseId;
 
+    /// <summary>
+    /// Source-X-faithful display name. Mirrors <c>CItem::GetName()</c>
+    /// in <c>CItem.cpp</c>: applies <c>%plural/singular%</c> NAME=
+    /// template rules from <c>CItemBase::GetNamePluralize</c> using the
+    /// current <see cref="Amount"/>. Without this override the client
+    /// receives raw template text like "Black Pearl%s%" or
+    /// "loa%ves/f%" in vendor lists, click-name responses, tooltips,
+    /// and crafting menus. Corpse names skip pluralization to match
+    /// Source-X (<c>!IsType(IT_CORPSE)</c> branch in CItem.cpp:1769).
+    /// </summary>
+    public override string GetName()
+    {
+        string raw = base.GetName();
+        if (string.IsNullOrEmpty(raw) || raw.IndexOf('%') < 0)
+            return raw;
+        bool plural = (_amount != 1) && _type != ItemType.Corpse;
+        return SphereNet.Scripting.Definitions.ItemDef.Pluralize(raw, plural);
+    }
+
     /// <summary>Decay time in milliseconds. 0 = no decay.</summary>
     public long DecayTime { get; set; }
 

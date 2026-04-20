@@ -12,6 +12,16 @@ namespace SphereNet.Game.Objects.Characters;
 /// </summary>
 public class Character : ObjBase
 {
+    /// <summary>
+    /// Optional diagnostic sink. Wired by the host (Program.cs) so
+    /// trace lines emitted from inside Character (vendor restock,
+    /// trigger verb dispatch, etc.) reach the same logger pipeline
+    /// as the rest of the server. Avoids needing an ILogger field on
+    /// every Character instance.
+    /// </summary>
+    public static Action<string>? Diagnostic { get; set; }
+
+
     // Static delegate for guild resolution (set in Program.cs)
     public static Func<Serial, Guild.GuildManager?>? ResolveGuildManager;
     // Static delegate for party resolution (set in Program.cs)
@@ -56,7 +66,13 @@ public class Character : ObjBase
     private readonly byte[] _skillLocks = new byte[(int)SkillType.Qty]; // 0=up, 1=down, 2=locked
 
     // Equipment and inventory
-    private readonly Item?[] _equipment = new Item?[(int)Layer.Horse + 1];
+    // Source-X parity: every LAYER_* slot — including BankBox(29),
+    // VendorStock/Buy/Extra and Special — must have a backing slot.
+    // Sizing this to Layer.Horse(+1) silently dropped any Equip()
+    // call for high-numbered layers (e.g. bank box), which made
+    // GetEquippedItem(Layer.BankBox) return null and forced
+    // OpenBankBox to spawn a fresh empty box on every "bank" word.
+    private readonly Item?[] _equipment = new Item?[(int)Layer.Qty];
     private Item? _backpack;
 
     // NPC fields
@@ -274,6 +290,24 @@ public class Character : ObjBase
     public short MaxStam { get => _maxStam; set { if (value != _maxStam) { _maxStam = value; if (_stam > _maxStam) _stam = _maxStam; MarkDirty(DirtyFlag.Stats); } } }
 
     public ushort BodyId { get => _bodyId; set { _bodyId = value; MarkDirty(DirtyFlag.Body); } }
+
+    /// <summary>
+    /// Full-width CHARDEF resource index (24-bit, defname hashes can exceed
+    /// ushort). Used by trigger and definition lookups
+    /// (TriggerDispatcher / SpeechEngine / InfoSkillExtensions). The legacy
+    /// <see cref="BaseId"/> property stays at the display body Id and is
+    /// truncated to 16 bits — clamping the chardef hash through it
+    /// previously resolved c_alchemist's @Create to c_man and c_banker's
+    /// to nothing at all (no banker brain). Falls back to BaseId so any
+    /// caller that didn't set it explicitly (loaded from save, players,
+    /// numeric body NPCs) still works.
+    /// </summary>
+    public int CharDefIndex
+    {
+        get => _charDefIndex != 0 ? _charDefIndex : BaseId;
+        set => _charDefIndex = value;
+    }
+    private int _charDefIndex;
     public Direction Direction { get => _direction; set { if (value != _direction) { _direction = value; MarkDirty(DirtyFlag.Direction); } } }
     public StatFlag StatFlags { get => _statFlags; set => _statFlags = value; }
     public PrivLevel PrivLevel { get => _privLevel; set => _privLevel = value; }
@@ -1037,7 +1071,7 @@ public class Character : ObjBase
         // TYPEDEF
         if (upper == "TYPEDEF")
         {
-            value = TryGetTag("CHARDEF", out string? cd) ? (cd ?? $"0{BaseId:X}") : $"0{BaseId:X}";
+            value = TryGetTag("CHARDEF", out string? cd) ? (cd ?? $"0{CharDefIndex:X}") : $"0{CharDefIndex:X}";
             return true;
         }
 
@@ -1241,6 +1275,18 @@ public class Character : ObjBase
     {
         if (!TryNormalizeScriptValue(value, out string normalized))
             normalized = value;
+
+        // SELL=/BUY= are vendor-restock VERBS, not properties; the
+        // ScriptInterpreter's ExecuteLine first tries TrySetProperty
+        // and then TryExecuteCommand, so any accidental "true" return
+        // here would silently swallow the verb and leave the vendor
+        // stock empty. Force the verb path by short-circuiting
+        // property recognition.
+        if (key.Equals("SELL", StringComparison.OrdinalIgnoreCase) ||
+            key.Equals("BUY", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
 
         switch (key.ToUpperInvariant())
         {
@@ -1685,14 +1731,6 @@ public class Character : ObjBase
             case "SELL":
             case "BUY":
             {
-                // Source-X: inside an @NPCRestock block the SELL= /
-                // BUY= verbs enumerate a VENDOR_S_* / VENDOR_B_*
-                // TEMPLATE and populate the vendor's stock list. We
-                // don't yet maintain the dedicated LAYER_VENDOR_STOCK
-                // layers; drop the items into the vendor's backpack
-                // so the existing buy gump can read them. BUY= lists
-                // are kept as a TAG so the sell gump can compute
-                // what the vendor is willing to buy.
                 PopulateVendorStock(args.Trim(), buySide: key.Equals("BUY", StringComparison.OrdinalIgnoreCase));
                 return true;
             }
@@ -2420,8 +2458,22 @@ public class Character : ObjBase
             return;
 
         var item = world.CreateItem();
-        item.BaseId = (ushort)rid.Index;
         var idef = Definitions.DefinitionLoader.GetItemDef(rid.Index);
+        // Wire-side graphic (DispIndex) is distinct from the script-side
+        // resource index for defname ITEMDEFs — see TemplateEngine.ResolveDispId
+        // for the full rationale. (ushort)rid.Index used to truncate the
+        // 32-bit hash and produced random graphics on equipment.
+        ushort dispId = 0;
+        if (idef != null)
+        {
+            if (idef.DispIndex != 0) dispId = idef.DispIndex;
+            else if (idef.DupItemId != 0) dispId = idef.DupItemId;
+        }
+        if (dispId == 0 && rid.Index <= 0xFFFF) dispId = (ushort)rid.Index;
+        if (dispId == 0) return;
+        item.BaseId = dispId;
+        // Store raw NAME= template; Item.GetName() resolves
+        // %plural/singular% markers per current Amount on every read.
         if (idef != null && !string.IsNullOrWhiteSpace(idef.Name))
             item.Name = idef.Name;
 
@@ -2551,37 +2603,58 @@ public class Character : ObjBase
         }
 
         // SELL side — spawn every entry from the template into the
-        // backpack. Duplicate restocks on the same template are
-        // handled by Vendor buy gump refresh logic, not here.
+        // dedicated vendor STOCK container (Layer.VendorStock = 26).
+        // ClassicUO's BuyList (0x74) handler hard-checks that the
+        // referenced container is equipped at Layer.ShopBuyRestock
+        // (0x1A == 26) or Layer.ShopBuy (0x1B == 27); items dropped
+        // into the regular Backpack (Layer.Pack = 21) are silently
+        // rejected and the buy gump never opens. Match Source-X
+        // CChar::NPC_Vendor_Restock which uses LAYER_VENDOR_STOCK.
         var world = ResolveWorld?.Invoke();
         if (world == null) return;
-        var pack = Backpack;
+        var pack = GetEquippedItem(Layer.VendorStock);
         if (pack == null)
         {
             pack = world.CreateItem();
-            pack.BaseId = 0x0E75; // backpack graphic
-            Equip(pack, Layer.Pack);
+            pack.BaseId = 0x408D; // i_vendor_box (Source-X stock graphic)
+            Equip(pack, Layer.VendorStock);
         }
 
+        int spawned = 0, considered = 0, resolveFails = 0;
         foreach (var (entryName, entryAmount) in
                  Definitions.TemplateEngine.EnumerateSequential(templateDefName))
         {
+            considered++;
             string picked = Definitions.TemplateEngine.PickRandomItemDefName(entryName);
-            if (string.IsNullOrWhiteSpace(picked)) continue;
+            if (string.IsNullOrWhiteSpace(picked)) { resolveFails++; continue; }
 
             var resources = Definitions.DefinitionLoader.StaticResources;
             if (resources == null) continue;
-            ushort itemId = Definitions.TemplateEngine.ResolveItemId(resources, picked);
-            if (itemId == 0) continue;
+            // Source-X parity: an [ITEMDEF i_potion_refresh] block lives
+            // under a string-hashed *resource* index (e.g. 0x40B2C7E1)
+            // but ships `ID=0x0F0E` as the wire graphic. We need BOTH:
+            //   - defIndex (32-bit hash) → look up the ItemDef
+            //   - dispId   (16-bit graphic) → wire-side BaseId / tile
+            // Truncating defIndex to a ushort yields random visible
+            // graphics (lava / window-shutter / elven-plate were the
+            // classic symptoms before this split — see ResolveDispId).
+            int defIndex = Definitions.TemplateEngine.ResolveItemDefIndex(resources, picked);
+            if (defIndex == 0) { resolveFails++; continue; }
+            ushort dispId = Definitions.TemplateEngine.ResolveDispId(resources, picked);
+            if (dispId == 0) { resolveFails++; continue; }
 
             var item = world.CreateItem();
-            item.BaseId = itemId;
-            var idef = Definitions.DefinitionLoader.GetItemDef(itemId);
+            var idef = Definitions.DefinitionLoader.GetItemDef(defIndex);
+            item.BaseId = dispId;
+            // NAME= templates carry %plural/singular% markers — store
+            // the RAW template; Item.GetName() pluralizes per Amount on
+            // every read (CItem::GetName parity, CItem.cpp:1769).
             if (idef != null && !string.IsNullOrWhiteSpace(idef.Name))
                 item.Name = idef.Name;
             if (entryAmount > 1)
                 item.Amount = (ushort)Math.Min(entryAmount, ushort.MaxValue);
             pack.AddItem(item);
+            spawned++;
         }
 
         SetTag("VENDOR_LAST_RESTOCK", Environment.TickCount64.ToString());
