@@ -4,6 +4,94 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-20] - Aktif skill motoru: Healing/Hiding/Stealing/Lockpicking/Taming + 9 skill daha
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - IActiveSkillSink + ActiveSkillEngine: Source-X CCharSkill.cpp aktif
+    skill ailesinin SphereNet karsiligi. Stage makinasi (START/STROKE/
+    SUCCESS/FAIL) tek senkron cagriya katlanir; pre-check, emote, dice
+    rolu ve yan etki ayni siralamayla isler.
+    (IActiveSkillSink + ActiveSkillEngine: SphereNet counterpart of the
+     CCharSkill.cpp active-skill family. Stage machine collapsed into a
+     single synchronous call preserving original ordering.)
+
+  Port edilen skill'ler / Ported skills:
+    * Hiding: LIGHT_CARRIED tag'i HIDING_TOOLIT ile reject; basari
+      STATF_HIDDEN, basarisizlik HIDING_STUMBLE.
+    * DetectingHidden: 8 tile yaricap, skill farki + %30 sans ile gizliyi
+      acar; DETECTHIDDEN_SUCC mesaji.
+    * Meditation: STAT_INT cap'ti MEDITATION_PEACE_1 ile reject;
+      MEDITATION_TRY/SUCCESS/PEACE_2 zinciri ve 0x0F9 sound.
+    * SpiritSpeak: STATF_SPIRITSPEAK aktifse no-op; basari 0x24A sound +
+      SPIRITSPEAK_SUCCESS + buff bayragi.
+    * Begging: human NPC hedefler, BEGGING_START emote, basari 1-10 altin.
+    * Healing: bandaj kontrolu, 2 tile mesafe, healthy/poisoned/dead
+      branch'lari, HEALING_SELF/TO emote, HEALING_CURE_1/4 bantlari,
+      basari/fail her ikisinde de bandaj harcanir.
+    * Stealing: agirlik kontrolu (skill/10), STEALING_HEAVY/PICKPOCKET/
+      MARK; basarisizlik %50 MakeCriminal.
+    * Snooping: container sinifi reject (SNOOPING_CANT), SNOOPING_ATTEMPTING/
+      FAILED + SnoopCriminalEnabled bayrami uyumlu.
+    * Lockpicking: ContainerLocked/DoorLocked guard, lockpick gerekli
+      (LOCKPICKING_NOPICK), basari 0x241 sound + tip degisimi, basarisizlik
+      %33 sansla pick kirilir.
+    * RemoveTrap: Trap/TrapActive guard, basari aktif tuzak deactive olur.
+    * Taming: human/Pet/range guard'lari, TAMING_1..4 emote dongusu,
+      hedef MaxHits*4 difficulty, basari Pet flag + master + TAMING_SUCCESS/
+      YMASTER mesajlari.
+    * Herding: animal hedef + WeaponMaceCrook gerekli; pet/human reject
+      "<name> seems being somehow annoyed by your action" (Source-X
+      sysmessagef formati), basari hedefe HERDING_SUCCESS overhead.
+    * Poisoning: WeaponMaceSharp/Sword/Fence/Axe + Food/Fruit/MeatRaw
+      hedefleri, POTION_SPELL=Poison potion'i tuketir, weapon'a
+      POISON_SKILL tag'i basar.
+    * Tracking: skill bantli yaricap, kategori sayimi (Animals/Monsters/
+      Humans/Players), TRACKING_RESULT_0..4/_DISC + TRACKING_FAIL_*.
+
+  - GameClient.BeginActiveSkill: skill dispatcher, ActiveSkillTargetKind'a
+    gore (None/Character/Item/Menu) target cursor acar veya hemen calisir.
+    SkillPreStart/Start/Stroke/Success/Fail trigger zinciri korunur.
+    (GameClient.BeginActiveSkill dispatches based on ActiveSkillTargetKind:
+     opens target cursor for character/item skills, runs immediately for
+     none/menu skills; preserves the trigger chain.)
+
+  - InfoSkillSink genisletildi: artik IActiveSkillSink implemente eder.
+    NpcSpeech uzerinden Emote, PacketSound ile Sound, Backpack ve sub-
+    container icinde FindBackpackItem, item silme (parent.RemoveItem +
+    item.Delete) ve DeliverItem (Backpack veya yere drop) saglar.
+    (InfoSkillSink now implements IActiveSkillSink: Emote via NpcSpeech,
+     Sound via PacketSound, FindBackpackItem one-level deep, ConsumeAmount,
+     DeliverItem to backpack-or-ground.)
+
+  - SkillHandlers.UseActiveSkill + GetActiveSkillTarget: 13 aktif skill
+    icin engine routing tablosu. Diger skill'ler eski Point3D? path'inde
+    legacy davranisi korur.
+    (SkillHandlers.UseActiveSkill + GetActiveSkillTarget: dispatch table
+     for the 13 active skills; remaining skills keep the legacy Point3D?
+     path.)
+
+TESTLER / TESTS:
+  - ActiveSkillEngineTests (16 test): Recording sink ile her skill'in
+    pre-check kanal/anahtar dizilimi (Hiding LightCarried, Meditation
+    Peace1, SpiritSpeak active, Healing healthy/wounded, Stealing/
+    Snooping/Lockpicking/RemoveTrap/Taming/Herding/Poisoning/Tracking)
+    dogrulaniyor.
+    (16 ActiveSkillEngine tests covering every pre-check branch via a
+     recording sink.)
+
+GELISTIRICILER ICIN / FOR DEVELOPERS:
+  - Engine network'tan tamamen bagimsiz; NPC AI veya scripted trigger'lar
+    icin de ayni IActiveSkillSink uzerinden cagrilabilir.
+    (Engine is network-free and reusable from NPC AI or scripted triggers
+     via the same IActiveSkillSink.)
+  - Stage collapse: bandage tuketimi START phase'inde degil dice rolu
+    sonrasinda yapilir; ileride per-tick STROKE loop eklemek icin engine
+    icindeki sira korundu.
+    (Stage collapse: bandage consumption happens after the dice roll, but
+     the in-engine ordering preserves the future per-tick STROKE loop hook.)
+
+
 [2026-04-20] - Source-X DEFMSG parite katmani + bilgi skill motoru
 ----------------------------------------
 

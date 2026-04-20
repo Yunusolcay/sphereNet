@@ -118,6 +118,62 @@ public sealed class SkillHandlers
         _ => false,
     };
 
+    /// <summary>
+    /// Active skills routed through <see cref="ActiveSkillEngine"/> via the
+    /// rich <see cref="IActiveSkillSink"/> path. Returns the kind of target
+    /// prompt the client should open.
+    /// </summary>
+    public static ActiveSkillTargetKind GetActiveSkillTarget(SkillType skill) => skill switch
+    {
+        SkillType.Hiding         => ActiveSkillTargetKind.None,
+        SkillType.DetectingHidden => ActiveSkillTargetKind.None,
+        SkillType.Meditation     => ActiveSkillTargetKind.None,
+        SkillType.SpiritSpeak    => ActiveSkillTargetKind.None,
+        SkillType.Tracking       => ActiveSkillTargetKind.Menu,
+        SkillType.Begging        => ActiveSkillTargetKind.Character,
+        SkillType.Healing        => ActiveSkillTargetKind.Character,
+        SkillType.Taming         => ActiveSkillTargetKind.Character,
+        SkillType.Stealing       => ActiveSkillTargetKind.Item,
+        SkillType.Snooping       => ActiveSkillTargetKind.Item,
+        SkillType.Lockpicking    => ActiveSkillTargetKind.Item,
+        SkillType.RemoveTrap     => ActiveSkillTargetKind.Item,
+        SkillType.Poisoning      => ActiveSkillTargetKind.Item,
+        SkillType.Herding        => ActiveSkillTargetKind.Character,
+        _                        => ActiveSkillTargetKind.Unsupported,
+    };
+
+    /// <summary>
+    /// Dispatch entry for active skills that takes the rich sink and routes
+    /// to the matching <see cref="ActiveSkillEngine"/> method. Falls back to
+    /// the legacy <see cref="UseSkill"/> path for unsupported skills.
+    /// </summary>
+    public bool UseActiveSkill(IActiveSkillSink sink, SkillType skill, ObjBase? target, Point3D? point = null)
+    {
+        var ch = sink.Self;
+        if (ch.IsDead) return false;
+
+        switch (skill)
+        {
+            case SkillType.Hiding:           return ActiveSkillEngine.Hiding(sink);
+            case SkillType.DetectingHidden:  return ActiveSkillEngine.DetectHidden(sink);
+            case SkillType.Meditation:       return ActiveSkillEngine.Meditation(sink);
+            case SkillType.SpiritSpeak:      return ActiveSkillEngine.SpiritSpeak(sink);
+            case SkillType.Begging:          return ActiveSkillEngine.Begging(sink, target as Character);
+            case SkillType.Healing:          return ActiveSkillEngine.Healing(sink, target as Character);
+            case SkillType.Taming:           return ActiveSkillEngine.Taming(sink, target as Character);
+            case SkillType.Stealing:         return ActiveSkillEngine.Stealing(sink, target as Item);
+            case SkillType.Snooping:         return ActiveSkillEngine.Snooping(sink, target as Item);
+            case SkillType.Lockpicking:      return ActiveSkillEngine.Lockpicking(sink, target as Item);
+            case SkillType.RemoveTrap:       return ActiveSkillEngine.RemoveTrap(sink, target as Item);
+            case SkillType.Poisoning:        return ActiveSkillEngine.Poisoning(sink, target as Item);
+            case SkillType.Herding:          return ActiveSkillEngine.Herding(sink, target as Character, point);
+            case SkillType.Tracking:         return ActiveSkillEngine.Tracking(sink, ActiveSkillEngine.TrackingCategory.Animals);
+            default:                         return UseSkill(ch, skill, point);
+        }
+    }
+
+    public enum ActiveSkillTargetKind { None, Character, Item, Menu, Unsupported }
+
     public bool UseSkill(Character ch, SkillType skill, Point3D? target = null)
     {
         if (ch.IsDead) return false;

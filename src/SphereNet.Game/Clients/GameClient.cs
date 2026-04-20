@@ -3057,6 +3057,14 @@ public sealed class GameClient : ITextConsole
             return;
         }
 
+        // Active skills with parity coverage in ActiveSkillEngine.
+        var activeKind = SkillHandlers.GetActiveSkillTarget(skill);
+        if (activeKind != SkillHandlers.ActiveSkillTargetKind.Unsupported)
+        {
+            BeginActiveSkill(skill, skillId, activeKind);
+            return;
+        }
+
         // Fire @SkillPreStart — if script blocks, don't use skill
         if (_triggerDispatcher != null)
         {
@@ -4132,15 +4140,132 @@ public sealed class GameClient : ITextConsole
         });
     }
 
-    /// <summary>Glue between the info-skill engine and the client's network layer.</summary>
-    private sealed class InfoSkillSink : Skills.Information.IInfoSkillSink
+    /// <summary>
+    /// Active-skill driver. Skills with <see cref="SkillHandlers.ActiveSkillTargetKind.None"/>
+    /// run immediately (Hiding, Meditation, ...). Character/Item-target skills
+    /// open a target cursor and resolve the picked Serial via the world before
+    /// invoking <see cref="SkillHandlers.UseActiveSkill"/>. Trigger chain
+    /// (PreStart/Start/Stroke/Success/Fail) is preserved.
+    /// </summary>
+    private void BeginActiveSkill(SkillType skill, int skillId, SkillHandlers.ActiveSkillTargetKind kind)
+    {
+        if (_character == null) return;
+
+        if (_triggerDispatcher != null)
+        {
+            var pre = _triggerDispatcher.FireCharTrigger(_character, CharTrigger.SkillPreStart,
+                new TriggerArgs { CharSrc = _character, N1 = skillId });
+            if (pre == TriggerResult.True) return;
+
+            var start = _triggerDispatcher.FireCharTrigger(_character, CharTrigger.SkillStart,
+                new TriggerArgs { CharSrc = _character, N1 = skillId });
+            if (start == TriggerResult.True) return;
+        }
+
+        // No-target path: fire stroke, run engine, fire success/fail.
+        if (kind == SkillHandlers.ActiveSkillTargetKind.None ||
+            kind == SkillHandlers.ActiveSkillTargetKind.Menu)
+        {
+            _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.SkillStroke,
+                new TriggerArgs { CharSrc = _character, N1 = skillId });
+
+            var sink0 = new InfoSkillSink(this, _character);
+            bool ok0 = _skillHandlers?.UseActiveSkill(sink0, skill, null) ?? false;
+
+            if (_triggerDispatcher != null)
+            {
+                _triggerDispatcher.FireCharTrigger(_character,
+                    ok0 ? CharTrigger.SkillSuccess : CharTrigger.SkillFail,
+                    new TriggerArgs { CharSrc = _character, N1 = skillId });
+            }
+            return;
+        }
+
+        // Target-required path.
+        SysMessage(kind == SkillHandlers.ActiveSkillTargetKind.Item
+            ? $"What item do you wish to use your {skill} skill on?"
+            : $"Whom do you wish to use your {skill} skill on?");
+
+        SetPendingTarget((serial, x, y, z, graphic) =>
+        {
+            if (_character == null) return;
+
+            var uid = new Serial(serial);
+            Objects.ObjBase? target = uid.IsValid ? _world.FindObject(uid) : null;
+
+            _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.SkillStroke,
+                new TriggerArgs { CharSrc = _character, N1 = skillId });
+
+            var sink = new InfoSkillSink(this, _character);
+            bool ok = _skillHandlers?.UseActiveSkill(sink, skill, target) ?? false;
+
+            if (_triggerDispatcher != null)
+            {
+                _triggerDispatcher.FireCharTrigger(_character,
+                    ok ? CharTrigger.SkillSuccess : CharTrigger.SkillFail,
+                    new TriggerArgs { CharSrc = _character, N1 = skillId });
+            }
+        });
+    }
+
+    /// <summary>
+    /// Glue between the skill engines and the client's network layer.
+    /// Implements both <see cref="Skills.Information.IInfoSkillSink"/> and
+    /// <see cref="Skills.Information.IActiveSkillSink"/> so the engines can
+    /// emit overhead text, emote poses, sounds, and consume backpack items.
+    /// </summary>
+    private sealed class InfoSkillSink : Skills.Information.IActiveSkillSink
     {
         private readonly GameClient _client;
         public InfoSkillSink(GameClient client, Character self) { _client = client; Self = self; }
         public Character Self { get; }
         public Random Random => System.Random.Shared;
+        public Game.World.GameWorld World => _client._world;
+
         public void SysMessage(string text) => _client.SysMessage(text);
         public void ObjectMessage(Objects.ObjBase target, string text) => _client.ObjectMessage(target, text);
+        public void Emote(string text) => _client.NpcSpeech(Self, text);
+        public void Sound(ushort soundId) =>
+            _client._netState.Send(new PacketSound(soundId, (short)Self.Position.X, (short)Self.Position.Y, Self.Position.Z));
+
+        public Item? FindBackpackItem(Core.Enums.ItemType type)
+        {
+            var pack = Self.Backpack;
+            if (pack == null) return null;
+            foreach (var it in pack.Contents)
+            {
+                if (it.ItemType == type) return it;
+            }
+            // One level deep so common pouches resolve.
+            foreach (var it in pack.Contents)
+            {
+                if (it.ItemType is Core.Enums.ItemType.Container or Core.Enums.ItemType.ContainerLocked)
+                {
+                    foreach (var inner in it.Contents)
+                        if (inner.ItemType == type) return inner;
+                }
+            }
+            return null;
+        }
+
+        public void ConsumeAmount(Item item, ushort amount = 1)
+        {
+            if (item.Amount > amount)
+            {
+                item.Amount = (ushort)(item.Amount - amount);
+                return;
+            }
+            // Drop from container.
+            var holder = _client._world.FindObject(item.ContainedIn);
+            if (holder is Item parent) parent.RemoveItem(item);
+            item.Delete();
+        }
+
+        public void DeliverItem(Item item)
+        {
+            if (Self.Backpack != null) Self.Backpack.AddItem(item);
+            else _client._world.PlaceItemWithDecay(item, Self.Position);
+        }
     }
 
     /// <summary>Source-X addObjMessage: overhead speech over any ObjBase.</summary>
