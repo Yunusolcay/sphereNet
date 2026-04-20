@@ -280,23 +280,10 @@ public sealed class MovementEngine
                         new TriggerArgs { CharSrc = ch, S1 = newRegion.Name });
                 }
 
-                // Source-X CCharBase::Region_Notify: announce region entry
-                // and any special flags (guards/PvP) to the moving client.
-                if (newRegion != null && OnSysMessage != null && ch.IsPlayer)
-                {
-                    OnSysMessage(ch, SphereNet.Game.Messages.ServerMessages.GetFormatted(
-                        SphereNet.Game.Messages.Msg.MsgRegionEnter, newRegion.Name));
-                    if (newRegion.IsFlag(RegionFlag.Guarded))
-                    {
-                        OnSysMessage(ch, SphereNet.Game.Messages.ServerMessages.Get(
-                            SphereNet.Game.Messages.Msg.MsgRegionGuards1));
-                    }
-                    if (newRegion.IsFlag(RegionFlag.NoPvP))
-                    {
-                        OnSysMessage(ch, SphereNet.Game.Messages.ServerMessages.Get(
-                            SphereNet.Game.Messages.Msg.MsgRegionPvpsafe));
-                    }
-                }
+                // Source-X CCharBase::Region_Notify is now centralised in
+                // GameWorld.OnRegionChanged so walking, .go teleport, recall
+                // and gate all produce the same MSG_REGION_ENTER / guard /
+                // PvP banner — no per-engine duplication needed here.
 
                 // Optional global hook — silently skip if not defined in scripts.
                 _triggerDispatcher?.Runner?.TryRunFunction(

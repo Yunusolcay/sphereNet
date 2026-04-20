@@ -4,6 +4,30 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-20] - Region notify merkeze tasindi: .go, recall, gate de banner aliyor
+----------------------------------------
+
+DUZELTMELER / FIXES:
+  - GameWorld.MoveCharacter'a OnRegionChanged hook'u eklendi. Karakter
+    bir regiondan digerine gectiginde tek bir noktadan tetikleniyor.
+    Boylece yurume + .go teleport + recall + gate hepsi ayni
+    MSG_REGION_ENTER + guard / PvP banner'i aliyor.
+  - MovementEngine icindeki esdeger blok kaldirildi (cift mesaj olmasin).
+  - Program.cs world.OnRegionChanged'i hareket eden oyuncunun
+    GameClient'ina yonlendiriyor.
+
+FIXES (EN):
+  - Added OnRegionChanged hook to GameWorld.MoveCharacter so a region
+    transition fires once regardless of the call path (walking, .go
+    teleport, recall, gate). Previously only walk steps emitted
+    MSG_REGION_ENTER, so .go britain into a guarded region produced
+    no banner.
+  - Removed the duplicate notify block from MovementEngine.
+  - Program.cs routes world.OnRegionChanged into the moving player's
+    GameClient.
+
+================================================================================
+
 [2026-04-20] - Container reddi: bvbox / cont_full mesajlari Source-X paritesine cevrildi
 ----------------------------------------
 

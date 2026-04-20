@@ -587,6 +587,26 @@ public static class Program
                 if (c.Character == mover) { c.SysMessage(text); break; }
             }
         };
+
+        // Source-X CCharBase::Region_Notify centralised at world level so
+        // walk, .go teleport, recall and gate all hit one notify path.
+        _world.OnRegionChanged = (mover, oldRegion, newRegion) =>
+        {
+            if (!mover.IsPlayer || newRegion == null) return;
+            SphereNet.Game.Clients.GameClient? gc = null;
+            foreach (var c in _clients.Values)
+                if (c.Character == mover) { gc = c; break; }
+            if (gc == null) return;
+
+            gc.SysMessage(SphereNet.Game.Messages.ServerMessages.GetFormatted(
+                SphereNet.Game.Messages.Msg.MsgRegionEnter, newRegion.Name));
+            if (newRegion.IsFlag(SphereNet.Core.Enums.RegionFlag.Guarded))
+                gc.SysMessage(SphereNet.Game.Messages.ServerMessages.Get(
+                    SphereNet.Game.Messages.Msg.MsgRegionGuards1));
+            if (newRegion.IsFlag(SphereNet.Core.Enums.RegionFlag.NoPvP))
+                gc.SysMessage(SphereNet.Game.Messages.ServerMessages.Get(
+                    SphereNet.Game.Messages.Msg.MsgRegionPvpsafe));
+        };
         _partyManager = new PartyManager();
         _guildManager = new GuildManager();
         _guildManager.DeserializeFromWorld(_world);

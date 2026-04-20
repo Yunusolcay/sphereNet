@@ -316,6 +316,12 @@ public sealed class GameWorld
         sector.AddItem(item);
     }
 
+    /// <summary>Source-X CCharBase::Region_Notify hook. Fired for every
+    /// character move (walk, .go teleport, recall/gate, NPC drift) so a
+    /// single point delivers MSG_REGION_ENTER / guard / PvP banners
+    /// regardless of the call path. Args: (character, oldRegion, newRegion).</summary>
+    public Action<Character, Regions.Region?, Regions.Region?>? OnRegionChanged { get; set; }
+
     /// <summary>Move a character to a new position.</summary>
     public void MoveCharacter(Character ch, Point3D newPos)
     {
@@ -332,6 +338,7 @@ public sealed class GameWorld
                 ch.Position.X, ch.Position.Y, ch.Position.Z, ch.Position.Map);
             return;
         }
+        var oldRegion = FindRegion(ch.Position);
         var oldSector = GetSector(ch.Position);
         if (oldSector != newSector)
         {
@@ -339,6 +346,9 @@ public sealed class GameWorld
             newSector.AddCharacter(ch);
         }
         ch.Position = newPos;
+        var newRegion = FindRegion(newPos);
+        if (oldRegion != newRegion)
+            OnRegionChanged?.Invoke(ch, oldRegion, newRegion);
     }
 
     /// <summary>Place a character in the world.</summary>
