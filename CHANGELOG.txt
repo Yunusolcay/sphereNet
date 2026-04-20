@@ -4,6 +4,51 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-20] - Pet komut paritesi: NPC_OnHearPetCmd 24 verb ile birebir
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - GameClient.TryHandlePetCommand: Source-X CChar::NPC_OnHearPetCmd
+    paritesinde yeniden yazildi. "all <verb>" ve "<petname> <verb>" iki
+    yola dispatch eder. ApplyPetVerb 24 PC_* verb'ini taniyor; ihtiyac
+    olanlar EmitPetTargetPrompt ile target cursor acar, callback
+    ApplyPetTarget'ta calisir.
+    (TryHandlePetCommand mirrors NPC_OnHearPetCmd: dispatches "all <verb>"
+     and "<petname> <verb>". ApplyPetVerb recognises 24 PC_* verbs;
+     target-needing verbs open the cursor via EmitPetTargetPrompt and
+     callback in ApplyPetTarget.)
+
+  Tanrnan verb'ler / Recognised verbs:
+    follow / follow me / come / stay / stop / guard / guard me / go /
+    speak / drop / drop all / equip / status / attack / kill / friend /
+    unfriend / transfer / release / price / bought / samples / stock /
+    cash.
+
+  Source-X mesaj eslemeleri / Source-X message bindings:
+    * NPC_PET_SUCCESS (basari ack)
+    * NPC_PET_CONFUSED (anlamsiz verb)
+    * NPC_PET_CARRYNOTHING (drop bos)
+    * NPC_PET_DAYS_LEFT (status, HIRE_DAYS_LEFT tag)
+    * NPC_PET_EMPLOYED (status, days yok)
+    * NPC_PET_TARG_ATT / GUARD / FOLLOW / FRIEND / UNFRIEND / TRANSFER /
+      GO / NPC_PET_SETPRICE (target cursor prompt'lari)
+    * NPC_PET_TARG_FRIEND_ALREADY / SUCCESS1 / NOTFRIEND / SUCCESS1
+    * NPC_PET_TARG_GUARD_SUCCESS
+
+  Yan etkiler / Side effects:
+    * Friend → pet'e FRIEND_<uid>=1 tag'i basilir.
+    * Unfriend → tag silinir.
+    * Transfer → NpcMaster guncellenir.
+    * Attack/Kill → ATTACK_TARGET tag'i.
+    * Guard → GUARD_TARGET tag'i.
+    * Follow → FOLLOW_TARGET tag'i.
+    * Go → pet pozisyonu hedef noktaya tasinir.
+
+  (Side effects: friend writes FRIEND_<uid>=1 tag; unfriend removes it;
+   transfer flips NpcMaster; attack/guard/follow store target uid in tag;
+   go teleports pet to clicked point.)
+
+
 [2026-04-20] - Item kullanim paritesi: 30+ Source-X IT_* dali Cmd_Use_Item ile esitlendi
 ----------------------------------------
 

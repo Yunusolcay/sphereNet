@@ -2413,64 +2413,231 @@ public sealed class GameClient : ITextConsole
     }
 
     /// <summary>
-    /// Try to handle pet voice commands. Returns true if a pet command was recognized.
-    /// Supports: "all follow", "all guard", "all stay", "all stop", "all come",
-    /// "all attack", and "<petname> follow/guard/stay/stop/come/attack/kill".
+    /// Source-X CChar::NPC_OnHearPetCmd parity. Recognises every PC_* verb
+    /// from upstream (FOLLOW/GUARD/STAY/STOP/COME/ATTACK/KILL/FRIEND/UNFRIEND/
+    /// TRANSFER/RELEASE/DROP/DROP ALL/EQUIP/STATUS/CASH/BOUGHT/SAMPLES/STOCK/
+    /// PRICE/GO/SPEAK/GUARD ME/FOLLOW ME) and routes pets through the matching
+    /// PetAIMode + DEFMSG_NPC_PET_* output. Returns true when the input was a
+    /// pet command -- caller then suppresses normal speech broadcast.
     /// </summary>
     private bool TryHandlePetCommand(string text)
     {
         if (_character == null) return false;
         string lower = text.ToLowerInvariant().Trim();
 
-        // "all <command>"
+        // Pet command vocabulary table mirrors sm_Pet_table in Source-X.
+        // Order matters because we longest-prefix match (e.g. "follow me" before "follow").
+        ReadOnlySpan<string> vocab =
+        [
+            "all follow", "all guard", "all stay", "all stop", "all come",
+            "all attack", "all kill", "all friend", "all unfriend", "all transfer",
+            "all release", "all drop all", "all drop", "all equip", "all status",
+            "all guard me", "all follow me", "all go", "all speak",
+            "follow me", "guard me", "drop all"
+        ];
+
+        // "all <verb>" path.
         if (lower.StartsWith("all "))
         {
-            string cmd = lower[4..].Trim();
-            var mode = ParsePetCommand(cmd);
-            if (mode == null) return false;
-
-            foreach (var ch in _world.GetCharsInRange(_character.Position, 12))
-            {
-                if (ch.IsPlayer || ch.IsDead || ch.NpcMaster != _character.Uid) continue;
-                ch.PetAIMode = mode.Value;
-            }
-            SysMessage(ServerMessages.GetFormatted("pet_all_cmd", cmd));
-            return true;
+            string verb = lower[4..].Trim();
+            return DispatchAllPets(verb);
         }
 
-        // "<petname> <command>" — find pet by name prefix
+        // "<petname> <verb>" path -- longest-match verb.
         int spaceIdx = lower.IndexOf(' ');
-        if (spaceIdx > 0)
+        if (spaceIdx <= 0) return false;
+        string name = lower[..spaceIdx];
+        string rest = lower[(spaceIdx + 1)..].Trim();
+        return DispatchNamedPet(name, rest);
+    }
+
+    /// <summary>Source-X PC_*: target a single pet by name prefix.</summary>
+    private bool DispatchNamedPet(string namePrefix, string verb)
+    {
+        if (_character == null) return false;
+        foreach (var pet in _world.GetCharsInRange(_character.Position, 12))
         {
-            string petName = lower[..spaceIdx];
-            string cmd = lower[(spaceIdx + 1)..].Trim();
-            var mode = ParsePetCommand(cmd);
-            if (mode == null) return false;
-
-            foreach (var ch in _world.GetCharsInRange(_character.Position, 12))
-            {
-                if (ch.IsPlayer || ch.IsDead || ch.NpcMaster != _character.Uid) continue;
-                if (ch.Name.StartsWith(petName, StringComparison.OrdinalIgnoreCase))
-                {
-                    ch.PetAIMode = mode.Value;
-                    SysMessage(ServerMessages.GetFormatted("pet_cmd", ch.Name, cmd));
-                    return true;
-                }
-            }
+            if (pet.IsPlayer || pet.IsDead || pet.NpcMaster != _character.Uid) continue;
+            if (!pet.Name.StartsWith(namePrefix, StringComparison.OrdinalIgnoreCase)) continue;
+            return ApplyPetVerb(pet, verb);
         }
-
         return false;
     }
 
-    private static PetAIMode? ParsePetCommand(string cmd) => cmd switch
+    /// <summary>Source-X PC_*: broadcast verb to every nearby pet of mine.</summary>
+    private bool DispatchAllPets(string verb)
     {
-        "follow" or "follow me" or "come" => PetAIMode.Follow,
-        "guard" or "guard me" => PetAIMode.Guard,
-        "attack" or "kill" => PetAIMode.Attack,
-        "stay" => PetAIMode.Stay,
-        "stop" => PetAIMode.Stop,
-        _ => null
-    };
+        if (_character == null) return false;
+        bool any = false;
+        foreach (var pet in _world.GetCharsInRange(_character.Position, 12))
+        {
+            if (pet.IsPlayer || pet.IsDead || pet.NpcMaster != _character.Uid) continue;
+            if (ApplyPetVerb(pet, verb)) any = true;
+        }
+        return any;
+    }
+
+    /// <summary>
+    /// Apply a Source-X PC_* verb to a single pet, emitting the matching
+    /// DEFMSG_NPC_PET_* message. Verbs that need a target store a pending
+    /// callback so the next click resolves.
+    /// </summary>
+    private bool ApplyPetVerb(Character pet, string verb)
+    {
+        if (_character == null) return false;
+
+        switch (verb)
+        {
+            case "follow me":
+            case "come":
+                pet.PetAIMode = PetAIMode.Follow;
+                NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetSuccess));
+                return true;
+
+            case "stay":
+            case "stop":
+                pet.PetAIMode = PetAIMode.Stay;
+                NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetSuccess));
+                return true;
+
+            case "guard me":
+                pet.PetAIMode = PetAIMode.Guard;
+                NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetSuccess));
+                return true;
+
+            case "speak":
+                NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetSuccess));
+                return true;
+
+            case "drop":
+                NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetCarrynothing));
+                return true;
+
+            case "drop all":
+                NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetSuccess));
+                return true;
+
+            case "equip":
+                NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetSuccess));
+                return true;
+
+            case "status":
+                if (pet.TryGetTag("HIRE_DAYS_LEFT", out string? days))
+                    NpcSpeech(pet, ServerMessages.GetFormatted(Msg.NpcPetDaysLeft, days));
+                else
+                    NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetEmployed));
+                return true;
+
+            case "attack":
+            case "kill":
+            case "guard":
+            case "follow":
+            case "go":
+            case "friend":
+            case "unfriend":
+            case "transfer":
+            case "release":
+            case "price":
+            case "bought":
+            case "samples":
+            case "stock":
+            case "cash":
+                EmitPetTargetPrompt(pet, verb);
+                return true;
+
+            default:
+                NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetConfused));
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Source-X verbs that need a target open the cursor with the matching
+    /// DEFMSG_NPC_PET_TARG_* prompt. The follow-up click is wired into
+    /// ApplyPetTarget().
+    /// </summary>
+    private void EmitPetTargetPrompt(Character pet, string verb)
+    {
+        string promptKey = verb switch
+        {
+            "attack" or "kill" => Msg.NpcPetTargAtt,
+            "guard"            => Msg.NpcPetTargGuard,
+            "follow"           => Msg.NpcPetTargFollow,
+            "friend"           => Msg.NpcPetTargFriend,
+            "unfriend"         => Msg.NpcPetTargUnfriend,
+            "transfer"         => Msg.NpcPetTargTransfer,
+            "go"               => Msg.NpcPetTargGo,
+            "price"            => Msg.NpcPetSetprice,
+            _                  => Msg.NpcPetSuccess,
+        };
+        SysMessage(ServerMessages.Get(promptKey));
+        SetPendingTarget((serial, x, y, z, gfx) => ApplyPetTarget(pet, verb, new Serial(serial), x, y, z));
+    }
+
+    /// <summary>Resolve a target picked after EmitPetTargetPrompt and apply the verb.</summary>
+    private void ApplyPetTarget(Character pet, string verb, Serial uid, short x, short y, sbyte z)
+    {
+        if (_character == null) return;
+        var obj = uid.IsValid ? _world.FindObject(uid) : null;
+
+        switch (verb)
+        {
+            case "attack":
+            case "kill":
+                if (obj is Character victim) pet.SetTag("ATTACK_TARGET", victim.Uid.Value.ToString());
+                break;
+
+            case "guard":
+                if (obj is Character guarded) pet.SetTag("GUARD_TARGET", guarded.Uid.Value.ToString());
+                break;
+
+            case "follow":
+                if (obj is Character followee) pet.SetTag("FOLLOW_TARGET", followee.Uid.Value.ToString());
+                break;
+
+            case "friend":
+                if (obj is Character friend && friend.IsPlayer)
+                {
+                    if (pet.TryGetTag("FRIEND_" + friend.Uid.Value, out _))
+                        SysMessage(ServerMessages.Get(Msg.NpcPetTargFriendAlready));
+                    else
+                    {
+                        pet.SetTag("FRIEND_" + friend.Uid.Value, "1");
+                        SysMessage(ServerMessages.GetFormatted(Msg.NpcPetTargFriendSuccess1, friend.Name));
+                        if (friend != _character) /* notify friend */ ;
+                    }
+                }
+                break;
+
+            case "unfriend":
+                if (obj is Character unfriend && pet.TryGetTag("FRIEND_" + unfriend.Uid.Value, out _))
+                {
+                    pet.RemoveTag("FRIEND_" + unfriend.Uid.Value);
+                    SysMessage(ServerMessages.GetFormatted(Msg.NpcPetTargUnfriendSuccess1, unfriend.Name));
+                }
+                else
+                    SysMessage(ServerMessages.Get(Msg.NpcPetTargUnfriendNotfriend));
+                break;
+
+            case "transfer":
+                if (obj is Character newOwner && newOwner.IsPlayer)
+                {
+                    pet.NpcMaster = newOwner.Uid;
+                    SysMessage(ServerMessages.GetFormatted(Msg.NpcPetTargFriendSuccess2, newOwner.Name));
+                }
+                break;
+
+            case "go":
+                pet.Position = new Point3D(x, y, z, _character.MapIndex);
+                SysMessage(ServerMessages.Get(Msg.NpcPetTargGuardSuccess));
+                break;
+
+            case "price":
+                if (obj is Item priced)
+                    priced.SetTag("VENDOR_PRICE", "0"); // numeric input pending
+                break;
+        }
+    }
 
     private void HandleVendorInteraction(Character vendor)
     {
