@@ -4,6 +4,41 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-20] - Combat + Magery cilasi: archery ammo, attack emote, recall/gate/poison mesajlari
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - GameClient.HandleAttack: archery dallarina Source-X CCharFight kontrolleri eklendi.
+    Bow/XBow icin range==1 ise COMBAT_ARCH_TOOCLOSE, backpack'te ok/quarrel yoksa
+    COMBAT_ARCH_NOAMMO emit edilip swing iptal ediliyor.
+  - GameClient.HandleAttack: hit oldugunda saldirgan icin COMBAT_ATTACKS emote,
+    miss oldugunda COMBAT_MISSS sys mesaji uretiliyor.
+  - GameClient: HasAmmoInBackpack helper'i eklendi (Bow -> Arrow, XBow -> Bolt).
+  - SpellEngine: OnSysMessage callback'i eklendi; Program.cs bunu caster/target
+    GameClient'ina yonlendiriyor (Source-X CClientMsg::SysMessage paritesi).
+  - SpellEngine.ApplySpecificSpell: Recall ise rune isaretli degilse
+    SPELL_RECALL_BLANK uretiyor. Mark basariliysa SPELL_MARK_CONT geliyor.
+    GateTravel oncesi rune kontrolu var; basariliysa SPELL_GATE_OPEN. Poison
+    spell'i seviyeye gore SPELL_POISON_1..4 mesajini hedefe gonderiyor.
+
+NEW FEATURES (EN):
+  - GameClient.HandleAttack: ranged-weapon branches now mirror Source-X
+    CCharFight pre-checks. Adjacent target -> COMBAT_ARCH_TOOCLOSE; missing
+    arrows/bolts in backpack -> COMBAT_ARCH_NOAMMO; swing aborted in both.
+  - GameClient.HandleAttack: emits COMBAT_ATTACKS attacker emote on hit and
+    COMBAT_MISSS sys message on a missed swing.
+  - GameClient: added HasAmmoInBackpack helper that maps Bow -> Arrow and
+    XBow -> Bolt before allowing the swing.
+  - SpellEngine: new OnSysMessage callback wired up by Program.cs to deliver
+    spell-specific text to the recipient client (Source-X
+    CClientMsg::SysMessage parity).
+  - SpellEngine.ApplySpecificSpell: Recall on an unmarked rune emits
+    SPELL_RECALL_BLANK; Mark emits SPELL_MARK_CONT on success; GateTravel
+    refuses unmarked runes and emits SPELL_GATE_OPEN otherwise; Poison spell
+    posts the matching SPELL_POISON_<level> string to the victim.
+
+================================================================================
+
 [2026-04-20] - Pet komut paritesi: NPC_OnHearPetCmd 24 verb ile birebir
 ----------------------------------------
 

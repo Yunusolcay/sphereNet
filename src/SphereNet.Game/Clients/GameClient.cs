@@ -1026,6 +1026,19 @@ public sealed class GameClient : ITextConsole
                 SysMessage("You cannot see that target.");
                 return;
             }
+
+            // Source-X CCharFight: ranged weapons reject point-blank shots and need ammo.
+            if (rangeDist <= 1)
+            {
+                SysMessage(ServerMessages.Get(Msg.CombatArchTooclose));
+                return;
+            }
+            var ammoType = weapon.ItemType == ItemType.WeaponBow ? ItemType.WeaponArrow : ItemType.WeaponBolt;
+            if (!HasAmmoInBackpack(ammoType))
+            {
+                SysMessage(ServerMessages.Get(Msg.CombatArchNoammo));
+                return;
+            }
         }
 
         // Each swing burns a small bit of stamina (Source-X
@@ -1035,8 +1048,18 @@ public sealed class GameClient : ITextConsole
 
         int damage = CombatEngine.ResolveAttack(_character, target, weapon);
 
+        if (damage == 0)
+        {
+            // Source-X CCharFight Hit_Miss: emit attacker miss + target miss text.
+            SysMessage(ServerMessages.GetFormatted(Msg.CombatMisss, target.Name));
+            // No simple way yet to message the target client; the overhead packet is enough on the source side.
+        }
+
         if (damage > 0)
         {
+            // Source-X CCharFight Fight_Hit: per-strike attacker emote.
+            NpcSpeech(_character, ServerMessages.GetFormatted(Msg.CombatAttacks, target.Name));
+
             _spellEngine?.TryInterruptFromDamage(target, damage);
 
             _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.Hit,
@@ -2329,6 +2352,15 @@ public sealed class GameClient : ITextConsole
     }
 
     // ---- helpers used by HandleItemUse target callbacks ----
+
+    /// <summary>Source-X arrow/bolt presence check before ranged swing.</summary>
+    private bool HasAmmoInBackpack(ItemType ammo)
+    {
+        if (_character?.Backpack == null) return false;
+        foreach (var it in _character.Backpack.Contents)
+            if (it.ItemType == ammo && it.Amount > 0) return true;
+        return false;
+    }
 
     /// <summary>Find a key in the player's backpack that opens a locked container/door.</summary>
     private Item? FindBackpackKeyFor(Item locked)

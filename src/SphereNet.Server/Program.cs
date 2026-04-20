@@ -868,6 +868,15 @@ public static class Program
                 }
             }
         };
+        _spellEngine.OnSysMessage = (recipient, text) =>
+        {
+            // Route Recall/Mark/Gate/Poison spell messages to the recipient's
+            // own client, mirroring Source-X CClientMsg::SysMessage semantics.
+            foreach (var c in _clients.Values)
+            {
+                if (c.Character == recipient) { c.SysMessage(text); break; }
+            }
+        };
         _spellEngine.OnCasterFacingChanged = caster =>
         {
             // Source-X UpdateMove(GetTopPoint()) — broadcast new facing only.

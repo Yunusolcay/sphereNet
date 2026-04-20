@@ -1,6 +1,7 @@
 using SphereNet.Core.Enums;
 using SphereNet.Core.Types;
 using SphereNet.Game.Combat;
+using SphereNet.Game.Messages;
 using SphereNet.Game.Objects.Characters;
 using SphereNet.Game.Objects.Items;
 using SphereNet.Game.World;
@@ -25,6 +26,12 @@ public sealed class SpellEngine
 
     /// <summary>Callback to play a sound at a location.</summary>
     public Action<Point3D, ushort>? OnPlaySound { get; set; }
+
+    /// <summary>Source-X CClientMsg::SysMessage hook for the active caster.
+    /// Program.cs wires this to the owning GameClient so spell-specific
+    /// failure/success messages (recall blank rune, gate already there,
+    /// poison resisted, etc.) reach only the caster, matching upstream.</summary>
+    public Action<Character, string>? OnSysMessage { get; set; }
 
     /// <summary>Callback fired when a spell is interrupted. Args: (Character caster, string reason).</summary>
     public Action<Character, string>? OnSpellInterrupt { get; set; }
@@ -581,7 +588,8 @@ public sealed class SpellEngine
                 // Already handled by target position
                 break;
             case SpellType.Recall:
-                // Teleport to rune location (stored as TAG)
+                // Source-X CCharSpell Recall: rune must be marked, otherwise
+                // 'spell_recall_blank' / 'spell_recall_notrune'.
                 if (target.TryGetTag("RUNE_X", out string? rx) &&
                     target.TryGetTag("RUNE_Y", out string? ry))
                 {
@@ -591,6 +599,10 @@ public sealed class SpellEngine
                     if (target.TryGetTag("RUNE_Z", out string? rz))
                         sbyte.TryParse(rz, out rzz);
                     _world.MoveCharacter(caster, new Point3D(rxx, ryy, rzz, caster.MapIndex));
+                }
+                else
+                {
+                    OnSysMessage?.Invoke(caster, ServerMessages.Get(Msg.SpellRecallBlank));
                 }
                 break;
             case SpellType.Mark:
@@ -603,16 +615,25 @@ public sealed class SpellEngine
                         item.SetTag("RUNE_X", caster.X.ToString());
                         item.SetTag("RUNE_Y", caster.Y.ToString());
                         item.SetTag("RUNE_Z", caster.Z.ToString());
+                        OnSysMessage?.Invoke(caster, ServerMessages.Get(Msg.SpellMarkCont));
                     }
                 }
                 break;
             case SpellType.GateTravel:
-                // Gate Travel — create a moongate at caster pos (script handles destination via LINK tags)
+                // Source-X CCharSpell GateTravel: rune must be marked, else
+                // 'spell_recall_blank'. The destination link is established
+                // via the rune's RUNE_* tags — Mark seeds them.
+                if (!target.TryGetTag("RUNE_X", out _))
+                {
+                    OnSysMessage?.Invoke(caster, ServerMessages.Get(Msg.SpellRecallBlank));
+                    break;
+                }
                 var gate = _world.CreateItem();
                 gate.BaseId = 0x0F6C; // moongate graphic
                 gate.Name = "moongate";
                 gate.DecayTime = Environment.TickCount64 + 30_000;
                 _world.PlaceItem(gate, caster.Position);
+                OnSysMessage?.Invoke(caster, ServerMessages.Get(Msg.SpellGateOpen));
                 break;
             case SpellType.Cure:
             case SpellType.ArchCure:
@@ -648,7 +669,8 @@ public sealed class SpellEngine
                 break;
             case SpellType.Poison:
             {
-                // Poison level based on caster's Magery skill (1-4)
+                // Source-X CCharSpell Poison: level (1=lesser, 4=deadly) keys
+                // the matching DEFMSG_SPELL_POISON_# string the victim sees.
                 byte poisonLvl = caster.GetSkill(SkillType.Magery) switch
                 {
                     >= 800 => 4, // deadly
@@ -657,6 +679,15 @@ public sealed class SpellEngine
                     _ => 1       // lesser
                 };
                 target.ApplyPoison(poisonLvl);
+                string poisonKey = poisonLvl switch
+                {
+                    1 => Msg.SpellPoison1,
+                    2 => Msg.SpellPoison2,
+                    3 => Msg.SpellPoison3,
+                    4 => Msg.SpellPoison4,
+                    _ => Msg.SpellPoison5
+                };
+                OnSysMessage?.Invoke(target, ServerMessages.Get(poisonKey));
                 break;
             }
             case SpellType.NightSight:
