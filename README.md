@@ -6,6 +6,12 @@
 
 ---
 
+## Ekran Goruntusu / Screenshot
+
+![SphereNet Console](sphereNetConsole.png)
+
+---
+
 ## Ozellikler / Features
 
 - **Tam UO Emulasyonu / Full UO Emulation** — T2A'dan TOL'a kadar tum eklenti paketlerini destekler (Classic ve Enhanced istemciler) / Supports all expansion packs from T2A to TOL (Classic and Enhanced clients)
