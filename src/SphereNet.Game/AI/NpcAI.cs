@@ -461,8 +461,10 @@ public sealed class NpcAI
         if (now < npc.NextAttackTime)
             return;
 
-        // Swing timer: base 2.5s, faster with higher dex
-        int swingDelayMs = Math.Max(1000, 2500 - (npc.Dex * 5));
+        // Source-X Fight_CalcDelay: speed * 100 / (DEX + 100) in ticks (100ms)
+        int speed = 35;
+        int dexMod = Math.Max(10, (int)npc.Dex);
+        int swingDelayMs = Math.Clamp(speed * 100 * 100 / (dexMod + 100), 1250, 5000);
         npc.NextAttackTime = now + swingDelayMs;
 
         // Get NPC weapon (if any)

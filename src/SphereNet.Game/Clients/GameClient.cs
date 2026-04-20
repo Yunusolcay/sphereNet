@@ -224,7 +224,9 @@ public sealed class GameClient : ITextConsole
         }
 
         _account.LastIp = _netState.RemoteEndPoint?.Address.ToString() ?? "";
-        _netState.Send(new PacketServerList("SphereNet", 0));
+        // Keep login-server list deterministic for local development.
+        // 0.0.0.0 (or unstable interface picks) can make some clients hang.
+        _netState.Send(new PacketServerList("SphereNet", 0x7F000001));
     }
 
     public void HandleGameLogin(string account, string password, uint authId)
@@ -998,8 +1000,70 @@ public sealed class GameClient : ITextConsole
                     new TriggerArgs { CharSrc = _character, O1 = target });
                 _triggerDispatcher?.FireCharTrigger(target, CharTrigger.Death,
                     new TriggerArgs { CharSrc = _character });
-                _deathEngine.ProcessDeath(target, _character);
+
+                _knownChars.Remove(target.Uid.Value);
+
+                var targetPos = target.Position;
+                byte targetDir = (byte)((byte)target.Direction & 0x07);
+                var corpse = _deathEngine.ProcessDeath(target, _character);
                 _character.FightTarget = Serial.Invalid;
+
+                if (corpse != null)
+                {
+                    _knownItems.Add(corpse.Uid.Value);
+                    var corpsePacket = new PacketWorldItem(
+                        corpse.Uid.Value, corpse.DispIdFull, corpse.Amount,
+                        corpse.X, corpse.Y, corpse.Z, corpse.Hue,
+                        targetDir);
+                    BroadcastNearby?.Invoke(targetPos, UpdateRange, corpsePacket, 0);
+
+                    if (target.IsPlayer)
+                    {
+                        // Player corpse: send contents + equip map for paperdoll corpse rendering.
+                        foreach (var corpseItem in corpse.Contents)
+                        {
+                            var containerItem = new PacketContainerItem(
+                                corpseItem.Uid.Value,
+                                corpseItem.DispIdFull,
+                                0,
+                                corpseItem.Amount,
+                                corpseItem.X,
+                                corpseItem.Y,
+                                corpse.Uid.Value,
+                                corpseItem.Hue,
+                                useGridIndex: true);
+                            BroadcastNearby?.Invoke(targetPos, UpdateRange, containerItem, 0);
+                        }
+
+                        var corpseEquipEntries = new List<(byte Layer, uint ItemSerial)>();
+                        var usedLayers = new HashSet<byte>();
+                        foreach (var item in corpse.Contents)
+                        {
+                            byte layer = (byte)item.EquipLayer;
+                            if (layer == (byte)Layer.None || layer == (byte)Layer.Face || layer == (byte)Layer.Pack)
+                                continue;
+                            if (!usedLayers.Add(layer))
+                                continue;
+                            corpseEquipEntries.Add((layer, item.Uid.Value));
+                        }
+
+                        var corpseEquip = new PacketCorpseEquipment(corpse.Uid.Value, corpseEquipEntries);
+                        BroadcastNearby?.Invoke(targetPos, UpdateRange, corpseEquip, 0);
+
+                        var deathAnim = new PacketDeathAnimation(target.Uid.Value, corpse.Uid.Value, 0);
+                        BroadcastNearby?.Invoke(targetPos, UpdateRange, deathAnim, 0);
+                    }
+                    else
+                    {
+                        // NPC corpse: keep flow minimal and stable.
+                        var deathAnim = new PacketDeathAnimation(target.Uid.Value, corpse.Uid.Value, 0);
+                        BroadcastNearby?.Invoke(targetPos, UpdateRange, deathAnim, 0);
+                    }
+                }
+
+                var deletePkt = new PacketDeleteObject(target.Uid.Value);
+                BroadcastNearby?.Invoke(targetPos, UpdateRange, deletePkt, 0);
+
             }
 
             // Reactive armor may have killed the attacker
@@ -6254,10 +6318,13 @@ public sealed class GameClient : ITextConsole
 
     private static int GetSwingDelayMs(Character attacker, Item? weapon)
     {
-        // Temporary Source-X-like pacing until full weapon speed formula is ported.
-        int baseDelay = attacker.IsMounted ? 900 : 1200;
-        if (weapon == null) return baseDelay;
-        return Math.Max(600, baseDelay - 100);
+        // Source-X CChar::Fight_CalcDelay: speed * 100 / (DEX + 100) in ticks (100ms each)
+        int speed = 35; // default weapon speed; TODO: read from ItemDef.Speed
+        if (weapon == null) speed = 40; // unarmed is slower
+        int dexMod = Math.Max(10, (int)attacker.Dex);
+        int delayMs = speed * 100 * 100 / (dexMod + 100);
+        if (attacker.IsMounted) delayMs -= 200;
+        return Math.Clamp(delayMs, 1250, 5000);
     }
 
     /// <summary>Map a weapon (or bare fists) to the correct humanoid

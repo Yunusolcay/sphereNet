@@ -856,12 +856,72 @@ public static class Program
         };
         _npcAI.OnNpcKill = (killer, victim) =>
         {
+            // TODO: NPC death/corpse packet sync still has edge cases; revisit with
+            // Source-X/ServUO/ClassicUO side-by-side traces.
             _triggerDispatcher?.FireCharTrigger(killer, CharTrigger.Kill,
                 new TriggerArgs { CharSrc = killer, O1 = victim });
             _triggerDispatcher?.FireCharTrigger(victim, CharTrigger.Death,
                 new TriggerArgs { CharSrc = killer });
-            _deathEngine.ProcessDeath(victim, killer);
+
+            var victimPos = victim.Position;
+            byte victimDir = (byte)((byte)victim.Direction & 0x07);
+            var corpse = _deathEngine.ProcessDeath(victim, killer);
             killer.FightTarget = Serial.Invalid;
+
+            if (corpse != null)
+            {
+                var corpsePacket = new PacketWorldItem(
+                    corpse.Uid.Value, corpse.DispIdFull, corpse.Amount,
+                    corpse.X, corpse.Y, corpse.Z, corpse.Hue,
+                    victimDir);
+                BroadcastNearby(victimPos, 18, corpsePacket, 0);
+
+                if (victim.IsPlayer)
+                {
+                    // Player corpse: send contents + equip map for paperdoll corpse rendering.
+                    foreach (var corpseItem in corpse.Contents)
+                    {
+                        var containerItem = new PacketContainerItem(
+                            corpseItem.Uid.Value,
+                            corpseItem.DispIdFull,
+                            0,
+                            corpseItem.Amount,
+                            corpseItem.X,
+                            corpseItem.Y,
+                            corpse.Uid.Value,
+                            corpseItem.Hue,
+                            useGridIndex: true);
+                        BroadcastNearby(victimPos, 18, containerItem, 0);
+                    }
+
+                    var corpseEquipEntries = new List<(byte Layer, uint ItemSerial)>();
+                    var usedLayers = new HashSet<byte>();
+                    foreach (var item in corpse.Contents)
+                    {
+                        byte layer = (byte)item.EquipLayer;
+                        if (layer == (byte)Layer.None || layer == (byte)Layer.Face || layer == (byte)Layer.Pack)
+                            continue;
+                        if (!usedLayers.Add(layer))
+                            continue;
+                        corpseEquipEntries.Add((layer, item.Uid.Value));
+                    }
+
+                    var corpseEquip = new PacketCorpseEquipment(corpse.Uid.Value, corpseEquipEntries);
+                    BroadcastNearby(victimPos, 18, corpseEquip, 0);
+
+                    var deathAnim = new PacketDeathAnimation(victim.Uid.Value, corpse.Uid.Value, 0);
+                    BroadcastNearby(victimPos, 18, deathAnim, 0);
+                }
+                else
+                {
+                    // NPC corpse: keep flow minimal and stable.
+                    var deathAnim = new PacketDeathAnimation(victim.Uid.Value, corpse.Uid.Value, 0);
+                    BroadcastNearby(victimPos, 18, deathAnim, 0);
+                }
+            }
+
+            var deletePkt = new PacketDeleteObject(victim.Uid.Value);
+            BroadcastNearby(victimPos, 18, deletePkt, 0);
 
             foreach (var c in _clients.Values)
             {

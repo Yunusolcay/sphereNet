@@ -593,6 +593,65 @@ public sealed class PacketDeleteObject : PacketWriter
     }
 }
 
+/// <summary>0xAF — Death animation. Tells the client a mobile has died and
+/// links it to its corpse container. ClassicUO uses this to reparent
+/// equipped items, play the body-specific death animation, and register
+/// the corpse for looting.</summary>
+public sealed class PacketDeathAnimation : PacketWriter
+{
+    private readonly uint _mobileSerial;
+    private readonly uint _corpseSerial;
+    private readonly uint _running;
+
+    public PacketDeathAnimation(uint mobileSerial, uint corpseSerial, uint running = 0)
+        : base(0xAF)
+    {
+        _mobileSerial = mobileSerial;
+        _corpseSerial = corpseSerial;
+        _running = running;
+    }
+
+    public override PacketBuffer Build()
+    {
+        var buf = CreateFixed(13);
+        buf.WriteUInt32(_mobileSerial);
+        buf.WriteUInt32(_corpseSerial);
+        buf.WriteUInt32(_running);
+        return buf;
+    }
+}
+
+/// <summary>0x89 — Corpse equipment list.
+/// Associates equipped item serials to layers on a corpse.</summary>
+public sealed class PacketCorpseEquipment : PacketWriter
+{
+    private readonly uint _corpseSerial;
+    private readonly IReadOnlyList<(byte Layer, uint ItemSerial)> _entries;
+
+    public PacketCorpseEquipment(uint corpseSerial, IReadOnlyList<(byte Layer, uint ItemSerial)> entries)
+        : base(0x89)
+    {
+        _corpseSerial = corpseSerial;
+        _entries = entries;
+    }
+
+    public override PacketBuffer Build()
+    {
+        var buf = CreateVariable(8 + (_entries.Count * 5));
+        buf.WriteUInt32(_corpseSerial);
+
+        foreach (var (layer, itemSerial) in _entries)
+        {
+            buf.WriteByte(layer);
+            buf.WriteUInt32(itemSerial);
+        }
+
+        buf.WriteByte(0); // terminator
+        buf.WriteLengthAt(1);
+        return buf;
+    }
+}
+
 /// <summary>0x6D — Play music.</summary>
 public sealed class PacketPlayMusic : PacketWriter
 {
@@ -620,12 +679,16 @@ public sealed class PacketWorldItem : PacketWriter
     private readonly short _x, _y;
     private readonly sbyte _z;
     private readonly ushort _hue;
+    private readonly byte _direction;
+    private readonly byte _flags;
 
-    public PacketWorldItem(uint serial, ushort itemId, ushort amount, short x, short y, sbyte z, ushort hue)
+    public PacketWorldItem(uint serial, ushort itemId, ushort amount, short x, short y, sbyte z,
+        ushort hue, byte direction = 0, byte flags = 0)
         : base(0x1A)
     {
         _serial = serial; _itemId = itemId; _amount = amount;
         _x = x; _y = y; _z = z; _hue = hue;
+        _direction = direction; _flags = flags;
     }
 
     public override PacketBuffer Build()
@@ -640,17 +703,25 @@ public sealed class PacketWorldItem : PacketWriter
         if (_amount > 1)
             buf.WriteUInt16(_amount);
 
-        short xVal = _x;
-        if (_hue != 0) xVal |= unchecked((short)0x8000);
-        buf.WriteInt16(xVal);
+        int xVal = _x & 0x7FFF;
+        if (_direction != 0) xVal |= 0x8000;
+        buf.WriteUInt16((ushort)xVal);
 
-        short yVal = _y;
-        buf.WriteInt16(yVal);
+        int yVal = _y & 0x3FFF;
+        if (_hue != 0) yVal |= 0x8000;
+        if (_flags != 0) yVal |= 0x4000;
+        buf.WriteUInt16((ushort)yVal);
+
+        if (_direction != 0)
+            buf.WriteByte(_direction);
 
         buf.WriteSByte(_z);
 
         if (_hue != 0)
             buf.WriteUInt16(_hue);
+
+        if (_flags != 0)
+            buf.WriteByte(_flags);
 
         buf.WriteLengthAt(1);
         return buf;
