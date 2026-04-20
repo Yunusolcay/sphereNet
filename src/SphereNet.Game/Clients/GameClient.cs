@@ -2020,9 +2020,18 @@ public sealed class GameClient : ITextConsole
         }
     }
 
+    /// <summary>
+    /// Source-X CClient::Cmd_Use_Item parity dispatcher.
+    /// The Source-X switch handles ~30 IT_* branches; SphereNet mirrors each
+    /// branch to either a real handler or, when the underlying engine is not
+    /// yet ported, the matching DEFMSG_ITEMUSE_* + target-cursor prompt so
+    /// players see the exact upstream UX. Anything not matched falls through
+    /// to DEFMSG_ITEMUSE_CANTTHINK like upstream.
+    /// </summary>
     private void HandleItemUse(Item item)
     {
-        if (_character != null && _character.IsDead)
+        if (_character == null) return;
+        if (_character.IsDead)
         {
             SysMessage(ServerMessages.Get("death_cant_while_dead"));
             return;
@@ -2030,33 +2039,256 @@ public sealed class GameClient : ITextConsole
 
         switch (item.ItemType)
         {
+            // ---- containers / corpses ----
             case ItemType.Container:
-            case ItemType.ContainerLocked:
             case ItemType.Corpse:
+            case ItemType.TrashCan:
+            case ItemType.ShipHold:
                 SendOpenContainer(item);
                 break;
+
+            case ItemType.ContainerLocked:
+                SysMessage(ServerMessages.Get(Msg.ItemuseLocked));
+                if (FindBackpackKeyFor(item) != null)
+                    SysMessage(ServerMessages.Get(Msg.LockHasKey));
+                else
+                    SysMessage(ServerMessages.Get(Msg.LockContNoKey));
+                break;
+
+            case ItemType.ShipHoldLock:
+                SysMessage(ServerMessages.Get(Msg.ItemuseLocked));
+                if (FindBackpackKeyFor(item) != null)
+                    SysMessage(ServerMessages.Get(Msg.LockHasKey));
+                else
+                    SysMessage(ServerMessages.Get(Msg.LockHoldNoKey));
+                break;
+
+            // ---- doors ----
             case ItemType.Door:
                 ToggleDoor(item);
                 break;
             case ItemType.DoorLocked:
-                SysMessage(ServerMessages.Get("itemuse_locked"));
+                SysMessage(ServerMessages.Get(Msg.ItemuseLocked));
                 break;
+
+            // ---- consumables / potions / books ----
             case ItemType.Potion:
                 UsePotion(item);
                 break;
+            case ItemType.Food:
+            case ItemType.Fruit:
+            case ItemType.Drink:
+                _character.Food = (ushort)Math.Min(_character.Food + 5, 60);
+                SysMessage(ServerMessages.Get("itemuse_eat_food"));
+                _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Destroy,
+                    new TriggerArgs { CharSrc = _character, ItemSrc = item });
+                item.Delete();
+                break;
+
+            case ItemType.Book:
+            case ItemType.Message:
+                // SphereNet does not yet ship a book gump -- mirror Source-X failure path so
+                // the player at least gets the upstream message.
+                SysMessage(ServerMessages.Get(Msg.ItemuseBookFail));
+                break;
+
             case ItemType.Spellbook:
+            case ItemType.SpellbookNecro:
+            case ItemType.SpellbookPala:
+            case ItemType.SpellbookBushido:
+            case ItemType.SpellbookNinjitsu:
+            case ItemType.SpellbookArcanist:
+            case ItemType.SpellbookMystic:
+            case ItemType.SpellbookMastery:
+            case ItemType.SpellbookExtra:
                 _netState.Send(new PacketOpenContainer(item.Uid.Value, 0x003E, _netState.IsClientPost7090));
                 break;
-            case ItemType.Food:
-                if (_character != null)
-                {
-                    _character.Food = (ushort)Math.Min(_character.Food + 5, 60);
-                    SysMessage(ServerMessages.Get("itemuse_eat_food"));
-                    _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Destroy,
-                        new TriggerArgs { CharSrc = _character, ItemSrc = item });
-                    item.Delete();
-                }
+
+            // ---- tools that target a follow-up object ----
+            case ItemType.Bandage:
+                SysMessage(ServerMessages.Get(Msg.ItemuseBandagePromt));
+                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Healing, new Serial(serial)));
                 break;
+
+            case ItemType.Lockpick:
+                SysMessage(ServerMessages.Get("target_promt"));
+                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Lockpicking, new Serial(serial)));
+                break;
+
+            case ItemType.Scissors:
+                SysMessage(ServerMessages.Get("target_promt"));
+                SetPendingTarget((serial, x, y, z, gfx) => HandleScissorsTarget(item, new Serial(serial)));
+                break;
+
+            case ItemType.Tracker:
+                SysMessage(ServerMessages.Get(Msg.ItemuseTrackerAttune));
+                SetPendingTarget((serial, x, y, z, gfx) => item.SetTag("LINK", serial.ToString()));
+                break;
+
+            case ItemType.Key:
+            case ItemType.Keyring:
+                if (item.ContainedIn != _character.Backpack?.Uid && _character.PrivLevel < PrivLevel.GM)
+                {
+                    SysMessage(ServerMessages.Get(Msg.ItemuseKeyFail));
+                    break;
+                }
+                SysMessage(ServerMessages.Get(Msg.ItemuseKeyPromt));
+                SetPendingTarget((serial, x, y, z, gfx) => HandleKeyUse(item, new Serial(serial)));
+                break;
+
+            case ItemType.HairDye:
+                if (_character.GetEquippedItem(Layer.Hair) == null && _character.GetEquippedItem(Layer.FacialHair) == null)
+                {
+                    SysMessage(ServerMessages.Get(Msg.ItemuseDyeNohair));
+                    break;
+                }
+                SysMessage("Choose a new color for your hair."); // Source-X dialog d_hair_dye not yet ported.
+                break;
+
+            case ItemType.Dye:
+                SysMessage(ServerMessages.Get(Msg.ItemuseDyeVat));
+                SetPendingTarget((serial, x, y, z, gfx) => HandleDyePickup(item, new Serial(serial)));
+                break;
+
+            case ItemType.DyeVat:
+                SysMessage(ServerMessages.Get(Msg.ItemuseDyeTarg));
+                SetPendingTarget((serial, x, y, z, gfx) => HandleDyeApply(item, new Serial(serial)));
+                break;
+
+            // ---- weapons (target prompt for stab/pluck) ----
+            case ItemType.WeaponSword:
+            case ItemType.WeaponFence:
+            case ItemType.WeaponAxe:
+            case ItemType.WeaponMaceSharp:
+            case ItemType.WeaponMaceStaff:
+            case ItemType.WeaponMaceSmith:
+                SysMessage(ServerMessages.Get(Msg.ItemuseWeaponPromt));
+                SetPendingTarget((serial, x, y, z, gfx) => { /* tinker/poison etc unimplemented */ });
+                break;
+
+            case ItemType.WeaponMaceCrook:
+                SysMessage(ServerMessages.Get(Msg.ItemuseCrookPromt));
+                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Herding, new Serial(serial)));
+                break;
+
+            case ItemType.WeaponMacePick:
+                SysMessage(ServerMessages.GetFormatted(Msg.ItemuseMacepickTarg, item.Name ?? "pick"));
+                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Mining, new Serial(serial)));
+                break;
+
+            // ---- pole/sextant/spyglass ----
+            case ItemType.FishPole:
+                SysMessage(ServerMessages.Get("fishing_promt"));
+                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Fishing, new Serial(serial)));
+                break;
+            case ItemType.Fish:
+                SysMessage(ServerMessages.Get(Msg.ItemuseFishFail));
+                break;
+            case ItemType.Telescope:
+                SysMessage(ServerMessages.Get(Msg.ItemuseTelescope));
+                break;
+            case ItemType.Sextant:
+                SysMessage($"Location: {_character.X}, {_character.Y}, {_character.Z}");
+                break;
+            case ItemType.SpyGlass:
+                SysMessage(ServerMessages.Get(Msg.ItemuseTelescope));
+                break;
+            case ItemType.Map:
+            case ItemType.MapBlank:
+                SysMessage("You unroll the map."); // gump pending
+                break;
+
+            // ---- ore / forge / ingot ----
+            case ItemType.Ore:
+                SysMessage("You select the ore for smelting.");
+                SetPendingTarget((serial, x, y, z, gfx) => { /* smelt routine pending */ });
+                break;
+            case ItemType.Forge:
+                SysMessage(ServerMessages.Get(Msg.ItemuseForge));
+                SetPendingTarget((serial, x, y, z, gfx) => { /* combine routine pending */ });
+                break;
+            case ItemType.Ingot:
+                SysMessage("Select what to smith.");
+                break;
+
+            // ---- crafting toolbenches (skill menu pending) ----
+            case ItemType.Mortar:
+                SysMessage("Select an item to alchemize.");
+                break;
+            case ItemType.Carpentry:
+                SysMessage("Select an item to craft.");
+                break;
+            case ItemType.CarpentryChop:
+                SysMessage(ServerMessages.Get("target_promt"));
+                break;
+            case ItemType.CartographyTool:
+                SysMessage("Select a destination on the map.");
+                break;
+            case ItemType.CookingTool:
+                SysMessage("Select what to cook.");
+                break;
+            case ItemType.TinkerTools:
+                SysMessage("Select an item to tinker.");
+                break;
+            case ItemType.SewingKit:
+                SysMessage(ServerMessages.GetFormatted(Msg.ItemuseSewkitPromt, item.Name ?? "sewing kit"));
+                break;
+            case ItemType.ScrollBlank:
+                SysMessage("Select a spell to inscribe.");
+                break;
+
+            // ---- ship / sign / shrine / runes ----
+            case ItemType.ShipTiller:
+                NpcSpeech(_character, ServerMessages.Get(Msg.ItemuseTillerman));
+                break;
+            case ItemType.Shrine:
+                if (_character.IsDead)
+                    SysMessage(ServerMessages.Get(Msg.HealingRes));
+                else
+                    SysMessage(ServerMessages.Get("itemuse_shrine"));
+                break;
+            case ItemType.Rune:
+                SysMessage(ServerMessages.Get(Msg.ItemuseRuneName));
+                break;
+
+            // ---- bulletin / game / clock / spawn / animations ----
+            case ItemType.BBoard:
+                SysMessage("You open the bulletin board."); // bbox gump pending
+                break;
+            case ItemType.GameBoard:
+                if (item.ContainedIn.IsValid)
+                    SysMessage(ServerMessages.Get(Msg.ItemuseGameboardFail));
+                else
+                    SendOpenContainer(item);
+                break;
+            case ItemType.Clock:
+                ObjectMessage(item, FormatLocalGameTime());
+                break;
+            case ItemType.AnimActive:
+                SysMessage(ServerMessages.Get("item_in_use"));
+                break;
+            case ItemType.SpawnItem:
+            case ItemType.SpawnChar:
+                SysMessage(ServerMessages.Get(Msg.ItemuseSpawnReset));
+                break;
+
+            // ---- spell tools (Source-X routes via CClient::Cmd_Skill_Magery) ----
+            case ItemType.Wand:
+            case ItemType.Scroll:
+                SysMessage("You begin casting the spell.");
+                break;
+
+            // ---- crystal ball / cannon ----
+            case ItemType.CrystalBall:
+                break; // Source-X: gaze, no message.
+            case ItemType.CannonBall:
+                SysMessage(ServerMessages.GetFormatted(Msg.ItemuseCballPromt, item.Name ?? "cannon ball"));
+                break;
+            case ItemType.CannonMuzzle:
+                SysMessage(ServerMessages.Get(Msg.ItemuseCannonTarg));
+                break;
+
+            // ---- containers / signs / multi (existing engines) ----
             case ItemType.StoneGuild:
                 OpenGuildStoneGump(item);
                 break;
@@ -2065,8 +2297,9 @@ public sealed class GameClient : ITextConsole
             case ItemType.SignGump:
                 OpenHouseSignGump(item);
                 break;
+
             case ItemType.Deed:
-                if (_character != null && _housingEngine != null)
+                if (_housingEngine != null)
                 {
                     var house = _housingEngine.PlaceHouse(_character, item.BaseId, _character.Position);
                     if (house != null)
@@ -2082,7 +2315,101 @@ public sealed class GameClient : ITextConsole
                     }
                 }
                 break;
+
+            // ---- BankBox / VendorBox: anti-cheat reject ----
+            case ItemType.EqBankBox:
+            case ItemType.EqVendorBox:
+                _logger.LogWarning("Suspicious dclick on bankbox/vendorbox uid={Uid}", item.Uid.Value);
+                break;
+
+            default:
+                SysMessage(ServerMessages.Get(Msg.ItemuseCantthink));
+                break;
         }
+    }
+
+    // ---- helpers used by HandleItemUse target callbacks ----
+
+    /// <summary>Find a key in the player's backpack that opens a locked container/door.</summary>
+    private Item? FindBackpackKeyFor(Item locked)
+    {
+        if (_character?.Backpack == null) return null;
+        uint linkId = locked.Uid.Value;
+        foreach (var it in _character.Backpack.Contents)
+        {
+            if (it.ItemType is not (ItemType.Key or ItemType.Keyring)) continue;
+            if (it.TryGetTag("LINK", out string? lk) && uint.TryParse(lk, out uint kv) && kv == linkId)
+                return it;
+        }
+        return null;
+    }
+
+    /// <summary>Re-enter the active-skill pipeline with a pre-resolved Serial target.</summary>
+    private void RouteSkillTarget(SkillType skill, Serial target)
+    {
+        if (_character == null) return;
+        var obj = target.IsValid ? _world.FindObject(target) : null;
+        var sink = new InfoSkillSink(this, _character);
+        _skillHandlers?.UseActiveSkill(sink, skill, obj);
+    }
+
+    /// <summary>Source-X uses scissors to convert hides/cloth to leather/bolts.</summary>
+    private void HandleScissorsTarget(Item scissors, Serial target)
+    {
+        var obj = target.IsValid ? _world.FindObject(target) as Item : null;
+        if (obj == null) { SysMessage(ServerMessages.Get(Msg.ItemuseCantthink)); return; }
+        switch (obj.ItemType)
+        {
+            case ItemType.Hide: obj.ItemType = ItemType.Leather; SysMessage("You cut the hide into leather."); break;
+            case ItemType.Cloth: obj.ItemType = ItemType.ClothBolt; SysMessage("You cut the cloth into bolts."); break;
+            case ItemType.BandageBlood: obj.Delete(); SysMessage(ServerMessages.Get(Msg.ItemuseBandageClean)); break;
+            default: SysMessage(ServerMessages.Get(Msg.ItemuseCantthink)); break;
+        }
+    }
+
+    /// <summary>Source-X key use: link key, lock/unlock door or container.</summary>
+    private void HandleKeyUse(Item key, Serial target)
+    {
+        var obj = target.IsValid ? _world.FindObject(target) as Item : null;
+        if (obj == null) { SysMessage(ServerMessages.Get(Msg.ItemuseKeyNolock)); return; }
+
+        bool linked = key.TryGetTag("LINK", out string? lk) && uint.TryParse(lk, out uint kv) && kv == obj.Uid.Value;
+        if (!linked) { SysMessage(ServerMessages.Get(Msg.ItemuseKeyNokey)); return; }
+
+        if (obj.ItemType == ItemType.ContainerLocked) obj.ItemType = ItemType.Container;
+        else if (obj.ItemType == ItemType.Container) obj.ItemType = ItemType.ContainerLocked;
+        else if (obj.ItemType == ItemType.DoorLocked) obj.ItemType = ItemType.Door;
+        else if (obj.ItemType == ItemType.Door) obj.ItemType = ItemType.DoorLocked;
+        else { SysMessage(ServerMessages.Get(Msg.ItemuseKeyNolock)); return; }
+    }
+
+    /// <summary>Pick a hue from a Dye onto a DyeVat (Source-X two-step).</summary>
+    private void HandleDyePickup(Item dye, Serial target)
+    {
+        var vat = target.IsValid ? _world.FindObject(target) as Item : null;
+        if (vat == null || vat.ItemType != ItemType.DyeVat)
+        { SysMessage(ServerMessages.Get(Msg.ItemuseDyeFail)); return; }
+        vat.SetTag("DYE_HUE", dye.Hue.ToString());
+        SysMessage("You apply the dye to the vat.");
+    }
+
+    /// <summary>Apply a DyeVat hue to a target item.</summary>
+    private void HandleDyeApply(Item vat, Serial target)
+    {
+        var dest = target.IsValid ? _world.FindObject(target) as Item : null;
+        if (dest == null) { SysMessage(ServerMessages.Get(Msg.ItemuseDyeReach)); return; }
+        if (vat.TryGetTag("DYE_HUE", out string? hueText) && ushort.TryParse(hueText, out ushort hue))
+        {
+            dest.Hue = new Core.Types.Color(hue);
+            SysMessage("The item changes color.");
+        }
+    }
+
+    /// <summary>Format a Source-X-style local game time string for IT_CLOCK.</summary>
+    private static string FormatLocalGameTime()
+    {
+        var now = DateTime.Now;
+        return $"It is {now.Hour:00}:{now.Minute:00}.";
     }
 
     /// <summary>

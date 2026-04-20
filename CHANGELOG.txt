@@ -4,6 +4,74 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-20] - Item kullanim paritesi: 30+ Source-X IT_* dali Cmd_Use_Item ile esitlendi
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - GameClient.HandleItemUse: Source-X CClient::Cmd_Use_Item switch'inin
+    SphereNet karsiligi. ~30 ItemType dali Source-X DEFMSG_ITEMUSE_*
+    mesajlarini birebir basar; eslestirilemeyen turler upstream gibi
+    DEFMSG_ITEMUSE_CANTTHINK ile sonlanir.
+    (GameClient.HandleItemUse mirrors CClient::Cmd_Use_Item: ~30 ItemType
+     branches emit the exact upstream DEFMSG_ITEMUSE_* messages; unmatched
+     types fall through to DEFMSG_ITEMUSE_CANTTHINK like upstream.)
+
+  Aktif edilen daller / Activated branches:
+    * Container/Corpse/TrashCan/ShipHold: dogrudan acar.
+    * ContainerLocked/ShipHoldLock: backpack icindeki LINK key'i kontrol
+      eder, var ise LOCK_HAS_KEY, yoksa LOCK_CONT_NO_KEY/LOCK_HOLD_NO_KEY.
+    * Door/DoorLocked: toggle veya ITEMUSE_LOCKED.
+    * Potion/Food/Fruit/Drink: yeme/icme + Destroy trigger.
+    * Book/Message: DEFMSG_ITEMUSE_BOOK_FAIL (gump pending).
+    * Spellbook ailesi (Vanilla/Necro/Pala/Bushido/Ninjitsu/Arcanist/
+      Mystic/Mastery/Extra): PacketOpenContainer 0x003E.
+    * Bandage: DEFMSG_ITEMUSE_BANDAGE_PROMT + Healing skill target route.
+    * Lockpick: target prompt + Lockpicking skill route.
+    * Scissors: Hide->Leather, Cloth->ClothBolt, BandageBlood temizleme.
+    * Tracker: ITEMUSE_TRACKER_ATTUNE + LINK tag set.
+    * Key/Keyring: backpack disindaki anahtar reddi (KEY_FAIL),
+      ITEMUSE_KEY_PROMT + container/door lock toggle (LINK match).
+    * HairDye: hair/facial-hair yokken DYE_NOHAIR; aksi halde renk istemi.
+    * Dye/DyeVat: iki adimli pickup (vat'a hue tag) ve apply (hedefe hue).
+    * WeaponSword/Fence/Axe/MaceSharp/MaceStaff/MaceSmith: WEAPON_PROMT.
+    * WeaponMaceCrook: CROOK_PROMT + Herding skill route.
+    * WeaponMacePick: ITEMUSE_MACEPICK_TARG + Mining skill route.
+    * FishPole: fishing prompt + Fishing skill route.
+    * Fish/Telescope/SpyGlass: Source-X fail/info mesajlari.
+    * Sextant: oyuncunun X/Y/Z koordinati overhead.
+    * Map/MapBlank: "unroll the map" placeholder (gump pending).
+    * Ore/Forge/Ingot: ITEMUSE_FORGE prompt ve seçim mesajlari.
+    * Mortar/Carpentry/CarpentryChop/CartographyTool/CookingTool/
+      TinkerTools/SewingKit/ScrollBlank: skill menu placeholder.
+    * ShipTiller: NpcSpeech ile ITEMUSE_TILLERMAN.
+    * Shrine: alive=ITEMUSE_SHRINE, dead=HEALING_RES yolu.
+    * Rune: ITEMUSE_RUNE_NAME prompt.
+    * BBoard: bbox placeholder.
+    * GameBoard: container icindeyse GAMEBOARD_FAIL, aksi halde acar.
+    * Clock: gercek zaman ile overhead message.
+    * AnimActive: ITEM_IN_USE.
+    * SpawnItem/SpawnChar: ITEMUSE_SPAWN_RESET.
+    * Wand/Scroll: cast placeholder.
+    * CrystalBall: Source-X gibi sessiz.
+    * CannonBall/CannonMuzzle: CBALL_PROMT, CANNON_TARG.
+    * StoneGuild/Multi/MultiCustom/SignGump: mevcut gump dispatch'leri.
+    * Deed: housingEngine.PlaceHouse (mevcut akis).
+    * EqBankBox/EqVendorBox: 3rd party reach uyari log'u.
+
+YARDIMCI METOTLAR / HELPERS:
+  - FindBackpackKeyFor(item): LINK tag'i hedefin UID'sine eslesen
+    Key/Keyring'i backpack'te arar (Source-X ContentFindKeyFor).
+  - RouteSkillTarget(skill, serial): tek-adim Healing/Lockpicking/Mining/
+    Herding/Fishing icin ActiveSkillEngine'i dogrudan UseActiveSkill ile
+    cagirir.
+  - HandleScissorsTarget / HandleKeyUse / HandleDyePickup / HandleDyeApply:
+    ikinci-adim target callback'leri.
+  - FormatLocalGameTime(): IT_CLOCK icin saat metni.
+
+  (Helpers: backpack key resolver, skill-target router, scissors/key/dye
+   second-stage callbacks, local game-time formatter for IT_CLOCK.)
+
+
 [2026-04-20] - Aktif skill motoru: Healing/Hiding/Stealing/Lockpicking/Taming + 9 skill daha
 ----------------------------------------
 
