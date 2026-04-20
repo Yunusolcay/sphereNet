@@ -2,6 +2,9 @@
 bin/
 obj/
 
+# Local commit message scratch
+.git_commit_msg.tmp
+
 # Visual Studio
 .vs/
 
