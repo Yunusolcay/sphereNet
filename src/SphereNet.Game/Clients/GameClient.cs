@@ -869,20 +869,71 @@ public sealed class GameClient : ITextConsole
                 return;
         }
 
+        // Range check — set FightTarget so TickCombat auto-attacks when in range,
+        // but only swing now if already close enough
+        var atkWeapon = _character.GetEquippedItem(Layer.OneHanded)
+                     ?? _character.GetEquippedItem(Layer.TwoHanded);
+        int atkMaxRange = (atkWeapon != null &&
+            (atkWeapon.ItemType == ItemType.WeaponBow || atkWeapon.ItemType == ItemType.WeaponXBow))
+            ? 10 : 2;
+        int atkDist = Math.Max(Math.Abs(_character.X - target.X), Math.Abs(_character.Y - target.Y));
+        if (atkDist > atkMaxRange)
+            return;
+
+        TrySwingAt(target);
+    }
+
+    /// <summary>
+    /// Auto-attack tick. Called every server tick — if the player has a
+    /// valid FightTarget and the swing timer has elapsed, automatically
+    /// performs the next melee/ranged swing. Maps to CChar::Fight_HitTry
+    /// in Source-X which runs every tick for any character with a fight
+    /// target, giving continuous combat without requiring repeated 0x05
+    /// packets from the client.
+    /// </summary>
+    public void TickCombat()
+    {
+        if (_character == null || _character.IsDead) return;
+        if (!_character.FightTarget.IsValid) return;
+        if (!_character.IsInWarMode) return;
+
+        long now = Environment.TickCount64;
+        if (now < _character.NextAttackTime) return;
+
+        var target = _world.FindChar(_character.FightTarget);
+        if (target == null || target.IsDead || target.IsDeleted)
+        {
+            _character.FightTarget = Serial.Invalid;
+            return;
+        }
+
+        // Range check — melee max 2 tiles, ranged by weapon range
+        var weapon = _character.GetEquippedItem(Layer.OneHanded)
+                  ?? _character.GetEquippedItem(Layer.TwoHanded);
+        int maxRange = (weapon != null &&
+            (weapon.ItemType == ItemType.WeaponBow || weapon.ItemType == ItemType.WeaponXBow))
+            ? 10 : 2;
+        int dist = Math.Max(Math.Abs(_character.X - target.X), Math.Abs(_character.Y - target.Y));
+        if (dist > maxRange)
+            return;
+
+        TrySwingAt(target);
+    }
+
+    private void TrySwingAt(Character target)
+    {
+        if (_character == null) return;
+
         long now = Environment.TickCount64;
         if (now < _character.NextAttackTime)
             return;
 
-        // Keep swing delay simple and deterministic for now; later replaced by full weapon speed curve.
-        _character.NextAttackTime = now + GetSwingDelayMs(_character, _character.GetEquippedItem(Layer.OneHanded)
-            ?? _character.GetEquippedItem(Layer.TwoHanded));
-
         var weapon = _character.GetEquippedItem(Layer.OneHanded)
                   ?? _character.GetEquippedItem(Layer.TwoHanded);
 
-        // Ranged weapons (bow/xbow) need line of sight to the target. Melee
-        // is skipped — if you are in melee range you already "see" them via
-        // proximity. Source-X equivalent: CChar::Fight_HitTry LOS guard.
+        _character.NextAttackTime = now + GetSwingDelayMs(_character, weapon);
+
+        // Ranged LOS check
         if (weapon != null && _character.PrivLevel < PrivLevel.GM &&
             (weapon.ItemType == ItemType.WeaponBow || weapon.ItemType == ItemType.WeaponXBow))
         {
@@ -898,16 +949,13 @@ public sealed class GameClient : ITextConsole
 
         if (damage > 0)
         {
-            // Spell interruption on damage
             _spellEngine?.TryInterruptFromDamage(target, damage);
 
-            // Fire @Hit on attacker, @GetHit on target
             _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.Hit,
                 new TriggerArgs { CharSrc = _character, O1 = target, N1 = damage });
             _triggerDispatcher?.FireCharTrigger(target, CharTrigger.GetHit,
                 new TriggerArgs { CharSrc = _character, N1 = damage });
 
-            // Fire @Hit on weapon, @GetHit on target's armor/shield
             if (weapon != null)
                 _triggerDispatcher?.FireItemTrigger(weapon, ItemTrigger.Hit,
                     new TriggerArgs { CharSrc = _character, ItemSrc = weapon, O1 = target, N1 = damage });
@@ -919,56 +967,79 @@ public sealed class GameClient : ITextConsole
             _logger.LogDebug("{Attacker} hit {Target} for {Dmg} damage",
                 _character.Name, target.Name, damage);
 
-            // Swing animation — 0x6E (PacketAnimation). The old code
-            // sent 0x70 PacketEffect with a zero graphic which the client
-            // interprets as an invisible projectile, producing a phantom
-            // arrow sound. 0x6E is the correct packet for a humanoid
-            // combat action (swing / punch / bow draw) and leaves the
-            // projectile / sound channel untouched.
             ushort swingAction = GetSwingAction(_character, weapon);
             var swingAnim = new PacketAnimation(_character.Uid.Value, swingAction);
             BroadcastNearby?.Invoke(_character.Position, UpdateRange, swingAnim, 0);
 
-            // Swing-start sound — chosen from the weapon's sound set
-            // (or the unarmed fallback). Fires at the attacker's spot
-            // so nearby clients hear the strike.
             ushort swingSound = GetSwingSound(weapon);
             var swingSoundPacket = new PacketSound(swingSound, _character.X, _character.Y, _character.Z);
             BroadcastNearby?.Invoke(_character.Position, UpdateRange, swingSoundPacket, 0);
 
-            // Hit-land sound at the target (metal clang / flesh thud).
             ushort hitSound = weapon != null ? (ushort)0x0239 : (ushort)0x0135;
             var hitSoundPacket = new PacketSound(hitSound, target.X, target.Y, target.Z);
             BroadcastNearby?.Invoke(target.Position, UpdateRange, hitSoundPacket, 0);
 
-            // Damage number popup (0x0B)
             var damagePacket = new PacketDamage(target.Uid.Value, (ushort)Math.Min(damage, ushort.MaxValue));
             BroadcastNearby?.Invoke(target.Position, UpdateRange, damagePacket, 0);
-            _netState.Send(damagePacket); // also send to self
 
-            // Update target's health bar for nearby players
             var healthPacket = new PacketUpdateHealth(
                 target.Uid.Value, target.MaxHits, target.Hits);
             BroadcastNearby?.Invoke(target.Position, UpdateRange, healthPacket, 0);
-            _netState.Send(healthPacket);
 
-            if (target.IsDead && _deathEngine != null)
+            if (target.Hits <= 0 && !target.IsDead && _deathEngine != null)
             {
-                // Fire @Kill on attacker, @Death on victim
                 _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.Kill,
                     new TriggerArgs { CharSrc = _character, O1 = target });
                 _triggerDispatcher?.FireCharTrigger(target, CharTrigger.Death,
                     new TriggerArgs { CharSrc = _character });
-                _deathEngine.ProcessDeath(target, _character);
+                var corpse = _deathEngine.ProcessDeath(target, _character);
+                _character.FightTarget = Serial.Invalid;
+
+                var deletePacket = new PacketDeleteObject(target.Uid.Value);
+                BroadcastNearby?.Invoke(target.Position, UpdateRange, deletePacket, 0);
+
+                if (corpse != null)
+                {
+                    var corpsePacket = new PacketWorldItem(
+                        corpse.Uid.Value, corpse.BaseId, corpse.Amount,
+                        corpse.X, corpse.Y, corpse.Z, corpse.Hue);
+                    BroadcastNearby?.Invoke(corpse.Position, UpdateRange, corpsePacket, 0);
+                }
+            }
+
+            // Reactive armor may have killed the attacker
+            if (_character.Hits <= 0 && !_character.IsDead && _deathEngine != null)
+            {
+                _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.Death,
+                    new TriggerArgs { CharSrc = target });
+                var attackerCorpse = _deathEngine.ProcessDeath(_character, target);
+                var delPkt = new PacketDeleteObject(_character.Uid.Value);
+                BroadcastNearby?.Invoke(_character.Position, UpdateRange, delPkt, 0);
+                if (attackerCorpse != null)
+                {
+                    var cPkt = new PacketWorldItem(
+                        attackerCorpse.Uid.Value, attackerCorpse.BaseId, attackerCorpse.Amount,
+                        attackerCorpse.X, attackerCorpse.Y, attackerCorpse.Z,
+                        attackerCorpse.Hue);
+                    BroadcastNearby?.Invoke(attackerCorpse.Position, UpdateRange, cPkt, 0);
+                }
+                OnCharacterDeath();
             }
         }
         else
         {
-            // Fire @HitMiss on attacker
             _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.HitMiss,
                 new TriggerArgs { CharSrc = _character, O1 = target });
 
-            // Miss sound
+            // Swing animation plays even on miss
+            ushort missAction = GetSwingAction(_character, weapon);
+            var missAnim = new PacketAnimation(_character.Uid.Value, missAction);
+            BroadcastNearby?.Invoke(_character.Position, UpdateRange, missAnim, 0);
+
+            ushort missSwingSound = GetSwingSound(weapon);
+            var missSwingSoundPacket = new PacketSound(missSwingSound, _character.X, _character.Y, _character.Z);
+            BroadcastNearby?.Invoke(_character.Position, UpdateRange, missSwingSoundPacket, 0);
+
             var missSound = new PacketSound(0x0234, target.X, target.Y, target.Z);
             BroadcastNearby?.Invoke(target.Position, UpdateRange, missSound, 0);
         }
@@ -6211,22 +6282,34 @@ public sealed class GameClient : ITextConsole
     /// ServUO MobileAnimation / Source-X AnimationRange tables.</summary>
     private static ushort GetSwingAction(Character attacker, Item? weapon)
     {
+        if (attacker.IsMounted)
+        {
+            if (weapon == null) return 26;
+            return weapon.ItemType switch
+            {
+                Core.Enums.ItemType.WeaponBow or
+                Core.Enums.ItemType.WeaponXBow => 28,
+                Core.Enums.ItemType.WeaponFence => 27,
+                _ => 26,
+            };
+        }
+
         if (weapon == null)
             return 31; // wrestling punch
         return weapon.ItemType switch
         {
-            Core.Enums.ItemType.WeaponBow => 18,       // bow draw
-            Core.Enums.ItemType.WeaponXBow => 19,      // crossbow
+            Core.Enums.ItemType.WeaponBow => 18,
+            Core.Enums.ItemType.WeaponXBow => 19,
             Core.Enums.ItemType.WeaponSword or
-            Core.Enums.ItemType.WeaponAxe => 9,        // slash
-            Core.Enums.ItemType.WeaponFence => 13,     // thrust / pierce
+            Core.Enums.ItemType.WeaponAxe => 9,
+            Core.Enums.ItemType.WeaponFence => 13,
             Core.Enums.ItemType.WeaponMaceSmith or
             Core.Enums.ItemType.WeaponMaceSharp or
             Core.Enums.ItemType.WeaponMaceStaff or
             Core.Enums.ItemType.WeaponMaceCrook or
             Core.Enums.ItemType.WeaponMacePick or
-            Core.Enums.ItemType.WeaponWhip => 11,      // bash
-            Core.Enums.ItemType.WeaponThrowing => 12,  // throw
+            Core.Enums.ItemType.WeaponWhip => 11,
+            Core.Enums.ItemType.WeaponThrowing => 12,
             _ => 9,
         };
     }

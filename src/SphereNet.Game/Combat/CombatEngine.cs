@@ -100,11 +100,13 @@ public static class CombatEngine
             }
             default: // Sphere custom (era 0)
             {
+                // Source-X Calc_CombatChanceToHit: base 50% shifted by
+                // the attack/defend skill difference, clamped 5-95%.
                 int iSkillAttack = (attackSkill + tacticsAtk) / 2;
                 int iSkillDefend = (targetSkill + tacticsDef) / 2;
-                int iDiff = (iSkillAttack - iSkillDefend) / 5;
-                int chance = (attackSkill - iDiff) / 10;
-                return Math.Clamp(chance, 0, 100);
+                int iDiff = iSkillAttack - iSkillDefend;
+                int chance = 50 + iDiff / 10;
+                return Math.Clamp(chance, 5, 95);
             }
         }
     }
@@ -248,24 +250,19 @@ public static class CombatEngine
 
         damage = Math.Max(0, damage);
 
-        // Apply damage
+        // Apply damage — do NOT call Kill() here; the caller handles death
+        // via DeathEngine.ProcessDeath which creates the corpse, drops loot,
+        // and sends the delete packet. Calling Kill() early makes
+        // ProcessDeath bail out ("already dead") leaving a ghost NPC.
         if (damage > 0)
         {
             target.Hits -= (short)damage;
             target.RecordAttack(attacker.Uid, damage);
-            if (target.Hits <= 0)
-                target.Kill();
 
-            // Reactive Armor: a portion of melee damage is reflected back
-            // to the attacker. ServUO reflects 25% after armor; we mirror
-            // that ratio. Only physical melee — the caller path for spell
-            // damage goes through SpellEngine.ApplyCharEffect, which does
-            // NOT invoke ResolveAttack.
             if (target.IsStatFlag(StatFlag.Reactive) && attacker != target && !attacker.IsDead)
             {
                 int reflect = Math.Max(1, damage / 4);
                 attacker.Hits -= (short)reflect;
-                if (attacker.Hits <= 0) attacker.Kill();
             }
         }
 

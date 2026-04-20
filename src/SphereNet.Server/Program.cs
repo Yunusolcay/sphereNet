@@ -853,16 +853,33 @@ public static class Program
             var healthPkt = new PacketUpdateHealth(target.Uid.Value, target.MaxHits, target.Hits);
             BroadcastNearby(target.Position, 18, healthPkt, 0);
 
-            // Handle death
-            if (target.IsDead)
+        };
+        _npcAI.OnNpcKill = (killer, victim) =>
+        {
+            _triggerDispatcher?.FireCharTrigger(killer, CharTrigger.Kill,
+                new TriggerArgs { CharSrc = killer, O1 = victim });
+            _triggerDispatcher?.FireCharTrigger(victim, CharTrigger.Death,
+                new TriggerArgs { CharSrc = killer });
+            var corpse = _deathEngine.ProcessDeath(victim, killer);
+            killer.FightTarget = Serial.Invalid;
+
+            var deletePacket = new PacketDeleteObject(victim.Uid.Value);
+            BroadcastNearby(victim.Position, 18, deletePacket, 0);
+
+            if (corpse != null)
             {
-                foreach (var c in _clients.Values)
+                var corpsePacket = new PacketWorldItem(
+                    corpse.Uid.Value, corpse.BaseId, corpse.Amount,
+                    corpse.X, corpse.Y, corpse.Z, corpse.Hue);
+                BroadcastNearby(corpse.Position, 18, corpsePacket, 0);
+            }
+
+            foreach (var c in _clients.Values)
+            {
+                if (c.Character == victim)
                 {
-                    if (c.Character == target)
-                    {
-                        c.OnCharacterDeath();
-                        break;
-                    }
+                    c.OnCharacterDeath();
+                    break;
                 }
             }
         };
@@ -2906,6 +2923,7 @@ public static class Program
 
         foreach (var client in _clients.Values)
         {
+            client.TickCombat();
             client.TickSpellCast();
             client.TickStatUpdate();
             client.UpdateClientView();
@@ -2962,6 +2980,7 @@ public static class Program
 
         foreach (var client in clientSnapshot)
         {
+            client.TickCombat();
             client.TickSpellCast();
             client.TickStatUpdate();
         }

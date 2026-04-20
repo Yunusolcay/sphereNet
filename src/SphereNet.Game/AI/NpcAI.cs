@@ -444,10 +444,19 @@ public sealed class NpcAI
     public Action<Character, Character, int>? OnNpcAttack { get; set; }
 
     /// <summary>
+    /// Callback for when an NPC kills a target. Used by Program.cs to run DeathEngine + broadcast.
+    /// Parameters: killer, victim
+    /// </summary>
+    public Action<Character, Character>? OnNpcKill { get; set; }
+
+    /// <summary>
     /// Try to swing attack a target with swing timer throttle.
     /// </summary>
     private void TrySwingAttack(Character npc, Character target)
     {
+        if (npc.IsDead || npc.Hits <= 0 || target.IsDead || target.Hits <= 0)
+            return;
+
         long now = Environment.TickCount64;
         if (now < npc.NextAttackTime)
             return;
@@ -459,11 +468,19 @@ public sealed class NpcAI
         // Get NPC weapon (if any)
         Item? weapon = npc.GetEquippedItem(Layer.OneHanded) ?? npc.GetEquippedItem(Layer.TwoHanded);
 
+        short hpBefore = npc.Hits;
         int damage = CombatEngine.ResolveAttack(npc, target, weapon);
         if (damage > 0)
         {
             OnNpcAttack?.Invoke(npc, target, damage);
+
+            if (target.Hits <= 0 && !target.IsDead)
+                OnNpcKill?.Invoke(npc, target);
         }
+
+        // Reactive armor reflect may have killed the attacker
+        if (npc.Hits < hpBefore && npc.Hits <= 0 && !npc.IsDead)
+            OnNpcKill?.Invoke(npc, npc);
 
         // Face the target
         npc.Direction = npc.Position.GetDirectionTo(target.Position);

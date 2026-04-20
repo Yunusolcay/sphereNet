@@ -53,7 +53,7 @@ public sealed class ItemDef : BaseDef
         switch (key.ToUpperInvariant())
         {
             case "NAME": Name = value; break;
-            case "TYPE": Enum.TryParse(value, true, out ItemType t); Type = t; break;
+            case "TYPE": Type = ParseItemType(value); break;
             case "WEIGHT": int.TryParse(value, out int w); Weight = w; break;
             case "LAYER": Enum.TryParse(value, true, out Layer l); Layer = l; break;
             case "FLIPID": ParseHexOrDec(value, out ushort f); FlipId = f; break;
@@ -176,5 +176,33 @@ public sealed class ItemDef : BaseDef
             ulong.TryParse(value.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out result);
         else
             ulong.TryParse(value, out result);
+    }
+
+    /// <summary>
+    /// Parse Source-X type strings (t_weapon_sword, t_armor, etc.)
+    /// to the ItemType enum. Strips the t_ prefix and underscores.
+    /// Also handles numeric values.
+    /// </summary>
+    private static ItemType ParseItemType(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return ItemType.Normal;
+
+        // Numeric value
+        if (ushort.TryParse(value, out ushort numType))
+            return (ItemType)numType;
+
+        // Strip t_ prefix used by Source-X scripts
+        string normalized = value.Trim();
+        if (normalized.StartsWith("t_", StringComparison.OrdinalIgnoreCase))
+            normalized = normalized[2..];
+
+        // Remove underscores for enum matching (t_weapon_sword → weaponsword → WeaponSword)
+        normalized = normalized.Replace("_", "");
+
+        if (Enum.TryParse(normalized, true, out ItemType result))
+            return result;
+
+        return ItemType.Normal;
     }
 }
