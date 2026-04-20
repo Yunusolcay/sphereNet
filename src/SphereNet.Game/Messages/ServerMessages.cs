@@ -116,6 +116,7 @@ public static class ServerMessages
         Def("combat_nopvp", "You cannot attack players in this area.");
         Def("combat_dead", "You have died. Seek a healer to be resurrected.");
         Def("combat_resurrected", "You have been resurrected.");
+        Def("combat_resurrected_with_corpse", "You have been resurrected and your belongings restored.");
         Def("combat_warmode_on", "You are now in war mode.");
         Def("combat_warmode_off", "You are now in peace mode.");
         Def("combat_arch_noammo", "You have no ammunition.");
@@ -335,6 +336,11 @@ public static class ServerMessages
         Def("gm_insuf_priv", "Insufficient privileges. Required=%s, YourPLEVEL=%s.");
         Def("cmd_invalid", "Not a valid command or format");
         Def("gm_object_serial", "Object not found: 0x%s");
+
+        // ===== World Save (Source-X: DEFMSG_WORLDSAVE_*) =====
+        Def("worldsave_started", "Saving world...");
+        Def("worldsave_complete", "World save complete. (#%s, took %s ms)");
+        Def("worldsave_failed", "World save FAILED: %s");
 
         // ===== DB Commands =====
         Def("db_connect_fail", "DB.CONNECT failed: %s");

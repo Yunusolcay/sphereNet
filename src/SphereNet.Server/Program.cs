@@ -2,6 +2,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Serilog;
+using Serilog.Sinks.SystemConsole.Themes;
 using SphereNet.Core.Configuration;
 using SphereNet.Core.Enums;
 using SphereNet.Core.Interfaces;
@@ -50,6 +51,14 @@ namespace SphereNet.Server;
 
 public static class Program
 {
+    private static readonly AnsiConsoleTheme WarningConsoleTheme = new(
+        new Dictionary<ConsoleThemeStyle, string>
+        {
+            [ConsoleThemeStyle.LevelWarning] = "\x1b[38;5;196m",
+            [ConsoleThemeStyle.LevelError] = "\x1b[38;5;203m",
+            [ConsoleThemeStyle.LevelFatal] = "\x1b[38;5;15m"
+        });
+
     private static SphereConfig _config = null!;
     private static CryptConfig _cryptConfig = null!;
     private static ILoggerFactory _loggerFactory = null!;
@@ -273,7 +282,8 @@ public static class Program
         else
 #endif
             serilogConfig = serilogConfig.WriteTo.Console(
-                outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}");
+                outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}",
+                theme: WarningConsoleTheme);
 
         serilogConfig = serilogConfig.WriteTo.File(
                 Path.Combine(basePath, "logs", "spherenet-.log"),
@@ -766,6 +776,48 @@ public static class Program
                 }
             }
         };
+        _commands.OnResurrectRequested += (gm, targetUid) =>
+        {
+            // No UID  → resurrect self.
+            // With UID → resurrect that character (GM-only command, so we
+            // don't gate on PrivLevel here; SpeechEngine.Register already
+            // restricts the verb).
+            var victim = !targetUid.HasValue || targetUid.Value.Value == 0
+                ? gm
+                : _world.FindChar(targetUid.Value);
+            if (victim == null)
+            {
+                if (_clientsByCharUid.TryGetValue(gm.Uid, out var gmClient))
+                    gmClient.SysMessage("Resurrect: target not found.");
+                return;
+            }
+
+            if (!_clientsByCharUid.TryGetValue(victim.Uid, out var victimClient))
+            {
+                // Offline / NPC — no client-side ghost transition needed,
+                // just clear the dead state on the character object so the
+                // next login or AI tick sees them alive.
+                if (victim.IsDead)
+                    victim.Resurrect();
+                if (_clientsByCharUid.TryGetValue(gm.Uid, out var gmClient2))
+                    gmClient2.SysMessage($"Resurrected '{victim.Name}'.");
+                return;
+            }
+
+            if (!victim.IsDead)
+            {
+                if (_clientsByCharUid.TryGetValue(gm.Uid, out var gmClient3))
+                    gmClient3.SysMessage($"'{victim.Name}' is not dead.");
+                return;
+            }
+
+            victimClient.OnResurrect();
+        };
+        _commands.OnResurrectTargetRequested += gm =>
+        {
+            if (_clientsByCharUid.TryGetValue(gm.Uid, out var gmClient))
+                gmClient.BeginResurrectTarget();
+        };
         _commands.OnCastRequested += (ch, spellId) =>
         {
             foreach (var c in _clients.Values)
@@ -816,22 +868,39 @@ public static class Program
                 }
             }
         };
-        _deathEngine = new DeathEngine(_world);
-        _deathEngine.OnDeath += (victim, killer) =>
+        _spellEngine.OnCasterFacingChanged = caster =>
         {
-            // Find the client of the victim and notify about death
-            if (victim.IsPlayer)
-            {
-                foreach (var c in _clients.Values)
-                {
-                    if (c.Character == victim)
-                    {
-                        c.OnCharacterDeath();
-                        break;
-                    }
-                }
-            }
+            // Source-X UpdateMove(GetTopPoint()) — broadcast new facing only.
+            // Reuse the lightweight 0x77 MobileMoving so nearby clients
+            // re-render the mobile in its new direction without a full
+            // 0x78 char info refresh.
+            byte dirByte = (byte)((byte)caster.Direction & 0x07);
+            byte flags = 0;
+            if (caster.IsInWarMode) flags |= 0x40;
+            if (caster.IsDead) flags |= 0x02;
+            byte noto = caster.IsPlayer ? (byte)1 : (byte)3;
+            var pkt = new PacketMobileMoving(
+                caster.Uid.Value, caster.BodyId,
+                caster.X, caster.Y, caster.Z, dirByte,
+                caster.Hue, flags, noto);
+            BroadcastNearby(caster.Position, 18, pkt, 0);
         };
+        _deathEngine = new DeathEngine(_world);
+        // NOTE: DeathEngine.OnDeath fires from inside ProcessDeath, after the
+        // corpse object is created but BEFORE the corpse spawn packets are
+        // broadcast. We deliberately do NOT call GameClient.OnCharacterDeath
+        // here, because:
+        //   * Source-X order is: corpse appears → 0xAF death anim → ghost
+        //     transition. Calling OnCharacterDeath inside this callback
+        //     flips the player to a ghost body BEFORE the killer's client
+        //     has even received the corpse packet, so observers briefly
+        //     see "ghost without a corpse on the floor".
+        //   * Both code paths that trigger player death (NpcAI.OnNpcKill
+        //     in Program.cs and Player-vs-Player in GameClient.TrySwingAt)
+        //     already invoke c.OnCharacterDeath() AFTER they finish sending
+        //     corpse + 0xAF packets. Doing it here would call it twice.
+        // This hook is kept for non-visual side effects (logging, party
+        // bookkeeping, etc.) — currently nothing else needs it.
         _deathEngine.LootingIsACrime = _config.LootingIsACrime;
         _deathEngine.CorpseDecayNPC = _config.CorpseNpcDecay * 60;
         _deathEngine.CorpseDecayPlayer = _config.CorpsePlayerDecay * 60;
@@ -841,6 +910,21 @@ public static class Program
         _npcTimerWheel = new SphereNet.Game.Scheduling.TimerWheel(Environment.TickCount64);
         _npcAI.OnNpcAttack = (attacker, target, damage) =>
         {
+            // Broadcast the attacker's new facing first (Source-X
+            // CChar::UpdateDir during Fight_Hit). Without a 0x77 here the
+            // client keeps drawing the NPC facing its old direction even
+            // though the AI has already turned it on the server side, and
+            // the swing animation plays sideways.
+            byte attackerDir = (byte)((byte)attacker.Direction & 0x07);
+            byte attackerFlags = 0;
+            if (attacker.IsInWarMode) attackerFlags |= 0x40;
+            if (attacker.IsDead) attackerFlags |= 0x02;
+            var movePkt = new PacketMobileMoving(
+                attacker.Uid.Value, attacker.BodyId,
+                attacker.X, attacker.Y, attacker.Z, attackerDir,
+                attacker.Hue, attackerFlags, /*notoriety*/ 3);
+            BroadcastNearby(attacker.Position, 18, movePkt, 0);
+
             // Broadcast attack animation and damage to nearby clients
             var animPkt = new PacketAnimation(attacker.Uid.Value, 4); // swing anim
             BroadcastNearby(attacker.Position, 18, animPkt, 0);
@@ -870,14 +954,18 @@ public static class Program
 
             if (corpse != null)
             {
-                var corpsePacket = new PacketWorldItem(
-                    corpse.Uid.Value, corpse.DispIdFull, corpse.Amount,
-                    corpse.X, corpse.Y, corpse.Z, corpse.Hue,
-                    victimDir);
-                BroadcastNearby(victimPos, 18, corpsePacket, 0);
+                uint corpseWireSerial = corpse.Uid.Value;
+                if (corpse.Amount > 1)
+                    corpseWireSerial |= 0x80000000u;
 
                 if (victim.IsPlayer)
                 {
+                    var corpsePacket = new PacketWorldItem(
+                        corpse.Uid.Value, corpse.DispIdFull, corpse.Amount,
+                        corpse.X, corpse.Y, corpse.Z, corpse.Hue,
+                        victimDir);
+                    BroadcastNearby(victimPos, 18, corpsePacket, 0);
+
                     // Player corpse: send contents + equip map for paperdoll corpse rendering.
                     foreach (var corpseItem in corpse.Contents)
                     {
@@ -909,19 +997,39 @@ public static class Program
                     var corpseEquip = new PacketCorpseEquipment(corpse.Uid.Value, corpseEquipEntries);
                     BroadcastNearby(victimPos, 18, corpseEquip, 0);
 
-                    var deathAnim = new PacketDeathAnimation(victim.Uid.Value, corpse.Uid.Value, 0);
-                    BroadcastNearby(victimPos, 18, deathAnim, 0);
+                    // 0xAF is NOT broadcast here — OnCharacterDeath below
+                    // runs a per-observer dispatch that sends 0xAF to plain
+                    // players and 0x1D + 0x78 ghost mobile to staff. A
+                    // blanket BroadcastNearby would hit staff with 0xAF
+                    // BEFORE 0x1D+0x78, causing ClassicUO to remap the
+                    // serial (0x80000000|serial) so the follow-up 0x1D
+                    // becomes a no-op and the alive body lingers under the
+                    // remapped key alongside the new ghost mobile.
+                    // Mirrors the PvP (TrySwingAt) path which also defers
+                    // 0xAF to OnCharacterDeath's per-observer dispatch.
                 }
                 else
                 {
-                    // NPC corpse: keep flow minimal and stable.
-                    var deathAnim = new PacketDeathAnimation(victim.Uid.Value, corpse.Uid.Value, 0);
+                    // NPC corpse — matches both Source-X (PacketDeath +
+                    // RemoveFromView) and ServUO (DeathAnimation + Delete ->
+                    // RemovePacket) reference flow:
+                    //   1) 0x1A WorldItem  (corpse appears in world)
+                    //   2) 0xAF DeathAnim  (mobile -> corpse transition)
+                    //   3) 0x1D DeleteObj  (remove the dead mobile)
+                    var corpsePacket = new PacketWorldItem(
+                        corpse.Uid.Value, corpse.DispIdFull, corpse.Amount,
+                        corpse.X, corpse.Y, corpse.Z, corpse.Hue,
+                        victimDir);
+                    BroadcastNearby(victimPos, 18, corpsePacket, 0);
+
+                    uint npcFallDir = (uint)Random.Shared.Next(2);
+                    var deathAnim = new PacketDeathAnimation(victim.Uid.Value, corpse.Uid.Value, npcFallDir);
                     BroadcastNearby(victimPos, 18, deathAnim, 0);
+
+                    var removeMobile = new PacketDeleteObject(victim.Uid.Value);
+                    BroadcastNearby(victimPos, 18, removeMobile, 0);
                 }
             }
-
-            var deletePkt = new PacketDeleteObject(victim.Uid.Value);
-            BroadcastNearby(victimPos, 18, deletePkt, 0);
 
             foreach (var c in _clients.Values)
             {
@@ -1944,20 +2052,69 @@ public static class Program
 
     private static void PerformSave()
     {
+        // Source-X DEFMSG_WORLDSAVE_S behaviour: tell every online player a
+        // save is happening so they don't blame momentary lag on the server
+        // crashing. We use the world-event hue (0x0040, light red) which
+        // matches the colour OSI/Source-X uses for global system events.
+        const ushort SaveHue = 0x0040;
+        BroadcastToAllPlayers(ServerMessages.Get("worldsave_started"), SaveHue);
+
         _log.LogInformation("Saving world...");
-        _systemHooks.DispatchServer("save", _serverHookContext);
-        _housingEngine?.SerializeAllToTags();
-        _shipEngine?.SerializeAllToTags();
-        _guildManager?.SerializeAllToTags(_world);
-        string basePath = AppDomain.CurrentDomain.BaseDirectory;
-        string sp = ResolvePath(basePath, _config.WorldSaveDir);
-        _saver.Save(_world, sp);
-        string accDir = ResolvePath(basePath, _config.AccountDir);
-        SphereNet.Persistence.Accounts.AccountPersistence.Save(
-            _accounts, accDir, _saver.Format,
-            _loggerFactory.CreateLogger("AccountPersistence"));
-        _saveCount++;
-        _log.LogInformation("Save complete. (#{Count})", _saveCount);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            _systemHooks.DispatchServer("save", _serverHookContext);
+            _housingEngine?.SerializeAllToTags();
+            _shipEngine?.SerializeAllToTags();
+            _guildManager?.SerializeAllToTags(_world);
+            string basePath = AppDomain.CurrentDomain.BaseDirectory;
+            string sp = ResolvePath(basePath, _config.WorldSaveDir);
+            _saver.Save(_world, sp);
+            string accDir = ResolvePath(basePath, _config.AccountDir);
+            SphereNet.Persistence.Accounts.AccountPersistence.Save(
+                _accounts, accDir, _saver.Format,
+                _loggerFactory.CreateLogger("AccountPersistence"));
+            _saveCount++;
+            sw.Stop();
+            _log.LogInformation("Save complete. (#{Count}, {Ms} ms)", _saveCount, sw.ElapsedMilliseconds);
+            BroadcastToAllPlayers(
+                ServerMessages.GetFormatted("worldsave_complete", _saveCount, sw.ElapsedMilliseconds),
+                SaveHue);
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            _log.LogError(ex, "World save failed");
+            BroadcastToAllPlayers(
+                ServerMessages.GetFormatted("worldsave_failed", ex.Message),
+                SaveHue);
+        }
+    }
+
+    /// <summary>Send a sysmessage to every logged-in player. Used for global
+    /// events (world save start/complete, shutdown countdown, etc.) where
+    /// Source-X uses g_World.Broadcast() / addBarkParse(...,
+    /// CCharBase::ALLCHARS, ...).</summary>
+    private static void BroadcastToAllPlayers(string text, ushort hue)
+    {
+        if (string.IsNullOrEmpty(text))
+            return;
+
+        foreach (var c in _clients.Values)
+        {
+            if (!c.IsPlaying)
+                continue;
+            try
+            {
+                c.SysMessage(text, hue);
+            }
+            catch
+            {
+                // Don't let a single dead socket abort the broadcast — a
+                // disconnected client during save is normal at server tick
+                // boundaries; the connection will be reaped shortly.
+            }
+        }
     }
 
     /// <summary>Handle a <c>.SAVEFORMAT</c> request: parse format name, update
@@ -2201,8 +2358,23 @@ public static class Program
             client.SetScriptServices(_systemHooks, _scriptDb, ResolveDefMessage, _scriptFile);
             client.BroadcastNearby = BroadcastNearby;
             client.BroadcastMoveNearby = BroadcastMoveNearby;
+            client.ForEachClientInRange = ForEachClientInRange;
             client.SendToChar = SendPacketToChar;
             client.BroadcastCharacterAppear = BroadcastCharacterAppear;
+            client.OnCharacterDeathOfOther = victim =>
+            {
+                // Resolve the victim's own client and run its death sequence
+                // (ghost transition, 0x77 broadcast, 0x20/0x2C self packets).
+                if (_clientsByCharUid.TryGetValue(victim.Uid, out var victimClient))
+                    victimClient.OnCharacterDeath();
+            };
+            client.OnResurrectOther = victim =>
+            {
+                if (_clientsByCharUid.TryGetValue(victim.Uid, out var victimClient))
+                    victimClient.OnResurrect();
+                else if (victim.IsDead)
+                    victim.Resurrect(); // offline / NPC fallback
+            };
             _clients[state.Id] = client;
         }
         return client;
@@ -2231,6 +2403,41 @@ public static class Program
                 if (center.GetDistanceTo(ch.Position) > range) continue;
                 if (_clientsByCharUid.TryGetValue(ch.Uid, out var c) && c.IsPlaying)
                     c.Send(packet);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Per-observer dispatch helper. Walks every online player whose character
+    /// is within <paramref name="range"/> tiles of <paramref name="center"/>
+    /// and invokes <paramref name="action"/> with both the observer Character
+    /// and its GameClient. Used by the death/resurrect pipeline where the
+    /// packet sent depends on the observer (plain player vs Counsel+ staff
+    /// vs the dying player itself) — the standard BroadcastNearby helper
+    /// can only dispatch a single packet to everyone.
+    ///
+    /// <paramref name="excludeUid"/> behaves like BroadcastNearby — pass 0
+    /// to include everyone (the action can decide what to send to the
+    /// dying player), or a specific UID to skip a single character.
+    /// </summary>
+    private static void ForEachClientInRange(Point3D center, int range, uint excludeUid,
+        Action<Character, GameClient> action)
+    {
+        int secRadius = (range / SphereNet.Game.World.Sectors.Sector.SectorSize) + 1;
+        int cx = center.X / SphereNet.Game.World.Sectors.Sector.SectorSize;
+        int cy = center.Y / SphereNet.Game.World.Sectors.Sector.SectorSize;
+        for (int sx = cx - secRadius; sx <= cx + secRadius; sx++)
+        for (int sy = cy - secRadius; sy <= cy + secRadius; sy++)
+        {
+            var sector = _world.GetSector(center.Map, sx, sy);
+            if (sector == null) continue;
+            foreach (var ch in sector.Characters)
+            {
+                if (!ch.IsPlayer || !ch.IsOnline) continue;
+                if (ch.Uid.Value == excludeUid) continue;
+                if (center.GetDistanceTo(ch.Position) > range) continue;
+                if (_clientsByCharUid.TryGetValue(ch.Uid, out var c) && c.IsPlaying)
+                    action(ch, c);
             }
         }
     }

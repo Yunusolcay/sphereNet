@@ -621,6 +621,36 @@ public sealed class PacketDeathAnimation : PacketWriter
     }
 }
 
+/// <summary>0x2C — Death status / death menu. Sent to the dying player's own
+/// client to trigger the client-side death state (death music, death screen
+/// fade, war-mode reset). ClassicUO's <c>DeathScreen</c> handler treats any
+/// action != 1 as "you are dead" — Source-X uses <c>PacketDeathMenu::Dead</c>
+/// (action 0x00) for that. The reverse path (action 1 = resurrect, 2 = stay
+/// ghost) comes back to the server as the client's reply.
+/// Reference: Source-X PacketDeathMenu (send.cpp), ClassicUO PacketHandlers
+/// DeathScreen (line 1745).
+/// Fixed length: 1 (opcode) + 1 (action) = 2 bytes.</summary>
+public sealed class PacketDeathStatus : PacketWriter
+{
+    public const byte ActionDead = 0x00;
+    public const byte ActionResurrect = 0x01;
+    public const byte ActionGhost = 0x02;
+
+    private readonly byte _action;
+
+    public PacketDeathStatus(byte action) : base(0x2C)
+    {
+        _action = action;
+    }
+
+    public override PacketBuffer Build()
+    {
+        var buf = CreateFixed(2);
+        buf.WriteByte(_action);
+        return buf;
+    }
+}
+
 /// <summary>0x89 — Corpse equipment list.
 /// Associates equipped item serials to layers on a corpse.</summary>
 public sealed class PacketCorpseEquipment : PacketWriter
@@ -724,6 +754,7 @@ public sealed class PacketWorldItem : PacketWriter
             buf.WriteByte(_flags);
 
         buf.WriteLengthAt(1);
+
         return buf;
     }
 }
@@ -947,7 +978,10 @@ public sealed class PacketUpdateStamina : PacketWriter
     }
 }
 
-/// <summary>0x0B — Damage notification (combat damage number popup).</summary>
+/// <summary>0x0B — Damage notification (combat damage number popup).
+/// Fixed length: 1 (opcode) + 4 (defender serial) + 2 (damage) = 7 bytes.
+/// Reference: Source-X PacketCombatDamage (send.cpp). Sending a length
+/// header here desyncs the client packet stream and freezes the UI.</summary>
 public sealed class PacketDamage : PacketWriter
 {
     private readonly uint _serial;
@@ -961,10 +995,9 @@ public sealed class PacketDamage : PacketWriter
 
     public override PacketBuffer Build()
     {
-        var buf = CreateVariable(8);
+        var buf = CreateFixed(7);
         buf.WriteUInt32(_serial);
         buf.WriteUInt16(_damage);
-        buf.WriteLengthAt(1);
         return buf;
     }
 }

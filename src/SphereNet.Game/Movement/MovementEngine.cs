@@ -48,7 +48,15 @@ public sealed class MovementEngine
         byte sequence, out WalkCheck.Diagnostic diag)
     {
         diag = default;
-        if (ch.IsDead || ch.IsStatFlag(StatFlag.Freeze) || ch.IsStatFlag(StatFlag.Stone))
+        // IsDead is intentionally NOT a hard reject here. Source-X /
+        // OSI ghosts can walk freely (just slower, can't open most doors,
+        // can't mount). Treating death as "cannot move" leaves the player
+        // stuck in place after dying, which manifests in the death log as
+        // "client receives 0x2C death status, draws ghost body, then sends
+        // no walk packets". We still block Freeze (paralyze, GM .freeze)
+        // and Stone (stone form / petrified) since those are explicit
+        // immobility states even on living characters.
+        if (ch.IsStatFlag(StatFlag.Freeze) || ch.IsStatFlag(StatFlag.Stone))
             return false;
 
         var current = new Point3D(ch.X, ch.Y, ch.Z, ch.MapIndex);

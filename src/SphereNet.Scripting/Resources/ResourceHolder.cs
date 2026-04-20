@@ -42,6 +42,7 @@ public sealed class ResourceHolder
         "EVENTS" => ResType.Events,
         "FUNCTION" => ResType.Function,
         "DEFNAME" or "DEFNAMES" => ResType.DefName,
+        "RESDEFNAME" => ResType.DefName,
         "REGIONTYPE" => ResType.RegionType,
         "REGIONRESOURCE" => ResType.RegionResource,
         "AREADEF" or "AREA" => ResType.Area,
@@ -52,6 +53,7 @@ public sealed class ResourceHolder
         "MENU" => ResType.Menu,
         "SPHERE" => ResType.Sphere,
         "SCROLL" => ResType.Scroll,
+        "BOOK" => ResType.Book,
         "TIP" => ResType.Tip,
         "SPEECH" => ResType.Speech,
         "NEWBIE" => ResType.NewBie,
@@ -141,7 +143,8 @@ public sealed class ResourceHolder
             }
 
             if (resType == ResType.Sphere || resType == ResType.ServerConfig ||
-                resType == ResType.ResourceList || resType == ResType.Comment)
+                resType == ResType.ResourceList || resType == ResType.Comment ||
+                resType == ResType.Book)
             {
                 count++;
                 continue;
@@ -529,7 +532,7 @@ public sealed class ResourceHolder
 
             if (resType == ResType.Unknown || resType == ResType.Sphere ||
                 resType == ResType.ServerConfig || resType == ResType.ResourceList ||
-                resType == ResType.Comment)
+                resType == ResType.Comment || resType == ResType.Book)
                 continue;
 
             string rawArg = section.Argument;

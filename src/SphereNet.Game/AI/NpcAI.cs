@@ -451,6 +451,17 @@ public sealed class NpcAI
 
     /// <summary>
     /// Try to swing attack a target with swing timer throttle.
+    /// Uses the same pre-AOS Source-X swing-speed formula as players
+    /// (<see cref="SphereNet.Game.Clients.GameClient.GetSwingDelayMs"/>),
+    /// gated by the same can-swing checks (dead / sleeping / frozen /
+    /// out-of-stamina / mid-cast). Mirrors CChar::Fight_Hit:
+    ///   <list type="number">
+    ///     <item>Validate state and STAM &gt; 0.</item>
+    ///     <item>Turn to face the target before launching the swing
+    ///       so the animation plays the right way (UpdateDir).</item>
+    ///     <item>Resolve damage and consume one stamina point.</item>
+    ///     <item>Set <c>NextAttackTime</c> to the full swing recoil.</item>
+    ///   </list>
     /// </summary>
     private void TrySwingAttack(Character npc, Character target)
     {
@@ -461,14 +472,41 @@ public sealed class NpcAI
         if (now < npc.NextAttackTime)
             return;
 
-        // Source-X Fight_CalcDelay: speed * 100 / (DEX + 100) in ticks (100ms)
-        int speed = 35;
-        int dexMod = Math.Max(10, (int)npc.Dex);
-        int swingDelayMs = Math.Clamp(speed * 100 * 100 / (dexMod + 100), 1250, 5000);
+        // Same gating Source-X applies to player attackers — see
+        // GameClient.TrySwingAt for rationale.
+        if (npc.Stam <= 0)
+        {
+            npc.NextAttackTime = now + 1000;
+            return;
+        }
+        if (npc.IsStatFlag(StatFlag.Freeze) || npc.IsStatFlag(StatFlag.Sleeping))
+        {
+            npc.NextAttackTime = now + 500;
+            return;
+        }
+        if (npc.TryGetTag("SPELL_CASTING", out _))
+        {
+            npc.NextAttackTime = now + 500;
+            return;
+        }
+
+        Item? weapon = npc.GetEquippedItem(Layer.OneHanded) ?? npc.GetEquippedItem(Layer.TwoHanded);
+
+        // Source-X formula 0 swing delay, identical to player code.
+        int swingDelayMs = SphereNet.Game.Clients.GameClient.GetSwingDelayMs(npc, weapon);
         npc.NextAttackTime = now + swingDelayMs;
 
-        // Get NPC weapon (if any)
-        Item? weapon = npc.GetEquippedItem(Layer.OneHanded) ?? npc.GetEquippedItem(Layer.TwoHanded);
+        // Face the target *before* the swing — Source-X UpdateDir(pCharTarg).
+        // Direction setter marks the dirty flag; the actual 0x77 broadcast
+        // is performed by Program.cs's OnNpcAttack handler when it sends
+        // the swing animation, so a single network update covers both
+        // the new facing and the swing.
+        var newDir = npc.Position.GetDirectionTo(target.Position);
+        if (newDir != npc.Direction)
+            npc.Direction = newDir;
+
+        if (npc.Stam > 0)
+            npc.Stam = (short)(npc.Stam - 1);
 
         short hpBefore = npc.Hits;
         int damage = CombatEngine.ResolveAttack(npc, target, weapon);
@@ -483,9 +521,6 @@ public sealed class NpcAI
         // Reactive armor reflect may have killed the attacker
         if (npc.Hits < hpBefore && npc.Hits <= 0 && !npc.IsDead)
             OnNpcKill?.Invoke(npc, npc);
-
-        // Face the target
-        npc.Direction = npc.Position.GetDirectionTo(target.Position);
     }
 
     // --- Movement helpers ---

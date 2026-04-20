@@ -29,6 +29,13 @@ public sealed class SpellEngine
     /// <summary>Callback fired when a spell is interrupted. Args: (Character caster, string reason).</summary>
     public Action<Character, string>? OnSpellInterrupt { get; set; }
 
+    /// <summary>Fired when a cast starts after we've turned the caster
+    /// to face the target — Program.cs uses this to broadcast a 0x77
+    /// MobileMoving so other clients see the new facing while the cast
+    /// animation plays. Without this, the caster appears to throw the
+    /// spell sideways.</summary>
+    public Action<Character>? OnCasterFacingChanged { get; set; }
+
     /// <summary>Callback fired when a character's personal light level
     /// changes (e.g. after Night Sight). Program.cs wires this to the
     /// matching GameClient so it can send a fresh 0x4E packet.</summary>
@@ -182,6 +189,19 @@ public sealed class SpellEngine
         caster.SetTag("SPELL_TARGET_X", targetPos.X.ToString());
         caster.SetTag("SPELL_TARGET_Y", targetPos.Y.ToString());
         caster.SetTag("SPELL_TARGET_Z", targetPos.Z.ToString());
+
+        // Source-X CCharSkill::Skill_Magery -> UpdateDir(m_Act_p): turn the
+        // caster to face the spell target so the cast animation plays in
+        // the correct direction. Skip if self-target or same-tile.
+        if (!targetPos.Equals(caster.Position))
+        {
+            var newDir = caster.Position.GetDirectionTo(targetPos);
+            if (newDir != caster.Direction)
+            {
+                caster.Direction = newDir;
+                OnCasterFacingChanged?.Invoke(caster);
+            }
+        }
 
         return castTimeTenths * 100; // convert to ms
     }

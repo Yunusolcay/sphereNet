@@ -60,9 +60,16 @@ public sealed class DeathEngine
             }
         }
 
-        OnDeath?.Invoke(victim, killer);
-
-        // Create corpse
+        // Source-X CChar::Death order is critical for players:
+        //   1) MakeCorpse  (corpse.Amount = current/original body ID)
+        //   2) Broadcast PacketDeath (0xAF) to nearby
+        //   3) SetID(ghost) + SetHue(0)  ← only after the corpse exists
+        // If we fire OnDeath here (which transitions the player to a ghost
+        // body in OnCharacterDeath) BEFORE CreateCorpse runs, the corpse
+        // will be created with amount=0x192 (ghost) instead of the player's
+        // real body, and the corpse on the ground renders as a ghost shape
+        // instead of a normal humanoid corpse. Source-X ordering avoids
+        // exactly this.
         var corpse = CreateCorpse(victim);
 
         // Drop equipped items and backpack contents to corpse
@@ -70,6 +77,11 @@ public sealed class DeathEngine
             DropLootToCorpse(victim, corpse);
         else
             DropNpcLootToCorpse(victim, corpse);
+
+        // Now that the corpse has snapshotted the original body, fire the
+        // death callbacks so OnCharacterDeath / OnNpcKill can swap the
+        // mobile to its ghost body and broadcast the new appearance.
+        OnDeath?.Invoke(victim, killer);
 
         // Set corpse decay timer. Using the Item.DecayTime field (not a
         // TAG) routes this through the sector-tick Item.OnTick path —
@@ -87,9 +99,14 @@ public sealed class DeathEngine
             corpse.SetTag("KILLER_UUID", killer.Uuid.ToString("D"));
         }
 
-        // For NPCs, delete the character (players become ghosts)
+        // For NPCs, remove the mobile from world state immediately so it no
+        // longer blocks movement or lingers in sector/object queries after the
+        // corpse has been created.
         if (!victim.IsPlayer)
+        {
+            _world.DeleteObject(victim);
             victim.Delete();
+        }
 
         return corpse;
     }
@@ -146,10 +163,22 @@ public sealed class DeathEngine
         {
             var item = victim.Unequip(layer);
             if (item != null)
+            {
+                // Source-X corpse "tag.equiplayer" — preserves the
+                // original equip slot so a later Resurrect-with-Corpse
+                // pass can put the item back where it came from. We
+                // also store it on the item directly via the corpse
+                // 0x89 PacketCorpseEquipment path (which reads
+                // item.EquipLayer), but Unequip clears IsEquipped and
+                // the layer can be wiped by container moves between
+                // death and resurrect — so the tag is the durable copy.
+                item.SetTag("EQUIPLAYER", ((byte)layer).ToString());
                 corpse.AddItem(item);
+            }
         }
 
-        // Move backpack contents to corpse
+        // Move backpack contents to corpse — these had no equip slot,
+        // so on resurrect they go back to the backpack (no layer tag).
         var pack = victim.Backpack;
         if (pack != null)
         {
@@ -204,6 +233,101 @@ public sealed class DeathEngine
             gem.Amount = 1;
             corpse.AddItem(gem);
         }
+    }
+
+    /// <summary>
+    /// Source-X "Resurrect with Corpse" — when a character is resurrected
+    /// while standing on (or owning) their own corpse, automatically
+    /// re-equip every item that was equipped at death (using the
+    /// EQUIPLAYER tag DropLootToCorpse stamped on it) and dump the rest
+    /// back into the backpack. The corpse is deleted once empty.
+    ///
+    /// Returns true iff a matching corpse was found and processed (the
+    /// caller can then skip the "you are still naked" path). If the
+    /// resurrected character has no backpack yet (rare — fresh char),
+    /// remaining items fall to the ground at the corpse position so
+    /// they aren't lost.
+    ///
+    /// Edge cases handled:
+    ///   * The corpse may have decayed/been looted between death and
+    ///     resurrect — search returns no match, return false.
+    ///   * An equip slot may already be occupied (e.g. NPC healer
+    ///     handed the player a robe) — fall back to the backpack.
+    ///   * The character may be standing one tile off — we sweep the
+    ///     character's tile only (matches Source-X CChar::ResurrectFromCorpse
+    ///     which reads <c>g_World.GetItemsAt(GetTopPoint())</c>).
+    /// </summary>
+    public bool RestoreFromCorpse(Character resurrected)
+    {
+        Item? corpse = null;
+        foreach (var item in _world.GetItemsInRange(resurrected.Position, 0))
+        {
+            if (item.ItemType != ItemType.Corpse) continue;
+            if (!item.TryGetTag("OWNER_UID", out string? ownerStr)) continue;
+            if (!uint.TryParse(ownerStr, out uint ownerUid)) continue;
+            if (ownerUid != resurrected.Uid.Value) continue;
+            corpse = item;
+            break;
+        }
+        if (corpse == null) return false;
+
+        // Snapshot first — RemoveItem mutates the underlying list and
+        // would otherwise invalidate the iterator after the first call.
+        var contents = new List<Item>(corpse.Contents);
+        var pack = resurrected.Backpack;
+
+        foreach (var item in contents)
+        {
+            corpse.RemoveItem(item);
+
+            Layer? targetLayer = null;
+            if (item.TryGetTag("EQUIPLAYER", out string? layerStr) &&
+                byte.TryParse(layerStr, out byte layerByte))
+            {
+                targetLayer = (Layer)layerByte;
+                item.RemoveTag("EQUIPLAYER");
+            }
+
+            bool placed = false;
+            if (targetLayer.HasValue && targetLayer.Value != Layer.None)
+            {
+                // Re-equip on the original layer if free. Equip()
+                // returns false on out-of-range; double-equipping the
+                // same layer is handled internally by unequipping the
+                // previous item, but we keep the slot-occupied check
+                // explicit so that unexpected new gear (e.g. a healer
+                // robe) isn't silently dropped on the ground.
+                if (resurrected.GetEquippedItem(targetLayer.Value) == null &&
+                    resurrected.Equip(item, targetLayer.Value))
+                {
+                    placed = true;
+                }
+            }
+
+            if (!placed)
+            {
+                if (pack != null)
+                {
+                    pack.AddItem(item);
+                    placed = true;
+                }
+                else
+                {
+                    _world.PlaceItem(item, resurrected.Position);
+                    placed = true;
+                }
+            }
+        }
+
+        // Drop any remaining tags so a half-looted corpse doesn't keep
+        // the killer/owner metadata alive on the recycled UID.
+        corpse.RemoveTag("OWNER_UID");
+        corpse.RemoveTag("OWNER_UUID");
+        corpse.RemoveTag("KILLER_UID");
+        corpse.RemoveTag("KILLER_UUID");
+
+        _world.DeleteObject(corpse);
+        return true;
     }
 
     /// <summary>

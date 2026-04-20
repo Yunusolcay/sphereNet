@@ -792,7 +792,7 @@ public sealed class ConsoleForm : Form, ILogEventSink
         var color = logEvent.Level switch
         {
             LogEventLevel.Error or LogEventLevel.Fatal => AccentRed,
-            LogEventLevel.Warning => AccentAmber,
+            LogEventLevel.Warning => Color.FromArgb(255, 72, 72),
             LogEventLevel.Debug or LogEventLevel.Verbose => Color.FromArgb(195, 154, 102),
             _ => Color.FromArgb(204, 225, 255),
         };

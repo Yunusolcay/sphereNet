@@ -76,6 +76,13 @@ public sealed class GameClient : ITextConsole
     public Action<Point3D, int, PacketWriter, uint>? BroadcastNearby { get; set; }
     /// <summary>Broadcast movement and update nearby clients' _lastKnownPos to prevent duplicate 0x77.</summary>
     public Action<Point3D, int, PacketWriter, uint, Character>? BroadcastMoveNearby { get; set; }
+    /// <summary>
+    /// Per-observer dispatch helper used by the death/resurrect pipeline
+    /// where the packet sent depends on whether the observer is plain
+    /// player vs Counsel+/AllShow staff. Action receives (observerChar,
+    /// observerClient). Wired from Program.cs.ForEachClientInRange.
+    /// </summary>
+    public Action<Point3D, int, uint, Action<Character, GameClient>>? ForEachClientInRange { get; set; }
     /// <summary>Send a packet to a specific character (by UID). Wired from Program.cs.</summary>
     public Action<Serial, PacketWriter>? SendToChar { get; set; }
     /// <summary>Notify all nearby clients that a character appeared (login/teleport). Each client renders from its own perspective.</summary>
@@ -87,6 +94,20 @@ public sealed class GameClient : ITextConsole
     /// full _clients.Values scan. Cleared on OnDisconnect.</summary>
     public static Action<Character, GameClient>? OnCharacterOnline;
     public static Action<Character>? OnCharacterOffline;
+
+    /// <summary>Wired by Program.cs. Used when *this* client kills another
+    /// player and we need to invoke <see cref="OnCharacterDeath"/> on the
+    /// victim's own client (so the dying player sees the death screen,
+    /// ghost body and 0x2C death status). Not a static event because the
+    /// callback needs access to the per-client clientsByCharUid map that
+    /// only Program.cs owns.</summary>
+    public Action<Character>? OnCharacterDeathOfOther { get; set; }
+
+    /// <summary>Wired by Program.cs. Resolves a victim character's own
+    /// GameClient and calls <see cref="OnResurrect"/> on it. Used by the
+    /// .xresurrect target picker so a GM can right-click any dead body
+    /// to revive its owner.</summary>
+    public Action<Character>? OnResurrectOther { get; set; }
 
     private Account? _account;
     private Character? _character;
@@ -102,6 +123,7 @@ public sealed class GameClient : ITextConsole
     private Serial _pendingTargetItemUid = Serial.Invalid;
     private bool _pendingTeleTarget;
     private bool _pendingRemoveTarget;
+    private bool _pendingResurrectTarget;
     private bool _pendingInspectTarget;
     // Source-X dialog subject (CLIMODE_DIALOG pObj). When set, bare
     // property names inside the active script dialog resolve on this
@@ -635,7 +657,15 @@ public sealed class GameClient : ITextConsole
 
     public void HandleMove(byte dir, byte seq, uint fastWalkKey)
     {
-        if (_character == null || _character.IsDead) return;
+        if (_character == null) return;
+        // NOTE: do NOT silently drop walk packets when IsDead. Source-X
+        // ghosts walk freely; if the server eats the request without
+        // sending either 0x22 (MoveAck) or 0x21 (MoveReject) the client's
+        // walk sequence stalls and the player ends up frozen on screen
+        // even though their ghost body is rendered correctly. The
+        // post-death "client cannot move" symptom in the death log was
+        // exactly this: 0x2C death status arrived, then every subsequent
+        // walk packet from the client was silently swallowed here.
 
         var direction = (Direction)(dir & 0x07);
         bool running = (dir & 0x80) != 0;
@@ -936,10 +966,55 @@ public sealed class GameClient : ITextConsole
         if (now < _character.NextAttackTime)
             return;
 
+        // Source-X CChar::Fight_CanHit gates: dead / paralyzed / sleeping
+        // attackers can't swing. Also a STAM<=0 char collapses (CCharAct.cpp
+        // OnTick "Stat_GetVal(STAT_DEX) <= 0"), so block the swing entirely
+        // and re-check next tick — don't burn the recoil timer.
+        if (_character.IsDead) return;
+
+        // Manifest ghost protection: a dead target (peace OR war manifest)
+        // is never a valid combat target. Source-X CChar::Fight_IsAttackable
+        // returns false on m_pPlayer && IsStatFlag(STATF_DEAD); the
+        // translucent manifest is purely cosmetic and exists so plain
+        // observers can SEE the ghost without being able to hit it.
+        // Without this guard a manifested ghost would take damage and
+        // produce a "kill the dead" loop with no corpse / no resurrect.
+        if (target == null || target.IsDead)
+        {
+            _character.FightTarget = Serial.Invalid;
+            return;
+        }
+        if (_character.Stam <= 0)
+        {
+            _character.NextAttackTime = now + 500;
+            return;
+        }
+        if (_character.IsStatFlag(StatFlag.Freeze) || _character.IsStatFlag(StatFlag.Sleeping))
+        {
+            _character.NextAttackTime = now + 250;
+            return;
+        }
+
+        // Spell casting blocks weapon swings (Source-X Skill_Magery /
+        // SKTRIG_START path: the cast skill owns m_atFight while it runs).
+        // We tolerate the swing finishing the *current* recoil but won't
+        // start a new one mid-cast.
+        if (_character.TryGetTag("SPELL_CASTING", out _))
+        {
+            _character.NextAttackTime = now + 500;
+            return;
+        }
+
         var weapon = _character.GetEquippedItem(Layer.OneHanded)
                   ?? _character.GetEquippedItem(Layer.TwoHanded);
 
         _character.NextAttackTime = now + GetSwingDelayMs(_character, weapon);
+
+        // Source-X Fight_Hit: UpdateDir(pCharTarg) before launching the
+        // swing animation so the attacker visibly turns to face the target.
+        // We do this even on missed swings so combat doesn't look frozen
+        // from a side/back angle.
+        FaceTarget(target);
 
         // Ranged LOS check
         if (weapon != null && _character.PrivLevel < PrivLevel.GM &&
@@ -952,6 +1027,11 @@ public sealed class GameClient : ITextConsole
                 return;
             }
         }
+
+        // Each swing burns a small bit of stamina (Source-X
+        // Fight_Hit -> UpdateStatVal(STAT_DEX, -1)).
+        if (_character.Stam > 0)
+            _character.Stam = (short)(_character.Stam - 1);
 
         int damage = CombatEngine.ResolveAttack(_character, target, weapon);
 
@@ -1010,15 +1090,19 @@ public sealed class GameClient : ITextConsole
 
                 if (corpse != null)
                 {
-                    _knownItems.Add(corpse.Uid.Value);
-                    var corpsePacket = new PacketWorldItem(
-                        corpse.Uid.Value, corpse.DispIdFull, corpse.Amount,
-                        corpse.X, corpse.Y, corpse.Z, corpse.Hue,
-                        targetDir);
-                    BroadcastNearby?.Invoke(targetPos, UpdateRange, corpsePacket, 0);
+                    uint corpseWireSerial = corpse.Uid.Value;
+                    if (corpse.Amount > 1)
+                        corpseWireSerial |= 0x80000000u;
 
                     if (target.IsPlayer)
                     {
+                        _knownItems.Add(corpse.Uid.Value);
+                        var corpsePacket = new PacketWorldItem(
+                            corpse.Uid.Value, corpse.DispIdFull, corpse.Amount,
+                            corpse.X, corpse.Y, corpse.Z, corpse.Hue,
+                            targetDir);
+                        BroadcastNearby?.Invoke(targetPos, UpdateRange, corpsePacket, 0);
+
                         // Player corpse: send contents + equip map for paperdoll corpse rendering.
                         foreach (var corpseItem in corpse.Contents)
                         {
@@ -1050,20 +1134,58 @@ public sealed class GameClient : ITextConsole
                         var corpseEquip = new PacketCorpseEquipment(corpse.Uid.Value, corpseEquipEntries);
                         BroadcastNearby?.Invoke(targetPos, UpdateRange, corpseEquip, 0);
 
-                        var deathAnim = new PacketDeathAnimation(target.Uid.Value, corpse.Uid.Value, 0);
-                        BroadcastNearby?.Invoke(targetPos, UpdateRange, deathAnim, 0);
+                        // NOTE: 0xAF DeathAnimation is NOT broadcast here.
+                        // OnCharacterDeath below runs a per-observer dispatch
+                        // that sends 0xAF to plain players (which remaps the
+                        // mobile in ClassicUO so it disappears) and a
+                        // 0x1D + 0x78 ghost mobile pair to staff observers
+                        // (which avoids the 0xAF serial-remap so staff can
+                        // see the ghost without the duplicate-mobile bug
+                        // documented in the death plan). A blanket
+                        // BroadcastNearby would defeat that distinction.
                     }
                     else
                     {
-                        // NPC corpse: keep flow minimal and stable.
-                        var deathAnim = new PacketDeathAnimation(target.Uid.Value, corpse.Uid.Value, 0);
+                        // NPC corpse — matches both Source-X (PacketDeath +
+                        // RemoveFromView) and ServUO (DeathAnimation + Delete
+                        // -> RemovePacket) reference flow:
+                        //   1) 0x1A WorldItem  (corpse appears in world)
+                        //   2) 0xAF DeathAnim  (mobile -> corpse transition)
+                        //   3) 0x1D DeleteObj  (remove the dead mobile)
+                        // Source-X CObjBase::DeletePrepare() calls
+                        // RemoveFromView() which broadcasts 0x1D to all in
+                        // range, and ServUO's Mobile.Kill() / OnDeath() chain
+                        // ends with NPC.Delete() which sends 0x1D as well.
+                        // Without 0x1D the dead mobile lingers in client
+                        // collections (ClassicUO's 0xAF only re-keys the
+                        // mobile under 0x80000000|serial; the visual entity
+                        // is still there until the client receives 0x1D).
+                        //
+                        // 0x89/0x3C (CorpseEquipment/ContainerContent) are
+                        // only sent for human-body corpses; sending them for
+                        // monster corpses corrupts the client's input state.
+                        _knownItems.Add(corpse.Uid.Value);
+                        var corpsePacket = new PacketWorldItem(
+                            corpse.Uid.Value, corpse.DispIdFull, corpse.Amount,
+                            corpse.X, corpse.Y, corpse.Z, corpse.Hue,
+                            targetDir);
+                        BroadcastNearby?.Invoke(targetPos, UpdateRange, corpsePacket, 0);
+
+                        uint npcFallDir = (uint)Random.Shared.Next(2);
+                        var deathAnim = new PacketDeathAnimation(target.Uid.Value, corpse.Uid.Value, npcFallDir);
                         BroadcastNearby?.Invoke(targetPos, UpdateRange, deathAnim, 0);
+
+                        var removeMobile = new PacketDeleteObject(target.Uid.Value);
+                        BroadcastNearby?.Invoke(targetPos, UpdateRange, removeMobile, 0);
                     }
                 }
 
-                var deletePkt = new PacketDeleteObject(target.Uid.Value);
-                BroadcastNearby?.Invoke(targetPos, UpdateRange, deletePkt, 0);
-
+                // PvP: notify the dying player's own client so it transitions
+                // to ghost (body+hue swap, 0x77 broadcast, 0x20 self, 0x2C
+                // death status). Without this the killer sees the corpse but
+                // the victim's screen freezes with a still-alive paperdoll.
+                if (target.IsPlayer && OnCharacterDeathOfOther != null)
+                    OnCharacterDeathOfOther.Invoke(target);
             }
 
             // Reactive armor may have killed the attacker
@@ -1095,52 +1217,262 @@ public sealed class GameClient : ITextConsole
     }
 
     /// <summary>
-    /// Handle player death — send ghost body, death animation, corpse creation already done by DeathEngine.
-    /// Called when the character dies in combat.
+    /// Handle player death — body/hue ghost transition, death effect/sound,
+    /// per-observer dispatch (plain players get 0xAF, staff get 0x1D + 0x78
+    /// ghost mobile), self ghost render (0x77 + 0x20 + 0x78 self + 0x2C),
+    /// and view-cache invalidation. Corpse + corpse equipment are already
+    /// broadcast by the kill site (TrySwingAt PvP path or Program.OnNpcKill).
     /// </summary>
     public void OnCharacterDeath()
     {
         if (_character == null) return;
 
-        // Change to ghost body (male ghost=0x192, female ghost=0x193)
+        // ---------------------------------------------------------------
+        //   Source-X CChar::Death (CCharAct.cpp) reference order:
+        //     1) MakeCorpse + UpdateCanSee(PacketDeath)   ← caller did this
+        //     2) SetID(ghost) + SetHue(HUE_DEFAULT)       ← below
+        //     3) addPlayerWarMode(off) + addTargCancel    ← below
+        //     4) Per-observer dispatch (UpdateCanSee)     ← below
+        //     5) PacketDeathMenu(Dead) on own client      ← below
+        //
+        //   Hue note: 0x4001 (HUE_TRANSLUCENT|1) makes the sprite
+        //   see-through, NOT grey. ClassicUO renders the ghost body
+        //   (0x192/0x193) as a proper grey shroud when hue == 0
+        //   (HUE_DEFAULT). The "transparent ghost" bug from the early
+        //   death logs was caused by sending 0x4001 here.
+        // ---------------------------------------------------------------
+
         ushort ghostBody = _character.BodyId == 0x0191 ? (ushort)0x0193 : (ushort)0x0192;
         _character.BodyId = ghostBody;
-        _character.Hue = new Core.Types.Color(0x4001); // ghost hue (translucent)
+        _character.Hue = Core.Types.Color.Default;
 
-        // Send death animation to nearby players
+        // pClient->addPlayerWarMode(off). We only need the local
+        // state flip + the 0x72 PacketWarMode echo to the dying
+        // client — the per-observer dispatch below carries the
+        // post-death flags (War=off implicit, Female bit derived
+        // from ghost body) through its 0x78 PacketDrawObject. A
+        // syncClients=true here would inject an early 0x77 to staff
+        // observers that mutates their cached mobile (Hue/Flags
+        // updated, Graphic NOT updated) — that intermediate state
+        // can leave ClassicUO's animation atlas pointing at the
+        // alive body even after the follow-up 0x1D + 0x78. So we
+        // suppress the broadcast and rely on per-observer dispatch.
+        if (_character.IsInWarMode)
+            SetWarMode(false, syncClients: false, preserveTarget: false);
+        // The 0x72 echo is mandatory regardless — ClassicUO's input
+        // handler latches on it to release the war-mode toggle and
+        // unblock the death menu.
+        _netState.Send(new PacketWarModeResponse(false));
+
+        // pClient->addTargCancel. CRITICAL: PacketTarget(0,0) with
+        // flags=0 (Neutral) does NOT cancel in ClassicUO — it OPENS
+        // a brand-new target cursor (TargetManager.SetTargeting:165:
+        // `IsTargeting = cursorType < TargetType.Cancel;`). We use
+        // flags=3 (Cancel). The _targetCursorActive guard avoids a
+        // spurious 0x6C when no cursor was open — that flash was the
+        // "ölen karakterde target çıkıyor" symptom.
+        if (_targetCursorActive)
+        {
+            _netState.Send(new PacketTarget(0x00, 0x00000000, flags: 3));
+            ClearPendingTargetState();
+        }
+
+        // Death particle + sound — single BroadcastNearby with
+        // excludeUid=0 reaches everyone in range INCLUDING the dying
+        // player (Source-X UpdateCanSee semantic). A redundant
+        // _netState.Send afterwards would double-send and produce the
+        // duplicate 0x70/0x54 wire-log entries seen in earlier traces.
         var deathEffect = new PacketEffect(
-            0x03, // type: source fixed effect
+            0x03,
             _character.Uid.Value, 0,
-            0x3735, // death particles effect ID
+            0x3735,
             _character.X, _character.Y, (short)_character.Z,
             0, 0, 0,
             10, 30, true, false);
         BroadcastNearby?.Invoke(_character.Position, UpdateRange, deathEffect, 0);
 
-        // Play death sound
         var deathSound = new PacketSound(0x01FE, _character.X, _character.Y, _character.Z);
         BroadcastNearby?.Invoke(_character.Position, UpdateRange, deathSound, 0);
-        _netState.Send(deathSound);
 
-        // Update self - show ghost
+        // ---------------------------------------------------------------
+        //   Per-observer dispatch (mirror of CChar::UpdateCanSee with the
+        //   ghost-visibility filter). ClassicUO's 0xAF DisplayDeath remaps
+        //   the dying mobile to (serial | 0x80000000) and removes the
+        //   original key from world.Mobiles (PacketHandlers.cs:3711). So:
+        //
+        //     - PLAIN observer  → 0xAF (mobile vanishes via remap, only
+        //                         the corpse + death anim remain visible)
+        //                       + server-side cache cleanup (no 0x1D
+        //                         needed; the slot is already empty).
+        //     - STAFF observer  → 0x1D (delete the living-body mobile)
+        //                       + 0x78 ghost mobile (fresh spawn under
+        //                         the original serial — safe because we
+        //                         never sent 0xAF to this observer, so
+        //                         no remap collision).
+        //                       + cache marked as ghost so the next view-
+        //                         delta tick sees no body change.
+        //     - SELF (handled below the loop, not inside) — needs a full
+        //       0x77 + 0x20 + 0x78 + 0x2C sequence.
+        //
+        //   This is the correct mapping for "staff sees ghosts, plain
+        //   players don't" (the user's confirmed visibility rule) without
+        //   triggering the duplicate-mobile bug that the 0xAF + 0x78
+        //   combo produced on the same observer.
+        // ---------------------------------------------------------------
+        byte ghostFlags = BuildMobileFlags(_character);
+        byte ghostNoto = GetNotoriety(_character);
+        byte ghostDir = (byte)_character.Direction;
+        short cx = _character.X, cy = _character.Y;
+        sbyte cz = _character.Z;
+        uint victimUid = _character.Uid.Value;
+
+        // Find the corpse the kill site just created so we can wire the
+        // 0xAF DeathAnimation correctly (plain observers need the
+        // corpse serial to anchor the falling-body animation). One tile
+        // search covers the corpse — DeathEngine.PlaceItem positions it
+        // exactly at the victim's tile.
+        uint corpseSerial = 0;
+        if (_world != null)
+        {
+            foreach (var item in _world.GetItemsInRange(_character.Position, 0))
+            {
+                if (item.ItemType != ItemType.Corpse) continue;
+                if (!item.TryGetTag("OWNER_UID", out string? ownerStr)) continue;
+                if (!uint.TryParse(ownerStr, out uint ownerUid)) continue;
+                if (ownerUid != victimUid) continue;
+                corpseSerial = item.Uid.Value;
+                break;
+            }
+        }
+
+        // Source-X g_Rand.GetValFast(2) — 0/1 forward/backward fall.
+        uint fallDir = (uint)Random.Shared.Next(2);
+        var deathAnim = new PacketDeathAnimation(victimUid, corpseSerial, fallDir);
+
+        // Pre-build the ghost mobile draw object once; it's identical
+        // for every staff observer.
+        var ghostEquipment = BuildEquipmentList(_character);
+        var ghostDraw = new PacketDrawObject(
+            victimUid, ghostBody,
+            cx, cy, cz, ghostDir,
+            _character.Hue, ghostFlags, ghostNoto,
+            ghostEquipment);
+
+        // Follow-up 0x77 — even though ClassicUO's 0x78 path already
+        // calls CheckGraphicChange() when GetOrCreateMobile spawns a
+        // fresh entity (mobile.Graphic == 0 branch), some 4.x builds
+        // skip the animation-atlas reset on the freshly-spawned ghost.
+        // A redundant 0x77 with the same body re-runs CheckGraphicChange
+        // against the now-current 0x192/0x193 graphic and forces the
+        // animation cache to drop whatever leftover frames the alive
+        // body left behind. Cheap to send, fully eliminates the
+        // "staff still sees alive sprite" symptom.
+        var ghostMovingBroadcast = new PacketMobileMoving(
+            victimUid, ghostBody,
+            cx, cy, cz, ghostDir,
+            _character.Hue, ghostFlags, ghostNoto);
+
+        ForEachClientInRange?.Invoke(_character.Position, UpdateRange, victimUid,
+            (observerCh, observerClient) =>
+            {
+                bool canSeeGhost = observerCh.AllShow ||
+                    observerCh.PrivLevel >= Core.Enums.PrivLevel.Counsel;
+                if (canSeeGhost)
+                {
+                    // Staff path: send 0x78 ghost draw directly on the
+                    // existing mobile serial. ClassicUO's DrawObject
+                    // handler calls GetOrCreateMobile which returns the
+                    // existing entity, updates Graphic to 0x192/0x193,
+                    // and runs CheckGraphicChange() to reload the
+                    // animation atlas. No 0x1D needed — sending
+                    // DeleteObject first destroys the client-side mobile
+                    // and the follow-up 0x78 recreates it, but some
+                    // ClassicUO builds don't fully reset the animation
+                    // cache on delete+recreate, leaving the alive sprite
+                    // visible despite the ghost body being set.
+                    observerClient.Send(ghostDraw);
+                    observerClient.Send(ghostMovingBroadcast);
+                    observerClient.UpdateKnownCharRender(victimUid, ghostBody, _character.Hue,
+                        ghostDir, cx, cy, cz);
+                }
+                else
+                {
+                    observerClient.Send(deathAnim);
+                    observerClient.RemoveKnownChar(victimUid, sendDelete: false);
+                }
+            });
+
+        // ---------------------------------------------------------------
+        //   Self updates — make the ghost form actually render on the
+        //   dying player's own screen.
+        //
+        //   ClassicUO graphic-update reality (verified against
+        //   PacketHandlers.cs in 4.x):
+        //
+        //   * 0x77 (UpdateCharacter) — for self does NOT touch
+        //     world.Player.Graphic in older builds; only NotorietyFlag
+        //     and (sometimes) flags get applied. CheckGraphicChange is
+        //     called against the OLD graphic, leaving the male/human
+        //     state in place.
+        //
+        //   * 0x78 (UpdateObject) — for an existing (non-zero-graphic)
+        //     mobile, the body update path is gated by
+        //     `mobile.Graphic == 0`, i.e. only fresh spawns get a real
+        //     graphic switch. For self the existing mobile always has
+        //     the alive body cached, so the ghost graphic NEVER lands.
+        //
+        //   * 0x20 (UpdatePlayer) — the ONLY canonical path that sets
+        //     world.Player.Graphic = newGraphic and follows it with a
+        //     CheckGraphicChange + animation-atlas reset. This must be
+        //     the first body-bearing packet sent to the dying player.
+        //
+        //   * 0x88 (OpenPaperdoll) — forces the paperdoll gump to
+        //     re-render against the now-updated body so the dying
+        //     player sees the grey ghost on the paperdoll too.
+        //
+        //   * 0x2C (DeathScreen) — opens the death menu UI; the client
+        //     echoes RequestWarMode(false) in response.
+        //
+        //   Send order is therefore 0x20 → 0x77 (CheckGraphicChange
+        //   re-trigger, harmless if already correct) → 0x88 → 0x2C →
+        //   status. The previous order (0x77 → 0x20 → 0x78) left the
+        //   ghost graphic stuck on the dying client because 0x78 self
+        //   was a no-op and 0x77 was racing 0x20.
+        // ---------------------------------------------------------------
         var drawPacket = new PacketDrawPlayer(
-            _character.Uid.Value, _character.BodyId, _character.Hue,
-            BuildMobileFlags(_character),
-            _character.X, _character.Y, _character.Z, (byte)_character.Direction);
+            victimUid, ghostBody, _character.Hue,
+            ghostFlags, cx, cy, cz, ghostDir);
         _netState.Send(drawPacket);
+
+        var ghostMoving = new PacketMobileMoving(
+            victimUid, ghostBody,
+            cx, cy, cz, ghostDir,
+            _character.Hue, ghostFlags, ghostNoto);
+        _netState.Send(ghostMoving);
+
+        // Refresh own paperdoll so the ghost body shows up on the
+        // gump as well — this also nudges ClassicUO to reload the
+        // mobile's animation atlas.
+        SendPaperdoll(_character);
+
+        _netState.Send(new PacketDeathStatus(PacketDeathStatus.ActionDead));
 
         SendCharacterStatus(_character);
         SysMessage(ServerMessages.Get("combat_dead"));
     }
 
     /// <summary>
-    /// Handle resurrection from NPC healer or spell.
+    /// Handle resurrection — body restore (ghost → human), Source-X
+    /// "Resurrect with Corpse" auto re-equip, self redraw (0x77 + 0x20
+    /// + 0x78 self), per-observer dispatch (single 0x78 fresh draw,
+    /// works for both plain — never had the ghost — and staff — had
+    /// the ghost mobile, 0x78 overwrites it), and view-cache resync so
+    /// the next BuildViewDelta tick sees the new living body.
     /// </summary>
     public void OnResurrect()
     {
         if (_character == null || !_character.IsDead) return;
 
-        // Fire @Resurrect — if script blocks, don't resurrect
         if (_triggerDispatcher != null)
         {
             var result = _triggerDispatcher.FireCharTrigger(_character, CharTrigger.Resurrect,
@@ -1150,25 +1482,159 @@ public sealed class GameClient : ITextConsole
         }
 
         _character.Resurrect();
-        _character.BodyId = 0x0190; // restore to human male (default)
+
+        // Ghost → human body remap. NOTE: polymorphed players store
+        // their "form before polymorph" separately in Source-X — this
+        // is a TODO when the polymorph system lands; for now plain
+        // ghosts (0x192/0x193) are the only inputs we expect.
+        ushort restoredBody = _character.BodyId switch
+        {
+            0x0193 => (ushort)0x0191,
+            0x0192 => (ushort)0x0190,
+            _      => _character.BodyId,
+        };
+        _character.BodyId = restoredBody;
         _character.Hue = Core.Types.Color.Default;
 
-        // Redraw character — 0x20 for self, 0x77 for others
+        // === Source-X "Resurrect with Corpse" — auto re-equip ===
+        // If the resurrected character is standing on (or one tile of)
+        // their own corpse, every item that was equipped at death goes
+        // back to its original slot via the EQUIPLAYER tag, the rest
+        // returns to the backpack, and the (now-empty) corpse is
+        // deleted. Returns true iff the corpse was found — used only
+        // for the SysMessage and for deciding whether to broadcast the
+        // 0x1D corpse-delete (the corpse's own decay path will already
+        // emit it, but we want it gone NOW so the resurrected player
+        // isn't standing on a "ghost" corpse on every observer's
+        // screen).
+        bool corpseRestored = _deathEngine?.RestoreFromCorpse(_character) ?? false;
+
         byte resFlags = BuildMobileFlags(_character);
         byte resNoto = GetNotoriety(_character);
+        byte resDir = (byte)_character.Direction;
+        short cx = _character.X, cy = _character.Y;
+        sbyte cz = _character.Z;
+        uint uid = _character.Uid.Value;
+        var resEquipment = BuildEquipmentList(_character);
+
+        // Single draw object reused across all paths — same equipment,
+        // same body, same hue everywhere.
+        var resDraw = new PacketDrawObject(
+            uid, restoredBody,
+            cx, cy, cz, resDir,
+            _character.Hue, resFlags, resNoto,
+            resEquipment);
+
+        // === Self redraw ===
+        // Symmetrical to OnCharacterDeath: 0x20 is the ONLY packet
+        // that actually swaps world.Player.Graphic in ClassicUO, so
+        // it MUST go first. 0x77 then triggers a redundant
+        // CheckGraphicChange (cheap insurance for older builds), 0x78
+        // delivers the restored equipment list, and SendPaperdoll
+        // forces the gump to re-render against the new (alive) body.
         _netState.Send(new PacketDrawPlayer(
-            _character.Uid.Value, _character.BodyId, _character.Hue,
-            resFlags, _character.X, _character.Y, _character.Z, (byte)_character.Direction));
-        var resPacket = new PacketMobileMoving(_character.Uid.Value, _character.BodyId,
-            _character.X, _character.Y, _character.Z, (byte)_character.Direction,
+            uid, restoredBody, _character.Hue,
+            resFlags, cx, cy, cz, resDir));
+
+        var resMoving = new PacketMobileMoving(
+            uid, restoredBody,
+            cx, cy, cz, resDir,
             _character.Hue, resFlags, resNoto);
-        if (BroadcastMoveNearby != null)
-            BroadcastMoveNearby.Invoke(_character.Position, UpdateRange, resPacket, _character.Uid.Value, _character);
-        else
-            BroadcastNearby?.Invoke(_character.Position, UpdateRange, resPacket, _character.Uid.Value);
+        _netState.Send(resMoving);
+
+        _netState.Send(resDraw);
+
+        SendPaperdoll(_character);
+
+        // === Per-observer dispatch ===
+        // Plain observer: never saw the ghost (filter dropped it during
+        // BuildViewDelta) → 0x78 spawns a brand-new living mobile under
+        // the original serial.
+        // Staff observer: had the ghost mobile in their world.Mobiles
+        // (we sent 0x1D + 0x78 ghost during death and never sent 0xAF
+        // so no remap happened) → 0x78 overwrites the body+equipment
+        // in-place via UpdateGameObject. Same packet, same outcome,
+        // single dispatch path.
+        // Either way we update the cache so the next view-delta tick
+        // doesn't see a stale ghost-body entry and re-emit a duplicate.
+        ForEachClientInRange?.Invoke(_character.Position, UpdateRange, uid,
+            (observerCh, observerClient) =>
+            {
+                observerClient.Send(resDraw);
+                observerClient.UpdateKnownCharRender(uid, restoredBody, _character.Hue,
+                    resDir, cx, cy, cz);
+            });
+
+        // === Resurrect-with-Corpse: client-side state sync ===
+        // RestoreFromCorpse mutated the data layer (Equip + AddItem) but
+        // did NOT push any wire updates. Without the broadcasts below,
+        // ClassicUO observers don't know that backpack/armor came back —
+        // the killer would still see a "naked" resurrected mobile, and
+        // the resurrected player would see an empty backpack until they
+        // close+reopen it (which forces the 0x3C ContainerContent
+        // refresh). Source-X CChar::ContentAdd issues the same packet
+        // pair: addObject (0x2E PacketWornItem) for layered gear,
+        // addContents (0x25 PacketContainerItem) for backpack/loose
+        // contents.
+        if (corpseRestored)
+        {
+            // 1) Broadcast every equipped item (skip layers that wouldn't
+            //    appear on a paperdoll: None / Face / Pack — Pack itself
+            //    rides on the 0x78 above, its CONTENTS need 0x25 below).
+            for (int layerIdx = 1; layerIdx <= (int)Layer.Horse; layerIdx++)
+            {
+                var layer = (Layer)layerIdx;
+                if (layer == Layer.Pack || layer == Layer.Face) continue;
+                var equip = _character.GetEquippedItem(layer);
+                if (equip == null) continue;
+
+                var wornPacket = new PacketWornItem(
+                    equip.Uid.Value, equip.DispIdFull, (byte)layer,
+                    uid, equip.Hue);
+                BroadcastNearby?.Invoke(_character.Position, UpdateRange, wornPacket, 0);
+            }
+
+            // 2) Stream the backpack contents back to the resurrecting
+            //    player. We push 0x25 unconditionally (Sphere/ServUO
+            //    both do) so even if no gump is currently open, the
+            //    drag layer / hot-bar references are valid the moment
+            //    a gump is opened. Containers nested inside the
+            //    backpack (e.g. a pouch) also need their own contents
+            //    pushed — we recurse via FindContentItem semantics.
+            var pack = _character.Backpack;
+            if (pack != null)
+            {
+                foreach (var child in _world.GetContainerContents(pack.Uid))
+                {
+                    _netState.Send(new PacketContainerItem(
+                        child.Uid.Value, child.DispIdFull, 0,
+                        child.Amount, child.X, child.Y,
+                        pack.Uid.Value, child.Hue,
+                        _netState.IsClientPost6017));
+                }
+            }
+        }
+
+        // Resurrection visual + sound — anchored fixed effect (0x376A
+        // heal particle) and chime (0x0214). BroadcastNearby with
+        // excludeUid=0 reaches the resurrected player too, so no extra
+        // _netState.Send needed.
+        var resEffect = new PacketEffect(
+            0x03,
+            uid, 0,
+            0x376A,
+            cx, cy, (short)cz,
+            0, 0, 0,
+            10, 30, true, false);
+        BroadcastNearby?.Invoke(_character.Position, UpdateRange, resEffect, 0);
+
+        var resSound = new PacketSound(0x0214, cx, cy, cz);
+        BroadcastNearby?.Invoke(_character.Position, UpdateRange, resSound, 0);
 
         SendCharacterStatus(_character);
-        SysMessage(ServerMessages.Get("combat_resurrected"));
+        SysMessage(ServerMessages.Get(corpseRestored
+            ? "combat_resurrected_with_corpse"
+            : "combat_resurrected"));
     }
 
     public void HandleWarMode(bool warMode)
@@ -1566,6 +2032,7 @@ public sealed class GameClient : ITextConsole
         {
             case ItemType.Container:
             case ItemType.ContainerLocked:
+            case ItemType.Corpse:
                 SendOpenContainer(item);
                 break;
             case ItemType.Door:
@@ -3358,6 +3825,45 @@ public sealed class GameClient : ITextConsole
             return;
         }
 
+        if (_pendingResurrectTarget)
+        {
+            _pendingResurrectTarget = false;
+
+            if (serial == 0 || serial == 0xFFFFFFFF)
+            {
+                SysMessage(ServerMessages.Get("target_must_object"));
+                return;
+            }
+
+            // Try the picked serial as a character first; if it's a corpse,
+            // fall back to the OWNER_UID tag the DeathEngine wrote on it.
+            var victim = _world.FindChar(new Serial(serial));
+            if (victim == null)
+            {
+                var corpse = _world.FindItem(new Serial(serial));
+                if (corpse != null && corpse.TryGetTag("OWNER_UID", out string? ownerStr) &&
+                    uint.TryParse(ownerStr, out uint ownerUid))
+                {
+                    victim = _world.FindChar(new Serial(ownerUid));
+                }
+            }
+
+            if (victim == null)
+            {
+                SysMessage("Resurrect: cannot identify a character from that target.");
+                return;
+            }
+            if (!victim.IsDead)
+            {
+                SysMessage($"'{victim.Name}' is not dead.");
+                return;
+            }
+
+            OnResurrectOther?.Invoke(victim);
+            SysMessage($"Resurrected '{victim.Name}'.");
+            return;
+        }
+
         if (_pendingInspectTarget)
         {
             _pendingInspectTarget = false;
@@ -3791,12 +4297,50 @@ public sealed class GameClient : ITextConsole
             if (isHidden && !canSeeHidden)
                 continue;
 
+            // === Source-X ghost visibility (CChar::CanSeeAsDead) ===
+            // A dead/ghost character is invisible to LIVING observers
+            // unless one of:
+            //   * the observer is also dead (ghost ↔ ghost see each other),
+            //   * the observer has Spirit Speak active,
+            //   * the observer is Counsel+ staff (already handled above
+            //     via canSeeHidden and the AllShow override),
+            //   * the observer is the dying player themselves (filtered
+            //     above with `ch == _character`),
+            //   * the ghost has "manifested" — entered war mode. A
+            //     manifested ghost renders translucent grey (hue 0x4001)
+            //     for plain observers but cannot be targeted/attacked
+            //     (combat path already short-circuits on target.IsDead;
+            //     see TrySwingAt). Returning to peace mode hides the
+            //     ghost again — handled imperatively in HandleWarMode
+            //     via per-observer 0x78/0x1D dispatch so the transition
+            //     is immediate and not delayed until the next tick.
+            //
+            // Without this filter, the ProcessViewDelta loop below would
+            // notice ch.BodyId changed from 0x190 to 0x192 (ghost) and
+            // happily push a 0x78 PacketDrawObject to the killer.
+            bool ghostManifested = ch.IsDead && ch.IsInWarMode;
+            if (ch.IsDead && !_character.IsDead && !ghostManifested)
+            {
+                // TODO(spirit-speak): expose a CanSeeGhosts() helper on
+                // Character that returns true when Spirit Speak is in
+                // an "activated" state (Source-X uses GetSpiritSpeak()
+                // which decays after a window). Until then, only staff
+                // / AllShow can see plain (peace-mode) ghosts.
+                if (!_character.AllShow &&
+                    _character.PrivLevel < Core.Enums.PrivLevel.Counsel)
+                    continue;
+            }
+
             uint uid = ch.Uid.Value;
             delta.CurrentChars.Add(uid);
 
             // Ghostly render when the viewer is seeing an otherwise-hidden target
-            // (offline shown via AllShow, or invis/hidden via staff privilege).
-            bool ghostly = isOfflinePlayer || (isHidden && canSeeHidden);
+            // (offline shown via AllShow, or invis/hidden via staff privilege),
+            // or when a manifested ghost is being shown to a plain observer.
+            bool isPlainObserver = !_character.AllShow &&
+                _character.PrivLevel < Core.Enums.PrivLevel.Counsel;
+            bool ghostly = isOfflinePlayer || (isHidden && canSeeHidden) ||
+                (ghostManifested && isPlainObserver && !_character.IsDead);
             if (!_knownChars.Contains(uid))
                 delta.NewChars.Add((ch, ghostly));
             else
@@ -3854,14 +4398,24 @@ public sealed class GameClient : ITextConsole
                 posChanged = true;
             }
 
+            bool manifestGhost = ch.IsDead && ch.IsInWarMode &&
+                !_character!.AllShow &&
+                _character.PrivLevel < Core.Enums.PrivLevel.Counsel &&
+                !_character.IsDead;
+
             if (bodyChanged)
             {
-                // Body or hue changed — send full DrawObject (0x78) so client updates appearance
-                SendDrawObject(ch);
+                if (manifestGhost)
+                    SendDrawObjectWithHue(ch, 0x4001);
+                else
+                    SendDrawObject(ch);
             }
             else if (posChanged)
             {
-                SendUpdateMobile(ch);
+                if (manifestGhost)
+                    SendUpdateMobileWithHue(ch, 0x4001);
+                else
+                    SendUpdateMobile(ch);
             }
 
             if (posChanged || bodyChanged)
@@ -3920,6 +4474,59 @@ public sealed class GameClient : ITextConsole
     public bool HasKnownChar(uint uid) => _knownChars.Contains(uid);
 
     /// <summary>
+    /// Update this client's known-character cache to reflect a body/hue
+    /// change that we already broadcast out-of-band — e.g. the ghost
+    /// transition during death (body=0x192, hue=0) or the living-body
+    /// restore during resurrect (body=0x190, hue=skin). This prevents
+    /// the next BuildViewDelta tick from detecting a stale
+    /// <c>bodyChanged</c> and re-emitting a duplicate 0x78 with the new
+    /// body — which would race the per-observer dispatch and either
+    /// produce a duplicate ghost mobile (after 0xAF remap) or just
+    /// repeat the spawn packet for no reason.
+    ///
+    /// If the UID is not currently in <c>_knownChars</c> the call is a
+    /// no-op (use this in resurrect to safely re-sync everyone, including
+    /// observers who never had the mobile in cache because the ghost
+    /// was hidden from them).
+    /// </summary>
+    public void UpdateKnownCharRender(uint uid, ushort newBody, ushort newHue, byte direction, short x, short y, sbyte z)
+    {
+        if (_knownChars.Contains(uid))
+            _lastKnownPos[uid] = (x, y, z, direction, newBody, newHue);
+    }
+
+    /// <summary>
+    /// Drop the given character from this client's known-character set,
+    /// optionally emitting a 0x1D PacketDeleteObject so ClassicUO removes
+    /// the mobile from world.Mobiles immediately.
+    ///
+    /// <paramref name="sendDelete"/> = false: only clears server-side
+    /// cache. Use this in the death dispatch for plain observers — the
+    /// 0xAF DisplayDeath we already sent re-keys the mobile to
+    /// <c>serial | 0x80000000</c> in ClassicUO, so a follow-up 0x1D with
+    /// the original serial would target a now-empty slot (no-op, just
+    /// wasted bandwidth). Without this option we'd ALSO double-clean the
+    /// killer's view on every PvP death.
+    ///
+    /// <paramref name="sendDelete"/> = true (default): emit the 0x1D as
+    /// well — useful when the dying mobile was never announced via 0xAF
+    /// to this observer (e.g. cleanup after a teleport, or for a plain
+    /// observer who came in range AFTER the death animation had already
+    /// played for everyone else).
+    ///
+    /// Idempotent: safe to call when the UID is not currently known.
+    /// </summary>
+    public void RemoveKnownChar(uint uid, bool sendDelete = true)
+    {
+        if (_knownChars.Remove(uid))
+        {
+            _lastKnownPos.Remove(uid);
+            if (sendDelete)
+                _netState.Send(new PacketDeleteObject(uid));
+        }
+    }
+
+    /// <summary>
     /// Called by BroadcastCharacterAppear to immediately show a character on this client.
     /// Each client renders from its own perspective (notoriety, AllShow, etc.).
     /// </summary>
@@ -3930,8 +4537,28 @@ public sealed class GameClient : ITextConsole
         if (ch.Position.Map != _character.Position.Map) return;
         if (!InRange(_character.Position, ch.Position, _netState.ViewRange)) return;
 
+        // === Source-X ghost visibility (mirror of BuildViewDelta filter) ===
+        // A dead/ghost character is invisible to LIVING observers unless
+        // the observer is staff (Counsel+) or has AllShow toggled, OR the
+        // ghost has manifested (war mode). Without this guard, a
+        // login/teleport BroadcastCharacterAppear would push the ghost
+        // mobile to plain players and cause exactly the duplicate-mobile
+        // bug 0xAF was supposed to prevent.
+        bool isStaffViewer = _character.AllShow ||
+            _character.PrivLevel >= Core.Enums.PrivLevel.Counsel;
+        bool ghostManifested = ch.IsDead && ch.IsInWarMode;
+
+        if (ch.IsDead && !_character.IsDead && !ghostManifested && !isStaffViewer)
+            return;
+
         uint uid = ch.Uid.Value;
-        SendDrawObject(ch);
+        // Manifested ghost renders translucent grey (hue 0x4001) for plain
+        // observers; staff already see ghosts in their normal hue (HUE_DEFAULT).
+        if (ghostManifested && !isStaffViewer && !_character.IsDead)
+            SendDrawObjectWithHue(ch, 0x4001);
+        else
+            SendDrawObject(ch);
+
         _knownChars.Add(uid);
         _lastKnownPos[uid] = (ch.X, ch.Y, ch.Z, (byte)ch.Direction, ch.BodyId, ch.Hue);
     }
@@ -3984,6 +4611,18 @@ public sealed class GameClient : ITextConsole
         _pendingRemoveTarget = true;
         _targetCursorActive = true;
         _netState.Send(new PacketTarget(1, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    /// <summary>.XRESURRECT — opens a target cursor; the picked mobile (or
+    /// the owner of the picked corpse) is resurrected via OnResurrectOther.</summary>
+    public void BeginResurrectTarget()
+    {
+        if (_character == null) return;
+        if (_targetCursorActive) return;
+        ClearPendingTargetState();
+        _pendingResurrectTarget = true;
+        _targetCursorActive = true;
+        _netState.Send(new PacketTarget(0, (uint)Random.Shared.Next(1, int.MaxValue)));
     }
 
     /// <summary>.info without a UID — opens a target cursor; whatever
@@ -4044,6 +4683,7 @@ public sealed class GameClient : ITextConsole
         _pendingShowArgs = null;
         _pendingEditArgs = null;
         _pendingRemoveTarget = false;
+        _pendingResurrectTarget = false;
         _pendingInspectTarget = false;
         _pendingTargetFunction = null;
         _pendingTargetArgs = "";
@@ -4246,6 +4886,17 @@ public sealed class GameClient : ITextConsole
         ));
     }
 
+    private void SendUpdateMobileWithHue(Character ch, ushort hue)
+    {
+        byte flags = BuildMobileFlags(ch);
+        byte noto = GetNotoriety(ch);
+        _netState.Send(new PacketMobileMoving(
+            ch.Uid.Value, ch.BodyId,
+            ch.X, ch.Y, ch.Z, (byte)ch.Direction,
+            hue, flags, noto
+        ));
+    }
+
     private void SendDrawObjectWithHue(Character ch, ushort hue)
     {
         var equipment = BuildEquipmentList(ch);
@@ -4352,19 +5003,22 @@ public sealed class GameClient : ITextConsole
 
     private void SendPaperdoll(Character ch)
     {
-        // Send draw object with equipment
-        var equipment = BuildEquipmentList(ch);
-        byte flags = BuildMobileFlags(ch);
-        byte noto = GetNotoriety(ch);
-
-        _netState.Send(new PacketDrawObject(
-            ch.Uid.Value, ch.BodyId,
-            ch.X, ch.Y, ch.Z,
-            (byte)ch.Direction, ch.Hue, flags, noto,
-            equipment
-        ));
-
-        // Send paperdoll open packet (0x88) — Sphere format: "Name, Title"
+        // Source-X CClient::addCharPaperdoll dispatches a single 0x88
+        // PacketOpenPaperdoll. The mobile/equipment data the gump
+        // renders comes from the client's own world.Mobiles cache,
+        // which BuildViewDelta / NotifyCharacterAppear / death+resurrect
+        // dispatch already keep current. Re-broadcasting a 0x78
+        // PacketDrawObject here would be:
+        //   1. Redundant — ClassicUO doesn't repaint the paperdoll
+        //      gump when it receives 0x78; it repaints when 0x88
+        //      arrives.
+        //   2. Confusing during ghost transitions — every paperdoll
+        //      open during a death/resurrect cycle would re-push the
+        //      mobile graphic and could race the per-observer dispatch
+        //      that's also pushing fresh draw objects to specific
+        //      clients (one of the symptoms behind the "extra
+        //      paperdolls in the background" report).
+        // Keep this method laser-focused on the gump open packet.
         string title = string.IsNullOrEmpty(ch.Title)
             ? ch.GetName()
             : $"{ch.GetName()}, {ch.Title}";
@@ -6207,14 +6861,74 @@ public sealed class GameClient : ITextConsole
         return list.ToArray();
     }
 
+    /// <summary>
+    /// Build the network MobileFlags byte (0x77/0x78/0x20 packets).
+    ///
+    /// Wire format mirrors ClassicUO <c>MobileFlags</c>:
+    ///   0x01 = Frozen
+    ///   0x02 = Female  (NOT "Dead" — ghost state is read from body ID
+    ///                   0x192/0x193 client-side; setting 0x02 on a male
+    ///                   ghost makes ClassicUO short-circuit
+    ///                   <c>CheckGraphicChange()</c> because the cached
+    ///                   IsFemale state contradicts the male body, and
+    ///                   the sprite stays on the previous human atlas —
+    ///                   the root cause of the "ghost body never
+    ///                   renders" bug for both self and staff observers
+    ///                   in the death rebuild logs.)
+    ///   0x04 = Flying / Poisoned (client interprets per body type)
+    ///   0x08 = YellowBar
+    ///   0x10 = IgnoreMobiles
+    ///   0x40 = WarMode
+    ///   0x80 = Hidden / Invisible
+    ///
+    /// Female is derived from the body ID (Source-X
+    /// <c>CChar::IsFemale()</c> returns the same lookup): human female
+    /// = 0x191, female ghost = 0x193.
+    /// </summary>
     private static byte BuildMobileFlags(Character ch)
     {
         byte flags = 0;
         if (ch.IsInvisible) flags |= 0x80;
         if (ch.IsInWarMode) flags |= 0x40;
-        if (ch.IsDead) flags |= 0x02;
+        if (ch.BodyId == 0x0191 || ch.BodyId == 0x0193) flags |= 0x02;
         if (ch.IsStatFlag(StatFlag.Freeze)) flags |= 0x01;
         return flags;
+    }
+
+    /// <summary>
+    /// Turn the player to face <paramref name="target"/> and broadcast the
+    /// new facing to nearby clients via 0x77. Mirrors Source-X
+    /// <c>CChar::UpdateDir(pCharTarg)</c> -> <c>UpdateMove(GetTopPoint())</c>:
+    /// when an NPC starts a swing or a spell, the engine first turns the
+    /// caster/attacker so that the animation plays in the correct
+    /// direction. Without this, melee/cast animations look broken from
+    /// the side and bow shots may visually fly the wrong way.
+    /// Skips the broadcast (but still updates state) when facing is
+    /// already correct, to avoid packet spam during continuous combat.
+    /// </summary>
+    public void FaceTarget(Character target)
+    {
+        if (_character == null || target == null) return;
+        if (target.Position.Equals(_character.Position)) return;
+
+        var newDir = _character.Position.GetDirectionTo(target.Position);
+        if (newDir == _character.Direction) return;
+
+        _character.Direction = newDir;
+
+        byte flags = BuildMobileFlags(_character);
+        byte noto = GetNotoriety(_character);
+        byte dirByte = (byte)((byte)_character.Direction & 0x07);
+
+        var pkt = new PacketMobileMoving(
+            _character.Uid.Value, _character.BodyId,
+            _character.X, _character.Y, _character.Z, dirByte,
+            _character.Hue, flags, noto);
+
+        if (BroadcastMoveNearby != null)
+            BroadcastMoveNearby.Invoke(_character.Position, UpdateRange, pkt, _character.Uid.Value, _character);
+        else
+            BroadcastNearby?.Invoke(_character.Position, UpdateRange, pkt, _character.Uid.Value);
     }
 
     private bool TryHandleCommandSpeech(string text)
@@ -6303,28 +7017,125 @@ public sealed class GameClient : ITextConsole
         // Send 0x72 war mode confirmation — client expects this to actually toggle
         _netState.Send(new PacketWarModeResponse(warMode));
 
-        // Broadcast appearance update to nearby players
+        // Broadcast appearance update to nearby players. For a LIVING
+        // character a single 0x77 update is enough — every observer
+        // already has the mobile in their world.Mobiles.
+        //
+        // Ghosts are special. While in peace mode the ghost is hidden
+        // from plain observers via the BuildViewDelta filter (their
+        // _knownChars never tracked the mobile). A blanket 0x77
+        // broadcast on a peace→war transition would target a serial
+        // that ClassicUO doesn't know about and silently drop.
+        // So for a manifesting/un-manifesting ghost we skip the
+        // BroadcastNearby and use per-observer dispatch instead:
+        //
+        //   peace → war (manifest):
+        //     plain observer  → 0x78 PacketDrawObject (hue 0x4001
+        //                       translucent grey) + cache add so the
+        //                       next view-delta tick doesn't double-spawn
+        //     staff observer  → 0x77 normal update (already had the
+        //                       ghost mobile in cache)
+        //
+        //   war → peace (un-manifest):
+        //     plain observer  → 0x1D delete + cache drop
+        //     staff observer  → 0x77 normal update
+        //
+        //   self                → 0x77 always (own client always knows
+        //                         the mobile)
         byte warFlags = BuildMobileFlags(_character);
         byte warNoto = GetNotoriety(_character);
-        BroadcastNearby?.Invoke(_character.Position, UpdateRange,
-            new PacketMobileMoving(_character.Uid.Value, _character.BodyId,
-                _character.X, _character.Y, _character.Z, (byte)_character.Direction,
-                _character.Hue, warFlags, warNoto),
-            _character.Uid.Value);
+        var mobileMoving = new PacketMobileMoving(
+            _character.Uid.Value, _character.BodyId,
+            _character.X, _character.Y, _character.Z, (byte)_character.Direction,
+            _character.Hue, warFlags, warNoto);
+
+        if (_character.IsDead && ForEachClientInRange != null)
+        {
+            uint selfUid = _character.Uid.Value;
+
+            ForEachClientInRange.Invoke(_character.Position, UpdateRange, selfUid,
+                (observerCh, observerClient) =>
+                {
+                    bool isStaff = observerCh.AllShow ||
+                        observerCh.PrivLevel >= Core.Enums.PrivLevel.Counsel;
+                    if (isStaff)
+                    {
+                        observerClient.Send(mobileMoving);
+                        return;
+                    }
+
+                    if (warMode)
+                    {
+                        // Manifest: spawn ghost as translucent grey on this
+                        // plain observer's client and start tracking it so
+                        // BuildViewDelta will keep it in sync (manifested
+                        // ghosts are now in the delta filter's allow-list).
+                        // NotifyCharacterAppear handles the hue=0x4001 draw
+                        // and _knownChars insert in one call (mirroring the
+                        // login/teleport entry path).
+                        observerClient.NotifyCharacterAppear(_character);
+                    }
+                    else
+                    {
+                        // Un-manifest: drop the mobile from the plain
+                        // observer's view so they no longer see it.
+                        observerClient.RemoveKnownChar(selfUid, sendDelete: true);
+                    }
+                });
+        }
+        else
+        {
+            BroadcastNearby?.Invoke(_character.Position, UpdateRange, mobileMoving,
+                _character.Uid.Value);
+        }
 
         _logger.LogDebug("[war_mode] client={ClientId} char=0x{Char:X8} {Old}->{New}",
             _netState.Id, _character.Uid.Value, oldState ? "war" : "peace", _character.IsInWarMode ? "war" : "peace");
     }
 
-    private static int GetSwingDelayMs(Character attacker, Item? weapon)
+    /// <summary>
+    /// Pre-AOS swing delay (Source-X <c>Calc_CombatAttackSpeed</c> formula 0).
+    /// Returns the full swing recoil in milliseconds. Steps:
+    ///   <list type="number">
+    ///     <item>Take <c>iBaseSpeed</c> from <c>weapon.Speed</c> (ITEMDEF SPEED)
+    ///       or 50 for bare-fist wrestling.</item>
+    ///     <item>Compute <c>iSwingSpeed = (DEX + 100) * iBaseSpeed</c>.</item>
+    ///     <item>Convert to deciseconds: <c>(SpeedScaleFactor * 10) / iSwingSpeed</c>
+    ///       with the same default <c>SpeedScaleFactor = 15000</c> Source-X uses.</item>
+    ///     <item>Floor at 5 ticks (0.5 s) so a fast weapon never goes instant.</item>
+    ///     <item>Apply 2-handed weight bonus and a small mounted bonus to match
+    ///       Source-X behaviour, then return as ms.</item>
+    ///   </list>
+    /// This makes ITEMDEF SPEED = 35 sword + DEX 100 swing in ~0.75 s + recoil,
+    /// instead of the earlier hard-coded ~2.3 s value.
+    /// </summary>
+    public static int GetSwingDelayMs(Character attacker, Item? weapon)
     {
-        // Source-X CChar::Fight_CalcDelay: speed * 100 / (DEX + 100) in ticks (100ms each)
-        int speed = 35; // default weapon speed; TODO: read from ItemDef.Speed
-        if (weapon == null) speed = 40; // unarmed is slower
-        int dexMod = Math.Max(10, (int)attacker.Dex);
-        int delayMs = speed * 100 * 100 / (dexMod + 100);
-        if (attacker.IsMounted) delayMs -= 200;
-        return Math.Clamp(delayMs, 1250, 5000);
+        const int speedScaleFactor = 15000;
+
+        int baseSpeed = weapon?.Speed > 0 ? weapon.Speed : 0;
+        if (baseSpeed <= 0)
+            baseSpeed = weapon == null ? 50 : 35;
+
+        int dex = Math.Max(0, (int)attacker.Dex);
+        long iSwingSpeed = (long)(dex + 100) * baseSpeed;
+        if (iSwingSpeed < 1) iSwingSpeed = 1;
+
+        long deciseconds = (speedScaleFactor * 10L) / iSwingSpeed;
+        if (deciseconds < 5) deciseconds = 5;
+
+        // 2-handed weapons: Source-X formula 0 weight branch adds half the
+        // swing speed for HAND2-equipped weapons. We approximate without
+        // recomputing the legacy weight branch.
+        if (weapon != null && weapon.IsTwoHanded)
+            deciseconds += deciseconds / 4;
+
+        int delayMs = (int)(deciseconds * 100);
+
+        if (attacker.IsMounted)
+            delayMs -= 200;
+
+        return Math.Clamp(delayMs, 500, 7000);
     }
 
     /// <summary>Map a weapon (or bare fists) to the correct humanoid

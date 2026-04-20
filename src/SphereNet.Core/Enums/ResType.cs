@@ -16,6 +16,7 @@ public enum ResType : byte
     Events,
     Function,
     GamePage,
+    Book,
     ItemDef,
     Menu,
     MultiDef,

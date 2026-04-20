@@ -131,6 +131,41 @@ public class Item : ObjBase
     public int Price { get => _price; set => _price = value; }
     public ushort Quality { get => _quality; set => _quality = value; }
 
+    /// <summary>Weapon swing speed read from ITEMDEF.SPEED. 0 = unspecified
+    /// (combat code falls back to a sensible default). Used by
+    /// <c>GetSwingDelayMs</c> to compute swing recoil per Source-X
+    /// <c>Calc_CombatAttackSpeed</c>.</summary>
+    public int Speed
+    {
+        get
+        {
+            var def = DefinitionLoader.GetItemDef(BaseId);
+            return def?.Speed ?? 0;
+        }
+    }
+
+    /// <summary>Item weight in stones (sphere units). Reads from ITEMDEF.</summary>
+    public int Weight
+    {
+        get
+        {
+            var def = DefinitionLoader.GetItemDef(BaseId);
+            return def?.Weight ?? 0;
+        }
+    }
+
+    /// <summary>True if this is a 2-handed weapon. Used for swing speed
+    /// weight bonus and to block shield equip.</summary>
+    public bool IsTwoHanded
+    {
+        get
+        {
+            if (EquipLayer == Layer.TwoHanded) return true;
+            var def = DefinitionLoader.GetItemDef(BaseId);
+            return def?.TwoHands ?? false;
+        }
+    }
+
     public void Delete()
     {
         _isDeleted = true;

@@ -218,6 +218,15 @@ public sealed class CommandHandler
     public event Action<bool>? OnScriptDebugToggleRequested;
     public event Action<Character, string>? OnAddTargetRequested;
     public event Action<Character>? OnRemoveTargetRequested;
+    /// <summary>Fired by .RESURRECT (no args = self, with UID = direct,
+    /// no UID + alive caller = target cursor). Wired in Program.cs to
+    /// resolve to the victim's GameClient.OnResurrect so the proper
+    /// 0x77/0x20 broadcast happens. Source-X equivalent: DV_RESURRECT
+    /// verb on a character.</summary>
+    public event Action<Character, Core.Types.Serial?>? OnResurrectRequested;
+    /// <summary>Fired by .XRESURRECT — request a target cursor on the GM
+    /// client; the picked character is then resurrected.</summary>
+    public event Action<Character>? OnResurrectTargetRequested;
     public event Action<Character, string, IReadOnlyList<string>>? OnShowDialogRequested;
     public event Action<Character, string>? OnShowTargetRequested;
     public event Action<Character, string>? OnEditTargetRequested;
@@ -447,6 +456,40 @@ public sealed class CommandHandler
                 var target = world.FindChar(new Core.Types.Serial(uid));
                 target?.Kill();
             }
+        });
+
+        // .RESURRECT [uid]
+        //   * no arg: resurrect self (works whether the caller is dead or
+        //     not — Source-X DV_RESURRECT is callable on living chars too,
+        //     it just no-ops on the IsDead check inside Resurrect())
+        //   * hex uid arg: resurrect that specific character
+        // .XRESURRECT
+        //   * pops a target cursor on the GM client; whoever is targeted
+        //     gets resurrected
+        Register("RESURRECT", PrivLevel.GM, (gm, args) =>
+        {
+            string raw = args.Trim();
+            if (string.IsNullOrEmpty(raw))
+            {
+                OnResurrectRequested?.Invoke(gm, null);
+                return;
+            }
+            string uidText = raw.Replace("0x", "", StringComparison.OrdinalIgnoreCase).Trim();
+            if (uint.TryParse(uidText, System.Globalization.NumberStyles.HexNumber, null, out uint uid)
+                || uint.TryParse(raw, out uid))
+            {
+                OnResurrectRequested?.Invoke(gm, new Core.Types.Serial(uid));
+            }
+            else
+            {
+                OnSysMessage?.Invoke(gm, "Usage: .resurrect [hex_uid]");
+            }
+        });
+
+        Register("XRESURRECT", PrivLevel.GM, (gm, _) =>
+        {
+            OnResurrectTargetRequested?.Invoke(gm);
+            OnSysMessage?.Invoke(gm, "Select a character to resurrect.");
         });
 
         Register("REMOVE", PrivLevel.GM, (gm, args) =>
