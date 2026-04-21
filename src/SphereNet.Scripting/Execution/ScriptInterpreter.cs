@@ -53,6 +53,17 @@ public sealed class ScriptInterpreter
                 break;
 
             var key = lines[i];
+
+            // Push a per-line "where am I" label into the expression parser so
+            // any unresolved <X> warning reported during this line names a
+            // concrete script file/line instead of just the bare variable.
+            // Skipped when the key carries no source info (synthetic keys
+            // built in code) — t_currentSourceLabel falls back to the parent
+            // frame in that case, which is still better than empty.
+            using var __srcLabel = !string.IsNullOrEmpty(key.SourceFile)
+                ? _expr.PushSourceLabel(FormatSourceLabel(key, scope))
+                : default;
+
             string cmd = key.Key.ToUpperInvariant();
 
             // Handle LOCAL.varname=value (Key="LOCAL.foo", Arg="bar")
@@ -696,6 +707,38 @@ public sealed class ScriptInterpreter
             ta2.Object1 = prevObj1;
 
         return bodyEnd + 1;
+    }
+
+    /// <summary>Build a human-readable "file(line) [trigger]" tag for the
+    /// given script line, used by ExpressionParser.ReportUnresolved when
+    /// scriptdebug is on. Falls back gracefully when only partial source
+    /// info is present.</summary>
+    private static string FormatSourceLabel(ScriptKey key, ScriptScope scope)
+    {
+        string file = key.SourceFile;
+        if (file.Length > 0)
+        {
+            // Strip the long absolute prefix so the warning stays readable.
+            // We keep the last two path segments which is enough to
+            // disambiguate (e.g. "core/dialogs/admin/d_admin.scp").
+            int slash = file.LastIndexOf('/', file.Length - 1);
+            if (slash < 0) slash = file.LastIndexOf('\\', file.Length - 1);
+            if (slash > 0)
+            {
+                int prevSlash = slash > 0
+                    ? file.LastIndexOfAny(new[] { '/', '\\' }, slash - 1)
+                    : -1;
+                file = prevSlash >= 0 ? file[(prevSlash + 1)..] : file[(slash + 1)..];
+            }
+        }
+
+        string trigger = scope?.TriggerName ?? "";
+        if (file.Length == 0 && trigger.Length == 0) return "";
+        if (trigger.Length == 0)
+            return key.SourceLine > 0 ? $"{file}({key.SourceLine})" : file;
+        return key.SourceLine > 0
+            ? $"{file}({key.SourceLine}) {trigger}"
+            : $"{file} {trigger}";
     }
 
     private string ResolveArgs(string arg, IScriptObj target, ITextConsole? source, ITriggerArgs? args, ScriptScope? scope = null)

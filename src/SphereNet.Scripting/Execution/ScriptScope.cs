@@ -11,6 +11,13 @@ public sealed class ScriptScope
     public bool IsReturning { get; set; }
     public int LoopDepth { get; set; }
 
+    /// <summary>Optional human-readable label for the current trigger or
+    /// function (e.g. "@Click", "@Create", "f_doSomething"). Surfaced by
+    /// scriptdebug warnings so the unresolved-variable message points at
+    /// the right block, not just the file/line. Set by the trigger runner
+    /// or dialog dispatcher; safe to leave null.</summary>
+    public string? TriggerName { get; set; }
+
     /// <summary>
     /// Maximum nested loop depth to prevent infinite loops.
     /// Maps to MaxLoopTimes in sphere.ini.

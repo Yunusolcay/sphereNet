@@ -4,6 +4,43 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-21] - Scriptdebug uyarilarina kaynak dosya/satir/trigger etiketi
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - ScriptKey'e SourceFile / SourceLine alanlari eklendi; ScriptFile
+    parser bunlari ReadKeyParse ve ReadAllSections cikislarinda otomatik
+    dolduruyor. Kod icinde elle olusturulan synthetic key'ler etkilenmiyor.
+    ScriptKey now carries SourceFile / SourceLine, populated by ScriptFile
+    on parse so every script line keeps a back-pointer to its origin.
+  - ExpressionParser'a thread-static "current source label" eklendi
+    (PushSourceLabel + SourceLabelScope). ScriptInterpreter.Execute her
+    satirda aktif label'i set ediyor ("file(line) @Trigger" formatinda),
+    ReportUnresolved caller context'i bossa bu label'a fallback yapiyor.
+    Cikti artik soyle: "[script] unresolved <Eval> (in core/dialogs/admin/
+    d_admin.scp(412) @Click)" — eskiden sadece "<Eval>" yaziyordu.
+    Thread-static source label in ExpressionParser; ScriptInterpreter
+    pushes "file(line) @Trigger" per executed line so scriptdebug warnings
+    pinpoint the offending script + trigger instead of the bare variable.
+  - ScriptScope'a TriggerName alani eklendi; TriggerRunner @Trigger /
+    speech / dialog button / function calistirirken scope'u "@Click",
+    "BUTTON 100", "f_doSomething", "SPEECH:*hello*" etiketiyle
+    isaretliyor.
+    ScriptScope.TriggerName populated by TriggerRunner for @Trigger,
+    speech, dialog-button and function execution so the warning context
+    knows which block is running.
+
+NOTLAR / NOTES:
+  - DebugUnresolved varsayilan olarak KAPALI birakildi. Acik bir surede
+    her cozumlenmemis <X> bir string-format + log yazimi maliyetine
+    sebep oluyor; gurultulu script paketleri (NPC tick, region tick)
+    saniyede binlerce uyari uretebiliyor. .SCRIPTDEBUG ON sadece eksik
+    property/defname avlarken kullanilmali, production'da kapali kalmali.
+    Inline doc string'i bu konuda uyari ekleyecek sekilde guncellendi.
+    DebugUnresolved stays off by default; enabling it under load is
+    expensive (every unresolved <X> pays a string-format + log write),
+    so the docstring now warns against leaving it on in production.
+
 [2026-04-21] - Admin dialog altyapisi, X-prefix verb fallback, INPDLG/TRYP, GM verb seti
 ----------------------------------------
 

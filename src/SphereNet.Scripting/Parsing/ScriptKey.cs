@@ -10,6 +10,16 @@ public sealed class ScriptKey
     public string Arg { get; private set; } = "";
     public bool HasArg => Arg.Length > 0;
 
+    /// <summary>Source file path the line was parsed from (set by
+    /// <see cref="ScriptFile"/>). Used for diagnostic messages so
+    /// scriptdebug warnings can pinpoint the offending line; never
+    /// affects execution. Empty for keys built in code.</summary>
+    public string SourceFile { get; set; } = "";
+
+    /// <summary>1-based source line number, set together with
+    /// <see cref="SourceFile"/>. Zero when unknown.</summary>
+    public int SourceLine { get; set; }
+
     public ScriptKey() { }
 
     /// <summary>Construct a pre-parsed key/arg pair — used when expanding

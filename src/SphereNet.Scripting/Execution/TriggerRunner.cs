@@ -62,7 +62,7 @@ public sealed class TriggerRunner
                     int startIdx = section.Keys.IndexOf(key) + 1;
                     var triggerLines = CollectTriggerBody(section.Keys, startIdx);
 
-                    var scope = new ScriptScope();
+                    var scope = new ScriptScope { TriggerName = "@" + triggerName };
                     return _interpreter.Execute(triggerLines, target, source, args, scope);
                 }
             }
@@ -121,7 +121,7 @@ public sealed class TriggerRunner
                                 ln.Key, ln.HasArg, ln.Arg);
                     }
 
-                    var scope = new ScriptScope();
+                    var scope = new ScriptScope { TriggerName = "@" + triggerName };
                     return _interpreter.Execute(triggerLines, target, source, args, scope);
                 }
             }
@@ -190,7 +190,7 @@ public sealed class TriggerRunner
             return true;
         }
 
-        var scope = new ScriptScope();
+        var scope = new ScriptScope { TriggerName = funcName };
         result = _interpreter.Execute(sections[0].Keys, target, source, args, scope);
         return true;
     }
@@ -227,7 +227,7 @@ public sealed class TriggerRunner
 
             // Found a match — collect and execute the body
             var body = CollectTriggerBody(keys, i + 1);
-            var scope = new ScriptScope();
+            var scope = new ScriptScope { TriggerName = "SPEECH:" + pattern };
             return _interpreter.Execute(body, target, source, args, scope);
         }
 
@@ -317,7 +317,7 @@ public sealed class TriggerRunner
                 continue;
 
             var body = CollectDialogButtonBody(keys, i + 1);
-            var scope = new ScriptScope();
+            var scope = new ScriptScope { TriggerName = $"BUTTON {buttonId}" };
             _interpreter.Execute(body, target, source, args, scope);
             return true;
         }

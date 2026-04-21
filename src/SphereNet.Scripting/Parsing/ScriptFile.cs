@@ -138,7 +138,11 @@ public sealed class ScriptFile : IDisposable
         if (line.Equals("[EOF]", StringComparison.OrdinalIgnoreCase))
             return null;
 
-        var key = new ScriptKey();
+        var key = new ScriptKey
+        {
+            SourceFile = Context.FilePath,
+            SourceLine = Context.LineNumber
+        };
         key.Parse(line.AsSpan());
         return key;
     }
@@ -203,7 +207,11 @@ public sealed class ScriptFile : IDisposable
                     break;
                 }
 
-                var key = new ScriptKey();
+                var key = new ScriptKey
+                {
+                    SourceFile = Context.FilePath,
+                    SourceLine = Context.LineNumber
+                };
                 key.Parse(line.AsSpan());
                 if (!string.IsNullOrEmpty(key.Key))
                     section.Keys.Add(key);

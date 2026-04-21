@@ -24,19 +24,68 @@ public sealed class ExpressionParser
     /// <summary>When true, unresolved <c>&lt;X&gt;</c> expressions are reported
     /// via <see cref="DiagnosticLogger"/>. Default off so production logs stay
     /// quiet; flip on with the <c>.SCRIPTDEBUG</c> command while hunting
-    /// missing properties in imported Sphere scripts.</summary>
+    /// missing properties in imported Sphere scripts.
+    ///
+    /// Performance note: leaving this on under load is OK for development but
+    /// not recommended in production — every unresolved &lt;X&gt; pays a
+    /// string-format + log write, and noisy script packs (region/NPC ticks)
+    /// can produce thousands of warnings per second. Default stays
+    /// <c>false</c> for that reason.</summary>
     public bool DebugUnresolved { get; set; }
 
     /// <summary>Callback for diagnostic messages (unknown variables, commands).
     /// Host wires this up to write to the server console / log.</summary>
     public Action<string>? DiagnosticLogger { get; set; }
 
+    /// <summary>
+    /// Per-thread "where am I" label used by <see cref="ReportUnresolved"/> when
+    /// the caller doesn't pass an explicit context. ScriptInterpreter / dialog
+    /// dispatcher / trigger runner push the current source location here before
+    /// invoking expression evaluation, so unresolved warnings look like
+    /// <c>[script] unresolved &lt;Eval&gt; (in d_admin.scp(412) @Click)</c>
+    /// instead of the bare variable name. The field is thread-static so server
+    /// tick threads and the network thread don't trample each other.
+    /// </summary>
+    [ThreadStatic]
+    private static string? t_currentSourceLabel;
+
+    /// <summary>Push a "where am I" label for the current thread. Returns a
+    /// scope handle whose <c>Dispose</c> restores the previous label, so
+    /// callers can use <c>using (parser.PushSourceLabel(...)) { ... }</c>
+    /// without writing try/finally everywhere.</summary>
+    public SourceLabelScope PushSourceLabel(string? label)
+    {
+        var prev = t_currentSourceLabel;
+        t_currentSourceLabel = label;
+        return new SourceLabelScope(prev);
+    }
+
+    /// <summary>Read-only view of the current thread's source label, or
+    /// <c>null</c> if nothing has been pushed.</summary>
+    public static string? CurrentSourceLabel => t_currentSourceLabel;
+
+    public readonly struct SourceLabelScope : IDisposable
+    {
+        private readonly string? _previous;
+        internal SourceLabelScope(string? previous) { _previous = previous; }
+        public void Dispose() { t_currentSourceLabel = _previous; }
+    }
+
     internal void ReportUnresolved(string varExpr, string context = "")
     {
         if (!DebugUnresolved || DiagnosticLogger == null) return;
-        string msg = string.IsNullOrEmpty(context)
+
+        // Prefer the caller-supplied context, but fall back to whatever the
+        // current ScriptInterpreter / dialog runner pushed for this thread.
+        // This is what lets the warning name a concrete script + line even
+        // for variables resolved deep inside nested <Eval>/<QVal> expansion.
+        string ctx = !string.IsNullOrEmpty(context)
+            ? context
+            : (t_currentSourceLabel ?? "");
+
+        string msg = string.IsNullOrEmpty(ctx)
             ? $"[script] unresolved <{varExpr}>"
-            : $"[script] unresolved <{varExpr}> (in {context})";
+            : $"[script] unresolved <{varExpr}> (in {ctx})";
         DiagnosticLogger(msg);
     }
 

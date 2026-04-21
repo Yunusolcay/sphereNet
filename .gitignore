@@ -4,6 +4,8 @@ obj/
 
 # Local commit message scratch
 .git_commit_msg.tmp
+.commit_msg.tmp
+*.commit_msg.tmp
 
 # Visual Studio
 .vs/
