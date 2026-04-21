@@ -166,7 +166,7 @@ public sealed class ScriptInterpreter
                 case "RETURN":
                 {
                     string argStr = ResolveArgs(key.Arg, target, source, args, scope);
-                    long val = string.IsNullOrEmpty(argStr) ? 0 : _expr.Evaluate(argStr.AsSpan());
+                    long val = EvaluateWithResolver(argStr, target, source, args, scope);
                     scope.ReturnValue = val.ToString();
                     scope.IsReturning = true;
                     result = val != 0 ? TriggerResult.True : TriggerResult.Default;
@@ -228,6 +228,52 @@ public sealed class ScriptInterpreter
                         if (!target.TryExecuteCommand(verb, verbArgs, source ?? NullConsole.Instance))
                             (source ?? NullConsole.Instance).TryExecuteScriptCommand(target, verb, verbArgs, args);
                     }
+                    i++;
+                    break;
+                }
+
+                // TRYSRC <srcRef> <verb args...> — execute the verb on the
+                // referenced source object. Common pattern:
+                //   TRYSRC <UID> DIALOGCLOSE d_spawn
+                // If srcRef can be resolved, route through _REF_EXEC so
+                // object verbs and client-scoped verbs (DIALOG/SDIALOG/...)
+                // follow the same bridge. Fall back to legacy behaviour when
+                // the first token isn't a source reference.
+                case "TRYSRC":
+                {
+                    string srcLine = ResolveArgs(key.Arg, target, source, args, scope);
+                    if (string.IsNullOrWhiteSpace(srcLine))
+                    {
+                        i++;
+                        break;
+                    }
+
+                    string work = srcLine.Trim();
+                    int firstSpace = work.IndexOf(' ');
+                    if (firstSpace > 0)
+                    {
+                        string srcRef = work[..firstSpace].Trim();
+                        string rest = work[(firstSpace + 1)..].Trim();
+                        if (!string.IsNullOrWhiteSpace(srcRef) && !string.IsNullOrWhiteSpace(rest))
+                        {
+                            int cmdSpace = rest.IndexOf(' ');
+                            string trysrcVerb = cmdSpace > 0 ? rest[..cmdSpace].Trim() : rest;
+                            string trysrcArgs = cmdSpace > 0 ? rest[(cmdSpace + 1)..].Trim() : "";
+                            if (!string.IsNullOrWhiteSpace(trysrcVerb))
+                            {
+                                ServerPropertyResolver?.Invoke($"_REF_EXEC={srcRef}|{trysrcVerb}|{trysrcArgs}");
+                                i++;
+                                break;
+                            }
+                        }
+                    }
+
+                    // Legacy fallback: execute payload directly on current target.
+                    int spIdx = work.IndexOf(' ');
+                    string verb = spIdx > 0 ? work[..spIdx].Trim() : work.Trim();
+                    string verbArgs = spIdx > 0 ? work[(spIdx + 1)..].Trim() : "";
+                    if (!target.TryExecuteCommand(verb, verbArgs, source ?? NullConsole.Instance))
+                        (source ?? NullConsole.Instance).TryExecuteScriptCommand(target, verb, verbArgs, args);
                     i++;
                     break;
                 }
@@ -331,6 +377,16 @@ public sealed class ScriptInterpreter
             ? ResolveArgs(key.Key, target, source, args, scope)
             : key.Key;
 
+        if (_expr.DebugUnresolved)
+        {
+            _logger.LogDebug("[script_exec] ctx='{Ctx}' cmd='{Cmd}' arg='{Arg}' target='{Target}' source='{Source}'",
+                FormatSourceLabel(key, scope),
+                cmd,
+                resolvedArg,
+                target.GetName(),
+                source?.GetName() ?? "SYSTEM");
+        }
+
         // Handle SRC. prefix — redirect to source object
         if (cmd.StartsWith("SRC.", StringComparison.OrdinalIgnoreCase))
         {
@@ -339,11 +395,23 @@ public sealed class ScriptInterpreter
             if (srcObj != null)
             {
                 if (key.HasArg && srcObj.TrySetProperty(subCmd, resolvedArg))
+                {
+                    if (_expr.DebugUnresolved)
+                        _logger.LogDebug("[script_exec] handled via src setprop '{Cmd}'", subCmd);
                     return;
+                }
                 if (srcObj.TryExecuteCommand(subCmd, resolvedArg, source ?? NullConsole.Instance))
+                {
+                    if (_expr.DebugUnresolved)
+                        _logger.LogDebug("[script_exec] handled via src verb '{Cmd}'", subCmd);
                     return;
+                }
                 if ((source ?? NullConsole.Instance).TryExecuteScriptCommand(srcObj, subCmd, resolvedArg, args))
+                {
+                    if (_expr.DebugUnresolved)
+                        _logger.LogDebug("[script_exec] handled via src scriptcmd '{Cmd}'", subCmd);
                     return;
+                }
                 // Source-X: unrecognized SRC.verb → treat as function call on source object
                 if (CallFunction != null)
                 {
@@ -364,6 +432,27 @@ public sealed class ScriptInterpreter
             }
             _logger.LogWarning("SRC not available for: {Key}={Arg}", cmd, resolvedArg);
             return;
+        }
+
+        // UID.<hex>.<verb> [args] — direct command on object resolved by
+        // UID. Dialog admin scripts lean on this pattern, e.g.
+        //     UID.<CTag.Dialog.Admin.C<Eval <ArgN>-10>>.Dialog d_X
+        // After ResolveArgs the key looks like "UID.0186A4.DIALOG"; we
+        // strip the prefix, look the object up via the same _REF_EXEC
+        // bridge REFn uses, and let the host dispatch the verb / setter.
+        if (cmd.StartsWith("UID.", StringComparison.OrdinalIgnoreCase) && cmd.Length > 4)
+        {
+            int firstDot = cmd.IndexOf('.', 4);
+            if (firstDot > 4)
+            {
+                string uidTok = cmd[4..firstDot];
+                string subCmd = cmd[(firstDot + 1)..];
+                if (!string.IsNullOrEmpty(uidTok) && !string.IsNullOrEmpty(subCmd))
+                {
+                    ServerPropertyResolver?.Invoke($"_REF_EXEC={uidTok}|{subCmd}|{resolvedArg}");
+                    return;
+                }
+            }
         }
 
         // VAR.name=value / VAR0.name=value — global variable assignment
@@ -445,21 +534,51 @@ public sealed class ScriptInterpreter
         if (cmd.Equals("ARGS", StringComparison.OrdinalIgnoreCase) && args is TriggerArgs mutableArgs)
         {
             mutableArgs.ArgString = resolvedArg ?? "";
+            if (_expr.DebugUnresolved)
+                _logger.LogDebug("[script_exec] updated ARGS='{Args}'", mutableArgs.ArgString);
             return;
         }
 
         // Try as property set (KEY=VALUE)
         if (key.HasArg && target.TrySetProperty(cmd, resolvedArg))
+        {
+            if (_expr.DebugUnresolved)
+                _logger.LogDebug("[script_exec] handled via setprop '{Cmd}'", cmd);
             return;
+        }
+
+        // Client-bound dialog verbs should still work when script fallback
+        // runs without a concrete ITextConsole (source can be null in some
+        // call paths). Route directly to the target object's owning client
+        // through the same _REF_EXEC bridge used by UID.<...>.DIALOG.
+        if (cmd.Equals("DIALOG", StringComparison.OrdinalIgnoreCase) ||
+            cmd.Equals("SDIALOG", StringComparison.OrdinalIgnoreCase))
+        {
+            if (target.TryGetProperty("UID", out string dialogUid) && !string.IsNullOrWhiteSpace(dialogUid))
+            {
+                ServerPropertyResolver?.Invoke($"_REF_EXEC={dialogUid}|DIALOG|{resolvedArg}");
+                if (_expr.DebugUnresolved)
+                    _logger.LogDebug("[script_exec] handled via dialog bridge uid='{Uid}' arg='{Arg}'", dialogUid, resolvedArg);
+                return;
+            }
+        }
 
         // Try as verb/command
         if (target.TryExecuteCommand(cmd, resolvedArg, source ?? NullConsole.Instance))
+        {
+            if (_expr.DebugUnresolved)
+                _logger.LogDebug("[script_exec] handled via target verb '{Cmd}'", cmd);
             return;
+        }
 
         // Source-X bridge: allow console/client host to handle script-specific verbs
         // (targetf/targetfg, dialog, serv.*, db.*, etc.) without polluting object classes.
         if ((source ?? NullConsole.Instance).TryExecuteScriptCommand(target, cmd, resolvedArg, args))
+        {
+            if (_expr.DebugUnresolved)
+                _logger.LogDebug("[script_exec] handled via source scriptcmd '{Cmd}'", cmd);
             return;
+        }
 
         // Source-X: any unrecognized command is treated as a function call
         if (CallFunction != null)
@@ -476,6 +595,8 @@ public sealed class ScriptInterpreter
                 ArgString = resolvedArg
             };
             CallFunction(cmd, target, source, funcArgs);
+            if (_expr.DebugUnresolved)
+                _logger.LogDebug("[script_exec] delegated to function '{Cmd}'", cmd);
             return;
         }
 
@@ -489,8 +610,8 @@ public sealed class ScriptInterpreter
         int i = startIdx;
 
         string condition = ResolveArgs(lines[i].Arg, target, source, args, scope);
-        bool condResult = _expr.Evaluate(condition.AsSpan()) != 0;
-        bool executed = false;
+        bool condResult = EvaluateWithResolver(condition, target, source, args, scope) != 0;
+        bool branchTaken = condResult;
         i++;
 
         while (i < lines.Count)
@@ -505,17 +626,20 @@ public sealed class ScriptInterpreter
 
             if (cmd == "ELSE")
             {
-                condResult = !executed;
+                condResult = !branchTaken;
+                branchTaken = true;
                 i++;
                 continue;
             }
 
             if (cmd == "ELIF" || cmd == "ELSEIF")
             {
-                if (!executed)
+                if (!branchTaken)
                 {
                     string elifCond = ResolveArgs(lines[i].Arg, target, source, args, scope);
-                    condResult = _expr.Evaluate(elifCond.AsSpan()) != 0;
+                    condResult = EvaluateWithResolver(elifCond, target, source, args, scope) != 0;
+                    if (condResult)
+                        branchTaken = true;
                 }
                 else
                 {
@@ -525,7 +649,7 @@ public sealed class ScriptInterpreter
                 continue;
             }
 
-            if (condResult && !executed)
+            if (condResult)
             {
                 switch (cmd)
                 {
@@ -541,7 +665,7 @@ public sealed class ScriptInterpreter
                     case "RETURN":
                     {
                         string argStr = ResolveArgs(lines[i].Arg, target, source, args, scope);
-                        long val = string.IsNullOrEmpty(argStr) ? 0 : _expr.Evaluate(argStr.AsSpan());
+                        long val = EvaluateWithResolver(argStr, target, source, args, scope);
                         scope.ReturnValue = val.ToString();
                         scope.IsReturning = true;
                         return lines.Count;
@@ -559,8 +683,6 @@ public sealed class ScriptInterpreter
                 // Skip nested blocks
                 i = SkipBlock(lines, i, cmd);
             }
-
-            if (condResult) executed = true;
         }
 
         return i;
@@ -573,7 +695,7 @@ public sealed class ScriptInterpreter
         int i = startIdx;
 
         string countStr = ResolveArgs(lines[i].Arg, target, source, args, scope);
-        long count = _expr.Evaluate(countStr.AsSpan());
+        long count = EvaluateWithResolver(countStr, target, source, args, scope);
         i++;
 
         int bodyStart = i;
@@ -608,7 +730,7 @@ public sealed class ScriptInterpreter
         while (iterations < scope.MaxLoopIterations)
         {
             string resolved = ResolveArgs(condition, target, source, args, scope);
-            if (_expr.Evaluate(resolved.AsSpan()) == 0)
+            if (EvaluateWithResolver(resolved, target, source, args, scope) == 0)
                 break;
 
             result = Execute(GetSubList(lines, bodyStart, bodyEnd), target, source, args, scope);
@@ -648,7 +770,7 @@ public sealed class ScriptInterpreter
     {
         result = TriggerResult.Default;
         string indexStr = ResolveArgs(lines[startIdx].Arg, target, source, args, scope);
-        int switchIdx = (int)_expr.Evaluate(indexStr.AsSpan());
+        int switchIdx = (int)EvaluateWithResolver(indexStr, target, source, args, scope);
         int i = startIdx + 1;
 
         int lineIdx = 0;
@@ -748,6 +870,17 @@ public sealed class ScriptInterpreter
         var oldResolver = _expr.VariableResolver;
         _expr.VariableResolver = varName => ResolveVarForTarget(varName, target, source, args, scope);
         string result = _expr.EvaluateStr(arg);
+        _expr.VariableResolver = oldResolver;
+        return result;
+    }
+
+    private long EvaluateWithResolver(string expr, IScriptObj target, ITextConsole? source, ITriggerArgs? args, ScriptScope? scope = null)
+    {
+        if (string.IsNullOrWhiteSpace(expr))
+            return 0;
+        var oldResolver = _expr.VariableResolver;
+        _expr.VariableResolver = varName => ResolveVarForTarget(varName, target, source, args, scope);
+        long result = _expr.Evaluate(expr.AsSpan());
         _expr.VariableResolver = oldResolver;
         return result;
     }
@@ -1037,6 +1170,17 @@ public sealed class ScriptInterpreter
             return value;
         if ((source ?? NullConsole.Instance).TryResolveScriptVariable(varName, target, args, out string resolved))
             return resolved;
+        // Bare defname/constant fallback (e.g. <statf_insubstantial>,
+        // <memory_ipet>) via the shared server resolver. Source scripts use
+        // these names without DEF./DEF0. prefixes inside expressions.
+        if (!varName.Contains('.', StringComparison.Ordinal) &&
+            !varName.Contains('(', StringComparison.Ordinal) &&
+            !varName.Contains(')', StringComparison.Ordinal))
+        {
+            string? constVal = ServerPropertyResolver?.Invoke(varName);
+            if (constVal != null)
+                return constVal;
+        }
 
         return null;
     }

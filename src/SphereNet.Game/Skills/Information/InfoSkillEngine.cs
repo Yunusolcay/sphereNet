@@ -13,7 +13,7 @@ namespace SphereNet.Game.Skills.Information;
 /// after a skill-target click: Anatomy, AnimalLore, ArmsLore, EvalInt, Forensics,
 /// ItemID, TasteID. Each method preserves the upstream branch order, constant
 /// lookup tables, and message delivery channel (SysMessage vs. addObjMessage),
-/// so the text sequence the client sees is byte-identical to mortechUO.
+/// so the text sequence the client sees is byte-identical to Source-X.
 ///
 /// Engine entry points never touch the network directly -- they emit via the
 /// <see cref="IInfoSkillSink"/> passed in, which lets unit tests record the

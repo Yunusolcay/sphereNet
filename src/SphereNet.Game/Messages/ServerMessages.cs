@@ -232,7 +232,7 @@ public static partial class ServerMessages
         Def("itemuse_locked", "This item is locked.");
         Def("itemuse_eat_food", "You eat the food.");
 
-        // ===== Housing (Source-X handles via house_* but mortechUO scripts use these) =====
+        // ===== Housing (Source-X handles via house_* but imported sphere scripts use these) =====
         Def("house_placed", "House placed.");
         Def("house_cant_place", "Cannot place house here.");
         Def("house_not_house", "This does not belong to any house.");
@@ -291,7 +291,7 @@ public static partial class ServerMessages
         Def("rename_no_permission", "You do not have permission to rename.");
         Def("rename_item_ok", "Item renamed to '%s'.");
 
-        // ===== Guild (mortechUO scripts) =====
+        // ===== Guild (imported sphere scripts) =====
         Def("guild_join_request", "You have submitted a request to join the guild.");
         Def("guild_disbanded", "Guild has been disbanded.");
         Def("guild_left", "You have left the guild.");

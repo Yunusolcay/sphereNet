@@ -178,7 +178,10 @@ public enum CommandResult { NotFound, InsufficientPriv, Failed, Executed }
 /// </summary>
 public sealed class CommandHandler
 {
-    private const PrivLevel DefaultScriptCommandPrivLevel = PrivLevel.Owner; // Source-X fallback: PLEVEL 7
+    // Default fallback for script-defined commands that are missing from
+    // [PLEVEL X] sections. Keep Source-like strictness: Owner-only unless
+    // the script pack explicitly assigns a lower level.
+    private const PrivLevel DefaultScriptCommandPrivLevel = PrivLevel.Owner;
     private GameWorld? _registeredWorld;
 
     /// <summary>Null console for TryExecuteCommand calls that don't need output.</summary>
@@ -1067,6 +1070,22 @@ public sealed class CommandHandler
             if (string.IsNullOrWhiteSpace(raw))
             {
                 OnSysMessage?.Invoke(gm, "Usage: .dialog <name> [page]");
+                return;
+            }
+            var parts = raw.Split([' ', ','], 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            string dialogName = parts[0];
+            int page = 1;
+            if (parts.Length > 1 && int.TryParse(parts[1].Trim(), out int p) && p > 0)
+                page = p;
+            OnScriptDialogRequested?.Invoke(gm, dialogName, page);
+        });
+        Register("SDIALOG", PrivLevel.GM, (gm, args) =>
+        {
+            // Source-X alias: SDIALOG behaves like DIALOG for command-line use.
+            string raw = args.Replace("\0", string.Empty, StringComparison.Ordinal).Trim();
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                OnSysMessage?.Invoke(gm, "Usage: .sdialog <name> [page]");
                 return;
             }
             var parts = raw.Split([' ', ','], 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);

@@ -77,11 +77,45 @@ public sealed class ScriptKey
             }
         }
 
-        int eqPos = line.IndexOf('=');
-        int spacePos = line.IndexOf(' ');
-        int tabPos = line.IndexOf('\t');
-        int sepPos = -1;
+        // Find the first key/arg separator (=, space, or tab) that lies
+        // OUTSIDE any <...> or (...) group. Sphere scripts routinely build
+        // dynamic keys like
+        //     UID.<CTag.Admin.C<Eval <ArgN>-10>>.Dialog d_SphereAdmin
+        // — the first ' ' character lives inside `<Eval ...>`. A naive
+        // IndexOf chops the key in the middle of the bracket, leaves a
+        // dangling "<Eval" in Key, and the later expansion warns
+        // "unresolved <Eval>". Walking with bracket depth tracking keeps
+        // those expressions intact.
+        int eqPos = -1, spacePos = -1, tabPos = -1;
+        {
+            int angleDepth = 0;
+            int parenDepth = 0;
+            for (int p = 0; p < line.Length; p++)
+            {
+                char ch = line[p];
+                if (ch == '<')
+                {
+                    // Treat as nested bracket only when followed by a
+                    // letter / underscore — same disambiguation used by the
+                    // expression walker so "a < b" stays a comparison.
+                    char nxt = p + 1 < line.Length ? line[p + 1] : '\0';
+                    if (nxt == '_' || char.IsLetter(nxt)) angleDepth++;
+                    continue;
+                }
+                if (ch == '>' && angleDepth > 0) { angleDepth--; continue; }
+                if (ch == '(') { parenDepth++; continue; }
+                if (ch == ')' && parenDepth > 0) { parenDepth--; continue; }
+                if (angleDepth > 0 || parenDepth > 0) continue;
 
+                if (ch == '=' && eqPos < 0) eqPos = p;
+                else if (ch == ' ' && spacePos < 0) spacePos = p;
+                else if (ch == '\t' && tabPos < 0) tabPos = p;
+
+                if (eqPos >= 0 && spacePos >= 0 && tabPos >= 0) break;
+            }
+        }
+
+        int sepPos = -1;
         if (eqPos >= 0 && (spacePos < 0 || eqPos <= spacePos) && (tabPos < 0 || eqPos <= tabPos))
         {
             sepPos = eqPos;

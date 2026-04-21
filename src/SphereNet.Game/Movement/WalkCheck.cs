@@ -55,7 +55,8 @@ public sealed class WalkCheck
         // Raw tile inventory for the forward tile — useful when surface
         // counters are 0 to see what IS there (walls, decorative, etc.).
         int FwdStaticTotal, int FwdImpassableCount, ushort FwdLandTileId,
-        string FwdStaticDump);
+        string FwdStaticDump,
+        int FwdMobileCount, string FwdMobileDump);
 
     /// <summary>Entry point. Returns true if <paramref name="mover"/> can step
     /// in direction <paramref name="d"/> from <paramref name="loc"/>, and sets
@@ -124,6 +125,14 @@ public sealed class WalkCheck
             dump.Append($"0x{s.TileId:X}@{s.Z}h{sd.Height}f0x{(ulong)sd.Flags:X}'{nm}'");
         }
         var fwdLandTile = md.GetTerrainTile(mapId, xForward, yForward);
+        var mobDump = new System.Text.StringBuilder();
+        foreach (var mob in mobsForward)
+        {
+            if (mobDump.Length > 0) mobDump.Append(',');
+            string nm = mob.Name ?? "";
+            if (nm.Length > 12) nm = nm.Substring(0, 12);
+            mobDump.Append($"0x{mob.Uid.Value:X} z={mob.Z} dead={mob.IsDead} player={mob.IsPlayer} war={mob.IsInWarMode} '{nm}'");
+        }
 
         var fwdTrace = new CheckTrace();
         bool forwardOk = Check(mover, md, mapId, xForward, yForward, startTop, startZ, loc.Z,
@@ -168,7 +177,8 @@ public sealed class WalkCheck
             fwdTrace.LandBlocks, fwdTrace.ConsiderLand,
             fwdTrace.SurfaceCandidates, fwdTrace.ItemSurfaceCandidates,
             fwdTrace.LastReason,
-            fwdStatics.Length, fwdImpassable, fwdLandTile.TileId, dump.ToString());
+            fwdStatics.Length, fwdImpassable, fwdLandTile.TileId, dump.ToString(),
+            mobsForward.Count, mobDump.ToString());
         return moveOk;
     }
 
@@ -202,7 +212,7 @@ public sealed class WalkCheck
         // deep ocean that need a bridge static above. Land that is Impassable
         // alone is treated as walkable: stock tiledata.mul flags some
         // decorative rock / slope textures as Impassable, but the UO client
-        // (and mortechUO's maps) use them as walkable sloped terrain. Real
+        // (and standard sphere maps) use them as walkable sloped terrain. Real
         // walls must be modeled as static items, which are checked properly.
         bool landBlocks = landData.IsImpassable && landData.IsWet;
         bool considerLand = !MapDataManager.IsLandIgnored(landTile.TileId);
@@ -281,6 +291,7 @@ public sealed class WalkCheck
         {
             var item = items[i];
             var itemData = md.GetItemTileData(item.BaseId);
+            if (!ShouldTreatAsMovementGeometry(item, itemData)) continue;
             TileFlag flags = itemData.Flags;
 
             if ((flags & ImpassableSurface) == TileFlag.Surface)
@@ -424,6 +435,7 @@ public sealed class WalkCheck
         {
             var item = itemList[i];
             var id = md.GetItemTileData(item.BaseId);
+            if (!ShouldTreatAsMovementGeometry(item, id)) continue;
             int calcTop = item.Z + id.CalcHeight;
 
             if ((!isSet || calcTop >= zCenter) && id.IsSurface && locZ >= calcTop)
@@ -468,6 +480,7 @@ public sealed class WalkCheck
         {
             var item = items[i];
             var data = md.GetItemTileData(item.BaseId);
+            if (!ShouldTreatAsMovementGeometry(item, data)) continue;
             if ((data.Flags & ImpassableSurface) != 0)
             {
                 int checkZ = item.Z;
@@ -475,6 +488,28 @@ public sealed class WalkCheck
                 if (checkTop > ourZ && ourTop > checkZ) return false;
             }
         }
+
+        return true;
+    }
+
+    private static bool ShouldTreatAsMovementGeometry(Item item, ItemTileData data)
+    {
+        // Only treat world items as movement geometry when they are meaningful
+        // obstacles/floors. Small loose drops like reagents, weapons, bags,
+        // etc. should not become collision just because tiledata carries a
+        // Surface bit, while bulky/anchored objects still should.
+        if (item.ItemType == ItemType.Corpse) return false;
+        if (item.IsStaticBlock) return true;
+        if (item.IsAttr(ObjAttributes.Static)
+            || item.IsAttr(ObjAttributes.Move_Never)
+            || item.IsAttr(ObjAttributes.LockedDown))
+            return true;
+        if (data.IsBridge) return true;
+
+        // Loose items that are low enough to step over should not affect
+        // movement. Keep explicit impassables blocking even when movable.
+        if (!data.IsImpassable && data.CalcHeight <= StepHeight)
+            return false;
 
         return true;
     }
@@ -513,16 +548,27 @@ public sealed class WalkCheck
 
     private static bool CanMoveOver(Character mover, Character blocker)
     {
-        // GM with AllMove walks through anything.
-        if (mover.PrivLevel >= PrivLevel.GM && mover.AllMove) return true;
-        // Dead / hidden staff → shovable.
+        // ServUO / RunUO-style shove rule:
+        // - staff can always move through mobiles
+        // - dead bodies / dead movers do not block
+        // - hidden staff do not block
+        // - players can shove only when at full stamina, spending 10 stam
+        if (mover.PrivLevel >= PrivLevel.Counsel) return true;
+        if (!mover.IsDead && mover.Stam == mover.MaxStam && mover.MaxStam > 0)
+        {
+            mover.Stam -= 10;
+            if (mover.IsStatFlag(StatFlag.Hidden)) mover.ClearStatFlag(StatFlag.Hidden);
+            if (mover.IsStatFlag(StatFlag.Invisible)) mover.ClearStatFlag(StatFlag.Invisible);
+            return true;
+        }
+
         if (blocker.IsDead) return true;
-        if (blocker.IsStatFlag(StatFlag.Invisible)) return true;
-        // NPCs yield to players by default.
-        if (!blocker.IsPlayer) return true;
-        // Player blockers: war mode = block, otherwise can shove past.
-        if (blocker.IsInWarMode) return false;
-        return true;
+        if (mover.IsDead) return true;
+        if ((blocker.IsStatFlag(StatFlag.Hidden) || blocker.IsStatFlag(StatFlag.Invisible))
+            && blocker.PrivLevel >= PrivLevel.Counsel)
+            return true;
+
+        return false;
     }
 
     public static void Offset(Direction d, ref int x, ref int y)

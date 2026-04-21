@@ -210,6 +210,9 @@ public sealed class ExpressionParser
         char c = text[pos];
         char c2 = (pos + 1 < text.Length) ? text[pos + 1] : '\0';
 
+        // Sphere scripts commonly use single '=' for equality in IFs.
+        // Treat both '=' and '==' as compare operators.
+        if (c == '=' && c2 != '=') { pos++; long r = ParseShift(text, ref pos); return left == r ? 1 : 0; }
         if (c == '=' && c2 == '=') { pos += 2; long r = ParseShift(text, ref pos); return left == r ? 1 : 0; }
         if (c == '!' && c2 == '=') { pos += 2; long r = ParseShift(text, ref pos); return left != r ? 1 : 0; }
         if (c == '>' && c2 == '=') { pos += 2; long r = ParseShift(text, ref pos); return left >= r ? 1 : 0; }
@@ -333,6 +336,61 @@ public sealed class ExpressionParser
                 long.TryParse(expanded.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out v))
                 return v;
 
+            return 0;
+        }
+
+        // Bare identifier — handles Sphere function calls written WITHOUT
+        // angle-brackets inside an expression, e.g.
+        //     If (!strcmp(<Account.Lang>,CSY))
+        //     If (isnum(<argv[0]>))
+        // Without this, the identifier resolved to 0 and the lang
+        // detection chain in d_admin_main always took the first branch
+        // (CSY), leaving CTag.AccountLang empty so every dialog DEF
+        // lookup fell back to "0".
+        if (pos < text.Length && (char.IsLetter(text[pos]) || text[pos] == '_'))
+        {
+            int idStart = pos;
+            while (pos < text.Length && (char.IsLetterOrDigit(text[pos]) || text[pos] == '_'))
+                pos++;
+            string ident = text[idStart..pos];
+
+            string callExpr;
+            if (pos < text.Length && text[pos] == '(')
+            {
+                int parenStart = pos;
+                int depth = 0;
+                int angleDepth = 0;
+                while (pos < text.Length)
+                {
+                    char ch = text[pos];
+                    if (ch == '<') angleDepth++;
+                    else if (ch == '>' && angleDepth > 0) angleDepth--;
+                    else if (angleDepth == 0)
+                    {
+                        if (ch == '(') depth++;
+                        else if (ch == ')')
+                        {
+                            depth--;
+                            if (depth == 0) { pos++; break; }
+                        }
+                    }
+                    pos++;
+                }
+                callExpr = ident + text[parenStart..pos];
+            }
+            else
+            {
+                callExpr = ident;
+            }
+
+            string val = ResolveVariable(callExpr) ?? "";
+            if (long.TryParse(val, out long fv)) return fv;
+            if (val.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+                long.TryParse(val.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out fv))
+                return fv;
+            if (val.Length > 1 && val[0] == '0' &&
+                long.TryParse(val, System.Globalization.NumberStyles.HexNumber, null, out fv))
+                return fv;
             return 0;
         }
 
@@ -544,10 +602,16 @@ public sealed class ExpressionParser
             return sep >= 0 ? inner[(sep + 1)..].TrimStart(' ', ',') : "";
         }
 
-        // STRMATCH — wildcard pattern match: <STRMATCH pattern,string>
-        if (varExpr.StartsWith("STRMATCH ", StringComparison.OrdinalIgnoreCase))
+        // STRMATCH — wildcard pattern match. Accept both:
+        //   <STRMATCH pattern,string>
+        //   strmatch("a","b")
+        if (varExpr.StartsWith("STRMATCH ", StringComparison.OrdinalIgnoreCase) ||
+            varExpr.StartsWith("STRMATCH(", StringComparison.OrdinalIgnoreCase))
         {
-            return EvaluateStrMatch(varExpr[9..]);
+            string body = varExpr.StartsWith("STRMATCH(", StringComparison.OrdinalIgnoreCase)
+                ? ExtractFuncArg(varExpr, 8)
+                : varExpr[9..];
+            return EvaluateStrMatch(body);
         }
 
         // SEX <male>/<female> — pick value based on character sex.
@@ -577,10 +641,17 @@ public sealed class ExpressionParser
             return inner;
         }
 
-        // STRCMP — case-sensitive string compare: <STRCMP str1,str2>
-        if (varExpr.StartsWith("STRCMP ", StringComparison.OrdinalIgnoreCase))
+        // STRCMP — case-sensitive string compare. Accepts both Sphere
+        // forms: angle-bracket variable <STRCMP a,b> AND bare expression
+        // function call strcmp(a,b) (used e.g. by d_admin_main's language
+        // detection chain `If (!strcmp(<Account.Lang>,CSY))`).
+        if (varExpr.StartsWith("STRCMP(", StringComparison.OrdinalIgnoreCase) ||
+            varExpr.StartsWith("STRCMP ", StringComparison.OrdinalIgnoreCase))
         {
-            var parts = varExpr[6..].Split(',', 2);
+            string inner = varExpr.StartsWith("STRCMP(", StringComparison.OrdinalIgnoreCase)
+                ? ExtractFuncArg(varExpr, 6)
+                : varExpr[7..];
+            var parts = inner.Split(',', 2);
             if (parts.Length == 2)
                 return string.Compare(ResolveAngleBrackets(parts[0].Trim()),
                     ResolveAngleBrackets(parts[1].Trim()), StringComparison.Ordinal).ToString();

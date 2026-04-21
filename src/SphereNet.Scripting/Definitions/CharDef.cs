@@ -122,7 +122,7 @@ public sealed class CharDef : BaseDef
             case "NPC":
             case "NPCBRAIN":
                 // Source-X CHARDEF accepts both "NPC=brain_vendor" (DEFNAME
-                // form, mortechUO) and "NPCBRAIN=Vendor" (numeric/legacy
+                // form) and "NPCBRAIN=Vendor" (numeric/legacy
                 // saves). Strip the brain_ / npc_ prefix so the matching
                 // enum value parses; without this c_alchemist & friends
                 // dropped to NpcBrain=None and the spawn pipeline fell back

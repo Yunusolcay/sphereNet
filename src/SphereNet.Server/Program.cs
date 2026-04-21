@@ -735,11 +735,18 @@ public static class Program
             GameClient? scriptConsole = null;
             foreach (var c in _clients.Values)
             {
-                if (c.Character == gm)
+                if (c.Character == gm ||
+                    (c.Character != null && c.Character.Uid == gm.Uid))
                 {
                     scriptConsole = c;
                     break;
                 }
+            }
+
+            if (exprParser.DebugUnresolved)
+            {
+                _log.LogDebug("[script_call] verb={Verb} char=0x{Char:X8} sourceConsole={HasConsole} args='{Args}'",
+                    verb, gm.Uid.Value, scriptConsole != null, args);
             }
 
             var trigArgs = new SphereNet.Scripting.Execution.TriggerArgs(gm, 0, 0, args)
@@ -749,7 +756,14 @@ public static class Program
             };
 
             if (!_triggerRunner.TryRunFunction(verb, gm, scriptConsole, trigArgs, out var result))
+            {
+                if (exprParser.DebugUnresolved)
+                    _log.LogDebug("[script_call] verb={Verb} not found", verb);
                 return false;
+            }
+
+            if (exprParser.DebugUnresolved)
+                _log.LogDebug("[script_call] verb={Verb} result={Result}", verb, result);
 
             // Sphere parity:
             // Script verbs are typically written as [FUNCTION ADMIN], [FUNCTION SHOW], etc.,
@@ -1924,6 +1938,10 @@ public static class Program
             "HEARALL" => "0",
             "GMPAGES" => "0",
             "GUILDS" => "0",
+            "FEATURET2A" => (_config?.FeatureT2A ?? 0).ToString(),
+            // Chat system flags are script-visible even when chat is disabled.
+            // Return 0 until a fuller chat subsystem is wired.
+            "CHATFLAGS" => "0",
 
             // --- Reference lookups via SERV.xxx ---
             "LASTNEWITEM" => _world?.LastNewItem.Value.ToString() ?? "0",
@@ -1948,7 +1966,7 @@ public static class Program
             _ when upper.StartsWith("MAP.") => ResolveServMapSector(upper[4..]),
 
             // --- SERV.MAP(x,y,z,m).property — Source-X function form
-            // Used by mortechUO d_admin houses/ships row to look up the
+            // Used by d_admin houses/ships row to look up the
             // region name at a given world point:
             //   <Serv.Map(<REF1.P.X>,<REF1.P.Y>,0,<REF1.P.M>).Region.Name>
             _ when upper.StartsWith("MAP(") => ResolveServMapPoint(property[4..]),
@@ -2015,7 +2033,9 @@ public static class Program
             // Room property access
             _ when upper.StartsWith("_ROOM_GET=") => HandleRoomGet(property[10..]),
 
-            _ => null
+            // Bare defname constants (e.g. statf_insubstantial) used by
+            // script expressions without DEF./DEF0. prefix.
+            _ => ResolveDefConstant(upper)
         };
     }
 
@@ -2088,6 +2108,37 @@ public static class Program
         if (_resources != null && _resources.TryGetDefMessage(msgName, out string defMsg))
             return defMsg;
         return "";
+    }
+
+    private static string? ResolveDefConstant(string upperToken)
+    {
+        if (_resources == null || string.IsNullOrWhiteSpace(upperToken))
+            return null;
+        // Only allow plain identifier-like tokens here so arithmetic and
+        // command payloads don't accidentally route into defname lookups.
+        for (int i = 0; i < upperToken.Length; i++)
+        {
+            char ch = upperToken[i];
+            bool ok = (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch is '_' or '.';
+            if (!ok) return null;
+        }
+        var rid = _resources.ResolveDefName(upperToken);
+        if (rid.IsValid) return rid.Index.ToString();
+
+        // Built-in STATF_* fallback when scripts reference status-flag
+        // constants directly and the defname pack doesn't provide them.
+        // Example: (<Flags> & statf_insubstantial)
+        if (upperToken.StartsWith("STATF_", StringComparison.Ordinal))
+        {
+            string suffix = upperToken[6..];
+            foreach (SphereNet.Core.Enums.StatFlag flag in Enum.GetValues(typeof(SphereNet.Core.Enums.StatFlag)))
+            {
+                string enumName = flag.ToString().ToUpperInvariant();
+                if (enumName == suffix || enumName.Replace("_", "", StringComparison.Ordinal) == suffix)
+                    return ((uint)flag).ToString();
+            }
+        }
+        return null;
     }
 
     private static string? HandleSetGlobalVar(string assignment)
@@ -2213,7 +2264,21 @@ public static class Program
         // Try set property first, then execute command with a minimal console
         if (cmdArgs.Length > 0 && obj.TrySetProperty(cmd, cmdArgs))
             return "";
-        obj.TryExecuteCommand(cmd, cmdArgs, new RefExecConsole());
+        if (obj.TryExecuteCommand(cmd, cmdArgs, new RefExecConsole()))
+            return "";
+
+        // Client-scoped verbs (DIALOG, SDIALOG, MENU, INPDLG, GUMPDISPLAY, ...)
+        // are not implemented on the object itself; they live on the
+        // owning player's GameClient. Imported sphere admin scripts use
+        //   UID.<player>.Dialog d_X
+        // to push a dialog to a specific player. Route the verb to that
+        // player's client so the gump actually goes out the wire.
+        if (obj is Character ch)
+        {
+            var gc = FindGameClient(ch);
+            if (gc != null)
+                gc.TryExecuteScriptCommand(obj, cmd, cmdArgs, null);
+        }
         return "";
     }
 
@@ -3767,7 +3832,7 @@ public static class Program
 
         // Service-NPC well-known keywords (buy/sell/bank/balance/withdraw/
         // heal/stable/...) are handled by the built-in dispatcher BEFORE
-        // the SPEECH script chain. mortechUO ships TSPEECH=spk_jobSHOPKEEP
+        // the SPEECH script chain. Imported sphere packs ship TSPEECH=spk_jobSHOPKEEP
         // / spk_jobBANKER bodies whose verbs (actserv.dialog, ...) aren't
         // fully wired in our interpreter yet — letting the script "handle"
         // those keywords would silently swallow the request and the
@@ -4496,7 +4561,7 @@ public static class Program
     /// <summary>
     /// Parse a Source-X FLAGS expression. Accepts numeric (decimal/hex) values
     /// and pipe-separated symbol lists like
-    /// "REGION_FLAG_NOBUILDING|REGION_FLAG_GUARDED" used by mortechUO scripts.
+    /// "REGION_FLAG_NOBUILDING|REGION_FLAG_GUARDED" used by sphere scripts.
     /// </summary>
     private static SphereNet.Core.Enums.RegionFlag ParseRegionFlags(string raw)
     {

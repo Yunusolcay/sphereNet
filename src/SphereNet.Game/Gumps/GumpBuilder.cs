@@ -162,7 +162,7 @@ public sealed class GumpBuilder
     {
         int idx = AddText(initialText);
         // Older 2D clients read the trailing 8th token as the cap. Sphere's
-        // CDialogDef serialises the same shape; mortechUO admin INPDLGs rely
+        // CDialogDef serialises the same shape; sphere admin INPDLGs rely
         // on it to keep INPDLG NAME, BODY, COLOR, … inside their script
         // limits.
         if (limit < 0) limit = 0;

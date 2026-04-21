@@ -92,7 +92,10 @@ public sealed class MovementEngine
                 if (other == ch || other.IsDead) continue;
                 if (other.X != target.X || other.Y != target.Y) continue;
                 if (!CanShove(ch, other))
+                {
+                    diag = diag with { MobBlocked = true };
                     return false;
+                }
             }
         }
 
@@ -177,17 +180,25 @@ public sealed class MovementEngine
     /// </summary>
     private static bool CanShove(Objects.Characters.Character mover, Objects.Characters.Character blocker)
     {
-        // Staff characters only shove when .allmove is on (consistent with wall bypass).
-        if (mover.PrivLevel >= PrivLevel.GM && mover.AllMove) return true;
-        if (blocker.IsStatFlag(StatFlag.Invisible)) return true;
+        // ServUO / RunUO Mobile.CheckShove parity.
+        if (mover.PrivLevel >= PrivLevel.Counsel) return true;
 
-        // NPCs can be shoved by players
-        if (!blocker.IsPlayer) return true;
+        if (blocker.IsDead || mover.IsDead)
+            return true;
 
-        // In war mode, characters block
-        if (blocker.IsInWarMode) return false;
+        if ((blocker.IsStatFlag(StatFlag.Hidden) || blocker.IsStatFlag(StatFlag.Invisible))
+            && blocker.PrivLevel >= PrivLevel.Counsel)
+            return true;
 
-        return true;
+        if (mover.Stam == mover.MaxStam && mover.MaxStam > 0)
+        {
+            mover.Stam -= 10;
+            if (mover.IsStatFlag(StatFlag.Hidden)) mover.ClearStatFlag(StatFlag.Hidden);
+            if (mover.IsStatFlag(StatFlag.Invisible)) mover.ClearStatFlag(StatFlag.Invisible);
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>Check step effects (traps, fields, region enter/leave).</summary>

@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using SphereNet.Core.Enums;
 using SphereNet.Core.Interfaces;
+using SphereNet.Core.Types;
 using SphereNet.Scripting.Parsing;
 using SphereNet.Scripting.Resources;
 
@@ -164,10 +165,14 @@ public sealed class TriggerRunner
 
         // Resolve function by defname (registered during script loading)
         var rid = _resources.ResolveDefName(funcName);
+        if (rid.IsValid && rid.Type != ResType.Function)
+            rid = ResourceId.Invalid;
         if (!rid.IsValid)
         {
             // Try with f_ prefix if not found (common Sphere convention)
             rid = _resources.ResolveDefName("f_" + funcName);
+            if (rid.IsValid && rid.Type != ResType.Function)
+                rid = ResourceId.Invalid;
         }
 
         ResourceLink? link = rid.IsValid ? _resources.GetResource(rid) : null;

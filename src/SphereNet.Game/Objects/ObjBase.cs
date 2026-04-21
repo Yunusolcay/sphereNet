@@ -149,7 +149,7 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
             case "Z": value = _position.Z.ToString(); return true;
             case "MAP": value = _position.Map.ToString(); return true;
             // Sphere scripts also access P as a sub-object: <P.X> / <P.Y>
-            // / <P.Z> / <P.M>. mortechUO d_admin uses <REF1.P.X> in the
+            // / <P.Z> / <P.M>. d_admin uses <REF1.P.X> in the
             // map-region lookup row, so without these keys the world
             // map call collapses to "Serv.Map(,,0,).Region.Name".
             case "P.X": value = _position.X.ToString(); return true;
@@ -209,7 +209,9 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
             return true;
         }
         if (key.StartsWith("CTAG.", StringComparison.OrdinalIgnoreCase) ||
-            key.StartsWith("CTAG0.", StringComparison.OrdinalIgnoreCase))
+            key.StartsWith("CTAG0.", StringComparison.OrdinalIgnoreCase) ||
+            key.StartsWith("DCTAG.", StringComparison.OrdinalIgnoreCase) ||
+            key.StartsWith("DCTAG0.", StringComparison.OrdinalIgnoreCase))
         {
             int dotIdx = key.IndexOf('.');
             string tagKey = dotIdx >= 0 ? key[(dotIdx + 1)..] : "";
@@ -225,6 +227,38 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
 
     public virtual bool TryExecuteCommand(string key, string args, ITextConsole source)
     {
+        // Source-X compatibility: a bare TAG/CTAG/DTAG command with a dotted
+        // suffix and no argument clears that entry.
+        // Examples:
+        //   CTAG0.NPCSELECTED   -> remove client-session tag NPCSELECTED
+        //   TAG.MYFLAG          -> remove persistent tag MYFLAG
+        string trimmedKey = key.Trim();
+        if (string.IsNullOrEmpty(args))
+        {
+            if (trimmedKey.StartsWith("TAG.", StringComparison.OrdinalIgnoreCase) ||
+                trimmedKey.StartsWith("TAG0.", StringComparison.OrdinalIgnoreCase) ||
+                trimmedKey.StartsWith("DTAG.", StringComparison.OrdinalIgnoreCase) ||
+                trimmedKey.StartsWith("DTAG0.", StringComparison.OrdinalIgnoreCase))
+            {
+                int dotIdx = trimmedKey.IndexOf('.');
+                string tagKey = dotIdx >= 0 ? trimmedKey[(dotIdx + 1)..].Trim() : "";
+                if (tagKey.Length > 0)
+                    _tags.Remove(tagKey);
+                return true;
+            }
+            if (trimmedKey.StartsWith("CTAG.", StringComparison.OrdinalIgnoreCase) ||
+                trimmedKey.StartsWith("CTAG0.", StringComparison.OrdinalIgnoreCase) ||
+                trimmedKey.StartsWith("DCTAG.", StringComparison.OrdinalIgnoreCase) ||
+                trimmedKey.StartsWith("DCTAG0.", StringComparison.OrdinalIgnoreCase))
+            {
+                int dotIdx = trimmedKey.IndexOf('.');
+                string tagKey = dotIdx >= 0 ? trimmedKey[(dotIdx + 1)..].Trim() : "";
+                if (tagKey.Length > 0 && this is Characters.Character chClear)
+                    chClear.CTags.Remove(tagKey);
+                return true;
+            }
+        }
+
         switch (key.ToUpperInvariant())
         {
             case "SHOW":
@@ -391,7 +425,9 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
             return true;
         }
         if (key.StartsWith("CTAG.", StringComparison.OrdinalIgnoreCase) ||
-            key.StartsWith("CTAG0.", StringComparison.OrdinalIgnoreCase))
+            key.StartsWith("CTAG0.", StringComparison.OrdinalIgnoreCase) ||
+            key.StartsWith("DCTAG.", StringComparison.OrdinalIgnoreCase) ||
+            key.StartsWith("DCTAG0.", StringComparison.OrdinalIgnoreCase))
         {
             int dotIdx = key.IndexOf('.');
             string tagKey = dotIdx >= 0 ? key[(dotIdx + 1)..] : "";

@@ -48,7 +48,7 @@ public class Character : ObjBase
     public static Action<Character, bool>? DisconnectClient;
 
     /// <summary>Resend tooltip cliloc packet to every client viewing the
-    /// character. mortechUO admin dialog uses ResendTooltip after stat-
+    /// character. Sphere admin dialog uses ResendTooltip after stat-
     /// flag toggles so the tooltip refresh is immediate, not on next
     /// move tick.</summary>
     public static Action<Character>? ResendTooltipForAll;
@@ -66,7 +66,7 @@ public class Character : ObjBase
     /// Reuses the SUMMONCAGE speech command path.</summary>
     public static Action<Character>? SummonCageAround;
 
-    /// <summary>Begin follow-target on a UID. mortechUO admin dialog
+    /// <summary>Begin follow-target on a UID. Sphere admin dialog
     /// player tweak does <c>Src.Follow &lt;UID&gt;</c> to make the GM
     /// auto-walk after a player.</summary>
     public static Action<Character, uint>? FollowUid;
@@ -909,7 +909,7 @@ public class Character : ObjBase
             case "TITLE": value = _title; return true;
             case "SKILLCLASS": value = _skillClass.ToString(); return true;
             // <SkillClass.Statsum> / <SkillClass.SkillSum> / .Name
-            // mortechUO d_admin_PlayerTweak shows the active class cap
+            // d_admin_PlayerTweak shows the active class cap
             // next to STR/DEX/INT to make stat editing safer.
             case "SKILLCLASS.STATSUM":
             case "SKILLCLASS.STATSUMMAX":
@@ -936,7 +936,7 @@ public class Character : ObjBase
                 return true;
             }
             // Source-X client introspection (CClient::GetReportedVer
-            // and friends). mortechUO admin search row uses these to
+            // and friends). Sphere admin search row uses these to
             // decorate online players with their client kind.
             case "REPORTEDCLIVER":
             {
@@ -2003,7 +2003,7 @@ public class Character : ObjBase
             {
                 // Source-X r_Verb EFFECT type, id, speed, duration, explode[, hue, render]
                 // We honour the first five tokens which cover all
-                // mortechUO admin/spell scripts (the optional hue/render
+                // standard admin/spell scripts (the optional hue/render
                 // pair feeds the colored-particle packet which we don't
                 // implement yet — defaults to 0/0).
                 var eparts = (args ?? "").Split(
@@ -2484,7 +2484,7 @@ public class Character : ObjBase
             case "CLEARCTAGS":
             {
                 // Standalone form: drop every CTag under the given
-                // prefix on this character. mortechUO admin dialogs
+                // prefix on this character. Sphere admin dialogs
                 // call <c>ClearCTags Dialog.Admin</c> directly (no
                 // PARTY. prefix) to reset the admin UI state.
                 CTags.RemoveByPrefix(args?.Trim() ?? string.Empty);

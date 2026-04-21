@@ -850,15 +850,15 @@ public sealed class GameClient : ITextConsole
                 "[move_reject] {Reason} dir={Dir} run={Run} from {FromX},{FromY},{FromZ} " +
                 "target {TgtX},{TgtY} startZ={StartZ} startTop={StartTop} fwdZ={FwdZ} | " +
                 "fwdLand=tile=0x{LandTile:X} ({LZ}/{LC}/{LT}) blocks={LB} consider={CL} | " +
-                "statics={ST} impassable={IMP} surfaces={SC} items={IC} last={Last} | " +
-                "tiles=[{Dump}]",
+                "statics={ST} impassable={IMP} surfaces={SC} items={IC} mobiles={MC} last={Last} | " +
+                "tiles=[{Dump}] mobs=[{MobDump}]",
                 reason, direction, running, _character.X, _character.Y, _character.Z,
                 tgtX, tgtY, moveDiag.StartZ, moveDiag.StartTop, moveDiag.ForwardNewZ,
                 moveDiag.FwdLandTileId, moveDiag.FwdLandZ, moveDiag.FwdLandCenter, moveDiag.FwdLandTop,
                 moveDiag.FwdLandBlocks, moveDiag.FwdConsiderLand,
                 moveDiag.FwdStaticTotal, moveDiag.FwdImpassableCount,
-                moveDiag.FwdSurfaceCount, moveDiag.FwdItemSurfaceCount,
-                moveDiag.FwdReason, moveDiag.FwdStaticDump);
+                moveDiag.FwdSurfaceCount, moveDiag.FwdItemSurfaceCount, moveDiag.FwdMobileCount,
+                moveDiag.FwdReason, moveDiag.FwdStaticDump, moveDiag.FwdMobileDump);
             _netState.Send(new PacketMoveReject(seq, _character.X, _character.Y, _character.Z, (byte)_character.Direction));
             _netState.WalkSequence = 0;
         }
@@ -5440,15 +5440,15 @@ public sealed class GameClient : ITextConsole
             uint uid = ch.Uid.Value;
             delta.CurrentChars.Add(uid);
 
-            // Ghostly render when the viewer is seeing an otherwise-hidden target
-            // (offline shown via AllShow, or invis/hidden via staff privilege),
-            // or when a manifested ghost is being shown to a plain observer.
+            // Special render when the viewer is seeing an otherwise-hidden target
+            // (offline shown via AllShow, or invis/hidden via staff privilege).
+            // This should look like hidden/invisible, not like a ghostly
+            // translucent mobile.
             bool isPlainObserver = !_character.AllShow &&
                 _character.PrivLevel < Core.Enums.PrivLevel.Counsel;
-            bool ghostly = isOfflinePlayer || (isHidden && canSeeHidden) ||
-                (ghostManifested && isPlainObserver && !_character.IsDead);
+            bool hiddenAsAllShow = isOfflinePlayer || (isHidden && canSeeHidden);
             if (!_knownChars.Contains(uid))
-                delta.NewChars.Add((ch, ghostly));
+                delta.NewChars.Add((ch, hiddenAsAllShow));
             else
                 delta.UpdatedChars.Add(ch);
         }
@@ -5480,7 +5480,7 @@ public sealed class GameClient : ITextConsole
         foreach (var (ch, hiddenAsAllShow) in delta.NewChars)
         {
             if (hiddenAsAllShow)
-                SendDrawObjectWithHue(ch, 0x4001);
+                SendDrawObjectHidden(ch);
             else
                 SendDrawObject(ch);
 
@@ -5508,17 +5508,27 @@ public sealed class GameClient : ITextConsole
                 !_character!.AllShow &&
                 _character.PrivLevel < Core.Enums.PrivLevel.Counsel &&
                 !_character.IsDead;
+            bool isOfflinePlayer = ch.IsPlayer && !ch.IsOnline;
+            bool isHidden = ch.IsInvisible || ch.IsStatFlag(Core.Enums.StatFlag.Hidden);
+            bool canSeeHidden = _character.AllShow ||
+                (_character.PrivLevel >= Core.Enums.PrivLevel.Counsel &&
+                 _character.PrivLevel >= ch.PrivLevel);
+            bool hiddenAsAllShow = isOfflinePlayer || (isHidden && canSeeHidden);
 
             if (bodyChanged)
             {
-                if (manifestGhost)
+                if (hiddenAsAllShow)
+                    SendDrawObjectHidden(ch);
+                else if (manifestGhost)
                     SendDrawObjectWithHue(ch, 0x4001);
                 else
                     SendDrawObject(ch);
             }
             else if (posChanged)
             {
-                if (manifestGhost)
+                if (hiddenAsAllShow)
+                    SendUpdateMobileHidden(ch);
+                else if (manifestGhost)
                     SendUpdateMobileWithHue(ch, 0x4001);
                 else
                     SendUpdateMobile(ch);
@@ -6131,6 +6141,17 @@ public sealed class GameClient : ITextConsole
         ));
     }
 
+    private void SendUpdateMobileHidden(Character ch)
+    {
+        byte flags = (byte)(BuildMobileFlags(ch) | 0x80);
+        byte noto = GetNotoriety(ch);
+        _netState.Send(new PacketMobileMoving(
+            ch.Uid.Value, ch.BodyId,
+            ch.X, ch.Y, ch.Z, (byte)ch.Direction,
+            ch.Hue, flags, noto
+        ));
+    }
+
     private void SendDrawObjectWithHue(Character ch, ushort hue)
     {
         var equipment = BuildEquipmentList(ch);
@@ -6141,6 +6162,20 @@ public sealed class GameClient : ITextConsole
             ch.Uid.Value, ch.BodyId,
             ch.X, ch.Y, ch.Z,
             (byte)ch.Direction, hue, flags, noto,
+            equipment
+        ));
+    }
+
+    private void SendDrawObjectHidden(Character ch)
+    {
+        var equipment = BuildEquipmentList(ch);
+        byte flags = (byte)(BuildMobileFlags(ch) | 0x80);
+        byte noto = GetNotoriety(ch);
+
+        _netState.Send(new PacketDrawObject(
+            ch.Uid.Value, ch.BodyId,
+            ch.X, ch.Y, ch.Z,
+            (byte)ch.Direction, ch.Hue, flags, noto,
             equipment
         ));
     }
@@ -6874,7 +6909,7 @@ public sealed class GameClient : ITextConsole
 
         // Brain finalisation (Animal fallback + @NPCRestock for vendors)
         // intentionally happens AFTER @Create runs — see FinalizeNpcBrain.
-        // mortechUO sets NPC=brain_vendor inside ON=@Create, so the brain
+        // Sphere scripts set NPC=brain_vendor inside ON=@Create, so the brain
         // is only known once that trigger has executed.
 
         return npc;
@@ -7065,7 +7100,7 @@ public sealed class GameClient : ITextConsole
             return lastHue;
 
         // Canonical palette ranges (inclusive) — matches classic
-        // Sphere defaults shipped with mortechUO scripts.
+        // Sphere defaults shipped with the standard script pack.
         (ushort lo, ushort hi) = n.ToLowerInvariant() switch
         {
             "colors_skin" => ((ushort)0x03EA, (ushort)0x03F2),
@@ -7236,7 +7271,12 @@ public sealed class GameClient : ITextConsole
         // Separate "row tracker" for the `*N` operator. Sphere treats *N as a
         // fresh row step independent of the +/- cursor used for column work.
         int rowCursorX = 0, rowCursorY = 0;
-        bool currentPageVisible = currentPage <= 0;
+        // Sphere/UO page semantics: content emitted before the first PAGE
+        // marker belongs to page 0 (shared/common) and must render
+        // immediately. Some imported dialogs (e.g. d_admin_player_tweak)
+        // never declare an explicit PAGE 0 header, so starting hidden would
+        // drop the entire layout and produce an almost-empty 0xDD packet.
+        bool currentPageVisible = true;
 
         // Per-call local variable scope for LOCAL.x= assignments and
         // <local.x> / <dlocal.x> references — used by Sphere dialog
@@ -7310,12 +7350,19 @@ public sealed class GameClient : ITextConsole
                     var parts = SplitTokens(args, 2);
                     if (parts.Length >= 2)
                     {
-                        originX = ParseIntToken(parts[0]);
-                        originY = ParseIntToken(parts[1]);
-                        cursorX = 0;
-                        cursorY = 0;
-                        rowCursorX = 0;
-                        rowCursorY = 0;
+                        // Sphere semantics: DORIGIN seeds the coordinate
+                        // baseline for subsequent +/* resolution; commands
+                        // that follow are already expressed in dialog-space.
+                        // Adding originX/originY again at emit-time causes a
+                        // double offset (notably d_spawn's right-side groups
+                        // jump far to the right). Keep the runtime origin at
+                        // zero and move the baseline cursors instead.
+                        originX = 0;
+                        originY = 0;
+                        cursorX = ParseIntToken(parts[0]);
+                        cursorY = ParseIntToken(parts[1]);
+                        rowCursorX = cursorX;
+                        rowCursorY = cursorY;
                     }
                     break;
                 }
@@ -7753,21 +7800,65 @@ public sealed class GameClient : ITextConsole
 
             if (cmd == "FOR")
             {
-                // FOR N  or  FOR START END — count loops using iterator _for.
+                // FOR N  / FOR START END / FOR VAR START END.
                 int forEnd = FindBlockEnd(input, i + 1, end, "FOR", "ENDFOR");
                 if (forEnd < 0) { i = end; break; }
                 string resolved = ResolveInlineExpressions(args, locals, dialogArgN1);
-                ParseForRange(resolved, out long from, out long to);
+                ParseForRange(resolved, out string? iterName, out long from, out long to);
                 const long maxIter = 500;
                 long count = Math.Min(maxIter, to - from + 1);
                 string? savedFor = locals.TryGetValue("_FOR", out var sf) ? sf : null;
+                string? savedNamed = (iterName != null && locals.TryGetValue(iterName, out var sv)) ? sv : null;
                 for (long it = 0; it < count; it++)
                 {
-                    locals["_FOR"] = (from + it).ToString();
+                    string cur = (from + it).ToString();
+                    locals["_FOR"] = cur;
+                    if (iterName != null)
+                        locals[iterName] = cur;
                     ExpandRange(input, i + 1, forEnd, output, locals, dialogArgN1);
                 }
                 if (savedFor != null) locals["_FOR"] = savedFor; else locals.Remove("_FOR");
+                if (iterName != null)
+                {
+                    if (savedNamed != null) locals[iterName] = savedNamed;
+                    else locals.Remove(iterName);
+                }
                 i = forEnd + 1;
+                continue;
+            }
+
+            // Dialog scripts frequently seed runtime state in the layout body
+            // before drawing controls:
+            //   ARGS <def.npctype_<dctag0.spawn_type>_spawn>
+            //   SRC.CTAG0.spawn_type 1
+            // Keep those side-effect lines in the pre-expansion pass so
+            // later <ARGV[...]> / <DARGV> and CTAG-dependent expressions
+            // resolve correctly.
+            if (cmd == "ARGS")
+            {
+                string resolvedArgs = string.IsNullOrEmpty(args)
+                    ? ""
+                    : ResolveInlineExpressions(args, locals, dialogArgN1);
+                locals["__ARGS"] = resolvedArgs;
+                i++;
+                continue;
+            }
+            if ((cmd.StartsWith("SRC.CTAG0.", StringComparison.OrdinalIgnoreCase) ||
+                 cmd.StartsWith("SRC.CTAG.", StringComparison.OrdinalIgnoreCase) ||
+                 cmd.StartsWith("SRC.DCTAG0.", StringComparison.OrdinalIgnoreCase) ||
+                 cmd.StartsWith("SRC.DCTAG.", StringComparison.OrdinalIgnoreCase) ||
+                 cmd.StartsWith("CTAG0.", StringComparison.OrdinalIgnoreCase) ||
+                 cmd.StartsWith("CTAG.", StringComparison.OrdinalIgnoreCase) ||
+                 cmd.StartsWith("DCTAG0.", StringComparison.OrdinalIgnoreCase) ||
+                 cmd.StartsWith("DCTAG.", StringComparison.OrdinalIgnoreCase)) &&
+                _character != null)
+            {
+                string prop = cmd.StartsWith("SRC.", StringComparison.OrdinalIgnoreCase) ? cmd[4..] : cmd;
+                string resolvedVal = string.IsNullOrEmpty(args)
+                    ? ""
+                    : ResolveInlineExpressions(args, locals, dialogArgN1);
+                _character.TrySetProperty(prop, resolvedVal);
+                i++;
                 continue;
             }
 
@@ -7891,8 +7982,9 @@ public sealed class GameClient : ITextConsole
         return list;
     }
 
-    private static void ParseForRange(string expr, out long from, out long to)
+    private static void ParseForRange(string expr, out string? iterName, out long from, out long to)
     {
+        iterName = null;
         from = 0; to = 0;
         var parts = expr.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (parts.Length == 1)
@@ -7903,7 +7995,17 @@ public sealed class GameClient : ITextConsole
         }
         else if (parts.Length >= 2)
         {
-            long.TryParse(parts[0], out from);
+            // FOR var start end
+            if (!long.TryParse(parts[0], out from))
+            {
+                iterName = parts[0];
+                if (parts.Length >= 3)
+                {
+                    long.TryParse(parts[1], out from);
+                    long.TryParse(parts[2], out to);
+                }
+                return;
+            }
             long.TryParse(parts[1], out to);
         }
     }
@@ -7971,6 +8073,25 @@ public sealed class GameClient : ITextConsole
                 string upper = varName.ToUpperInvariant();
                 if (upper == "ARGN" || upper == "ARGN1")
                     return dialogArgN1.ToString();
+                if (upper == "ARGS" || upper == "DARGS")
+                    return locals.TryGetValue("__ARGS", out var av) ? av : "";
+                if (upper == "DARGV")
+                {
+                    string rawArgs = locals.TryGetValue("__ARGS", out var av) ? av : "";
+                    var toks = rawArgs.Split([' ', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    return toks.Length.ToString();
+                }
+                if (upper.StartsWith("ARGV", StringComparison.Ordinal))
+                {
+                    string rawArgs = locals.TryGetValue("__ARGS", out var av) ? av : "";
+                    var toks = rawArgs.Split([' ', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    string suffix = upper.Length > 4 ? upper[4..] : "";
+                    if (suffix.StartsWith("[", StringComparison.Ordinal) && suffix.EndsWith("]", StringComparison.Ordinal) && suffix.Length > 2)
+                        suffix = suffix[1..^1];
+                    if (int.TryParse(suffix, out int idx) && idx >= 0 && idx < toks.Length)
+                        return toks[idx];
+                    return "";
+                }
                 // Uninitialised LOCAL / DLOCAL return "0" per Sphere
                 // convention — scripts read them as zero before the first
                 // assignment (common pattern: "while <dlocal.n>" where the
@@ -7998,15 +8119,22 @@ public sealed class GameClient : ITextConsole
                     return servResolver?.Invoke($"_REF_GET={refVal}|{subProp}") ?? "0";
                 }
 
-                // CTAG0.X / CTAG.X on the current character. Reads from
+                // CTAG0.X / CTAG.X / DCTAG0.X / DCTAG.X on the current character. Reads from
                 // the client-session CTag map (Source-X CClient::m_TagDefs
                 // parity), not the persistent TAG storage. Defaults to
                 // "0" when unset — Sphere convention.
-                if (upper.StartsWith("CTAG0.") || upper.StartsWith("CTAG."))
+                if (upper.StartsWith("CTAG0.") || upper.StartsWith("CTAG.") ||
+                    upper.StartsWith("DCTAG0.") || upper.StartsWith("DCTAG."))
                 {
                     int dot = upper.IndexOf('.');
                     string tagKey = upper[(dot + 1)..];
                     string? tagVal = _character?.CTags.Get(tagKey);
+                    if (string.IsNullOrEmpty(tagVal) && tagKey.Equals("ACCOUNTLANG", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string fallbackLang = GetEffectiveAccountLang();
+                        if (!string.IsNullOrEmpty(fallbackLang))
+                            return fallbackLang;
+                    }
                     return tagVal ?? "0";
                 }
                 if ((upper.StartsWith("DEF.") || upper.StartsWith("DEF0.")) &&
@@ -8031,8 +8159,15 @@ public sealed class GameClient : ITextConsole
                 if ((upper.StartsWith("SRC.") || upper.StartsWith("DSRC.")) && _character != null)
                 {
                     int d = upper.IndexOf('.');
-                    if (_character.TryGetProperty(upper[(d + 1)..], out string srcVal))
+                    string sub = upper[(d + 1)..];
+                    if (_character.TryGetProperty(sub, out string srcVal))
+                    {
+                        if ((sub.Equals("CTAG0.ACCOUNTLANG", StringComparison.OrdinalIgnoreCase) ||
+                             sub.Equals("CTAG.ACCOUNTLANG", StringComparison.OrdinalIgnoreCase)) &&
+                            (string.IsNullOrEmpty(srcVal) || srcVal == "0"))
+                            return GetEffectiveAccountLang();
                         return srcVal;
+                    }
                 }
                 if (upper.StartsWith("SERV.") && servResolver != null)
                     return servResolver(upper[5..]);
@@ -8074,6 +8209,14 @@ public sealed class GameClient : ITextConsole
                 if (_character != null &&
                     TryResolveScriptVariable(upper, _character, null, out string fallback))
                     return fallback;
+
+                // Bare defname constants used in script arithmetic/bit tests,
+                // e.g. <statf_insubstantial>, <memory_ipet>.
+                if (_commands?.Resources != null && IsPlainDefToken(upper))
+                {
+                    var rid = _commands.Resources.ResolveDefName(upper);
+                    if (rid.IsValid) return rid.Index.ToString();
+                }
 
                 return null;
             },
@@ -8215,7 +8358,13 @@ public sealed class GameClient : ITextConsole
                 {
                     string subProp = varName[4..];
                     if (_character != null && _character.TryGetProperty(subProp, out string srcProp))
+                    {
+                        if ((subProp.Equals("CTAG0.ACCOUNTLANG", StringComparison.OrdinalIgnoreCase) ||
+                             subProp.Equals("CTAG.ACCOUNTLANG", StringComparison.OrdinalIgnoreCase)) &&
+                            (string.IsNullOrEmpty(srcProp) || srcProp == "0"))
+                            return GetEffectiveAccountLang();
                         return srcProp;
+                    }
                 }
 
                 if (target.TryGetProperty(varName, out string prop))
@@ -8242,11 +8391,46 @@ public sealed class GameClient : ITextConsole
                     if (bare != null) return bare;
                 }
 
+                if (_commands?.Resources != null && IsPlainDefToken(varName))
+                {
+                    var rid = _commands.Resources.ResolveDefName(varName);
+                    if (rid.IsValid) return rid.Index.ToString();
+                }
+
                 return null;
             }
         };
 
         return parser.EvaluateStr(html);
+    }
+
+    private static bool IsPlainDefToken(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+            return false;
+        foreach (char ch in token)
+        {
+            bool ok = char.IsLetterOrDigit(ch) || ch is '_' or '.';
+            if (!ok) return false;
+        }
+        return true;
+    }
+
+    private string GetEffectiveAccountLang()
+    {
+        if (_character != null && _character.TryGetProperty("ACCOUNT.LANG", out string langRaw))
+        {
+            string lang = (langRaw ?? "").Trim().ToUpperInvariant();
+            if (lang.Length == 0) return "ENG";
+            return lang switch
+            {
+                "ENU" => "ENG",
+                "FRB" or "FRC" => "FRA",
+                "ESN" => "ESP",
+                _ => lang
+            };
+        }
+        return "ENG";
     }
 
     /// <summary>Resolve a dialog coordinate token.
@@ -8259,35 +8443,45 @@ public sealed class GameClient : ITextConsole
     /// caller hasn't wired a separate row tracker (old call sites).</summary>
     private static int ResolveDialogCoord(string token, ref int cursor, ref int rowCursor)
     {
+        // Sphere DORIGIN coord rules (verified against d_SphereAdmin_PlayerTweak):
+        //   bare N : SET baseline to N and return it (origin offset reset)
+        //   +N     : return baseline + N (NON-mutating row-relative offset)
+        //   -N     : return baseline - N (NON-mutating row-relative offset)
+        //   *N     : baseline += N, return baseline (advance the row)
+        //
+        // The earlier "+N means cursor += N" reading was wrong: with the
+        // DORIGIN block
+        //     DText  +35 +0   _Properties
+        //     Button +0  -2   4005 4006 0 3 0
+        // the button has to land at origin.x (X=5), to the LEFT of the
+        // text. Cumulative cursor logic stuck the button at X=40 on top
+        // of the label, which was the visible "buttons drift sideways /
+        // text is unreadable" symptom in d_SphereAdmin_PlayerTweak.
+        // `cursor` is kept around as a back-compat alias mirroring the
+        // baseline so callers that still pass it observe the same value
+        // as `rowCursor`.
         token = token.Trim();
         if (token.StartsWith('+'))
         {
             int delta = ParseIntToken(token[1..]);
-            cursor += delta;
-            return cursor;
+            return rowCursor + delta;
         }
         if (token.StartsWith('-'))
         {
-            // Source-X DORIGIN style: negative delta against the
-            // current cursor (e.g. "Button +0 -2 ..." means: same X as
-            // last cursor, Y two pixels above last DText). Without this
-            // mortechUO d_SphereAdmin_PlayerTweak side menu collapses
-            // because every other line uses "Button <x> -2".
             int delta = ParseIntToken(token[1..]);
-            cursor -= delta;
-            return cursor;
+            return rowCursor - delta;
         }
         if (token.StartsWith('*'))
         {
             int delta = ParseIntToken(token[1..]);
             rowCursor += delta;
             cursor = rowCursor;
-            return cursor;
+            return rowCursor;
         }
 
-        cursor = ParseIntToken(token);
-        rowCursor = cursor;
-        return cursor;
+        rowCursor = ParseIntToken(token);
+        cursor = rowCursor;
+        return rowCursor;
     }
 
     private static int ResolveDialogCoord(string token, ref int cursor)
@@ -8314,16 +8508,24 @@ public sealed class GameClient : ITextConsole
         if (token.Length == 0)
             return 0;
 
-        if (int.TryParse(token, out int dec))
-            return dec;
+        // Sphere convention (matches ScriptKey.TryParseNumber and Source-X
+        // CExpression::GetVal): a leading '0' on a multi-digit token marks
+        // the value as HEX. Without this rule "0480" silently parsed as
+        // decimal 480 instead of 0x480 (1152) and admin gump hues came
+        // out as random off-spectrum colors — the d_SphereAdmin_PlayerTweak
+        // labels were rendered in colors the client treats as
+        // near-invisible (the "yazılar okunmuyor" symptom).
 
         if (token.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
             int.TryParse(token[2..], System.Globalization.NumberStyles.HexNumber, null, out int hex))
             return hex;
 
-        if (token.StartsWith('0') && token.Length > 1 &&
+        if (token.Length > 1 && token[0] == '0' &&
             int.TryParse(token, System.Globalization.NumberStyles.HexNumber, null, out int legacyHex))
             return legacyHex;
+
+        if (int.TryParse(token, out int dec))
+            return dec;
 
         return 0;
     }
@@ -8907,7 +9109,7 @@ public sealed class GameClient : ITextConsole
 
         // Source-X SET meta-verb: "Src.set <verb> [args]" pops a target
         // cursor and re-dispatches the verb against the picked object.
-        // mortechUO admin dialogs lean on this for "set dupe", "set
+        // Sphere admin dialogs lean on this for "set dupe", "set
         // remove", "set xinfo" rows on the player tweak panel.
         if (upper == "SET" || upper == "SETUID")
         {
@@ -9077,6 +9279,36 @@ public sealed class GameClient : ITextConsole
 
             if (payload[0] is '.' or '/')
                 payload = payload[1..].TrimStart();
+            // Proper TRYSRC semantics:
+            //   TRYSRC <srcRef> <verb...>
+            // where <srcRef> can be UID/REF/etc. Examples from scripts:
+            //   TRYSRC <UID> DIALOGCLOSE d_spawn
+            //   TRYSRC <REF2> EFFECT 0,i_fx_fireball,10,16,0,044,4
+            // If the first token resolves to an object reference, execute
+            // the remaining command line against that object. Otherwise,
+            // keep the legacy fallback and run the whole payload as a GM
+            // command line.
+            int firstSpace = payload.IndexOf(' ');
+            if (firstSpace > 0)
+            {
+                string srcRefToken = payload[..firstSpace].Trim();
+                string rest = payload[(firstSpace + 1)..].Trim();
+                if (rest.Length > 0 && TryFindObjectByScriptRef(srcRefToken, out var srcRefObj))
+                {
+                    int cmdSpace = rest.IndexOf(' ');
+                    string subCmd = cmdSpace > 0 ? rest[..cmdSpace] : rest;
+                    string subArg = cmdSpace > 0 ? rest[(cmdSpace + 1)..].Trim() : "";
+                    if (subCmd.Length > 0)
+                    {
+                        if (srcRefObj.TrySetProperty(subCmd, subArg))
+                            return true;
+                        if (srcRefObj.TryExecuteCommand(subCmd, subArg, this))
+                            return true;
+                        _ = TryExecuteScriptCommand(srcRefObj, subCmd, subArg, triggerArgs);
+                    }
+                    return true;
+                }
+            }
 
             if (_commands != null)
             {
@@ -9084,17 +9316,18 @@ public sealed class GameClient : ITextConsole
                 return true;
             }
 
-            int firstSpace = payload.IndexOf(' ');
-            string subCmd = firstSpace > 0 ? payload[..firstSpace] : payload;
-            string subArg = firstSpace > 0 ? payload[(firstSpace + 1)..].Trim() : "";
+            string fallbackCmd = payload;
+            int fallbackSpace = fallbackCmd.IndexOf(' ');
+            string cmd2 = fallbackSpace > 0 ? fallbackCmd[..fallbackSpace] : fallbackCmd;
+            string arg2 = fallbackSpace > 0 ? fallbackCmd[(fallbackSpace + 1)..].Trim() : "";
             IScriptObj srcObj = triggerArgs?.Source ?? target;
-            if (subCmd.Length > 0)
+            if (cmd2.Length > 0)
             {
-                if (srcObj.TrySetProperty(subCmd, subArg))
+                if (srcObj.TrySetProperty(cmd2, arg2))
                     return true;
-                if (srcObj.TryExecuteCommand(subCmd, subArg, this))
+                if (srcObj.TryExecuteCommand(cmd2, arg2, this))
                     return true;
-                _ = TryExecuteScriptCommand(srcObj, subCmd, subArg, triggerArgs);
+                _ = TryExecuteScriptCommand(srcObj, cmd2, arg2, triggerArgs);
             }
             return true;
         }
@@ -9805,7 +10038,9 @@ public sealed class GameClient : ITextConsole
         }
 
         if (varName.StartsWith("CTAG0.", StringComparison.OrdinalIgnoreCase) ||
-            varName.StartsWith("CTAG.", StringComparison.OrdinalIgnoreCase))
+            varName.StartsWith("CTAG.", StringComparison.OrdinalIgnoreCase) ||
+            varName.StartsWith("DCTAG0.", StringComparison.OrdinalIgnoreCase) ||
+            varName.StartsWith("DCTAG.", StringComparison.OrdinalIgnoreCase))
         {
             int dot = varName.IndexOf('.');
             if (dot > 0)
@@ -9878,6 +10113,18 @@ public sealed class GameClient : ITextConsole
                     value = scopedVal;
                     return true;
                 }
+            }
+        }
+
+        // Bare defname constants for general script execution paths
+        // (outside dialog render), e.g. <statf_insubstantial>.
+        if (_commands?.Resources != null && IsPlainDefToken(varName))
+        {
+            var rid = _commands.Resources.ResolveDefName(varName);
+            if (rid.IsValid)
+            {
+                value = rid.Index.ToString();
+                return true;
             }
         }
 

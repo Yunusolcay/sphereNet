@@ -447,6 +447,10 @@ public sealed class ResourceHolder
     public int Resync()
     {
         int reloaded = 0;
+        // Important: clear ScriptFile static cache BEFORE reopening files.
+        // Otherwise ReSync may parse stale in-memory lines and miss
+        // function/section renames (e.g. [FUNCTION spawn] -> spawn2).
+        ScriptFile.ClearFileCache();
 
         foreach (var script in _scriptFiles)
         {
@@ -483,6 +487,8 @@ public sealed class ResourceHolder
     public int ResyncAll()
     {
         int reloaded = 0;
+        // Force fresh disk reads for all script files.
+        ScriptFile.ClearFileCache();
 
         foreach (var script in _scriptFiles)
         {

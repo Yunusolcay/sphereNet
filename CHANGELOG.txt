@@ -4,6 +4,39 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-21] - Hareket carpisma filtresi, mobil diagnostik, shove paritesi, AllShow gizli render
+----------------------------------------
+
+DUZELTMELER / FIXES:
+  - WalkCheck: ShouldTreatAsMovementGeometry ile dunya item geometrisi
+    daraltildi — ItemType.Corpse ve sabitlenmemis dusuk yukseklikli
+    ground drop'lar (Surface ama CalcHeight <= StepHeight ve Impassable
+    degil) artik yuruyus yuzeyi / engel adayi sayilmiyor; StaticBlock,
+    STATIC, MOVE_NEVER, LOCKEDDOWN, bridge tiledata ve gercek
+    impassable'lar eskisi gibi bloklar.
+    Movement geometry ignores corpses and shallow loose drops; anchored
+    and real obstacles still participate in walk checks.
+  - [move_reject] / WalkCheck move-diag: ileri karedeki mobil ozeti
+    (FwdMobileCount, FwdMobileDump: uid, z, dead, player, war, isim)
+    log satirina eklendi; MovementEngine mobil cakismasinda MobBlocked
+    isaretleniyor.
+    Move-reject logging lists forward-tile mobiles; mobile block flagged
+    on failed shove.
+  - CanMoveOver ve MovementEngine.CanShove: counsel+ personel mobil
+    uzerinden her zaman gecebiliyor; olu blocker/mover engellenmiyor;
+    counsel+ gizli veya gorunmez personel yol tikanigi sayilmiyor;
+    oyuncu itisi yalnizca tam stamina'da, 10 stam harcayarak ve
+    Hidden/Invisible bayraklarini temizleyerek mumkun (onceki GM +
+    AllMove ozel durumu kaldirildi).
+    Staff pass-through, dead bodies non-blocking, hidden staff do not
+    block players; player shove matches common stamina/reveal rules.
+  - GameClient gorunurluk: AllShow veya yetkili gorunurlukle gosterilen
+    offline / gizli hedefler artik 0x4001 sahte hue yerine normal govde
+    + 0x80 hidden bayrakli DrawObject / MobileMoving ile guncelleniyor;
+    manifest hayalet dal'i ayri tutuluyor.
+    AllShow / staff-hidden visibility uses proper hidden object flags
+    instead of translucent ghost hue.
+
 [2026-04-21] - Scriptdebug uyarilarina kaynak dosya/satir/trigger etiketi
 ----------------------------------------
 

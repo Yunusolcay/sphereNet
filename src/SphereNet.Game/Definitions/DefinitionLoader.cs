@@ -247,7 +247,7 @@ public sealed class DefinitionLoader
         // Walk the section, but stop at the first ON=@... trigger header so
         // the body keys (which belong to that trigger and run dynamically
         // via TriggerRunner) don't bleed into the static CharDef state.
-        // mortechUO puts NPC=brain_vendor inside ON=@Create — that line is
+        // Sphere scripts put NPC=brain_vendor inside ON=@Create — that line is
         // applied at spawn time by the trigger interpreter against the
         // Character instance, NOT against the shared CharDef template.
         bool insideTrigger = false;
