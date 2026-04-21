@@ -131,6 +131,15 @@ public sealed class GameClient : ITextConsole
     // <BODY> / <STR> etc. reflect the inspected target. Cleared after
     // render; callbacks that act on the target stash its UID locally.
     private Serial _dialogSubjectUid = Serial.Invalid;
+    /// <summary>Generic script-first → native fallback registry. When a
+    /// named dialog (<c>d_xxx</c>) is requested via <c>SDIALOG</c> or a
+    /// help/inspect entry point, the host first tries the script
+    /// <c>[DIALOG d_xxx]</c> section through <see cref="TryShowScriptDialog"/>;
+    /// only when no script section is found does the registered native
+    /// fallback render. New native gumps should plug in here instead of
+    /// hard-coding their own render path.</summary>
+    private readonly Dictionary<string, Action<int>> _nativeDialogFallbacks =
+        new(StringComparer.OrdinalIgnoreCase);
     private string? _pendingAddToken;
     private string? _pendingShowArgs;
     private string? _pendingEditArgs;
@@ -220,6 +229,38 @@ public sealed class GameClient : ITextConsole
         _world = world;
         _accountManager = accountManager;
         _logger = logger;
+
+        RegisterNativeDialogFallbacks();
+    }
+
+    /// <summary>Wire built-in <c>d_xxx</c> native gump fallbacks. Each entry
+    /// is only used when the script-side <c>[DIALOG d_xxx]</c> section is
+    /// missing — see <see cref="OpenNamedDialog"/>.</summary>
+    private void RegisterNativeDialogFallbacks()
+    {
+        _nativeDialogFallbacks["d_helppage"] = page => ShowHelpPageDialog(page <= 0 ? 1 : page);
+    }
+
+    /// <summary>Generic script-first dialog dispatcher. Tries the script
+    /// <c>[DIALOG dialogId]</c> section (Source-X parity), falling back to
+    /// any registered native gump. Returns true when something was
+    /// rendered. <paramref name="subject"/> binds the gump's CLIMODE_DIALOG
+    /// pObj for property reads (used by edit / inspect).</summary>
+    public bool OpenNamedDialog(string dialogId, int requestedPage = 0, ObjBase? subject = null)
+    {
+        if (string.IsNullOrWhiteSpace(dialogId))
+            return false;
+
+        if (TryShowScriptDialog(dialogId, requestedPage, subject))
+            return true;
+
+        if (_nativeDialogFallbacks.TryGetValue(dialogId, out var nativeOpen))
+        {
+            nativeOpen(requestedPage);
+            return true;
+        }
+
+        return false;
     }
 
     public void SetEngines(
@@ -384,9 +425,27 @@ public sealed class GameClient : ITextConsole
         EnsurePlayerBackpack(_character);
         _mountEngine?.EnsureMountedState(_character);
 
-        // Sync PrivLevel from account to character on each login
+        // Sync PrivLevel between account and character on each login.
+        // Eski .privset / .privlevel yollari (ve daha onceki PRIVLEVEL
+        // setter'i) karakterin PrivLevel'ini yukseltirken hesabin PLEVEL
+        // alanini guncellemiyordu. O kayitlar diske
+        // PRIVLEVEL=GM + PLEVEL=Player olarak yaziliyor; ardindan her
+        // login burada karakteri tekrar Player'a indirdigi icin "oyuna
+        // girince leveli 1 oldu" sikayetinin kayit kaynagi bu. Iki yon:
+        //  - Karakterin saved PrivLevel'i hesaptan yuksekse hesabi
+        //    karakterin seviyesine cek (legacy save'i tek girişte
+        //    iyilestir, bir sonraki save iki tarafi da senkron yazar).
+        //  - Aksi halde klasik yon: hesabi otorite kabul edip karakteri
+        //    senkronla (admin tarafindan account uzerinden indirme yine
+        //    calissin).
         if (_account != null)
-            _character.PrivLevel = _account.PrivLevel;
+        {
+            if (_character.PrivLevel > _account.PrivLevel)
+                _account.PrivLevel = _character.PrivLevel;
+            else
+                _character.PrivLevel = _account.PrivLevel;
+        }
+        _character.NormalizePlayerSkillClass();
 
         // Ensure Max stats are derived from attributes if missing (old saves)
         if (_character.MaxHits <= 0 && _character.Str > 0)
@@ -618,6 +677,7 @@ public sealed class GameClient : ITextConsole
         // 4. Re-send light & season
         _netState.Send(new PacketGlobalLight(_world.GlobalLight));
         _netState.Send(new PacketPersonalLight(_character.Uid.Value, _character.LightLevel));
+        _netState.Send(new PacketSeason((byte)_world.CurrentSeason, playSound: false));
 
         // 5. Reset walk sequence (0 = resync sentinel, client must send seq 0 next)
         _netState.WalkSequence = 0;
@@ -2151,9 +2211,11 @@ public sealed class GameClient : ITextConsole
             case ItemType.Drink:
                 _character.Food = (ushort)Math.Min(_character.Food + 5, 60);
                 SysMessage(ServerMessages.Get("itemuse_eat_food"));
-                _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Destroy,
-                    new TriggerArgs { CharSrc = _character, ItemSrc = item });
-                item.Delete();
+                if (_triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Destroy,
+                        new TriggerArgs { CharSrc = _character, ItemSrc = item }) != TriggerResult.True)
+                {
+                    item.Delete();
+                }
                 break;
 
             case ItemType.Book:
@@ -2376,9 +2438,11 @@ public sealed class GameClient : ITextConsole
                     if (house != null)
                     {
                         SysMessage(ServerMessages.Get("house_placed"));
-                        _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Destroy,
-                            new TriggerArgs { CharSrc = _character, ItemSrc = item });
-                        item.Delete();
+                        if (_triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Destroy,
+                                new TriggerArgs { CharSrc = _character, ItemSrc = item }) != TriggerResult.True)
+                        {
+                            item.Delete();
+                        }
                     }
                     else
                     {
@@ -2503,7 +2567,7 @@ public sealed class GameClient : ITextConsole
     private bool TryHandlePetCommand(string text)
     {
         if (_character == null) return false;
-        string lower = text.ToLowerInvariant().Trim();
+        string lower = text.ToLowerInvariant().Trim().TrimEnd('.', '!', '?');
 
         // Pet command vocabulary table mirrors sm_Pet_table in Source-X.
         // Order matters because we longest-prefix match (e.g. "follow me" before "follow").
@@ -2519,7 +2583,7 @@ public sealed class GameClient : ITextConsole
         // "all <verb>" path.
         if (lower.StartsWith("all "))
         {
-            string verb = lower[4..].Trim();
+            string verb = NormalizePetVerb(lower[4..], allMode: true);
             return DispatchAllPets(verb);
         }
 
@@ -2527,35 +2591,72 @@ public sealed class GameClient : ITextConsole
         int spaceIdx = lower.IndexOf(' ');
         if (spaceIdx <= 0) return false;
         string name = lower[..spaceIdx];
-        string rest = lower[(spaceIdx + 1)..].Trim();
+        string rest = NormalizePetVerb(lower[(spaceIdx + 1)..], allMode: false);
         return DispatchNamedPet(name, rest);
+    }
+
+    private static string NormalizePetVerb(string rawVerb, bool allMode)
+    {
+        string verb = rawVerb.Trim().ToLowerInvariant().TrimEnd('.', '!', '?');
+        verb = verb switch
+        {
+            "kills" => "kill",
+            "attacks" => "attack",
+            "comes" => "come",
+            "follows" => "follow",
+            _ => verb
+        };
+
+        // Source-style shortcut: "all follow" behaves like "all follow me".
+        if (allMode && verb == "follow")
+            return "follow me";
+        return verb;
     }
 
     /// <summary>Source-X PC_*: target a single pet by name prefix.</summary>
     private bool DispatchNamedPet(string namePrefix, string verb)
     {
         if (_character == null) return false;
-        foreach (var pet in _world.GetCharsInRange(_character.Position, 12))
+        var pet = CollectCommandablePets(namePrefix).FirstOrDefault();
+        if (pet == null)
         {
-            if (pet.IsPlayer || pet.IsDead || pet.NpcMaster != _character.Uid) continue;
-            if (!pet.Name.StartsWith(namePrefix, StringComparison.OrdinalIgnoreCase)) continue;
-            return ApplyPetVerb(pet, verb);
+            SysMessage(ServerMessages.Get(Msg.NpcPetFailure));
+            return false;
         }
-        return false;
+
+        return ApplyPetVerb(pet, verb);
     }
 
     /// <summary>Source-X PC_*: broadcast verb to every nearby pet of mine.</summary>
     private bool DispatchAllPets(string verb)
     {
         if (_character == null) return false;
-        bool any = false;
-        foreach (var pet in _world.GetCharsInRange(_character.Position, 12))
+        var pets = CollectCommandablePets().ToList();
+        if (pets.Count == 0)
         {
-            if (pet.IsPlayer || pet.IsDead || pet.NpcMaster != _character.Uid) continue;
-            if (ApplyPetVerb(pet, verb)) any = true;
+            SysMessage(ServerMessages.Get(Msg.NpcPetFailure));
+            return false;
         }
+
+        if (IsPetTargetVerb(verb))
+        {
+            EmitPetTargetPrompt(pets, verb);
+            return true;
+        }
+
+        bool any = false;
+        foreach (var pet in pets)
+            if (ApplyPetVerb(pet, verb)) any = true;
         return any;
     }
+
+    private static bool IsPetTargetVerb(string verb) => verb switch
+    {
+        "attack" or "kill" or "guard" or "follow" or "go" or
+        "friend" or "unfriend" or "transfer" or "release" or
+        "price" or "bought" or "samples" or "stock" or "cash" => true,
+        _ => false
+    };
 
     /// <summary>
     /// Apply a Source-X PC_* verb to a single pet, emitting the matching
@@ -2565,12 +2666,23 @@ public sealed class GameClient : ITextConsole
     private bool ApplyPetVerb(Character pet, string verb)
     {
         if (_character == null) return false;
+        if (!pet.CanAcceptPetCommandFrom(_character))
+        {
+            SysMessage(ServerMessages.Get(Msg.NpcPetFailure));
+            return false;
+        }
 
         switch (verb)
         {
             case "follow me":
-            case "come":
                 pet.PetAIMode = PetAIMode.Follow;
+                pet.SetTag("FOLLOW_TARGET", _character.Uid.Value.ToString());
+                NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetSuccess));
+                return true;
+
+            case "come":
+                pet.PetAIMode = PetAIMode.Come;
+                pet.SetTag("FOLLOW_TARGET", _character.Uid.Value.ToString());
                 NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetSuccess));
                 return true;
 
@@ -2582,6 +2694,7 @@ public sealed class GameClient : ITextConsole
 
             case "guard me":
                 pet.PetAIMode = PetAIMode.Guard;
+                pet.SetTag("GUARD_TARGET", _character.Uid.Value.ToString());
                 NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetSuccess));
                 return true;
 
@@ -2590,20 +2703,55 @@ public sealed class GameClient : ITextConsole
                 return true;
 
             case "drop":
-                NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetCarrynothing));
+                if (pet.Backpack == null || pet.Backpack.Contents.Count == 0)
+                {
+                    NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetCarrynothing));
+                    return true;
+                }
+                foreach (var carried in pet.Backpack.Contents.ToArray())
+                {
+                    pet.Backpack.RemoveItem(carried);
+                    _world.PlaceItemWithDecay(carried, pet.Position);
+                }
+                NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetSuccess));
                 return true;
 
             case "drop all":
+                if (pet.Backpack == null || pet.Backpack.Contents.Count == 0)
+                {
+                    NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetCarrynothing));
+                    return true;
+                }
+                foreach (var carried in pet.Backpack.Contents.ToArray())
+                {
+                    pet.Backpack.RemoveItem(carried);
+                    _world.PlaceItemWithDecay(carried, pet.Position);
+                }
                 NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetSuccess));
                 return true;
 
             case "equip":
-                NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetSuccess));
+                if (pet.Backpack == null)
+                {
+                    NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetFailure));
+                    return true;
+                }
+                bool equippedAny = false;
+                foreach (var carried in pet.Backpack.Contents.ToArray())
+                {
+                    Layer layer = ResolveWearableLayer(carried);
+                    if (layer == Layer.None || pet.GetEquippedItem(layer) != null)
+                        continue;
+                    pet.Backpack.RemoveItem(carried);
+                    pet.Equip(carried, layer);
+                    equippedAny = true;
+                }
+                NpcSpeech(pet, ServerMessages.Get(equippedAny ? Msg.NpcPetSuccess : Msg.NpcPetFailure));
                 return true;
 
             case "status":
                 if (pet.TryGetTag("HIRE_DAYS_LEFT", out string? days))
-                    NpcSpeech(pet, ServerMessages.GetFormatted(Msg.NpcPetDaysLeft, days));
+                    NpcSpeech(pet, ServerMessages.GetFormatted(Msg.NpcPetDaysLeft, days ?? "0"));
                 else
                     NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetEmployed));
                 return true;
@@ -2651,48 +2799,121 @@ public sealed class GameClient : ITextConsole
             _                  => Msg.NpcPetSuccess,
         };
         SysMessage(ServerMessages.Get(promptKey));
-        SetPendingTarget((serial, x, y, z, gfx) => ApplyPetTarget(pet, verb, new Serial(serial), x, y, z));
+        SetPendingTarget(
+            (serial, x, y, z, gfx) => ApplyPetTarget(pet, verb, new Serial(serial), x, y, z),
+            cursorType: verb == "go" ? (byte)0 : (byte)1);
+    }
+
+    private void EmitPetTargetPrompt(IReadOnlyList<Character> pets, string verb)
+    {
+        if (pets.Count == 0)
+            return;
+
+        string promptKey = verb switch
+        {
+            "attack" or "kill" => Msg.NpcPetTargAtt,
+            "guard" => Msg.NpcPetTargGuard,
+            "follow" => Msg.NpcPetTargFollow,
+            "friend" => Msg.NpcPetTargFriend,
+            "unfriend" => Msg.NpcPetTargUnfriend,
+            "transfer" => Msg.NpcPetTargTransfer,
+            "go" => Msg.NpcPetTargGo,
+            "price" => Msg.NpcPetSetprice,
+            _ => Msg.NpcPetSuccess,
+        };
+
+        var petUids = pets.Select(p => p.Uid).ToList();
+        SysMessage(ServerMessages.Get(promptKey));
+        SetPendingTarget((serial, x, y, z, gfx) =>
+            {
+                foreach (var petUid in petUids)
+                {
+                    var pet = _world.FindChar(petUid);
+                    if (pet == null || pet.IsDeleted || pet.IsDead || _character == null ||
+                        !pet.CanAcceptPetCommandFrom(_character))
+                    {
+                        continue;
+                    }
+
+                    ApplyPetTarget(pet, verb, new Serial(serial), x, y, z);
+                }
+            },
+            cursorType: verb == "go" ? (byte)0 : (byte)1);
     }
 
     /// <summary>Resolve a target picked after EmitPetTargetPrompt and apply the verb.</summary>
     private void ApplyPetTarget(Character pet, string verb, Serial uid, short x, short y, sbyte z)
     {
         if (_character == null) return;
+        if (!pet.CanAcceptPetCommandFrom(_character))
+        {
+            SysMessage(ServerMessages.Get(Msg.NpcPetFailure));
+            return;
+        }
+
         var obj = uid.IsValid ? _world.FindObject(uid) : null;
 
         switch (verb)
         {
             case "attack":
             case "kill":
-                if (obj is Character victim) pet.SetTag("ATTACK_TARGET", victim.Uid.Value.ToString());
+                if (obj is Character victim && victim != pet)
+                {
+                    pet.SetTag("ATTACK_TARGET", victim.Uid.Value.ToString());
+                    pet.PetAIMode = PetAIMode.Attack;
+                    SysMessage(ServerMessages.Get(Msg.NpcPetSuccess));
+                }
+                else
+                    SysMessage(ServerMessages.Get(Msg.NpcPetFailure));
                 break;
 
             case "guard":
-                if (obj is Character guarded) pet.SetTag("GUARD_TARGET", guarded.Uid.Value.ToString());
+                if (obj is Character guarded)
+                {
+                    pet.SetTag("GUARD_TARGET", guarded.Uid.Value.ToString());
+                    pet.PetAIMode = PetAIMode.Guard;
+                    SysMessage(ServerMessages.Get(Msg.NpcPetTargGuardSuccess));
+                }
+                else
+                    SysMessage(ServerMessages.Get(Msg.NpcPetFailure));
                 break;
 
             case "follow":
-                if (obj is Character followee) pet.SetTag("FOLLOW_TARGET", followee.Uid.Value.ToString());
+                if (obj is Character followee)
+                {
+                    pet.SetTag("FOLLOW_TARGET", followee.Uid.Value.ToString());
+                    pet.PetAIMode = PetAIMode.Follow;
+                    SysMessage(ServerMessages.Get(Msg.NpcPetSuccess));
+                }
+                else
+                    SysMessage(ServerMessages.Get(Msg.NpcPetFailure));
                 break;
 
             case "friend":
                 if (obj is Character friend && friend.IsPlayer)
                 {
-                    if (pet.TryGetTag("FRIEND_" + friend.Uid.Value, out _))
+                    if (pet.IsSummoned)
+                    {
+                        SysMessage(ServerMessages.Get(Msg.NpcPetTargFriendSummoned));
+                    }
+                    else if (pet.IsFriendOf(friend.Uid))
                         SysMessage(ServerMessages.Get(Msg.NpcPetTargFriendAlready));
                     else
                     {
-                        pet.SetTag("FRIEND_" + friend.Uid.Value, "1");
+                        pet.AddFriend(friend);
                         SysMessage(ServerMessages.GetFormatted(Msg.NpcPetTargFriendSuccess1, friend.Name));
-                        if (friend != _character) /* notify friend */ ;
+                        if (friend != _character)
+                            SendToChar?.Invoke(friend.Uid, new PacketSpeechUnicodeOut(
+                                0xFFFFFFFF, 0xFFFF, 6, 0x0035, 3, "TRK", "System",
+                                ServerMessages.GetFormatted(Msg.NpcPetTargFriendSuccess2, pet.Name)));
                     }
                 }
                 break;
 
             case "unfriend":
-                if (obj is Character unfriend && pet.TryGetTag("FRIEND_" + unfriend.Uid.Value, out _))
+                if (obj is Character unfriend && pet.IsFriendOf(unfriend.Uid))
                 {
-                    pet.RemoveTag("FRIEND_" + unfriend.Uid.Value);
+                    pet.RemoveFriend(unfriend);
                     SysMessage(ServerMessages.GetFormatted(Msg.NpcPetTargUnfriendSuccess1, unfriend.Name));
                 }
                 else
@@ -2702,21 +2923,83 @@ public sealed class GameClient : ITextConsole
             case "transfer":
                 if (obj is Character newOwner && newOwner.IsPlayer)
                 {
-                    pet.NpcMaster = newOwner.Uid;
-                    SysMessage(ServerMessages.GetFormatted(Msg.NpcPetTargFriendSuccess2, newOwner.Name));
+                    if (pet.IsSummoned)
+                    {
+                        SysMessage(ServerMessages.Get(Msg.NpcPetTargTransferSummoned));
+                    }
+                    else if (pet.TryAssignOwnership(newOwner, newOwner, summoned: false, enforceFollowerCap: true))
+                    {
+                        pet.PetAIMode = PetAIMode.Follow;
+                        SysMessage(ServerMessages.GetFormatted(Msg.NpcPetTargFriendSuccess2, newOwner.Name));
+                    }
+                    else
+                    {
+                        SysMessage(ServerMessages.Get(Msg.NpcPetFailure));
+                    }
                 }
                 break;
 
+            case "release":
+                if (obj is Character releaseOwner && pet.HasOwner(releaseOwner.Uid))
+                {
+                    pet.ClearOwnership(clearFriends: true);
+                    pet.PetAIMode = PetAIMode.Stay;
+                    pet.RemoveTag("ATTACK_TARGET");
+                    pet.RemoveTag("GUARD_TARGET");
+                    pet.RemoveTag("FOLLOW_TARGET");
+                    pet.RemoveTag("GO_TARGET");
+                    SysMessage(ServerMessages.Get(Msg.NpcPetSuccess));
+                }
+                else
+                    SysMessage(ServerMessages.Get(Msg.NpcPetFailure));
+                break;
+
             case "go":
-                pet.Position = new Point3D(x, y, z, _character.MapIndex);
-                SysMessage(ServerMessages.Get(Msg.NpcPetTargGuardSuccess));
+                pet.SetTag("GO_TARGET", $"{x},{y},{z},{_character.MapIndex}");
+                pet.PetAIMode = PetAIMode.Come;
+                SysMessage(ServerMessages.Get(Msg.NpcPetSuccess));
                 break;
 
             case "price":
                 if (obj is Item priced)
-                    priced.SetTag("VENDOR_PRICE", "0"); // numeric input pending
+                {
+                    priced.SetTag("PRICE", priced.Price > 0 ? priced.Price.ToString() : "1");
+                    SendInputPromptGump(priced, "PRICE", 9);
+                }
                 break;
         }
+    }
+
+    private Layer ResolveWearableLayer(Item item)
+    {
+        var itemDef = DefinitionLoader.GetItemDef(item.BaseId);
+        Layer layer = itemDef?.Layer ?? Layer.None;
+        if (layer == Layer.None && _world.MapData != null)
+        {
+            var tile = _world.MapData.GetItemTileData(item.BaseId);
+            if ((tile.Flags & SphereNet.MapData.Tiles.TileFlag.Wearable) != 0 &&
+                tile.Quality > 0 && tile.Quality <= (byte)Layer.Horse)
+            {
+                layer = (Layer)tile.Quality;
+            }
+        }
+        return layer;
+    }
+
+    private IEnumerable<Character> CollectCommandablePets(string? namePrefix = null)
+    {
+        if (_character == null)
+            return Enumerable.Empty<Character>();
+
+        return _world.GetCharsInRange(_character.Position, 12)
+            .Where(p =>
+                !p.IsPlayer &&
+                !p.IsDead &&
+                !p.IsDeleted &&
+                !p.IsStatFlag(StatFlag.Ridden) &&
+                p.CanAcceptPetCommandFrom(_character) &&
+                (string.IsNullOrEmpty(namePrefix) ||
+                 p.Name.StartsWith(namePrefix, StringComparison.OrdinalIgnoreCase)));
     }
 
     private void HandleVendorInteraction(Character vendor)
@@ -3721,10 +4004,12 @@ public sealed class GameClient : ITextConsole
         // Update stats
         SendCharacterStatus(_character);
 
-        // Consume potion
-        _triggerDispatcher?.FireItemTrigger(potion, ItemTrigger.Destroy,
-            new TriggerArgs { CharSrc = _character, ItemSrc = potion });
-        potion.Delete();
+        // Consume potion. Source-X parity: @Destroy RETURN 1 keeps the bottle.
+        if (_triggerDispatcher?.FireItemTrigger(potion, ItemTrigger.Destroy,
+                new TriggerArgs { CharSrc = _character, ItemSrc = potion }) != TriggerResult.True)
+        {
+            potion.Delete();
+        }
     }
 
     /// <summary>Handle UseSkill request (from packet 0x12 or extended command).</summary>
@@ -4312,10 +4597,19 @@ public sealed class GameClient : ITextConsole
             }
         }
 
-        // Fire @DropOn_Ground
-        _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.DropOnGround,
+        // Source-X parity: @DropOn_Ground RETURN 1 cancels the drop;
+        // bounce the item back to the player's pack so the cursor
+        // doesn't get stuck and scripts can fully gate ground placement.
+        var dropResult = _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.DropOnGround,
             new TriggerArgs { CharSrc = _character, ItemSrc = item });
-        _world.PlaceItem(item, new Point3D(x, y, z, _character.MapIndex));
+        if (dropResult == TriggerResult.True)
+        {
+            PlaceItemInPack(_character, item);
+            _netState.Send(new PacketDropAck());
+            return;
+        }
+
+        _world.PlaceItemWithDecay(item, new Point3D(x, y, z, _character.MapIndex));
         _netState.Send(new PacketDropAck());
     }
 
@@ -4666,12 +4960,7 @@ public sealed class GameClient : ITextConsole
             _pendingControlTarget = false;
             var npc = ResolvePickedChar(serial);
             if (npc == null) { SysMessage(ServerMessages.Get("target_must_object")); return; }
-            // Source-X CChar::NPC_PetSetOwner — give the NPC the GM as
-            // master. We mirror that with the conventional OWNER_UID tag
-            // (also used by the resurrect flow on corpses) and flag the
-            // NPC as a pet so AI / loyalty checks treat it accordingly.
-            npc.SetTag("OWNER_UID", _character.Uid.Value.ToString());
-            npc.SetStatFlag(StatFlag.Pet);
+            npc.TryAssignOwnership(_character, _character, summoned: false, enforceFollowerCap: false);
             SysMessage(ServerMessages.GetFormatted("gm_control_done", npc.Name));
             return;
         }
@@ -4983,11 +5272,16 @@ public sealed class GameClient : ITextConsole
             layout, gump.Texts));
     }
 
-    /// <summary>Set a callback-based target cursor. Used by housing, etc.</summary>
-    private void SetPendingTarget(Action<uint, short, short, sbyte, ushort> callback)
+    /// <summary>Set a callback-based target cursor. Used by housing, pets, etc.</summary>
+    private void SetPendingTarget(Action<uint, short, short, sbyte, ushort> callback, byte cursorType = 1)
     {
+        if (_targetCursorActive)
+            _netState.Send(new PacketTarget(0x00, 0x00000000, flags: 3));
+
+        ClearPendingTargetState();
         _pendingTargetCallback = callback;
-        _netState.Send(new PacketTarget(1, (uint)Random.Shared.Next(1, int.MaxValue)));
+        _targetCursorActive = true;
+        _netState.Send(new PacketTarget(cursorType, (uint)Random.Shared.Next(1, int.MaxValue)));
     }
 
     // ==================== Information Skills ====================
@@ -5191,7 +5485,7 @@ public sealed class GameClient : ITextConsole
         if (_character == null) return;
 
         // Script-first parity:
-        // If [FUNCTION f_onclient_helppage] exists and runs, skip default help gump.
+        // If [FUNCTION f_onclient_helppage] exists and runs, skip the built-in fallback.
         if (_triggerDispatcher?.Runner != null)
         {
             var trigArgs = new ExecTriggerArgs(_character, 0, 0, string.Empty)
@@ -5203,17 +5497,7 @@ public sealed class GameClient : ITextConsole
                 return;
         }
 
-        var gump = new GumpBuilder(_character.Uid.Value, 0x0001BE1F, 300, 250);
-        gump.AddResizePic(0, 0, 5054, 300, 250);
-        gump.AddText(30, 20, 0, "SphereNet Help");
-        gump.AddText(30, 50, 0, "Page a GM for assistance");
-        gump.AddText(30, 80, 0, "Commands:");
-        gump.AddText(30, 100, 0, ".help - Show this help");
-        gump.AddText(30, 120, 0, ".status - Show status");
-        gump.AddText(30, 140, 0, ".where - Show location");
-        gump.AddButton(120, 200, 4005, 4007, 0); // close button
-
-        SendGump(gump);
+        OpenNamedDialog("d_helppage", 1);
     }
 
     // ==================== AOS Tooltip ====================
@@ -5427,13 +5711,10 @@ public sealed class GameClient : ITextConsole
             bool ghostManifested = ch.IsDead && ch.IsInWarMode;
             if (ch.IsDead && !_character.IsDead && !ghostManifested)
             {
-                // TODO(spirit-speak): expose a CanSeeGhosts() helper on
-                // Character that returns true when Spirit Speak is in
-                // an "activated" state (Source-X uses GetSpiritSpeak()
-                // which decays after a window). Until then, only staff
-                // / AllShow can see plain (peace-mode) ghosts.
-                if (!_character.AllShow &&
-                    _character.PrivLevel < Core.Enums.PrivLevel.Counsel)
+                bool canSeeGhosts = _character.AllShow ||
+                    _character.PrivLevel >= Core.Enums.PrivLevel.Counsel ||
+                    _character.IsStatFlag(Core.Enums.StatFlag.SpiritSpeak);
+                if (!canSeeGhosts)
                     continue;
             }
 
@@ -5787,7 +6068,7 @@ public sealed class GameClient : ITextConsole
             return;
 
         ClearPendingTargetState();
-        _pendingEditArgs = string.IsNullOrWhiteSpace(editArgs) ? "EVENTS" : editArgs.Trim();
+        _pendingEditArgs = editArgs?.Trim() ?? "";
         _targetCursorActive = true;
         _netState.Send(new PacketTarget(1, (uint)Random.Shared.Next(1, int.MaxValue)));
     }
@@ -5938,12 +6219,9 @@ public sealed class GameClient : ITextConsole
         _targetCursorActive = false;
     }
 
-    /// <summary>Source-X <c>.info</c> handler. Tries the shipped
-    /// <c>d_charprop1</c> / <c>d_itemprop1</c> dialog scripts first (so
-    /// the layout matches Source-X exactly) with the target as the
-    /// dialog subject. Falls back to a native editable property gump
-    /// when those scripts aren't loaded on the shard.</summary>
-    public void ShowInspectDialog(uint uid)
+    /// <summary>Source-X edit/info dialog parity. Binds the object as
+    /// CLIMODE_DIALOG subject and opens the shipped script dialog only.</summary>
+    public void ShowInspectDialog(uint uid, int requestedPage = 0)
     {
         if (_character == null) return;
         ObjBase? obj = _world.FindObject(new Serial(uid));
@@ -5953,152 +6231,15 @@ public sealed class GameClient : ITextConsole
             return;
         }
 
-        string scriptDialog = obj is Character ? "d_charprop1" : "d_itemprop1";
-        if (TryShowScriptDialog(scriptDialog, 1, obj))
+        if (obj is Character)
+            SendSkillList();
+
+        string dialogId = obj is Item ? "d_itemprop1" : "d_charprop1";
+        int page = Math.Max(0, requestedPage);
+        if (OpenNamedDialog(dialogId, page, obj))
             return;
 
-        var fields = BuildInspectFields(obj);
-        uint gumpId = (uint)(0xEE000000u | (uid & 0x00FFFFFFu));
-        const int W = 520, ROW_H = 26, TOP = 60, LABEL_W = 110, ENTRY_W = 340;
-        int H = TOP + fields.Count * ROW_H + 70;
-        var gump = new GumpBuilder(_character.Uid.Value, gumpId, W, H);
-        gump.AddResizePic(0, 0, 5054, W, H);
-        string kind = obj is Character ? "CHAR" : obj is Item ? "ITEM" : "OBJ";
-        gump.AddText(20, 15, 0, $"INFO [{kind}] 0x{uid:X8} — {obj.Name}");
-
-        // Field rows: label + text entry. Entry index = field index + 10
-        // so button-ids and entry-ids never collide.
-        for (int i = 0; i < fields.Count; i++)
-        {
-            int y = TOP + i * ROW_H;
-            gump.AddText(20, y + 3, 0x0481, fields[i].Label);
-            gump.AddTextEntry(20 + LABEL_W, y, ENTRY_W, ROW_H - 4, 0, 10 + i, fields[i].Value ?? "");
-        }
-
-        // Bottom button row: APPLY, TAGS, EVENTS, CLOSE.
-        int by = TOP + fields.Count * ROW_H + 15;
-        gump.AddButton(20, by, 4005, 4007, 1).AddText(55, by + 3, 0, "APPLY");
-        gump.AddButton(130, by, 4005, 4007, 2).AddText(165, by + 3, 0, "TAGS");
-        gump.AddButton(230, by, 4005, 4007, 3).AddText(265, by + 3, 0, "EVENTS");
-        if (obj is Character)
-            gump.AddButton(340, by, 4005, 4007, 4).AddText(375, by + 3, 0, "PAPERDOLL");
-        gump.AddButton(W - 60, by, 4017, 4019, 0);
-
-        SendGump(gump, (buttonId, _, textEntries) =>
-        {
-            if (_character == null) return;
-            var target = _world.FindObject(new Serial(uid));
-            if (target == null) return;
-
-            switch (buttonId)
-            {
-                case 1: // APPLY all changed fields
-                    ApplyInspectChanges(target, fields, textEntries);
-                    ShowInspectDialog(uid); // refresh the dialog with new values
-                    break;
-                case 2: ShowTagsDialog(target); break;
-                case 3: ShowEventsDialog(target); break;
-                case 4 when target is Character tc: SendPaperdoll(tc); break;
-            }
-        });
-    }
-
-    /// <summary>Field descriptor for the property grid. <see cref="Key"/>
-    /// is the TrySetProperty key we will push back on Apply.</summary>
-    private readonly record struct InspectField(string Label, string Key, string? Value);
-
-    private List<InspectField> BuildInspectFields(ObjBase obj)
-    {
-        var list = new List<InspectField>();
-        void Add(string label, string key, string? value) => list.Add(new InspectField(label, key, value));
-
-        Add("UID", "", $"0x{obj.Uid.Value:X8}"); // read-only (empty Key)
-        Add("NAME", "NAME", obj.Name);
-        Add("P", "P", $"{obj.Position.X},{obj.Position.Y},{obj.Position.Z},{obj.Position.Map}");
-        Add("BASEID", "BASEID", $"0x{obj.BaseId:X4}");
-        Add("HUE", "COLOR", $"0{obj.Hue.Value:X}");
-        Add("ATTR", "ATTR", $"0{(uint)obj.Attributes:X}");
-
-        if (obj is Character ch)
-        {
-            Add("BODY", "BODY", $"0x{ch.BodyId:X4}");
-            Add("DIR", "DIR", ((byte)ch.Direction).ToString());
-            Add("STR", "STR", ch.Str.ToString());
-            Add("DEX", "DEX", ch.Dex.ToString());
-            Add("INT", "INT", ch.Int.ToString());
-            Add("HITS", "HITS", ch.Hits.ToString());
-            Add("MAXHITS", "MAXHITS", ch.MaxHits.ToString());
-            Add("MANA", "MANA", ch.Mana.ToString());
-            Add("MAXMANA", "MAXMANA", ch.MaxMana.ToString());
-            Add("STAM", "STAM", ch.Stam.ToString());
-            Add("MAXSTAM", "MAXSTAM", ch.MaxStam.ToString());
-            Add("FAME", "FAME", ch.Fame.ToString());
-            Add("KARMA", "KARMA", ch.Karma.ToString());
-            Add("FOOD", "FOOD", ch.Food.ToString());
-            Add("NPC", "NPC", ((byte)ch.NpcBrain).ToString());
-            Add("FLAGS", "FLAGS", $"0{(uint)ch.StatFlags:X}");
-            Add("PRIVLEVEL", "PRIVSET", ((byte)ch.PrivLevel).ToString());
-        }
-        else if (obj is Item it)
-        {
-            Add("TYPE", "TYPE", ((ushort)it.ItemType).ToString());
-            Add("AMOUNT", "AMOUNT", it.Amount.ToString());
-            Add("LAYER", "LAYER", ((byte)it.EquipLayer).ToString());
-            Add("CONT", "CONT", it.ContainedIn.IsValid ? $"0{it.ContainedIn.Value:X}" : "(ground)");
-            Add("LINK", "LINK", it.Link.IsValid ? $"0{it.Link.Value:X}" : "");
-            Add("MORE1", "MORE1", it.More1.ToString());
-            Add("MORE2", "MORE2", it.More2.ToString());
-            Add("MOREX", "MOREX", it.MoreP.X.ToString());
-            Add("MOREY", "MOREY", it.MoreP.Y.ToString());
-            Add("MOREZ", "MOREZ", it.MoreP.Z.ToString());
-            Add("MOREM", "MOREM", it.MoreP.Map.ToString());
-            Add("HITPOINTS", "HITPOINTS",
-                it.TryGetProperty("HITPOINTS", out var hp) ? hp : "");
-            Add("TIMER", "TIMER", it.DecayTime > 0
-                ? Math.Max(0, (int)((it.DecayTime - Environment.TickCount64) / 1000)).ToString()
-                : "-1");
-        }
-        return list;
-    }
-
-    private void ApplyInspectChanges(ObjBase target, List<InspectField> fields,
-        (ushort Id, string Text)[] textEntries)
-    {
-        int applied = 0;
-        foreach (var (id, text) in textEntries)
-        {
-            int idx = id - 10;
-            if (idx < 0 || idx >= fields.Count) continue;
-            var f = fields[idx];
-            if (string.IsNullOrEmpty(f.Key)) continue;              // read-only row
-            string oldVal = f.Value ?? "";
-            string newVal = text ?? "";
-            if (newVal == oldVal) continue;
-            if (target.TrySetProperty(f.Key, newVal))
-                applied++;
-        }
-        if (applied > 0)
-            SysMessage($"{applied} property updated on 0x{target.Uid.Value:X8}");
-    }
-
-    private void ShowTagsDialog(ObjBase target)
-    {
-        var tags = new List<string>();
-        foreach (var (k, v) in target.Tags.GetAll())
-            tags.Add($"{k} = {v}");
-        if (tags.Count == 0) tags.Add("(no tags)");
-        ShowTextDialog($"TAGS 0x{target.Uid.Value:X8}", tags);
-    }
-
-    private void ShowEventsDialog(ObjBase target)
-    {
-        var events = new List<string>();
-        if (target is Character ech)
-            foreach (var e in ech.Events) events.Add(e.ToString());
-        else if (target is Item eit)
-            foreach (var e in eit.Events) events.Add(e.ToString());
-        if (events.Count == 0) events.Add("(no events)");
-        ShowTextDialog($"EVENTS 0x{target.Uid.Value:X8}", events);
+        SysMessage(ServerMessages.GetFormatted("gm_object_not_found", $"{uid:X8}"));
     }
 
     public void ShowTextDialog(string title, IReadOnlyList<string> lines)
@@ -7129,57 +7270,58 @@ public sealed class GameClient : ITextConsole
         if (_character == null)
             return;
 
-        int page = Math.Clamp(requestedPage, 1, 8);
+        int page = Math.Clamp(requestedPage, 1, 4);
         _character.SetTag("help_type", page.ToString());
 
-        string[] menu = ["Duyurular", "Yardim", "Stuck", "Istatistik", "Bildirimler", "Takvim", "Basarimlar", "Donate"];
-        int[] icons = [180, 185, 183, 189, 187, 188, 182, 186];
+        string[] menu = ["Genel", "Yardim", "Stuck", "Istatistik"];
 
-        var gump = new GumpBuilder(_character.Uid.Value, (uint)Math.Abs("d_helppage".GetHashCode()), 540, 430);
-        gump.AddGumpPic(41, 182, 363)
-            .AddGumpPic(58, 187, 354)
-            .AddResizePic(135, 135, 340, 420, 420)
-            .AddGumpPic(470, 125, 339)
-            .AddGumpPic(190, 165, 353);
+        var gump = new GumpBuilder(_character.Uid.Value, (uint)Math.Abs("d_helppage".GetHashCode()), 500, 360);
+        gump.AddResizePic(0, 0, 5054, 500, 360)
+            .AddResizePic(15, 15, 2620, 130, 300)
+            .AddResizePic(155, 15, 2620, 330, 300)
+            .AddText(30, 25, 0x0481, "Help")
+            .AddText(175, 25, 0x0481, "Bilgi");
 
         for (int i = 0; i < menu.Length; i++)
         {
             int idx = i + 1;
-            int y = 220 + (i * 32);
-            bool active = idx == page;
-            gump.AddButton(44, y, active ? 351 : 349, active ? 352 : 350, idx)
-                .AddHtmlGump(70, y + 3, 90, 20, menu[i], false, false)
-                .AddGumpPic(35, y - 5, icons[i]);
+            int y = 65 + (i * 42);
+            gump.AddButton(28, y, 4005, 4007, idx)
+                .AddText(62, y + 2, idx == page ? (ushort)0x0021 : (ushort)0x0481, menu[i]);
         }
 
         string pageTitle = menu[page - 1];
-        gump.AddHtmlGump(135, 145, 420, 20, $"<CENTER><BIG>{pageTitle}</BIG></CENTER>", false, false);
+        gump.AddText(175, 60, 0x0481, pageTitle);
 
         switch (page)
         {
             case 1:
-                gump.AddHtmlGump(155, 190, 360, 180,
-                    "Duyuru sistemi script tarafinda aktif. Iceriklerin scriptten doldurulmasi gerekiyor.",
+                gump.AddHtmlGump(175, 90, 280, 160,
+                    "Genel yardim menusu.<br><br>Detayli sistemler daha sonra script tarafindan doldurulabilir.",
                     true, true);
                 break;
             case 2:
-                gump.AddHtmlGump(155, 190, 360, 180,
-                    "Yardim menusu: sorununu ayrintili sekilde yazip page atabilirsin.", true, true)
-                    .AddButton(193, 380, 142, 143, 21)
-                    .AddButton(363, 380, 144, 145, 22);
+                gump.AddHtmlGump(175, 90, 280, 120,
+                    "Sorunun varsa staff'a page atabilir veya mevcut page durumunu kontrol edebilirsin.",
+                    true, true)
+                    .AddButton(175, 235, 4005, 4007, 21)
+                    .AddText(210, 237, 0x0481, "Page")
+                    .AddButton(300, 235, 4005, 4007, 22)
+                    .AddText(335, 237, 0x0481, "Page List");
                 break;
             case 3:
-                gump.AddHtmlGump(155, 190, 360, 180,
-                    "Stuck noktalarini secerek guvenli bolgelere transfer olabilirsin.", true, true)
-                    .AddButton(170, 390, 130, 131, 30)
-                    .AddButton(250, 390, 133, 134, 31)
-                    .AddButton(330, 390, 136, 137, 32)
-                    .AddButton(410, 390, 139, 140, 33);
+                gump.AddHtmlGump(175, 90, 280, 120,
+                    "Karakterin takildiysa uygun bir guvenli nokta secerek cikabilirsin.",
+                    true, true)
+                    .AddButton(175, 235, 4005, 4007, 30)
+                    .AddText(210, 237, 0x0481, "Town")
+                    .AddButton(300, 235, 4005, 4007, 31)
+                    .AddText(335, 237, 0x0481, "Inn");
                 break;
             case 4:
             {
                 var stats = _world.GetStats();
-                gump.AddHtmlGump(155, 190, 360, 200,
+                gump.AddHtmlGump(175, 90, 280, 160,
                     $"Online Oyuncu: {_world.GetAllObjects().OfType<Character>().Count(c => c.IsPlayer && c.IsOnline)}<br>" +
                     $"Yaratik Sayisi: {stats.Chars}<br>" +
                     $"Esya Sayisi: {stats.Items}<br>" +
@@ -7187,12 +7329,9 @@ public sealed class GameClient : ITextConsole
                     true, true);
                 break;
             }
-            default:
-                gump.AddHtmlGump(155, 190, 360, 180,
-                    "Bu sayfa icin script tabanli icerik gerekiyor. Kademeli olarak eklenecek.",
-                    true, true);
-                break;
         }
+
+        gump.AddButton(455, 22, 4017, 4019, 0);
 
         SendGump(gump, (buttonId, _, _) =>
         {
@@ -7201,13 +7340,13 @@ public sealed class GameClient : ITextConsole
             if (buttonId == 0)
                 return;
 
-            if (buttonId is >= 1 and <= 8)
+            if (buttonId is >= 1 and <= 4)
             {
                 ShowHelpPageDialog((int)buttonId);
                 return;
             }
 
-            if (buttonId is >= 30 and <= 33)
+            if (buttonId is >= 30 and <= 31)
             {
                 SysMessage(ServerMessages.Get("msg_stuck_script"));
                 return;
@@ -7251,7 +7390,7 @@ public sealed class GameClient : ITextConsole
         _dialogSubjectUid = subject?.Uid ?? Serial.Invalid;
         try
         {
-            return RenderScriptDialog(dialogId, requestedPage, layoutSection);
+            return RenderScriptDialog(dialogId, requestedPage, layoutSection, subject?.Uid ?? Serial.Invalid);
         }
         finally
         {
@@ -7260,7 +7399,7 @@ public sealed class GameClient : ITextConsole
     }
 
     private bool RenderScriptDialog(string dialogId, int requestedPage,
-        SphereNet.Scripting.Parsing.ScriptSection layoutSection)
+        SphereNet.Scripting.Parsing.ScriptSection layoutSection, Serial subjectUid)
     {
         if (_character == null) return false;
 
@@ -7604,6 +7743,10 @@ public sealed class GameClient : ITextConsole
         {
             if (_character == null)
                 return;
+            var prevSubject = _dialogSubjectUid;
+            _dialogSubjectUid = subjectUid;
+            try
+            {
             // Try the script's [Dialog d_xxx Button] handler first. If a matching
             // ON=buttonId block exists, its body runs and we're done. Otherwise
             // fall back to page navigation behaviour so the old in-dialog page
@@ -7616,7 +7759,15 @@ public sealed class GameClient : ITextConsole
                 return;
 
             if (buttonId is >= 1 and <= 5000)
-                TryShowScriptDialog(dialogId, (int)buttonId);
+            {
+                ObjBase? subject = subjectUid.IsValid ? _world.FindObject(subjectUid) : null;
+                TryShowScriptDialog(dialogId, (int)buttonId, subject);
+            }
+            }
+            finally
+            {
+                _dialogSubjectUid = prevSubject;
+            }
         });
 
         return true;
@@ -9516,14 +9667,7 @@ public sealed class GameClient : ITextConsole
                     requestedPage = parsedPage;
             }
 
-            // Native bridge for legacy help dialog pack (dialog_helppage.scp).
-            if (dialogId.Equals("d_helppage", StringComparison.OrdinalIgnoreCase))
-            {
-                ShowHelpPageDialog(requestedPage);
-                return true;
-            }
-
-            if (TryShowScriptDialog(dialogId, requestedPage))
+            if (OpenNamedDialog(dialogId, requestedPage))
                 return true;
 
             string closeFn = "";
@@ -10302,11 +10446,12 @@ public sealed class GameClient : ITextConsole
             return new List<IScriptObj> { item };
         }
 
-        // FORCHARMEMORYTYPE — memory items on layer 30 matching flag (stub: no memory system yet)
         if (query.Equals("FORCHARMEMORYTYPE", StringComparison.OrdinalIgnoreCase))
         {
-            // Memory item system not yet implemented — return empty
-            return Array.Empty<IScriptObj>();
+            Character? ch = target as Character ?? _character;
+            if (ch == null)
+                return Array.Empty<IScriptObj>();
+            return ch.GetMemoryEntriesByType(args);
         }
 
         return Array.Empty<IScriptObj>();

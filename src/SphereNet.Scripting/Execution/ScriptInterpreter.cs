@@ -24,6 +24,12 @@ public sealed class ScriptInterpreter
     /// <summary>Optional TriggerRunner for CALL verb support.</summary>
     public Func<string, IScriptObj, ITextConsole?, ITriggerArgs?, TriggerResult>? CallFunction { get; set; }
 
+    /// <summary>
+    /// Optional bridge for angle-bracket script function calls that need a
+    /// string/numeric return value, e.g. <c>&lt;MyFunc arg1,arg2&gt;</c>.
+    /// </summary>
+    public Func<string, string, IScriptObj, ITextConsole?, ITriggerArgs?, string?>? ResolveFunctionExpression { get; set; }
+
     /// <summary>Resolves SERV.* and other server-level property lookups from scripts.</summary>
     public Func<string, string?>? ServerPropertyResolver { get; set; }
 
@@ -526,6 +532,14 @@ public sealed class ScriptInterpreter
             return;
         }
 
+        // SERV.SEASON <value> — global season setter routed through the
+        // server resolver so scripts can drive the authoritative weather state.
+        if (cmd.Equals("SERV.SEASON", StringComparison.OrdinalIgnoreCase))
+        {
+            ServerPropertyResolver?.Invoke($"_SET_SEASON={resolvedArg}");
+            return;
+        }
+
         // ARGS= updates the current trigger args string so subsequent
         // <ARGV[N]> accessors see the new token list. Sphere moongate
         // dialog handlers rely on this:
@@ -868,9 +882,12 @@ public sealed class ScriptInterpreter
         if (string.IsNullOrEmpty(arg)) return "";
         // Set resolver to target object for <property> lookups
         var oldResolver = _expr.VariableResolver;
+        var oldFunctionResolver = _expr.FunctionResolver;
         _expr.VariableResolver = varName => ResolveVarForTarget(varName, target, source, args, scope);
+        _expr.FunctionResolver = expr => TryResolveFunctionExpression(expr, target, source, args);
         string result = _expr.EvaluateStr(arg);
         _expr.VariableResolver = oldResolver;
+        _expr.FunctionResolver = oldFunctionResolver;
         return result;
     }
 
@@ -879,10 +896,71 @@ public sealed class ScriptInterpreter
         if (string.IsNullOrWhiteSpace(expr))
             return 0;
         var oldResolver = _expr.VariableResolver;
+        var oldFunctionResolver = _expr.FunctionResolver;
         _expr.VariableResolver = varName => ResolveVarForTarget(varName, target, source, args, scope);
+        _expr.FunctionResolver = exprText => TryResolveFunctionExpression(exprText, target, source, args);
         long result = _expr.Evaluate(expr.AsSpan());
         _expr.VariableResolver = oldResolver;
+        _expr.FunctionResolver = oldFunctionResolver;
         return result;
+    }
+
+    private string? TryResolveFunctionExpression(string expr, IScriptObj target, ITextConsole? source, ITriggerArgs? args)
+    {
+        if (ResolveFunctionExpression == null || string.IsNullOrWhiteSpace(expr))
+            return null;
+
+        string text = expr.Trim();
+        if (!(char.IsLetter(text[0]) || text[0] == '_'))
+            return null;
+
+        int nameLen = 1;
+        while (nameLen < text.Length && (char.IsLetterOrDigit(text[nameLen]) || text[nameLen] == '_'))
+            nameLen++;
+
+        if (nameLen >= text.Length)
+            return null;
+
+        string funcName = text[..nameLen];
+        string remainder = text[nameLen..].TrimStart();
+        if (remainder.Length == 0)
+            return null;
+
+        string funcArgs;
+        if (remainder[0] == '(')
+        {
+            int depth = 0;
+            int angleDepth = 0;
+            int end = -1;
+            for (int i = 0; i < remainder.Length; i++)
+            {
+                char ch = remainder[i];
+                if (ch == '<') angleDepth++;
+                else if (ch == '>' && angleDepth > 0) angleDepth--;
+                else if (angleDepth == 0)
+                {
+                    if (ch == '(') depth++;
+                    else if (ch == ')')
+                    {
+                        depth--;
+                        if (depth == 0)
+                        {
+                            end = i;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (end <= 0)
+                return null;
+            funcArgs = remainder[1..end].Trim();
+        }
+        else
+        {
+            funcArgs = remainder.Trim();
+        }
+
+        return ResolveFunctionExpression(funcName, funcArgs, target, source, args);
     }
 
     private string? ResolveVarForTarget(string varName, IScriptObj target, ITextConsole? source, ITriggerArgs? args, ScriptScope? scope = null)

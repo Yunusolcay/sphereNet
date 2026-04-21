@@ -1,6 +1,7 @@
 using SphereNet.Core.Enums;
 using SphereNet.Game.Objects.Characters;
 using SphereNet.Game.Objects.Items;
+using SphereNet.Game.Skills.Information;
 
 namespace SphereNet.Game.Combat;
 
@@ -198,7 +199,7 @@ public static class CombatEngine
             var item = defender.GetEquippedItem(armorLayers[i]);
             if (item == null) continue;
 
-            int ar = item.BaseId / 20 + 5; // simplified AR; TODO: read from ItemDef
+            int ar = item.GetArmorDefense();
             totalAR += coverage[i] * ar;
         }
 

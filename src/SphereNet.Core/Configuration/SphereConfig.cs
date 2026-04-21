@@ -1,5 +1,11 @@
 namespace SphereNet.Core.Configuration;
 
+public enum SeasonMode
+{
+    Auto = 0,
+    Manual = 1,
+}
+
 /// <summary>
 /// Server configuration model. Maps to CServerConfig in Source-X.
 /// Holds all sphere.ini settings as strongly-typed properties.
@@ -123,6 +129,11 @@ public sealed class SphereConfig
     public int LightDay { get; set; }
     public int LightNight { get; set; } = 25;
     public int DungeonLight { get; set; } = 27;
+
+    // Season
+    public SeasonMode SeasonMode { get; set; } = SeasonMode.Auto;
+    public byte SeasonDefault { get; set; } = 0;
+    public int SeasonChangeIntervalMinutes { get; set; } = 30;
 
     // Misc
     public int DecayTimer { get; set; } = 30;
@@ -323,6 +334,18 @@ public sealed class SphereConfig
         LightDay = ini.GetInt(section, "LightDay", LightDay);
         LightNight = ini.GetInt(section, "LightNight", LightNight);
         DungeonLight = ini.GetInt(section, "DungeonLight", DungeonLight);
+        string? seasonModeRaw = ini.GetValue(section, "SeasonMode");
+        if (!string.IsNullOrWhiteSpace(seasonModeRaw))
+        {
+            if (Enum.TryParse<SeasonMode>(seasonModeRaw, ignoreCase: true, out var parsedMode))
+                SeasonMode = parsedMode;
+            else if (int.TryParse(seasonModeRaw, out int parsedModeNum) &&
+                     Enum.IsDefined(typeof(SeasonMode), parsedModeNum))
+                SeasonMode = (SeasonMode)parsedModeNum;
+        }
+        SeasonDefault = (byte)Math.Clamp(ini.GetInt(section, "SeasonDefault", SeasonDefault), 0, 4);
+        SeasonChangeIntervalMinutes = Math.Max(0,
+            ini.GetInt(section, "SeasonChangeIntervalMinutes", SeasonChangeIntervalMinutes));
 
         DecayTimer = ini.GetInt(section, "DecayTimer", DecayTimer);
 

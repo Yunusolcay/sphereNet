@@ -36,6 +36,7 @@ public sealed class MountEngine
         // Store NPC identity so we can find the same NPC on dismount
         rider.Tags.Set("MOUNT_NPC_SERIAL", npc.Uid.Value.ToString());
         rider.Tags.Set("MOUNT_NPC_UUID", npc.Uuid.ToString("D"));
+        npc.TryAssignOwnership(rider, rider, summoned: false, enforceFollowerCap: false);
 
         // Hide NPC: remove from sector so it is invisible and won't tick,
         // but keep it in the world object table so it survives save/load.

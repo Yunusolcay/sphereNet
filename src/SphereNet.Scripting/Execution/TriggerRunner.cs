@@ -161,7 +161,45 @@ public sealed class TriggerRunner
         ITriggerArgs? args,
         out TriggerResult result)
     {
+        return TryExecuteFunction(funcName, target, source, args, out result, out _);
+    }
+
+    /// <summary>
+    /// Execute a named function and surface its RETURN value as a string for
+    /// angle-bracket function expressions.
+    /// </summary>
+    public bool TryEvaluateFunction(
+        string funcName,
+        string argString,
+        IScriptObj target,
+        ITextConsole? source,
+        ITriggerArgs? args,
+        out string value)
+    {
+        value = "";
+        var funcArgs = new TriggerArgs(args?.Source, args?.Number1 ?? 0, args?.Number2 ?? 0, argString)
+        {
+            Object1 = args?.Object1,
+            Object2 = args?.Object2,
+            Number3 = args?.Number3 ?? 0
+        };
+        if (!TryExecuteFunction(funcName, target, source, funcArgs, out var result, out var returnValue))
+            return false;
+
+        value = returnValue ?? (result == TriggerResult.True ? "1" : "0");
+        return true;
+    }
+
+    private bool TryExecuteFunction(
+        string funcName,
+        IScriptObj target,
+        ITextConsole? source,
+        ITriggerArgs? args,
+        out TriggerResult result,
+        out string? returnValue)
+    {
         result = TriggerResult.Default;
+        returnValue = null;
 
         // Resolve function by defname (registered during script loading)
         var rid = _resources.ResolveDefName(funcName);
@@ -197,6 +235,7 @@ public sealed class TriggerRunner
 
         var scope = new ScriptScope { TriggerName = funcName };
         result = _interpreter.Execute(sections[0].Keys, target, source, args, scope);
+        returnValue = scope.ReturnValue;
         return true;
     }
 

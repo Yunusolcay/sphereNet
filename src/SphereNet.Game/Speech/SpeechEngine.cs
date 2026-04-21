@@ -280,6 +280,8 @@ public sealed class CommandHandler
     /// transient iron-bar cage of items at the GM's feet.</summary>
     public event Action<Character>? OnSummonCageTargetRequested;
     public event Action<Character>? OnRemoveTargetRequested;
+    /// <summary>Fired by .KILL [uid]. Without uid the command targets self.</summary>
+    public event Action<Character, Core.Types.Serial?>? OnKillRequested;
     /// <summary>Fired by .RESURRECT (no args = self, with UID = direct,
     /// no UID + alive caller = target cursor). Wired in Program.cs to
     /// resolve to the victim's GameClient.OnResurrect so the proper
@@ -292,6 +294,7 @@ public sealed class CommandHandler
     public event Action<Character, string, IReadOnlyList<string>>? OnShowDialogRequested;
     public event Action<Character, string>? OnShowTargetRequested;
     public event Action<Character, string>? OnEditTargetRequested;
+    public event Action<Character, uint, int>? OnEditRequested;
     public event Action<Character, uint>? OnInspectRequested;
     /// <summary>Fired by <c>.info</c> with no argument. Program.cs wires
     /// this to a target-cursor flow on the calling client; the picked
@@ -559,10 +562,22 @@ public sealed class CommandHandler
 
         Register("KILL", PrivLevel.GM, (gm, args) =>
         {
-            if (uint.TryParse(args.Replace("0", ""), System.Globalization.NumberStyles.HexNumber, null, out uint uid))
+            string raw = args.Trim();
+            if (string.IsNullOrEmpty(raw))
             {
-                var target = world.FindChar(new Core.Types.Serial(uid));
-                target?.Kill();
+                OnKillRequested?.Invoke(gm, null);
+                return;
+            }
+
+            string uidText = raw.Replace("0x", "", StringComparison.OrdinalIgnoreCase).Trim();
+            if (uint.TryParse(uidText, System.Globalization.NumberStyles.HexNumber, null, out uint uid)
+                || uint.TryParse(raw, out uid))
+            {
+                OnKillRequested?.Invoke(gm, new Core.Types.Serial(uid));
+            }
+            else
+            {
+                OnSysMessage?.Invoke(gm, "Usage: .kill [hex_uid]");
             }
         });
 
@@ -1403,21 +1418,23 @@ public sealed class CommandHandler
 
     private bool ExecuteEditCommand(Character gm, string args, uint? forcedTargetSerial)
     {
+        int requestedPage = ParseRequestedPage(args);
         if (forcedTargetSerial.HasValue)
         {
-            OnInspectRequested?.Invoke(gm, forcedTargetSerial.Value);
+            OnEditRequested?.Invoke(gm, forcedTargetSerial.Value, requestedPage);
             return true;
         }
 
         string text = args.Trim();
         if (string.IsNullOrWhiteSpace(text))
         {
-            OnEditTargetRequested?.Invoke(gm, "EVENTS");
+            OnEditTargetRequested?.Invoke(gm, "");
             OnSysMessage?.Invoke(gm, ServerMessages.Get("gm_inspect_select"));
             return true;
         }
 
-        string token = text.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[0];
+        string[] parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        string token = parts[0];
         string uidText = token.Replace("0x", "", StringComparison.OrdinalIgnoreCase);
         bool parsed = uint.TryParse(uidText, System.Globalization.NumberStyles.HexNumber, null, out uint targetUid)
                       || uint.TryParse(token, out targetUid);
@@ -1427,8 +1444,24 @@ public sealed class CommandHandler
             return false;
         }
 
-        OnInspectRequested?.Invoke(gm, targetUid);
+        if (parts.Length >= 2 && int.TryParse(parts[1], out int explicitPage))
+            requestedPage = explicitPage;
+
+        OnEditRequested?.Invoke(gm, targetUid, requestedPage);
         return true;
+    }
+
+    private static int ParseRequestedPage(string args)
+    {
+        if (string.IsNullOrWhiteSpace(args))
+            return 0;
+
+        string[] parts = args.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 1 && int.TryParse(parts[0], out int first))
+            return first;
+        if (parts.Length >= 2 && int.TryParse(parts[1], out int second))
+            return second;
+        return 0;
     }
 
     /// <summary>

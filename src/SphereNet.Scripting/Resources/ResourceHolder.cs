@@ -464,6 +464,7 @@ public sealed class ResourceHolder
                 var file = script.Open();
                 try
                 {
+                    PurgeResourcesFromFile(script.FilePath);
                     ReloadResourcesFromFile(file, script.FilePath);
                     reloaded++;
                 }
@@ -499,6 +500,7 @@ public sealed class ResourceHolder
                 var file = script.Open();
                 try
                 {
+                    PurgeResourcesFromFile(script.FilePath);
                     ReloadResourcesFromFile(file, script.FilePath);
                     reloaded++;
                 }
@@ -514,6 +516,33 @@ public sealed class ResourceHolder
         }
 
         return reloaded;
+    }
+
+    private void PurgeResourcesFromFile(string filePath)
+    {
+        string normalized = Path.GetFullPath(filePath);
+        var toRemove = _resources.GetAll()
+            .Where(link => !string.IsNullOrEmpty(link.ScriptFilePath) &&
+                           string.Equals(Path.GetFullPath(link.ScriptFilePath!), normalized,
+                               StringComparison.OrdinalIgnoreCase))
+            .Select(link => link.Id)
+            .ToList();
+
+        if (toRemove.Count == 0)
+            return;
+
+        foreach (var rid in toRemove)
+            _resources.Remove(rid);
+
+        // Keep defname table in sync with removed resources so renamed/removed
+        // sections disappear after Resync (e.g. [FUNCTION spawn] -> spawn2).
+        var removedSet = toRemove.ToHashSet();
+        var staleDefNames = _defNames
+            .Where(kvp => removedSet.Contains(kvp.Value))
+            .Select(kvp => kvp.Key)
+            .ToList();
+        foreach (var key in staleDefNames)
+            _defNames.Remove(key);
     }
 
     private void ReloadResourcesFromFile(ScriptFile file, string filePath)

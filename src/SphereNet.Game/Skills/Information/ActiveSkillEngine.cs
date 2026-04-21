@@ -398,8 +398,10 @@ public static class ActiveSkillEngine
         bool success = SkillEngine.UseQuick(ch, SkillType.Taming, diff);
         if (success)
         {
-            target.NpcMaster = ch.Uid;
-            target.SetStatFlag(StatFlag.Pet);
+            success = target.TryAssignOwnership(ch, ch, summoned: false, enforceFollowerCap: true);
+        }
+        if (success)
+        {
             sink.SysMessage(ServerMessages.GetFormatted(Msg.TamingSuccess, target.Name));
             sink.SysMessage(ServerMessages.GetFormatted(Msg.TamingYmaster, target.Name));
         }

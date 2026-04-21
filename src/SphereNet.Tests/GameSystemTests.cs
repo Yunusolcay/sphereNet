@@ -20,8 +20,10 @@ using SphereNet.Game.Scripting;
 using SphereNet.Game.Movement;
 using SphereNet.Game.Accounts;
 using SphereNet.Network.Manager;
+using SphereNet.Network.Packets;
 using SphereNet.Network.State;
 using System.Data.Common;
+using System.Reflection;
 using Microsoft.Data.Sqlite;
 using ExecTriggerArgs = SphereNet.Scripting.Execution.TriggerArgs;
 
@@ -34,7 +36,37 @@ public class GameSystemTests
         var loggerFactory = LoggerFactory.Create(b => { });
         var world = new GameWorld(loggerFactory);
         world.InitMap(0, 6144, 4096);
+        SphereNet.Game.Objects.ObjBase.ResolveWorld = () => world;
+        SphereNet.Game.Objects.Items.Item.ResolveWorld = () => world;
         return world;
+    }
+
+    private static Queue<PacketBuffer> GetQueuedPackets(NetState state)
+    {
+        return (Queue<PacketBuffer>)(typeof(NetState)
+            .GetField("_sendQueue", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(state)!);
+    }
+
+    private static void SetNetStateInUse(NetState state, bool value)
+    {
+        typeof(NetState)
+            .GetField("<IsInUse>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(state, value);
+    }
+
+    private static bool InvokePetCommand(SphereNet.Game.Clients.GameClient client, string text)
+    {
+        return (bool)typeof(SphereNet.Game.Clients.GameClient)
+            .GetMethod("TryHandlePetCommand", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(client, [text])!;
+    }
+
+    private static void InvokeEnterWorld(SphereNet.Game.Clients.GameClient client)
+    {
+        typeof(SphereNet.Game.Clients.GameClient)
+            .GetMethod("EnterWorld", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(client, []);
     }
 
     // --- Party ---
@@ -375,6 +407,339 @@ public class GameSystemTests
         Assert.Equal(TriggerResult.Default, result);
         Assert.True(target.TryGetProperty("TAG.RESULT", out var value));
         Assert.Equal("alpha", value);
+    }
+
+    [Fact]
+    public void ScriptInterpreter_Resolves_AngleBracketFunctionCalls()
+    {
+        var loggerFactory = LoggerFactory.Create(_ => { });
+        var resources = new SphereNet.Scripting.Resources.ResourceHolder(loggerFactory.CreateLogger<SphereNet.Scripting.Resources.ResourceHolder>());
+        string tempFile = Path.Combine(Path.GetTempPath(), $"spherenet_func_expr_{Guid.NewGuid():N}.scp");
+        File.WriteAllText(tempFile,
+            "[FUNCTION SetProcessDelay]\n" +
+            "TAG.FUNC_ARG0=<ARGV[0]>\n" +
+            "TAG.FUNC_ARG1=<ARGV[1]>\n" +
+            "RETURN 1\n\n" +
+            "[FUNCTION f_test_angle]\n" +
+            "LOCAL.RESULT <SetProcessDelay HelpPage,50>\n" +
+            "TAG.RESULT=<LOCAL.RESULT>\n" +
+            "RETURN 1\n");
+        resources.LoadResourceFile(tempFile);
+
+        var interpreter = new ScriptInterpreter(new ExpressionParser(), loggerFactory.CreateLogger<ScriptInterpreter>());
+        var runner = new TriggerRunner(interpreter, resources, loggerFactory.CreateLogger<TriggerRunner>());
+        interpreter.CallFunction = (name, target, source, args) =>
+            runner.TryRunFunction(name, target, source, args, out var callResult) ? callResult : TriggerResult.Default;
+        interpreter.ResolveFunctionExpression = (name, argString, target, source, args) =>
+            runner.TryEvaluateFunction(name, argString, target, source, args, out var value) ? value : null;
+
+        var target = new Character();
+        bool handled = runner.TryRunFunction("f_test_angle", target, new TestConsole(), new ExecTriggerArgs(), out var result);
+
+        Assert.True(handled);
+        Assert.Equal(TriggerResult.True, result);
+        Assert.True(target.TryGetProperty("TAG.RESULT", out var localResult));
+        Assert.Equal("1", localResult);
+        Assert.True(target.TryGetProperty("TAG.FUNC_ARG0", out var arg0));
+        Assert.True(target.TryGetProperty("TAG.FUNC_ARG1", out var arg1));
+        Assert.Equal("HelpPage", arg0);
+        Assert.Equal("50", arg1);
+    }
+
+    [Fact]
+    public void WeatherEngine_Configure_KeepsWorldSeasonInSync()
+    {
+        var world = CreateWorld();
+        var engine = new WeatherEngine(world);
+
+        engine.Configure(SphereNet.Core.Configuration.SeasonMode.Manual, SeasonType.Winter, intervalMs: 0);
+
+        Assert.Equal(SeasonType.Winter, engine.CurrentSeason);
+        Assert.Equal((byte)SeasonType.Winter, world.CurrentSeason);
+        Assert.Equal(SphereNet.Core.Configuration.SeasonMode.Manual, engine.CurrentSeasonMode);
+    }
+
+    [Fact]
+    public void WeatherEngine_ManualMode_DoesNotAdvanceOnTick()
+    {
+        var world = CreateWorld();
+        var engine = new WeatherEngine(world);
+        engine.Configure(SphereNet.Core.Configuration.SeasonMode.Manual, SeasonType.Fall, intervalMs: 0);
+
+        bool changed = engine.OnTick();
+
+        Assert.False(changed);
+        Assert.Equal(SeasonType.Fall, engine.CurrentSeason);
+        Assert.Equal((byte)SeasonType.Fall, world.CurrentSeason);
+    }
+
+    [Fact]
+    public void WeatherEngine_AutoMode_AdvancesWhenIntervalElapsed()
+    {
+        var world = CreateWorld();
+        var engine = new WeatherEngine(world);
+        engine.Configure(SphereNet.Core.Configuration.SeasonMode.Auto, SeasonType.Spring, intervalMs: 1);
+        typeof(WeatherEngine)
+            .GetField("_lastSeasonChangeTick", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(engine, Environment.TickCount64 - 5);
+
+        bool changed = engine.OnTick();
+
+        Assert.True(changed);
+        Assert.Equal(SeasonType.Summer, engine.CurrentSeason);
+        Assert.Equal((byte)SeasonType.Summer, world.CurrentSeason);
+    }
+
+    [Fact]
+    public void ScriptInterpreter_ServSeason_Command_UsesServerSetterBridge()
+    {
+        var loggerFactory = LoggerFactory.Create(_ => { });
+        var interpreter = new ScriptInterpreter(new ExpressionParser(), loggerFactory.CreateLogger<ScriptInterpreter>());
+        var target = new Character();
+        var args = new ExecTriggerArgs();
+        var scope = new ScriptScope();
+        string? captured = null;
+
+        interpreter.ServerPropertyResolver = property =>
+        {
+            captured = property;
+            return "2";
+        };
+
+        var lines = ParseKeys("SERV.SEASON 3");
+        interpreter.Execute(lines, target, new TestConsole(), args, scope);
+
+        Assert.Equal("_SET_SEASON=3", captured);
+    }
+
+    [Fact]
+    public void GameClient_Resync_ReSendsSeasonPacket()
+    {
+        var loggerFactory = LoggerFactory.Create(_ => { });
+        var world = CreateWorld();
+        world.CurrentSeason = (byte)SeasonType.Winter;
+        var accountManager = new AccountManager(loggerFactory);
+        var netState = new NetState(loggerFactory.CreateLogger<NetState>()) { Id = 42 };
+        SetNetStateInUse(netState, true);
+
+        var client = new SphereNet.Game.Clients.GameClient(netState, world, accountManager,
+            loggerFactory.CreateLogger<SphereNet.Game.Clients.GameClient>());
+        var ch = world.CreateCharacter();
+        ch.IsPlayer = true;
+        world.PlaceCharacter(ch, new Point3D(100, 100, 0, 0));
+
+        typeof(SphereNet.Game.Clients.GameClient)
+            .GetField("_character", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(client, ch);
+
+        var queue = GetQueuedPackets(netState);
+        queue.Clear();
+
+        client.Resync();
+
+        Assert.Contains(queue, pkt => pkt.Span.Length > 0 && pkt.Span[0] == 0xBC && pkt.Span[1] == (byte)SeasonType.Winter);
+    }
+
+    [Fact]
+    public void Character_PrivLevel_SyncsBoundAccount()
+    {
+        var world = CreateWorld();
+        var account = new Account { Name = "tester", PrivLevel = PrivLevel.Player };
+        var ch = world.CreateCharacter();
+        ch.IsPlayer = true;
+        world.PlaceCharacter(ch, new Point3D(100, 100, 0, 0));
+
+        var oldResolver = Character.ResolveAccountForChar;
+        Character.ResolveAccountForChar = uid => uid == ch.Uid ? account : null;
+        try
+        {
+            ch.PrivLevel = PrivLevel.GM;
+            Assert.Equal(PrivLevel.GM, account.PrivLevel);
+            Assert.True(ch.TrySetProperty("PRIVLEVEL", ((int)PrivLevel.Owner).ToString()));
+            Assert.Equal(PrivLevel.Owner, account.PrivLevel);
+        }
+        finally
+        {
+            Character.ResolveAccountForChar = oldResolver;
+        }
+    }
+
+    [Fact]
+    public void EnterWorld_NormalizesMissingPlayerSkillClassToZero()
+    {
+        var loggerFactory = LoggerFactory.Create(_ => { });
+        var world = CreateWorld();
+        var accountManager = new AccountManager(loggerFactory);
+        var account = accountManager.CreateAccount("tester", "pw");
+        account.PrivLevel = PrivLevel.Counsel;
+        var netState = new NetState(loggerFactory.CreateLogger<NetState>()) { Id = 77 };
+        SetNetStateInUse(netState, true);
+
+        var client = new SphereNet.Game.Clients.GameClient(netState, world, accountManager,
+            loggerFactory.CreateLogger<SphereNet.Game.Clients.GameClient>());
+        var ch = world.CreateCharacter();
+        ch.IsPlayer = true;
+        ch.SkillClass = 99;
+        world.PlaceCharacter(ch, new Point3D(100, 100, 0, 0));
+
+        typeof(SphereNet.Game.Clients.GameClient)
+            .GetField("_character", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(client, ch);
+        typeof(SphereNet.Game.Clients.GameClient)
+            .GetField("_account", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(client, account);
+
+        InvokeEnterWorld(client);
+
+        Assert.Equal(0, ch.SkillClass);
+        Assert.Equal(PrivLevel.Counsel, ch.PrivLevel);
+    }
+
+    [Fact]
+    public void Character_OwnershipMemorySurface_ResolvesOwnerControllerAndFriends()
+    {
+        var world = CreateWorld();
+        var owner = world.CreateCharacter();
+        owner.Name = "Owner";
+        owner.IsPlayer = true;
+        world.PlaceCharacter(owner, new Point3D(100, 100, 0, 0));
+
+        var friend = world.CreateCharacter();
+        friend.Name = "Friend";
+        friend.IsPlayer = true;
+        world.PlaceCharacter(friend, new Point3D(101, 100, 0, 0));
+
+        var pet = world.CreateCharacter();
+        pet.Name = "Wolf";
+        world.PlaceCharacter(pet, new Point3D(102, 100, 0, 0));
+
+        Assert.True(pet.TryAssignOwnership(owner, owner, summoned: false, enforceFollowerCap: false));
+        Assert.True(pet.AddFriend(friend));
+
+        Assert.True(pet.TryGetProperty("OWNER", out var ownerVal));
+        Assert.Equal($"0{owner.Uid.Value:X}", ownerVal);
+        Assert.True(pet.TryGetProperty("CONTROLLER", out var controllerVal));
+        Assert.Equal($"0{owner.Uid.Value:X}", controllerVal);
+        Assert.True(pet.TryGetProperty("MemoryFindType.memory_ipet.isValid", out var ownerMemValid));
+        Assert.Equal("1", ownerMemValid);
+        Assert.True(pet.TryGetProperty("MemoryFindType.memory_friend.link.name", out var friendName));
+        Assert.Equal("Friend", friendName);
+        Assert.Single(pet.GetMemoryEntriesByType("memory_friend"));
+    }
+
+    [Fact]
+    public void GameClient_AllGo_UsesGroundCursorForCommandablePets()
+    {
+        var loggerFactory = LoggerFactory.Create(_ => { });
+        var world = CreateWorld();
+        var accountManager = new AccountManager(loggerFactory);
+        var netState = new NetState(loggerFactory.CreateLogger<NetState>()) { Id = 99 };
+        SetNetStateInUse(netState, true);
+
+        var client = new SphereNet.Game.Clients.GameClient(netState, world, accountManager,
+            loggerFactory.CreateLogger<SphereNet.Game.Clients.GameClient>());
+        var owner = world.CreateCharacter();
+        owner.Name = "Owner";
+        owner.IsPlayer = true;
+        world.PlaceCharacter(owner, new Point3D(100, 100, 0, 0));
+        typeof(SphereNet.Game.Clients.GameClient)
+            .GetField("_character", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(client, owner);
+
+        var pet = world.CreateCharacter();
+        pet.Name = "Wolf";
+        world.PlaceCharacter(pet, new Point3D(101, 100, 0, 0));
+        Assert.True(pet.TryAssignOwnership(owner, owner, summoned: false, enforceFollowerCap: false));
+
+        var queue = GetQueuedPackets(netState);
+        queue.Clear();
+
+        Assert.True(InvokePetCommand(client, "all go"));
+        Assert.Contains(queue, pkt => pkt.Span.Length >= 2 && pkt.Span[0] == 0x6C && pkt.Span[1] == 0x00);
+    }
+
+    [Fact]
+    public void GameClient_ForCharMemoryType_ReturnsOwnershipEntries()
+    {
+        var loggerFactory = LoggerFactory.Create(_ => { });
+        var world = CreateWorld();
+        var accountManager = new AccountManager(loggerFactory);
+        var netState = new NetState(loggerFactory.CreateLogger<NetState>()) { Id = 100 };
+        SetNetStateInUse(netState, true);
+
+        var client = new SphereNet.Game.Clients.GameClient(netState, world, accountManager,
+            loggerFactory.CreateLogger<SphereNet.Game.Clients.GameClient>());
+        var owner = world.CreateCharacter();
+        owner.Name = "Owner";
+        owner.IsPlayer = true;
+        world.PlaceCharacter(owner, new Point3D(100, 100, 0, 0));
+        typeof(SphereNet.Game.Clients.GameClient)
+            .GetField("_character", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(client, owner);
+
+        var pet = world.CreateCharacter();
+        pet.Name = "Drake";
+        world.PlaceCharacter(pet, new Point3D(101, 100, 0, 0));
+        Assert.True(pet.TryAssignOwnership(owner, owner, summoned: false, enforceFollowerCap: false));
+
+        var entries = client.QueryScriptObjects("FORCHARMEMORYTYPE", pet, "memory_ipet", null);
+        Assert.Single(entries);
+        Assert.True(entries[0].TryGetProperty("LINK.NAME", out var linkName));
+        Assert.Equal("Owner", linkName);
+    }
+
+    [Fact]
+    public void StableEngine_PersistsStabledPetsViaOwnerTags()
+    {
+        var world = CreateWorld();
+        var owner = world.CreateCharacter();
+        owner.Name = "Owner";
+        owner.IsPlayer = true;
+        world.PlaceCharacter(owner, new Point3D(100, 100, 0, 0));
+
+        var friend = world.CreateCharacter();
+        friend.Name = "Friend";
+        friend.IsPlayer = true;
+        world.PlaceCharacter(friend, new Point3D(101, 100, 0, 0));
+
+        var pet = world.CreateCharacter();
+        pet.Name = "Mare";
+        world.PlaceCharacter(pet, new Point3D(102, 100, 0, 0));
+        Assert.True(pet.TryAssignOwnership(owner, owner, summoned: false, enforceFollowerCap: false));
+        pet.AddFriend(friend);
+        pet.NpcFood = 37;
+
+        var stableA = new SphereNet.Game.NPCs.StableEngine();
+        Assert.True(stableA.StablePet(owner, pet, world));
+
+        var stableB = new SphereNet.Game.NPCs.StableEngine();
+        var claimed = stableB.ClaimPet(owner, 0, world, owner.Position);
+        Assert.NotNull(claimed);
+        Assert.True(claimed!.HasOwner(owner.Uid));
+        Assert.True(claimed.IsFriendOf(friend.Uid));
+        Assert.Equal((ushort)37, claimed.NpcFood);
+    }
+
+    [Fact]
+    public void MountEngine_TryMount_AssignsOwnerAndController()
+    {
+        var loggerFactory = LoggerFactory.Create(_ => { });
+        var world = CreateWorld();
+        var mountEngine = new SphereNet.Game.Mounts.MountEngine(world);
+
+        var rider = world.CreateCharacter();
+        rider.Name = "Rider";
+        rider.IsPlayer = true;
+        world.PlaceCharacter(rider, new Point3D(100, 100, 0, 0));
+
+        var horse = world.CreateCharacter();
+        horse.Name = "Horse";
+        horse.BodyId = 0x00C8;
+        world.PlaceCharacter(horse, new Point3D(101, 100, 0, 0));
+
+        Assert.True(mountEngine.TryMount(rider, horse));
+        Assert.True(horse.HasOwner(rider.Uid));
+        Assert.True(horse.HasController(rider.Uid));
     }
 
     [Fact]

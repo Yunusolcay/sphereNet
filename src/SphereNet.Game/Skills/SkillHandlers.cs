@@ -361,8 +361,7 @@ public sealed class SkillHandlers
         if (success)
         {
             npc.NpcBrain = NpcBrainType.Animal;
-            npc.NpcMaster = ch.Uid;
-            npc.SetStatFlag(StatFlag.Pet);
+            success = npc.TryAssignOwnership(ch, ch, summoned: false, enforceFollowerCap: true);
         }
         return success;
     }

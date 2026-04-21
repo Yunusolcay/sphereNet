@@ -38,6 +38,14 @@ public sealed class ExpressionParser
     public Action<string>? DiagnosticLogger { get; set; }
 
     /// <summary>
+    /// Optional callback for resolving script function calls used inside
+    /// angle-bracket expressions, e.g. <c>&lt;SetProcessDelay HelpPage,50&gt;</c>.
+    /// Return <c>null</c> when the expression is not a callable script
+    /// function so normal variable fallback can continue.
+    /// </summary>
+    public Func<string, string?>? FunctionResolver { get; set; }
+
+    /// <summary>
     /// Per-thread "where am I" label used by <see cref="ReportUnresolved"/> when
     /// the caller doesn't pass an explicit context. ScriptInterpreter / dialog
     /// dispatcher / trigger runner push the current source location here before
@@ -1216,6 +1224,8 @@ public sealed class ExpressionParser
         // Try variable resolver
         string expanded2 = ResolveAngleBrackets(varExpr);
         string? result = VariableResolver?.Invoke(expanded2);
+        if (result == null)
+            result = FunctionResolver?.Invoke(expanded2);
         if (result == null)
             ReportUnresolved(expanded2);
         return result ?? "";

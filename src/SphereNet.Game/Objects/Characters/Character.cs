@@ -109,6 +109,73 @@ public class Character : ObjBase
         Enhanced = 3,
     }
 
+    public enum MemoryRelationType
+    {
+        Owner,
+        Friend,
+        Controller,
+    }
+
+    private sealed class ScriptMemoryEntry(Character subject, Character? link, string memoryType) : IScriptObj
+    {
+        public string GetName() => memoryType;
+
+        public bool TryGetProperty(string key, out string value)
+        {
+            value = "";
+            string upper = key.ToUpperInvariant();
+            if (upper == "ISVALID")
+            {
+                value = link != null ? "1" : "0";
+                return true;
+            }
+
+            if (upper == "TYPE")
+            {
+                value = memoryType;
+                return true;
+            }
+
+            if (upper == "UID")
+            {
+                value = link != null ? $"0{link.Uid.Value:X8}" : "0";
+                return true;
+            }
+
+            if (upper == "LINK")
+            {
+                value = link != null ? $"0{link.Uid.Value:X8}" : "0";
+                return true;
+            }
+
+            if (upper.StartsWith("LINK.", StringComparison.Ordinal))
+            {
+                if (link == null)
+                {
+                    value = "";
+                    return true;
+                }
+
+                return link.TryGetProperty(key["LINK.".Length..], out value);
+            }
+
+            if (upper == "OWNER")
+            {
+                value = $"0{subject.Uid.Value:X8}";
+                return true;
+            }
+
+            if (upper.StartsWith("OWNER.", StringComparison.Ordinal))
+                return subject.TryGetProperty(key["OWNER.".Length..], out value);
+
+            return false;
+        }
+
+        public bool TryExecuteCommand(string key, string args, ITextConsole source) => false;
+        public bool TrySetProperty(string key, string value) => false;
+        public TriggerResult OnTrigger(int triggerType, IScriptObj? source, ITriggerArgs? args) => TriggerResult.Default;
+    }
+
     private bool _isDeleted;
     private bool _isPlayer;
 
@@ -297,7 +364,7 @@ public class Character : ObjBase
 
     /// <summary>True when a GameClient is actively controlling this character.</summary>
     public bool IsOnline { get => _isOnline; set => _isOnline = value; }
-    public int SkillClass { get => _skillClass; set => _skillClass = value; }
+    public int SkillClass { get => _skillClass; set => _skillClass = Math.Max(0, value); }
     public string Title { get => _title; set => _title = value ?? ""; }
 
     /// <summary>GM AllShow mode — shows invisible objects with a grey hue. Runtime-only, not persisted.</summary>
@@ -378,7 +445,20 @@ public class Character : ObjBase
     private int _charDefIndex;
     public Direction Direction { get => _direction; set { if (value != _direction) { _direction = value; MarkDirty(DirtyFlag.Direction); } } }
     public StatFlag StatFlags { get => _statFlags; set => _statFlags = value; }
-    public PrivLevel PrivLevel { get => _privLevel; set => _privLevel = value; }
+    public PrivLevel PrivLevel
+    {
+        get => _privLevel;
+        set
+        {
+            _privLevel = value;
+            if (_isPlayer)
+            {
+                var account = ResolveAccountForChar?.Invoke(Uid);
+                if (account != null)
+                    account.PrivLevel = value;
+            }
+        }
+    }
     public short Fame { get => _fame; set => _fame = value; }
     public short Karma { get => _karma; set => _karma = value; }
     public byte LightLevel { get => _lightLevel; set => _lightLevel = value; }
@@ -421,7 +501,31 @@ public class Character : ObjBase
 
     // Followers
     public byte MaxFollower { get => _maxFollower; set => _maxFollower = value; }
-    public byte CurFollower { get => _curFollower; set => _curFollower = value; }
+    public byte CurFollower
+    {
+        get
+        {
+            var world = ResolveWorld?.Invoke();
+            if (world == null)
+                return _curFollower;
+
+            int count = 0;
+            foreach (var obj in world.GetAllObjects())
+            {
+                if (obj is not Character creature || creature == this || creature.IsDeleted)
+                    continue;
+                if (!creature.HasOwner(this.Uid))
+                    continue;
+                if (creature.IsStatFlag(StatFlag.Ridden))
+                    continue;
+                count++;
+            }
+
+            _curFollower = (byte)Math.Clamp(count, 0, byte.MaxValue);
+            return _curFollower;
+        }
+        set => _curFollower = value;
+    }
 
     // Resist caps
     public short ResFireMax { get => _resFireMax; set => _resFireMax = value; }
@@ -574,7 +678,16 @@ public class Character : ObjBase
 
     // NPC
     public NpcBrainType NpcBrain { get => _npcBrain; set => _npcBrain = value; }
-    public Serial NpcMaster { get => _npcMaster; set => _npcMaster = value; }
+    public Serial NpcMaster
+    {
+        get
+        {
+            if (_npcMaster.IsValid)
+                return _npcMaster;
+            return ParseSerialTag("OWNER_UID");
+        }
+        set => SetOwnerControllerRaw(value, value, mirrorLegacySummon: false);
+    }
     public ushort NpcFood { get => _npcFood; set => _npcFood = value; }
 
     /// <summary>Pet AI mode — controls pet behavior when owned by a player.</summary>
@@ -597,6 +710,308 @@ public class Character : ObjBase
     public bool IsInWarMode => IsStatFlag(StatFlag.War);
     public bool IsInvisible => IsStatFlag(StatFlag.Invisible);
     public bool IsMounted => IsStatFlag(StatFlag.OnHorse);
+
+    public bool IsSummoned =>
+        TryGetTag("SUMMON_MASTER", out string? sm) && ParseSerial(sm).IsValid ||
+        TryGetTag("SUMMON_DURATION", out _) ||
+        TryGetTag("SUMMON_EXPIRE_TICK", out _);
+
+    public Serial OwnerSerial => ParseSerialTag("OWNER_UID", fallback: _npcMaster);
+
+    public Serial ControllerSerial
+    {
+        get
+        {
+            Serial controller = ParseSerialTag("CONTROLLER_UID");
+            return controller.IsValid ? controller : OwnerSerial;
+        }
+    }
+
+    public Character? ResolveOwnerCharacter()
+    {
+        var world = ResolveWorld?.Invoke();
+        return world?.FindChar(OwnerSerial);
+    }
+
+    public Character? ResolveControllerCharacter()
+    {
+        var world = ResolveWorld?.Invoke();
+        return world?.FindChar(ControllerSerial);
+    }
+
+    public bool HasOwner(Serial ownerUid) => ownerUid.IsValid && OwnerSerial == ownerUid;
+
+    public bool HasController(Serial controllerUid) => controllerUid.IsValid && ControllerSerial == controllerUid;
+
+    public bool IsFriendOf(Serial charUid)
+    {
+        if (!charUid.IsValid)
+            return false;
+        return TryGetTag($"FRIEND_{charUid.Value}", out string? raw) &&
+            !string.IsNullOrWhiteSpace(raw) &&
+            !raw.Equals("0", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public bool CanAcceptPetCommandFrom(Character? issuer, bool allowFriends = true)
+    {
+        if (issuer == null || issuer.IsDead)
+            return false;
+        if (HasController(issuer.Uid) || HasOwner(issuer.Uid))
+            return true;
+        if (allowFriends && IsFriendOf(issuer.Uid))
+            return true;
+        return false;
+    }
+
+    public bool TryAssignOwnership(Character? owner, Character? controller = null,
+        bool summoned = false, bool enforceFollowerCap = false)
+    {
+        Serial ownerUid = owner?.Uid ?? Serial.Invalid;
+        Serial controllerUid = controller?.Uid ?? ownerUid;
+
+        if (enforceFollowerCap && owner != null && !HasOwner(owner.Uid) &&
+            owner.CurFollower >= owner.MaxFollower)
+        {
+            return false;
+        }
+
+        SetOwnerControllerRaw(ownerUid, controllerUid, mirrorLegacySummon: summoned);
+        if (owner != null)
+            SetTag("OWNER_UUID", owner.Uuid.ToString("D"));
+        if (controller != null)
+            SetTag("CONTROLLER_UUID", controller.Uuid.ToString("D"));
+        if (summoned && owner != null)
+            SetTag("SUMMON_MASTER_UUID", owner.Uuid.ToString("D"));
+        if (ownerUid.IsValid)
+        {
+            SetStatFlag(StatFlag.Pet);
+            if (_npcFood == 0)
+                _npcFood = 50;
+        }
+        else
+        {
+            ClearStatFlag(StatFlag.Pet);
+        }
+
+        var world = ResolveWorld?.Invoke();
+        if (world != null)
+        {
+            owner?.CurFollower.ToString(); // forces lazy recalc cache
+            controller?.CurFollower.ToString();
+        }
+
+        return true;
+    }
+
+    public void ClearOwnership(bool clearFriends = false)
+    {
+        SetOwnerControllerRaw(Serial.Invalid, Serial.Invalid, mirrorLegacySummon: false);
+        if (clearFriends)
+        {
+            var toRemove = new List<string>();
+            foreach (var kvp in Tags.GetAll())
+            {
+                if (kvp.Key.StartsWith("FRIEND_", StringComparison.OrdinalIgnoreCase))
+                    toRemove.Add(kvp.Key);
+            }
+
+            foreach (var key in toRemove)
+                RemoveTag(key);
+        }
+
+        ClearStatFlag(StatFlag.Pet);
+    }
+
+    public void NormalizePlayerSkillClass()
+    {
+        if (!_isPlayer)
+            return;
+
+        if (_skillClass < 0)
+        {
+            _skillClass = 0;
+            return;
+        }
+
+        if (_skillClass != 0 && DefinitionLoader.GetSkillClassDef(_skillClass) == null)
+            _skillClass = 0;
+    }
+
+    public bool AddFriend(Character friend)
+    {
+        if (friend == null || !friend.Uid.IsValid)
+            return false;
+        SetTag($"FRIEND_{friend.Uid.Value}", "1");
+        return true;
+    }
+
+    public bool RemoveFriend(Character friend)
+    {
+        if (friend == null || !friend.Uid.IsValid)
+            return false;
+        return Tags.Remove($"FRIEND_{friend.Uid.Value}");
+    }
+
+    public IReadOnlyList<IScriptObj> GetMemoryEntriesByType(string rawType)
+    {
+        string normalized = NormalizeMemoryType(rawType);
+        var result = new List<IScriptObj>();
+
+        if (normalized == "MEMORY_GUILD")
+            return result;
+
+        var world = ResolveWorld?.Invoke();
+        if (world == null)
+            return result;
+
+        if (normalized is "MEMORY_IPET" or "MEMORY_OWNER" or "MEMORY_CONTROLLER")
+        {
+            Character? link = normalized == "MEMORY_CONTROLLER"
+                ? world.FindChar(ControllerSerial)
+                : world.FindChar(OwnerSerial);
+            if (link != null)
+                result.Add(new ScriptMemoryEntry(this, link, normalized));
+            return result;
+        }
+
+        if (normalized == "MEMORY_FRIEND")
+        {
+            foreach (var kvp in Tags.GetAll())
+            {
+                if (!kvp.Key.StartsWith("FRIEND_", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                Serial friendUid = ParseSerial(kvp.Key["FRIEND_".Length..]);
+                if (!friendUid.IsValid)
+                    continue;
+                var friend = world.FindChar(friendUid);
+                if (friend != null && !friend.IsDeleted)
+                    result.Add(new ScriptMemoryEntry(this, friend, normalized));
+            }
+        }
+
+        return result;
+    }
+
+    public IScriptObj? FindMemoryEntry(string rawType)
+    {
+        var list = GetMemoryEntriesByType(rawType);
+        return list.Count > 0 ? list[0] : null;
+    }
+
+    public bool TickPetOwnershipTimers(long nowMs)
+    {
+        if (!OwnerSerial.IsValid && !IsSummoned)
+            return false;
+
+        if (TryGetTag("SUMMON_EXPIRE_TICK", out string? expireRaw) &&
+            long.TryParse(expireRaw, out long expireTick) &&
+            expireTick > 0 && nowMs >= expireTick)
+        {
+            return true;
+        }
+
+        if (IsSummoned)
+            return false;
+
+        long nextTick = Tags.GetInt("PET_NEXT_LOYALTY_TICK", 0);
+        if (nextTick == 0)
+        {
+            SetTag("PET_NEXT_LOYALTY_TICK", (nowMs + 60_000).ToString());
+            return false;
+        }
+
+        if (nowMs < nextTick)
+            return false;
+
+        SetTag("PET_NEXT_LOYALTY_TICK", (nowMs + 60_000).ToString());
+        if (_npcFood > 0)
+            _npcFood--;
+
+        if (_npcFood == 0)
+        {
+            ClearOwnership(clearFriends: false);
+            PetAIMode = PetAIMode.Stay;
+            return false;
+        }
+
+        return false;
+    }
+
+    private static Serial ParseSerial(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return Serial.Invalid;
+
+        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+            uint.TryParse(raw.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out uint from0x))
+        {
+            return new Serial(from0x);
+        }
+
+        if (raw.StartsWith('0') && raw.Length > 1 && !raw.Contains(',') &&
+            uint.TryParse(raw.AsSpan(1), System.Globalization.NumberStyles.HexNumber, null, out uint fromSphere))
+        {
+            return new Serial(fromSphere);
+        }
+
+        return uint.TryParse(raw, out uint dec) ? new Serial(dec) : Serial.Invalid;
+    }
+
+    private Serial ParseSerialTag(string key, Serial fallback = default)
+    {
+        return TryGetTag(key, out string? raw) ? ParseSerial(raw) : fallback;
+    }
+
+    private static string NormalizeMemoryType(string rawType)
+    {
+        string upper = rawType.Trim().ToUpperInvariant();
+        return upper switch
+        {
+            "IPET" or "PET" or "OWNER" or "MEMORY_IPET" or "MEMORY_OWNER" => "MEMORY_IPET",
+            "CONTROLLER" or "MEMORY_CONTROLLER" => "MEMORY_CONTROLLER",
+            "FRIEND" or "MEMORY_FRIEND" => "MEMORY_FRIEND",
+            _ => upper.StartsWith("MEMORY_", StringComparison.Ordinal) ? upper : "MEMORY_" + upper,
+        };
+    }
+
+    private void SetOwnerControllerRaw(Serial ownerUid, Serial controllerUid, bool mirrorLegacySummon)
+    {
+        _npcMaster = ownerUid;
+
+        if (ownerUid.IsValid)
+        {
+            SetTag("OWNER_UID", ownerUid.Value.ToString());
+            SetTag("MEMORYLINK.MEMORY_IPET", ownerUid.Value.ToString());
+        }
+        else
+        {
+            RemoveTag("OWNER_UID");
+            RemoveTag("OWNER_UUID");
+            RemoveTag("MEMORYLINK.MEMORY_IPET");
+        }
+
+        if (controllerUid.IsValid)
+        {
+            SetTag("CONTROLLER_UID", controllerUid.Value.ToString());
+            SetTag("MEMORYLINK.MEMORY_CONTROLLER", controllerUid.Value.ToString());
+        }
+        else
+        {
+            RemoveTag("CONTROLLER_UID");
+            RemoveTag("CONTROLLER_UUID");
+            RemoveTag("MEMORYLINK.MEMORY_CONTROLLER");
+        }
+
+        if (mirrorLegacySummon && ownerUid.IsValid)
+        {
+            SetTag("SUMMON_MASTER", ownerUid.Value.ToString());
+        }
+        else if (!mirrorLegacySummon)
+        {
+            RemoveTag("SUMMON_MASTER");
+            RemoveTag("SUMMON_MASTER_UUID");
+        }
+    }
 
     // --- Skills ---
     public ushort GetSkill(SkillType skill) =>
@@ -790,6 +1205,14 @@ public class Character : ObjBase
                         return true;
                     }
                 }
+            }
+
+            var memory = FindMemoryEntry(memType);
+            if (memory != null)
+            {
+                if (sub.Length == 0)
+                    return memory.TryGetProperty("LINK", out value);
+                return memory.TryGetProperty(sub, out value);
             }
 
             // Unknown memory or sub: return false-y so callers using
@@ -1023,7 +1446,7 @@ public class Character : ObjBase
             case "ACTPRI": value = _actPri.ToString(); return true;
             case "SPEECHCOLOR": value = _speechColor.ToString(); return true;
             case "MAXFOLLOWER": value = _maxFollower.ToString(); return true;
-            case "CURFOLLOWER": value = _curFollower.ToString(); return true;
+            case "CURFOLLOWER": value = CurFollower.ToString(); return true;
             case "RESFIREMAX": value = _resFireMax.ToString(); return true;
             case "RESCOLDMAX": value = _resColdMax.ToString(); return true;
             case "RESPOISONMAX": value = _resPoisonMax.ToString(); return true;
@@ -1230,14 +1653,31 @@ public class Character : ObjBase
         // OWNER / OWNER.xxx
         if (upper == "OWNER" || upper.StartsWith("OWNER.", StringComparison.Ordinal))
         {
-            if (_npcMaster == Serial.Invalid) { value = "0"; return true; }
-            if (upper == "OWNER") { value = $"0{_npcMaster.Value:X}"; return true; }
+            Serial ownerUid = OwnerSerial;
+            if (!ownerUid.IsValid) { value = "0"; return true; }
+            if (upper == "OWNER") { value = $"0{ownerUid.Value:X}"; return true; }
             var world = ResolveWorld?.Invoke();
-            var owner = world?.FindObject(_npcMaster) as Character;
+            var owner = world?.FindObject(ownerUid) as Character;
             if (owner != null)
             {
                 string subKey = key["OWNER.".Length..];
                 return owner.TryGetProperty(subKey, out value);
+            }
+            value = "0";
+            return true;
+        }
+
+        if (upper == "CONTROLLER" || upper.StartsWith("CONTROLLER.", StringComparison.Ordinal))
+        {
+            Serial controllerUid = ControllerSerial;
+            if (!controllerUid.IsValid) { value = "0"; return true; }
+            if (upper == "CONTROLLER") { value = $"0{controllerUid.Value:X}"; return true; }
+            var world = ResolveWorld?.Invoke();
+            var controller = world?.FindObject(controllerUid) as Character;
+            if (controller != null)
+            {
+                string subKey = key["CONTROLLER.".Length..];
+                return controller.TryGetProperty(subKey, out value);
             }
             value = "0";
             return true;
@@ -1441,10 +1881,18 @@ public class Character : ObjBase
             return true;
         }
 
-        // MEMORY.xxx / MEMORYFIND.xxx (TAG-based)
+        // MEMORY.xxx / MEMORYFIND.xxx (ownership-aware)
         if (upper.StartsWith("MEMORY.", StringComparison.Ordinal) ||
             upper.StartsWith("MEMORYFIND.", StringComparison.Ordinal))
         {
+            if (upper.StartsWith("MEMORYFIND.", StringComparison.Ordinal))
+            {
+                string memType = key["MEMORYFIND.".Length..];
+                var entry = FindMemoryEntry(memType);
+                if (entry != null && entry.TryGetProperty("LINK", out value))
+                    return true;
+            }
+
             value = TryGetTag(key, out string? mv) ? (mv ?? "0") : "0";
             return true;
         }
@@ -1478,6 +1926,32 @@ public class Character : ObjBase
         return ushort.TryParse(val, out result);
     }
 
+    private static bool TryParseShortSingleOrRange(string value, out short result)
+    {
+        result = 0;
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        string v = value.Trim();
+        if (v.Length >= 2 && v[0] == '{' && v[^1] == '}')
+            v = v[1..^1].Trim();
+
+        if (short.TryParse(v, out result))
+            return true;
+
+        var parts = v.Split(new[] { ',', ' ' }, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2)
+            return false;
+
+        if (!short.TryParse(parts[0], out short a) || !short.TryParse(parts[1], out short b))
+            return false;
+
+        int min = Math.Min(a, b);
+        int max = Math.Max(a, b);
+        result = (short)Random.Shared.Next(min, max + 1);
+        return true;
+    }
+
     public override bool TrySetProperty(string key, string value)
     {
         if (!TryNormalizeScriptValue(value, out string normalized))
@@ -1508,15 +1982,23 @@ public class Character : ObjBase
             case "MAXSTAM": if (short.TryParse(normalized, out short msv)) MaxStam = msv; return true;
             case "BODY": if (TryParseHexOrDecUshort(normalized, out ushort bv)) _bodyId = bv; return true;
             case "DIR": if (byte.TryParse(normalized, out byte drv)) _direction = (Direction)drv; return true;
-            case "FAME": if (short.TryParse(normalized, out short fv)) _fame = fv; return true;
-            case "KARMA": if (short.TryParse(normalized, out short kv)) _karma = kv; return true;
+            case "FAME":
+                if (TryParseShortSingleOrRange(normalized, out short fv))
+                    _fame = fv;
+                return true;
+            case "KARMA":
+                if (TryParseShortSingleOrRange(normalized, out short kv))
+                    _karma = kv;
+                return true;
             case "NPC":
             case "NPCBRAIN":
                 if (TryParseNpcBrain(normalized, out var brain)) _npcBrain = brain;
                 return true;
             case "SKILLCLASS":
-                if (TryParseSkillClassValue(normalized, out int classId))
-                    _skillClass = classId;
+                if (string.IsNullOrWhiteSpace(normalized))
+                    _skillClass = 0;
+                else if (TryParseSkillClassValue(normalized, out int classId))
+                    _skillClass = Math.Max(0, classId);
                 return true;
             case "TITLE": _title = value; return true;
             case "FLAGS": if (uint.TryParse(normalized, out uint flagsVal)) _statFlags = (StatFlag)flagsVal; return true;
@@ -1557,7 +2039,7 @@ public class Character : ObjBase
             case "GM":
             {
                 bool isGm = normalized != "0" && !string.IsNullOrEmpty(normalized);
-                _privLevel = isGm ? PrivLevel.GM : PrivLevel.Player;
+                PrivLevel = isGm ? PrivLevel.GM : PrivLevel.Player;
                 return true;
             }
             case "INVUL":
@@ -1574,7 +2056,7 @@ public class Character : ObjBase
                 return true;
             case "PRIVLEVEL":
                 if (int.TryParse(normalized, out int plvSet))
-                    _privLevel = (PrivLevel)plvSet;
+                    PrivLevel = (PrivLevel)plvSet;
                 return true;
             case "NIGHTSIGHT":
                 _nightSight = normalized != "0" && !string.IsNullOrEmpty(normalized);
@@ -1605,6 +2087,29 @@ public class Character : ObjBase
             case "SPEECHCOLOR": if (ushort.TryParse(normalized, out ushort scv)) _speechColor = scv; return true;
             case "MAXFOLLOWER": if (byte.TryParse(normalized, out byte mfv)) _maxFollower = mfv; return true;
             case "CURFOLLOWER": if (byte.TryParse(normalized, out byte cfv)) _curFollower = cfv; return true;
+            case "OWNER":
+            case "OWNER_UID":
+            case "NPCMASTER":
+            {
+                Serial ownerUid = ParseSerial(normalized);
+                if (!ownerUid.IsValid)
+                {
+                    ClearOwnership(clearFriends: false);
+                }
+                else
+                {
+                    SetOwnerControllerRaw(ownerUid, ownerUid, mirrorLegacySummon: IsSummoned);
+                    SetStatFlag(StatFlag.Pet);
+                }
+                return true;
+            }
+            case "CONTROLLER":
+            case "CONTROLLER_UID":
+            {
+                Serial controllerUid = ParseSerial(normalized);
+                SetOwnerControllerRaw(OwnerSerial, controllerUid, mirrorLegacySummon: IsSummoned);
+                return true;
+            }
             case "RESFIREMAX": if (short.TryParse(normalized, out short rfmv)) _resFireMax = rfmv; return true;
             case "RESCOLDMAX": if (short.TryParse(normalized, out short rcmv)) _resColdMax = rcmv; return true;
             case "RESPOISONMAX": if (short.TryParse(normalized, out short rpmv)) _resPoisonMax = rpmv; return true;
@@ -2389,7 +2894,7 @@ public class Character : ObjBase
             case "PRIVSET":
             {
                 if (int.TryParse(args.Trim(), out int plv))
-                    _privLevel = (PrivLevel)plv;
+                    PrivLevel = (PrivLevel)plv;
                 return true;
             }
             case "FORGIVE":

@@ -4,8 +4,42 @@
  All notable changes are documented in this file.
 ================================================================================
 
-[2026-04-21] - Hareket carpisma filtresi, mobil diagnostik, shove paritesi, AllShow gizli render
+[2026-04-21] - PrivLevel save tutarsizligi: login senkronu iki yonlu, PRIVSET hesabi guncelliyor
 ----------------------------------------
+
+DUZELTMELER / FIXES:
+  - GameClient.EnterWorld: Login sirasindaki PrivLevel senkronu tek
+    yonludan ("hesap -> karakter") cift yonlu kosullu senkrona cevrildi.
+    Karakterin disk'ten yuklenen PrivLevel'i (spherechars/PRIVLEVEL)
+    hesabin PLEVEL'inden buyukse hesap karakter seviyesine yukseltiliyor;
+    aksi halde klasik "hesap otorite" yon korunuyor (admin tarafindan
+    account uzerinden indirme calismaya devam ediyor). Eski .privset /
+    .privlevel yollari hesabi guncellemeden karakteri yukselttigi icin
+    diskte PRIVLEVEL=GM + PLEVEL=Player kayitlari olusmustu; her
+    girisinde bu satir karakteri tekrar Player'a indiriyor, "oyuna
+    girince leveli 1 oluyor" hatasinin asil kaynagi buydu. Yeni davranis
+    bozulmus mevcut kayitlari ilk girisinde iyilestiriyor; sonraki dunya
+    save'i iki tarafi da tutarli yaziyor.
+    EnterWorld now reconciles char/account PrivLevel both ways: if the
+    saved character outranks the account, the account is promoted to the
+    character's level (heals legacy snapshots), otherwise the account
+    stays authoritative. Fixes "PLEVEL resets to 1 on login" caused by
+    older .privset / PRIVLEVEL paths that wrote char.PRIVLEVEL without
+    mirroring acc.PLEVEL; one login restores parity and the next save
+    persists both sides consistently.
+  - Character.TryExecuteCommand PRIVSET: Komut artik _privLevel alanina
+    dogrudan yazmak yerine PrivLevel property setter'i uzerinden
+    geciyor. Setter zaten _isPlayer kontrolu + ResolveAccountForChar ile
+    bagli hesabin PLEVEL'ini de mirror ediyordu; PRIVSET de artik bu
+    yolu kullandigi icin oyun-ici PrivLevel degisiklikleri tek save
+    cyclu'nde hem spherechars hem sphereaccu'ya tutarli yaziliyor ve
+    bir daha ayni driftin ureyemiyor.
+    PRIVSET verb routes through the PrivLevel property setter instead
+    of writing _privLevel directly, so the account-side mirror runs and
+    every in-game privilege change is persisted on both save files in a
+    single cycle — preventing the inconsistency from re-emerging.
+
+
 
 DUZELTMELER / FIXES:
   - WalkCheck: ShouldTreatAsMovementGeometry ile dunya item geometrisi

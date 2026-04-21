@@ -1,5 +1,6 @@
 using SphereNet.Core.Enums;
 using SphereNet.Core.Types;
+using SphereNet.Core.Configuration;
 
 namespace SphereNet.Game.World;
 
@@ -46,15 +47,36 @@ public sealed class WeatherEngine
     // Global season
     private SeasonType _currentSeason = SeasonType.Spring;
     private long _lastSeasonChangeTick;
+    private SeasonMode _seasonMode = SeasonMode.Auto;
 
     /// <summary>Season change interval in milliseconds (default: 30 minutes).</summary>
     public int SeasonChangeInterval { get; set; } = 30 * 60 * 1000;
 
     public SeasonType CurrentSeason => _currentSeason;
+    public SeasonMode CurrentSeasonMode => _seasonMode;
 
     public WeatherEngine(GameWorld world)
     {
         _world = world;
+        _world.CurrentSeason = (byte)_currentSeason;
+        _lastSeasonChangeTick = Environment.TickCount64;
+    }
+
+    public void Configure(SeasonMode mode, SeasonType defaultSeason, int intervalMs)
+    {
+        _seasonMode = mode;
+        SeasonChangeInterval = Math.Max(0, intervalMs);
+        SetSeason(defaultSeason, resetCycleTimer: true);
+    }
+
+    public bool SetSeason(SeasonType season, bool resetCycleTimer = true)
+    {
+        bool changed = _currentSeason != season || _world.CurrentSeason != (byte)season;
+        _currentSeason = season;
+        _world.CurrentSeason = (byte)season;
+        if (resetCycleTimer)
+            _lastSeasonChangeTick = Environment.TickCount64;
+        return changed;
     }
 
     /// <summary>
@@ -134,17 +156,14 @@ public sealed class WeatherEngine
             }
         }
 
-        // Season cycling
-        bool seasonChanged = false;
-        if (now - _lastSeasonChangeTick >= SeasonChangeInterval)
-        {
-            _lastSeasonChangeTick = now;
-            _currentSeason = (SeasonType)(((int)_currentSeason + 1) % 4);
-            _world.CurrentSeason = (byte)_currentSeason;
-            seasonChanged = true;
-        }
+        if (_seasonMode != SeasonMode.Auto || SeasonChangeInterval <= 0)
+            return false;
 
-        return seasonChanged;
+        if (now - _lastSeasonChangeTick < SeasonChangeInterval)
+            return false;
+
+        var nextSeason = (SeasonType)(((int)_currentSeason + 1) % 4);
+        return SetSeason(nextSeason, resetCycleTimer: true);
     }
 
     /// <summary>

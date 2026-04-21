@@ -24,6 +24,7 @@ using SphereNet.Game.Scripting;
 using SphereNet.Game.Skills;
 using SphereNet.Game.Objects;
 using SphereNet.Game.Objects.Characters;
+using SphereNet.Game.Objects.Items;
 using SphereNet.Game.Speech;
 using SphereNet.Game.Trade;
 using SphereNet.Game.World;
@@ -125,6 +126,8 @@ public static class Program
     // VDS hosts (~30–100 ms slow-tick spikes when GC kicked in).
     private static readonly List<NpcAI.NpcDecision> _reusableDecisionList = [];
     private static readonly Dictionary<int, GameClient.ClientViewDelta> _reusableClientDeltas = [];
+    private static readonly Dictionary<Serial, long> _summonedGuardExpiry = [];
+    private static long _nextDecayCatchupTick;
     private static long _telemetrySnapshotUs;
     private static long _telemetryComputeUs;
     private static long _telemetryApplyUs;
@@ -548,6 +551,10 @@ public static class Program
             _triggerRunner.TryRunFunction(name, target, source, args, out var callResult)
                 ? callResult
                 : TriggerResult.Default;
+        scriptInterpreter.ResolveFunctionExpression = (name, argString, target, source, args) =>
+            _triggerRunner.TryEvaluateFunction(name, argString, target, source, args, out var value)
+                ? value
+                : null;
         scriptInterpreter.ServerPropertyResolver = ResolveServerProperty;
         _triggerDispatcher.Runner = _triggerRunner;
 
@@ -887,6 +894,17 @@ public static class Program
                 }
             }
         };
+        _commands.OnEditRequested += (gm, uid, page) =>
+        {
+            foreach (var c in _clients.Values)
+            {
+                if (c.Character == gm)
+                {
+                    c.ShowInspectDialog(uid, page);
+                    break;
+                }
+            }
+        };
         // Source-X parity (CClient.cpp:921) — generic X-prefix verb fallback.
         _commands.OnAddVerbTargetRequested += (gm, verb, verbArgs) =>
         {
@@ -987,6 +1005,30 @@ public static class Program
                     break;
                 }
             }
+        };
+        _commands.OnKillRequested += (gm, targetUid) =>
+        {
+            var victim = !targetUid.HasValue || targetUid.Value.Value == 0
+                ? gm
+                : _world.FindChar(targetUid.Value);
+
+            if (victim == null)
+            {
+                if (_clientsByCharUid.TryGetValue(gm.Uid, out var gmClient))
+                    gmClient.SysMessage("Kill: target not found.");
+                return;
+            }
+
+            if (victim.IsDead || victim.IsDeleted)
+            {
+                if (_clientsByCharUid.TryGetValue(gm.Uid, out var gmClient2))
+                    gmClient2.SysMessage($"'{victim.Name}' is already dead.");
+                return;
+            }
+
+            _deathEngine.ProcessDeath(victim, gm);
+            if (_clientsByCharUid.TryGetValue(gm.Uid, out var gmClient3))
+                gmClient3.SysMessage($"Killed '{victim.Name}'.");
         };
         _commands.OnResurrectRequested += (gm, targetUid) =>
         {
@@ -1161,16 +1203,16 @@ public static class Program
         };
         _npcAI.OnNpcKill = (killer, victim) =>
         {
-            // TODO: NPC death/corpse packet sync still has edge cases; revisit with
-            // Source-X/ServUO/ClassicUO side-by-side traces.
-            _triggerDispatcher?.FireCharTrigger(killer, CharTrigger.Kill,
-                new TriggerArgs { CharSrc = killer, O1 = victim });
+            var effectiveKiller = ResolveEffectiveOffender(killer);
+
+            _triggerDispatcher?.FireCharTrigger(effectiveKiller, CharTrigger.Kill,
+                new TriggerArgs { CharSrc = effectiveKiller, O1 = victim });
             _triggerDispatcher?.FireCharTrigger(victim, CharTrigger.Death,
-                new TriggerArgs { CharSrc = killer });
+                new TriggerArgs { CharSrc = effectiveKiller });
 
             var victimPos = victim.Position;
             byte victimDir = (byte)((byte)victim.Direction & 0x07);
-            var corpse = _deathEngine.ProcessDeath(victim, killer);
+            var corpse = _deathEngine.ProcessDeath(victim, effectiveKiller);
             killer.FightTarget = Serial.Invalid;
 
             if (corpse != null)
@@ -1231,12 +1273,11 @@ public static class Program
                 }
                 else
                 {
-                    // NPC corpse — matches both Source-X (PacketDeath +
-                    // RemoveFromView) and ServUO (DeathAnimation + Delete ->
-                    // RemovePacket) reference flow:
-                    //   1) 0x1A WorldItem  (corpse appears in world)
-                    //   2) 0xAF DeathAnim  (mobile -> corpse transition)
-                    //   3) 0x1D DeleteObj  (remove the dead mobile)
+                    // NPC corpse — keep the same packet order the PvP path
+                    // uses for non-player victims so the client sees:
+                    //   1) corpse world item
+                    //   2) death animation
+                    //   3) delete dead mobile
                     var corpsePacket = new PacketWorldItem(
                         corpse.Uid.Value, corpse.DispIdFull, corpse.Amount,
                         corpse.X, corpse.Y, corpse.Z, corpse.Hue,
@@ -1265,6 +1306,10 @@ public static class Program
         _skillHandlers = new SkillHandlers(_world, gatheringEngine);
         _craftingEngine = new CraftingEngine(_world);
         _weatherEngine = new WeatherEngine(_world);
+        _weatherEngine.Configure(
+            _config.SeasonMode,
+            (SeasonType)Math.Clamp(_config.SeasonDefault, (byte)SeasonType.Spring, (byte)SeasonType.Desolation),
+            checked(_config.SeasonChangeIntervalMinutes * 60 * 1000));
         VendorEngine.World = _world;
         _world.ObjectCreated += OnWorldObjectCreated;
         _world.ObjectDeleting += OnWorldObjectDeleting;
@@ -1362,6 +1407,9 @@ public static class Program
             {
                 corpse.RemoveItem(child);
                 _world.PlaceItem(child, pos);
+                // Loot spilled from a rotting corpse should not stay forever.
+                if (child.DecayTime <= 0)
+                    child.DecayTime = Environment.TickCount64 + GameWorld.DefaultDecayTimeMs;
             }
         };
         SphereNet.Game.Objects.Items.Item.ResolveShipEngine = () => _shipEngine;
@@ -1938,6 +1986,8 @@ public static class Program
             "HEARALL" => "0",
             "GMPAGES" => "0",
             "GUILDS" => "0",
+            "SEASON" => ((int)(_weatherEngine?.CurrentSeason ?? SeasonType.Spring)).ToString(),
+            "SEASONMODE" => (_weatherEngine?.CurrentSeasonMode ?? SeasonMode.Auto).ToString(),
             "FEATURET2A" => (_config?.FeatureT2A ?? 0).ToString(),
             // Chat system flags are script-visible even when chat is disabled.
             // Return 0 until a fuller chat subsystem is wired.
@@ -1954,6 +2004,12 @@ public static class Program
             // Admin dialogs iterate all 58 skills using <Serv.Skill.<idx>.Key>
             // to discover defnames at runtime.
             _ when upper.StartsWith("SKILL.") => ResolveServSkill(upper[6..]),
+
+            // --- SERV.CHARDEF.<defname>.<prop> / SERV.ITEMDEF.<defname>.<prop>
+            // Used by script dialogs like d_spawn to render names/jobs from
+            // definition data without instantiating the object.
+            _ when upper.StartsWith("CHARDEF.") => ResolveServCharDef(property[8..]),
+            _ when upper.StartsWith("ITEMDEF.") => ResolveServItemDef(property[8..]),
 
             // --- ISEVENT.name — 1 if the named event script is loaded.
             // Used by admin dialogs to grey out delete buttons for missing events.
@@ -2008,6 +2064,7 @@ public static class Program
             _ when upper.StartsWith("_CLEARVARS=") => HandleClearVars(property[11..]),
             _ when upper.StartsWith("_NEWDUPE=") => HandleNewDupe(property[9..]),
             _ when upper.StartsWith("_SET_DEFMSG=") => HandleSetDefMsg(property[12..]),
+            _ when upper.StartsWith("_SET_SEASON=") => HandleSetSeason(property[12..]),
 
             // REF object property access
             _ when upper.StartsWith("_REF_GET=") => HandleRefGet(property[9..]),
@@ -2064,6 +2121,92 @@ public static class Program
         if (string.IsNullOrEmpty(field) || field == "KEY" || field == "NAME" || field == "DEFNAME")
             return skillName;
         return "";
+    }
+
+    private static string HandleSetSeason(string raw)
+    {
+        if (_weatherEngine == null)
+            return "0";
+
+        string trimmed = raw.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+            return "0";
+
+        SeasonType season;
+        if (byte.TryParse(trimmed, out byte seasonNum) &&
+            Enum.IsDefined(typeof(SeasonType), (int)seasonNum))
+        {
+            season = (SeasonType)seasonNum;
+        }
+        else if (!Enum.TryParse(trimmed, ignoreCase: true, out season))
+        {
+            return "0";
+        }
+
+        bool changed = _weatherEngine.SetSeason(season, resetCycleTimer: true);
+        if (changed)
+            BroadcastSeasonChange(playSound: true);
+        return ((int)_weatherEngine.CurrentSeason).ToString();
+    }
+
+    private static string? ResolveServCharDef(string sub)
+    {
+        if (_resources == null || string.IsNullOrWhiteSpace(sub))
+            return "";
+
+        int dot = sub.IndexOf('.');
+        if (dot <= 0)
+            return "";
+
+        string defName = sub[..dot].Trim();
+        string field = sub[(dot + 1)..].Trim().ToUpperInvariant();
+        var rid = _resources.ResolveDefName(defName);
+        if (!rid.IsValid || rid.Type != SphereNet.Core.Enums.ResType.CharDef)
+            return "";
+
+        var def = SphereNet.Game.Definitions.DefinitionLoader.GetCharDef(rid.Index);
+        if (def == null)
+            return "";
+
+        return field switch
+        {
+            "NAME" => def.Name ?? "",
+            "JOB" => def.Job ?? "",
+            "DEFNAME" => def.DefName ?? "",
+            "ID" or "DISPID" => $"0{def.DispIndex:X}",
+            "ICON" => def.Icon ?? "",
+            "NPC" or "NPCBRAIN" => def.NpcBrain.ToString(),
+            _ => ""
+        };
+    }
+
+    private static string? ResolveServItemDef(string sub)
+    {
+        if (_resources == null || string.IsNullOrWhiteSpace(sub))
+            return "";
+
+        int dot = sub.IndexOf('.');
+        if (dot <= 0)
+            return "";
+
+        string defName = sub[..dot].Trim();
+        string field = sub[(dot + 1)..].Trim().ToUpperInvariant();
+        var rid = _resources.ResolveDefName(defName);
+        if (!rid.IsValid || rid.Type != SphereNet.Core.Enums.ResType.ItemDef)
+            return "";
+
+        var def = SphereNet.Game.Definitions.DefinitionLoader.GetItemDef(rid.Index);
+        if (def == null)
+            return "";
+
+        return field switch
+        {
+            "NAME" => def.Name ?? "",
+            "DEFNAME" => def.DefName ?? "",
+            "ID" or "DISPID" => $"0{def.DispIndex:X}",
+            "TYPE" => def.Type.ToString(),
+            _ => ""
+        };
     }
 
     private static string? ResolveObjProperty(string subProp)
@@ -3385,6 +3528,16 @@ public static class Program
             client.HandleHelpRequest();
     }
 
+    private static void BroadcastSeasonChange(bool playSound)
+    {
+        var seasonPacket = new PacketSeason((byte)_weatherEngine.CurrentSeason, playSound);
+        foreach (var client in _clients.Values)
+        {
+            if (client.IsPlaying)
+                client.Send(seasonPacket);
+        }
+    }
+
     private static void OnViewRange(NetState state, byte range)
     {
         if (_clients.TryGetValue(state.Id, out var client))
@@ -3612,7 +3765,19 @@ public static class Program
             }
             if (checkAmount > 0)
             {
-                NpcSpeak(npc, "I am unable to issue a check for that amount right now.");
+                long banked = CountBankGold(speaker);
+                if (banked < checkAmount)
+                {
+                    NpcSpeak(npc, $"You have only {banked} gold piece(s) in our care.");
+                    return true;
+                }
+                if (!DepositBankCheckToBackpack(speaker, checkAmount))
+                {
+                    NpcSpeak(npc, "I am unable to issue a check for that amount right now.");
+                    return true;
+                }
+                RemoveBankGold(speaker, checkAmount);
+                NpcSpeak(npc, $"Here is thy check for {checkAmount} gold piece(s).");
                 return true;
             }
             if (wantBank)
@@ -3630,25 +3795,20 @@ public static class Program
     /// <summary>
     /// Service NPC keyword response. We don't yet have a dedicated NPC
     /// overhead-speech broadcast, so the line is delivered as a system
-    /// message to the player who triggered it. Source-X parity behaviour
-    /// (overhead bubble + nearby clients see the line) will land once
-    /// SpeechEngine grows a SendNpcSpeech helper.
     /// </summary>
     private static void NpcSpeak(Character npc, string line)
     {
         if (string.IsNullOrEmpty(line)) return;
-        // Heard-by-everyone path: walk the world and SysMessage every
-        // online player in hearing range. Keeps the response visible to
-        // nearby observers without requiring the NPC overhead packet
-        // wired up.
-        var listeners = _world?.GetCharsInRange(npc.Position, 14);
-        if (listeners == null) return;
-        string prefixed = $"{npc.Name}: {line}";
-        foreach (var ch in listeners)
-        {
-            if (!ch.IsPlayer) continue;
-            FindGameClient(ch)?.SysMessage(prefixed);
-        }
+        var speechPacket = new PacketSpeechUnicodeOut(
+            npc.Uid.Value,
+            npc.BodyId,
+            0x06,
+            npc.SpeechColor != 0 ? npc.SpeechColor : (ushort)0x03B2,
+            3,
+            "TRK",
+            npc.Name ?? "",
+            line);
+        BroadcastNearby(npc.Position, 14, speechPacket, 0);
     }
 
     /// <summary>
@@ -3736,6 +3896,37 @@ public static class Program
         }
     }
 
+    private static bool DepositBankCheckToBackpack(Character ch, int amount)
+    {
+        var pack = ch.Backpack;
+        if (pack == null || amount <= 0)
+            return false;
+
+        var rid = _resources.ResolveDefName("i_bankcheck");
+        if (!rid.IsValid || rid.Type != ResType.ItemDef)
+            return false;
+
+        var item = _world.CreateItem();
+        var itemDef = DefinitionLoader.GetItemDef(rid.Index);
+        ushort dispId = 0;
+        if (itemDef != null)
+        {
+            if (itemDef.DispIndex != 0) dispId = itemDef.DispIndex;
+            else if (itemDef.DupItemId != 0) dispId = itemDef.DupItemId;
+        }
+        if (dispId == 0 && rid.Index <= 0xFFFF)
+            dispId = (ushort)rid.Index;
+        if (dispId == 0)
+            return false;
+
+        item.BaseId = dispId;
+        item.Name = string.IsNullOrWhiteSpace(itemDef?.Name) ? $"Bank check ({amount})" : itemDef!.Name;
+        item.Price = amount;
+        item.SetTag("BANKCHECK_AMOUNT", amount.ToString());
+        pack.AddItem(item);
+        return true;
+    }
+
     /// <summary>
     /// Source-X CClient::Event_TalkBroadcast region keyword check. Fires exactly
     /// once per player utterance — currently handles "guards" / "help guards"
@@ -3758,24 +3949,10 @@ public static class Program
             return;
         }
 
-        // Find a hostile NPC near the speaker that the city guards can target.
-        // Pets, players, dead chars and other guards are excluded — only
-        // monsters/berserk/dragon brains qualify as legitimate threats.
-        Character? hostile = null;
-        foreach (var ch in _world.GetCharsInRange(speaker.Position, 14))
-        {
-            if (ch == speaker || ch.IsPlayer || ch.IsDead) continue;
-            if (ch.NpcMaster != Serial.Invalid) continue; // someone's pet
-            switch (ch.NpcBrain)
-            {
-                case NpcBrainType.Monster:
-                case NpcBrainType.Berserk:
-                case NpcBrainType.Dragon:
-                    hostile = ch;
-                    break;
-            }
-            if (hostile != null) break;
-        }
+        // Source-X style: guards can be called on criminals/murderers and
+        // hostile monsters in guarded zones. Prefer nearest player offender,
+        // then nearest hostile NPC.
+        var hostile = FindGuardTarget(speaker);
 
         var gc = FindGameClient(speaker);
         if (hostile == null)
@@ -3787,17 +3964,159 @@ public static class Program
             return;
         }
 
-        // Source-X CRegionWorld::CallGuards: NPC guard NPCs nearby attack the
-        // hostile; if none are within range an invul guard NPC is teleported
-        // in. We don't yet spawn templates from script, so stage 1 just notes
-        // the call so AI engines / region trigger scripts can react via the
-        // standard hostile-detection path. Stage 2 (actual summon) will tie
-        // into VendorEngine-style spawning once we have a CHARDEF for the
-        // city's guard template.
-        gc?.SysMessage("The guards have been called.");
+        // Source-X CRegionWorld::CallGuards: guards are expected to react
+        // immediately when a valid hostile exists. Until template-based guard
+        // summoning is wired, use the current guard policy and resolve the
+        // hostile through the standard death pipeline so corpse/loot/events
+        // remain consistent with normal combat kills.
+        var summonedGuard = FindNearbyGuardResponder(speaker.Position) ?? SummonCityGuardNear(hostile, region.Name);
+        if (summonedGuard != null && !summonedGuard.IsDeleted)
+            summonedGuard.FightTarget = hostile.Uid;
+        bool killed = false;
+        if (_config.GuardsInstantKill && !hostile.IsDeleted && !hostile.IsDead)
+        {
+            _deathEngine.ProcessDeath(hostile, null);
+            killed = true;
+        }
+
+        gc?.SysMessage(killed ? "Guards strike down your attacker." : "The guards have been called.");
         _log.LogDebug(
-            "[guards] {Speaker} called guards in region '{Region}' against hostile 0x{HUid:X} ({HName})",
-            speaker.Name, region.Name, hostile.Uid.Value, hostile.Name ?? "?");
+            "[guards] {Speaker} called guards in region '{Region}' against hostile 0x{HUid:X} ({HName}) guard=0x{GUid:X} killed={Killed}",
+            speaker.Name, region.Name, hostile.Uid.Value, hostile.Name ?? "?",
+            summonedGuard?.Uid.Value ?? 0, killed);
+    }
+
+    private static Character? FindGuardTarget(Character speaker)
+    {
+        Character? bestPlayer = null;
+        int bestPlayerDist = int.MaxValue;
+        Character? bestNpc = null;
+        int bestNpcDist = int.MaxValue;
+
+        foreach (var ch in _world.GetCharsInRange(speaker.Position, 14))
+        {
+            if (ch == speaker || ch.IsDead || ch.IsDeleted)
+                continue;
+            if (ch.PrivLevel >= PrivLevel.Counsel)
+                continue; // staff are never guard-call targets
+
+            int dist = ch.Position.GetDistanceTo(speaker.Position);
+            if (ch.IsPlayer)
+            {
+                bool isCriminal = ch.IsCriminal || ch.IsStatFlag(StatFlag.Criminal);
+                bool isMurderer = _config.GuardsOnMurderers && ch.IsMurderer;
+                if ((isCriminal || isMurderer) && dist < bestPlayerDist)
+                {
+                    bestPlayer = ch;
+                    bestPlayerDist = dist;
+                }
+                continue;
+            }
+
+            if (ch.NpcMaster.IsValid)
+            {
+                // Pet/summon aggression is attributed to its master for guard calls.
+                var owner = _world.FindChar(ch.NpcMaster);
+                if (owner != null && !owner.IsDeleted && !owner.IsDead && owner.IsPlayer &&
+                    owner.PrivLevel < PrivLevel.Counsel)
+                {
+                    bool petAggressingSpeaker = ch.FightTarget == speaker.Uid;
+                    if (!petAggressingSpeaker && ch.TryGetTag("ATTACK_TARGET", out string? attackUid) &&
+                        uint.TryParse(attackUid, out uint auid))
+                    {
+                        petAggressingSpeaker = auid == speaker.Uid.Value;
+                    }
+
+                    bool ownerCriminal = owner.IsCriminal || owner.IsStatFlag(StatFlag.Criminal);
+                    bool ownerMurderer = _config.GuardsOnMurderers && owner.IsMurderer;
+                    if ((petAggressingSpeaker || ownerCriminal || ownerMurderer) && dist < bestPlayerDist)
+                    {
+                        bestPlayer = owner;
+                        bestPlayerDist = dist;
+                    }
+                }
+                continue;
+            }
+            if (ch.NpcBrain == NpcBrainType.Guard)
+                continue;
+
+            bool hostileNpc = ch.NpcBrain is NpcBrainType.Monster or NpcBrainType.Berserk or NpcBrainType.Dragon;
+            if (hostileNpc && dist < bestNpcDist)
+            {
+                bestNpc = ch;
+                bestNpcDist = dist;
+            }
+        }
+
+        return bestPlayer ?? bestNpc;
+    }
+
+    private static Character ResolveEffectiveOffender(Character offender)
+    {
+        if (offender.NpcMaster.IsValid)
+        {
+            var owner = _world.FindChar(offender.NpcMaster);
+            if (owner != null && !owner.IsDeleted)
+                return owner;
+        }
+        return offender;
+    }
+
+    private static Character? FindNearbyGuardResponder(Point3D center)
+    {
+        Character? nearest = null;
+        int bestDist = int.MaxValue;
+        foreach (var ch in _world.GetCharsInRange(center, 18))
+        {
+            if (ch.IsDeleted || ch.IsDead || ch.IsPlayer)
+                continue;
+            if (ch.NpcBrain != NpcBrainType.Guard)
+                continue;
+            int dist = ch.Position.GetDistanceTo(center);
+            if (dist < bestDist)
+            {
+                nearest = ch;
+                bestDist = dist;
+            }
+        }
+        return nearest;
+    }
+
+    private static Character? SummonCityGuardNear(Character hostile, string regionName)
+    {
+        if (hostile.IsDeleted)
+            return null;
+
+        var guard = _world.CreateCharacter();
+        guard.IsPlayer = false;
+        guard.Name = string.IsNullOrWhiteSpace(regionName) ? "city guard" : $"{regionName} guard";
+        guard.BodyId = 0x0190;
+        guard.BaseId = 0x0190;
+        guard.NpcBrain = NpcBrainType.Guard;
+        guard.Str = 250;
+        guard.Dex = 90;
+        guard.Int = 70;
+        guard.MaxHits = 250;
+        guard.Hits = 250;
+        guard.MaxStam = 90;
+        guard.Stam = 90;
+        guard.MaxMana = 70;
+        guard.Mana = 70;
+        guard.Fame = 10_000;
+        guard.Karma = 10_000;
+        guard.SetStatFlag(StatFlag.Invul);
+        guard.SetTag("IS_CITY_GUARD", "1");
+        guard.SetTag("GUARD_SPAWNED_AT", Environment.TickCount64.ToString());
+        guard.FightTarget = hostile.Uid;
+
+        long lingerMs = Math.Max(1, _config.GuardLinger) * 1000L;
+        long expireAt = Environment.TickCount64 + lingerMs;
+        guard.SetTag("GUARD_EXPIRE_AT", expireAt.ToString());
+        _summonedGuardExpiry[guard.Uid] = expireAt;
+
+        _world.PlaceCharacter(guard, hostile.Position);
+        BroadcastCharacterAppear(guard);
+        return guard;
     }
 
     private static void OnNpcHearSpeech(Character speaker, Character npc, string text, TalkMode mode)
@@ -3912,8 +4231,8 @@ public static class Program
                     //   balance         -> report the gold currently banked
                     //   withdraw N      -> move N gold from the bank into the
                     //                      speaker's backpack
-                    //   check N         -> issue a bank check (still TODO,
-                    //                      requires bank-check item template)
+                    //   check N         -> issue a bank check into the
+                    //                      speaker's backpack
                     var gc = FindGameClient(speaker);
                     int withdrawAmount = TryParseAmountAfter(lower, "withdraw");
                     int checkAmount = TryParseAmountAfter(lower, "check");
@@ -3940,9 +4259,17 @@ public static class Program
                     }
                     else if (checkAmount > 0)
                     {
-                        // Stage 1: refuse cleanly until the bank-check template
-                        // (i_bankcheck) is wired through the script defs.
-                        response = "I am unable to issue a check for that amount right now.";
+                        long banked = CountBankGold(speaker);
+                        if (banked < checkAmount)
+                            response = $"You have only {banked} gold piece(s) in our care.";
+                        else if (!DepositBankCheckToBackpack(speaker, checkAmount))
+                            response = "I am unable to issue a check for that amount right now.";
+                        else
+                        {
+                            RemoveBankGold(speaker, checkAmount);
+                            response = $"Here is thy check for {checkAmount} gold piece(s).";
+                            gc?.OpenBankBox();
+                        }
                     }
                     else if (wantBank)
                     {
@@ -4271,8 +4598,66 @@ public static class Program
         MaybeRunDeterminismGuardrail();
     }
 
+    private static void CleanupSummonedGuards(long now)
+    {
+        if (_summonedGuardExpiry.Count == 0)
+            return;
+
+        foreach (var (uid, expireAt) in _summonedGuardExpiry.ToArray())
+        {
+            var guard = _world.FindChar(uid);
+            if (guard == null || guard.IsDeleted || guard.IsDead)
+            {
+                _summonedGuardExpiry.Remove(uid);
+                continue;
+            }
+
+            if (now < expireAt)
+                continue;
+
+            var removePacket = new PacketDeleteObject(uid.Value);
+            BroadcastNearby(guard.Position, 18, removePacket, 0);
+            _world.DeleteObject(guard);
+            guard.Delete();
+            _summonedGuardExpiry.Remove(uid);
+        }
+    }
+
+    private static void RunDecayCatchup(long now)
+    {
+        if (now < _nextDecayCatchupTick)
+            return;
+        _nextDecayCatchupTick = now + 5000;
+
+        // Sector sleep skips far-away sectors. This catch-up sweep ensures
+        // decaying ground items/corpses still expire on time even when
+        // nobody is nearby.
+        var expired = _world.GetAllObjects()
+            .OfType<Item>()
+            .Where(it => !it.IsDeleted && it.IsOnGround && it.DecayTime > 0 && it.DecayTime <= now)
+            .Take(256)
+            .ToList();
+
+        foreach (var item in expired)
+        {
+            // Drive the normal item decay path first (corpse spill, spawn cleanup).
+            _ = item.OnTick();
+            if (!item.IsDeleted)
+                continue;
+
+            var removePacket = new PacketDeleteObject(item.Uid.Value);
+            BroadcastNearby(item.Position, 18, removePacket, 0);
+            _world.DeleteObject(item);
+            item.Delete();
+        }
+    }
+
     private static void RunPostTickMaintenance()
     {
+        long now = Environment.TickCount64;
+        CleanupSummonedGuards(now);
+        RunDecayCatchup(now);
+
         byte newLight = _world.GlobalLight;
         if (newLight != _lastGlobalLight)
         {
@@ -4288,14 +4673,7 @@ public static class Program
         // Weather & season update
         bool seasonChanged = _weatherEngine.OnTick();
         if (seasonChanged)
-        {
-            var seasonPacket = new PacketSeason((byte)_weatherEngine.CurrentSeason);
-            foreach (var client in _clients.Values)
-            {
-                if (client.IsPlaying)
-                    client.Send(seasonPacket);
-            }
-        }
+            BroadcastSeasonChange(playSound: true);
 
         // Ship movement ticks
         _shipEngine?.OnTickAll();

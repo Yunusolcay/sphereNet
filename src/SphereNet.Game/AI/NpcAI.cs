@@ -34,6 +34,9 @@ public enum NpcAIFlags : uint
 /// </summary>
 public sealed class NpcAI
 {
+    public NpcAIFlags Flags { get; set; } =
+        NpcAIFlags.Path | NpcAIFlags.Combat | NpcAIFlags.Threat | NpcAIFlags.PersistentPath;
+
     public enum NpcDecisionType
     {
         None = 0,
@@ -180,17 +183,20 @@ public sealed class NpcAI
         if (npc == null || npc.IsDeleted || npc.IsDead || npc.IsPlayer)
             return;
 
-        npc.NextNpcActionTime = decision.NextActionTick;
         switch (decision.Type)
         {
             case NpcDecisionType.Move:
+                npc.NextNpcActionTime = decision.NextActionTick;
                 npc.Direction = decision.Direction;
                 _world.MoveCharacter(npc, decision.TargetPos);
                 break;
             case NpcDecisionType.Legacy:
+                // Let OnTickAction own the cadence update; setting NextNpcActionTime
+                // before the legacy call would make the combat brain return early.
                 OnTickAction(npc);
                 break;
             default:
+                npc.NextNpcActionTime = decision.NextActionTick;
                 break;
         }
     }
@@ -202,15 +208,39 @@ public sealed class NpcAI
     {
         var region = _world.FindRegion(npc.Position);
         bool isGuarded = region?.IsGuarded ?? false;
+        if (!isGuarded)
+        {
+            Wander(npc);
+            return;
+        }
+
+        if (npc.FightTarget.IsValid)
+        {
+            var assigned = _world.FindChar(npc.FightTarget);
+            if (assigned != null && !assigned.IsDead && !assigned.IsDeleted)
+            {
+                int assignedDist = npc.Position.GetDistanceTo(assigned.Position);
+                if (assignedDist <= GetAttackRange(npc))
+                    TrySwingAttack(npc, assigned);
+                else
+                    MoveToward(npc, assigned.Position);
+                return;
+            }
+            npc.FightTarget = Serial.Invalid;
+        }
 
         foreach (var target in _world.GetCharsInRange(npc.Position, 12))
         {
             if (target == npc || target.IsDead) continue;
 
-            if (isGuarded && target.IsStatFlag(StatFlag.Criminal))
+            if (target.IsStatFlag(StatFlag.Criminal) || target.IsCriminal || target.IsMurderer)
             {
-                // Instant kill criminal in guarded area (if GUARDSINSTANTKILL)
-                target.Kill();
+                npc.FightTarget = target.Uid;
+                int dist = npc.Position.GetDistanceTo(target.Position);
+                if (dist <= GetAttackRange(npc))
+                    TrySwingAttack(npc, target);
+                else
+                    MoveToward(npc, target.Position);
                 return;
             }
         }
@@ -244,9 +274,9 @@ public sealed class NpcAI
         {
             npc.FightTarget = bestTarget.Uid;
 
-            if (bestDist <= 1)
+            if (bestDist <= GetAttackRange(npc))
             {
-                // In melee range — attack with swing timer
+                // Weapon range mirrors the player path for bow/xbow brains too.
                 TrySwingAttack(npc, bestTarget);
             }
             else
@@ -281,7 +311,7 @@ public sealed class NpcAI
         {
             npc.FightTarget = nearest.Uid;
 
-            if (nearestDist <= 1)
+            if (nearestDist <= GetAttackRange(npc))
             {
                 TrySwingAttack(npc, nearest);
             }
@@ -368,10 +398,24 @@ public sealed class NpcAI
     /// </summary>
     private void ActPet(Character npc)
     {
-        var master = _world.FindChar(npc.NpcMaster);
+        if (npc.TickPetOwnershipTimers(Environment.TickCount64))
+        {
+            _world.DeleteObject(npc);
+            npc.Delete();
+            return;
+        }
+
+        var master = npc.ResolveControllerCharacter() ?? npc.ResolveOwnerCharacter();
         if (master == null || master.IsDead)
         {
-            // Master gone — wander
+            if (npc.IsSummoned)
+            {
+                _world.DeleteObject(npc);
+                npc.Delete();
+                return;
+            }
+
+            // Owner gone — uncontrolled pets idle instead of following stale state.
             Wander(npc);
             return;
         }
@@ -381,18 +425,29 @@ public sealed class NpcAI
             case PetAIMode.Follow:
             case PetAIMode.Come:
             {
-                int dist = npc.Position.GetDistanceTo(master.Position);
+                Character followTarget = ResolvePetTargetCharacter(npc, "FOLLOW_TARGET") ?? master;
+                int dist = npc.Position.GetDistanceTo(followTarget.Position);
                 if (dist > 2)
-                    MoveToward(npc, master.Position);
+                    MoveToward(npc, followTarget.Position);
+                if (npc.TryGetTag("GO_TARGET", out string? goTag) &&
+                    TryParsePoint(goTag, out Point3D goPos))
+                {
+                    int goDist = npc.Position.GetDistanceTo(goPos);
+                    if (goDist > 1)
+                        MoveToward(npc, goPos);
+                    else
+                        npc.RemoveTag("GO_TARGET");
+                }
                 break;
             }
             case PetAIMode.Guard:
             {
+                Character guardTarget = ResolvePetTargetCharacter(npc, "GUARD_TARGET") ?? master;
                 // Guard master — attack nearby aggressors
-                foreach (var ch in _world.GetCharsInRange(master.Position, 6))
+                foreach (var ch in _world.GetCharsInRange(guardTarget.Position, 6))
                 {
-                    if (ch == npc || ch == master || ch.IsDead) continue;
-                    if (ch.FightTarget == master.Uid)
+                    if (ch == npc || ch == guardTarget || ch.IsDead) continue;
+                    if (ch.FightTarget == guardTarget.Uid)
                     {
                         int dist = npc.Position.GetDistanceTo(ch.Position);
                         if (dist <= 1)
@@ -403,26 +458,25 @@ public sealed class NpcAI
                     }
                 }
                 // No threats — follow master
-                int masterDist = npc.Position.GetDistanceTo(master.Position);
-                if (masterDist > 3)
-                    MoveToward(npc, master.Position);
+                int guardDist = npc.Position.GetDistanceTo(guardTarget.Position);
+                if (guardDist > 3)
+                    MoveToward(npc, guardTarget.Position);
                 break;
             }
             case PetAIMode.Attack:
             {
-                // Attack the master's fight target
-                if (master.FightTarget.IsValid)
+                // Attack explicit pet target first, fall back to master's fight target.
+                Character? target = ResolvePetTargetCharacter(npc, "ATTACK_TARGET");
+                if (target == null && master.FightTarget.IsValid)
+                    target = _world.FindChar(master.FightTarget);
+                if (target != null && !target.IsDead)
                 {
-                    var target = _world.FindChar(master.FightTarget);
-                    if (target != null && !target.IsDead)
-                    {
-                        int dist = npc.Position.GetDistanceTo(target.Position);
-                        if (dist <= 1)
-                            TrySwingAttack(npc, target);
-                        else
-                            MoveToward(npc, target.Position);
-                        return;
-                    }
+                    int dist = npc.Position.GetDistanceTo(target.Position);
+                    if (dist <= 1)
+                        TrySwingAttack(npc, target);
+                    else
+                        MoveToward(npc, target.Position);
+                    return;
                 }
                 // No target — follow
                 int d = npc.Position.GetDistanceTo(master.Position);
@@ -491,6 +545,10 @@ public sealed class NpcAI
         }
 
         Item? weapon = npc.GetEquippedItem(Layer.OneHanded) ?? npc.GetEquippedItem(Layer.TwoHanded);
+        int maxRange = GetAttackRange(npc, weapon);
+        int distToTarget = npc.Position.GetDistanceTo(target.Position);
+        if (distToTarget > maxRange)
+            return;
 
         // Source-X formula 0 swing delay, identical to player code.
         int swingDelayMs = SphereNet.Game.Clients.GameClient.GetSwingDelayMs(npc, weapon);
@@ -507,6 +565,20 @@ public sealed class NpcAI
 
         if (npc.Stam > 0)
             npc.Stam = (short)(npc.Stam - 1);
+
+        // Source-style owner attribution: pet/summon attacks in guarded towns
+        // should criminal-flag the owner when targeting an innocent player.
+        if (npc.OwnerSerial.IsValid && target.IsPlayer && Character.AttackingIsACrimeEnabled)
+        {
+            var owner = npc.ResolveOwnerCharacter();
+            if (owner != null && owner.IsPlayer && !owner.IsDead)
+            {
+                var region = _world.FindRegion(owner.Position);
+                bool targetInnocent = !target.IsCriminal && !target.IsMurderer;
+                if (targetInnocent && region != null && region.IsFlag(RegionFlag.Guarded))
+                    owner.MakeCriminal();
+            }
+        }
 
         short hpBefore = npc.Hits;
         int damage = CombatEngine.ResolveAttack(npc, target, weapon);
@@ -577,8 +649,20 @@ public sealed class NpcAI
             return;
         }
 
+        if (!Flags.HasFlag(NpcAIFlags.Path))
+        {
+            npc.Direction = dir;
+            _world.MoveCharacter(npc, directPos);
+            return;
+        }
+
         // Direct path blocked — use A* pathfinding
         uint uid = npc.Uid.Value;
+        if (!Flags.HasFlag(NpcAIFlags.PersistentPath))
+        {
+            _pathCache.Remove(uid);
+            _pathIndex.Remove(uid);
+        }
         if (!_pathCache.TryGetValue(uid, out var path) || path.Count == 0)
         {
             // Calculate new path
@@ -607,6 +691,49 @@ public sealed class NpcAI
         npc.Direction = npc.Position.GetDirectionTo(nextStep);
         _world.MoveCharacter(npc, nextStep);
         _pathIndex[uid] = idx + 1;
+    }
+
+    private Character? ResolvePetTargetCharacter(Character npc, string tagName)
+    {
+        if (!npc.TryGetTag(tagName, out string? uidText) || string.IsNullOrWhiteSpace(uidText))
+            return null;
+        if (!uint.TryParse(uidText, out uint uid))
+            return null;
+        var target = _world.FindChar(new Serial(uid));
+        if (target == null || target.IsDeleted || target.IsDead)
+        {
+            npc.RemoveTag(tagName);
+            return null;
+        }
+        return target;
+    }
+
+    private static bool TryParsePoint(string? raw, out Point3D pos)
+    {
+        pos = default;
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+        var parts = raw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 4)
+            return false;
+        if (!short.TryParse(parts[0], out short x) ||
+            !short.TryParse(parts[1], out short y) ||
+            !sbyte.TryParse(parts[2], out sbyte z) ||
+            !byte.TryParse(parts[3], out byte map))
+            return false;
+        pos = new Point3D(x, y, z, map);
+        return true;
+    }
+
+    private static int GetAttackRange(Character npc, Item? weapon = null)
+    {
+        weapon ??= npc.GetEquippedItem(Layer.OneHanded) ?? npc.GetEquippedItem(Layer.TwoHanded);
+        if (weapon != null &&
+            (weapon.ItemType == ItemType.WeaponBow || weapon.ItemType == ItemType.WeaponXBow))
+        {
+            return 10;
+        }
+        return 1;
     }
 
     private void MoveAway(Character npc, Point3D threat)

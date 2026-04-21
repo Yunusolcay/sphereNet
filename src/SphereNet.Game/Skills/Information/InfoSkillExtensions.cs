@@ -70,8 +70,7 @@ internal static class InfoSkillExtensions
     /// </summary>
     public static Character? GetPetOwner(this Character ch, World.GameWorld world)
     {
-        if (!ch.NpcMaster.IsValid) return null;
-        return world.FindChar(ch.NpcMaster);
+        return ch.ResolveOwnerCharacter() ?? (ch.OwnerSerial.IsValid ? world.FindChar(ch.OwnerSerial) : null);
     }
 
     // ---- Item: ARMSLORE / TASTEID accessors ----

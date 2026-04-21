@@ -473,12 +473,18 @@ public sealed class SpellEngine
         var creature = _world.CreateCharacter();
         creature.Name = def.Name;
         creature.NpcBrain = NpcBrainType.Monster;
-        creature.NpcMaster = caster.Uid;
 
         int duration = def.GetDuration(skillLevel);
+        if (!creature.TryAssignOwnership(caster, caster, summoned: true, enforceFollowerCap: true))
+        {
+            _world.DeleteObject(creature);
+            creature.Delete();
+            return;
+        }
         creature.SetTag("SUMMON_DURATION", duration.ToString());
         creature.SetTag("SUMMON_MASTER", caster.Uid.Value.ToString());
         creature.SetTag("SUMMON_MASTER_UUID", caster.Uuid.ToString("D"));
+        creature.SetTag("SUMMON_EXPIRE_TICK", (Environment.TickCount64 + duration * 100L).ToString());
 
         _world.PlaceCharacter(creature, pos);
     }

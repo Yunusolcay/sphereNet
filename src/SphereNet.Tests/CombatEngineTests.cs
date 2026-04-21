@@ -93,6 +93,19 @@ public class CombatEngineTests
     }
 
     [Fact]
+    public void CalcArmorDefense_UsesArmorValueFromItemDefOrTag()
+    {
+        var ch = MakeChar();
+        var chest = new Item();
+        chest.SetTag("ARMOR", "40");
+        ch.Equip(chest, Layer.Chest);
+
+        int ar = CombatEngine.CalcArmorDefense(ch);
+
+        Assert.Equal(14, ar);
+    }
+
+    [Fact]
     public void ResolveAttack_DeadAttacker_ReturnsZero()
     {
         var attacker = MakeChar();

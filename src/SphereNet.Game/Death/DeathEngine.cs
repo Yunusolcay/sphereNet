@@ -44,19 +44,27 @@ public sealed class DeathEngine
         if (victim.IsDead)
             return null;
 
+        Character? effectiveKiller = killer;
+        if (killer != null && killer.NpcMaster.IsValid)
+        {
+            var master = _world.FindChar(killer.NpcMaster);
+            if (master != null && !master.IsDeleted)
+                effectiveKiller = master;
+        }
+
         // Kill the character
         victim.Kill();
 
         // Karma/Fame changes for killer
-        if (killer != null)
+        if (effectiveKiller != null)
         {
-            ApplyKarmaFameChange(killer, victim);
+            ApplyKarmaFameChange(effectiveKiller, victim);
 
             // PvP murder tracking
-            if (victim.IsPlayer && killer.IsPlayer)
+            if (victim.IsPlayer && effectiveKiller.IsPlayer)
             {
-                killer.Kills++;
-                killer.SetCriminal(120_000); // 2 minutes criminal flag
+                effectiveKiller.Kills++;
+                effectiveKiller.SetCriminal(120_000); // 2 minutes criminal flag
             }
         }
 
@@ -81,7 +89,7 @@ public sealed class DeathEngine
         // Now that the corpse has snapshotted the original body, fire the
         // death callbacks so OnCharacterDeath / OnNpcKill can swap the
         // mobile to its ghost body and broadcast the new appearance.
-        OnDeath?.Invoke(victim, killer);
+        OnDeath?.Invoke(victim, effectiveKiller);
 
         // Set corpse decay timer. Using the Item.DecayTime field (not a
         // TAG) routes this through the sector-tick Item.OnTick path —
@@ -93,10 +101,10 @@ public sealed class DeathEngine
         corpse.SetTag("OWNER_UID", victim.Uid.Value.ToString());
         corpse.SetTag("OWNER_UUID", victim.Uuid.ToString("D"));
 
-        if (killer != null)
+        if (effectiveKiller != null)
         {
-            corpse.SetTag("KILLER_UID", killer.Uid.Value.ToString());
-            corpse.SetTag("KILLER_UUID", killer.Uuid.ToString("D"));
+            corpse.SetTag("KILLER_UID", effectiveKiller.Uid.Value.ToString());
+            corpse.SetTag("KILLER_UUID", effectiveKiller.Uuid.ToString("D"));
         }
 
         // For NPCs, remove the mobile from world state immediately so it no

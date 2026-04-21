@@ -206,9 +206,13 @@ public sealed class MovementEngine
     {
         foreach (var item in _world.GetItemsInRange(pos, 0))
         {
-            // Fire @Step on every item at this location (Source-X style)
-            _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Step,
+            // Source-X parity: @Step trigger gets first chance. RETURN 1
+            // cancels the hard-coded effect (trap, teleport, moongate, …)
+            // so scripts can fully replace native behaviour.
+            var stepResult = _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Step,
                 new TriggerArgs { CharSrc = ch, ItemSrc = item });
+            if (stepResult == TriggerResult.True)
+                continue;
 
             switch (item.ItemType)
             {

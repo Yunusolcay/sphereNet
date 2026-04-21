@@ -109,7 +109,7 @@ public sealed class GameWorld
     public int WorldMinute => (int)(_worldClock % 60);
 
     /// <summary>Current season. Updated by WeatherEngine.</summary>
-    public byte CurrentSeason { get; set; } = 1; // default spring
+    public byte CurrentSeason { get; set; } = 0; // default spring
 
     /// <summary>Global light level based on time of day (0=bright, 30=dark).</summary>
     public byte GlobalLight
