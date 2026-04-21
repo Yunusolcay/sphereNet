@@ -153,6 +153,23 @@ public sealed class GumpBuilder
         return this;
     }
 
+    /// <summary>
+    /// textentrylimited variant — emits the `{ textentrylimited ... limit }`
+    /// layout token so the client caps the input length at <paramref name="limit"/>.
+    /// Source-X CDialogDef writes this as control id GUMPCTL_TEXTENTRYLIMITED.
+    /// </summary>
+    public GumpBuilder AddTextEntryLimited(int x, int y, int width, int height, int hue, int entryId, string initialText, int limit)
+    {
+        int idx = AddText(initialText);
+        // Older 2D clients read the trailing 8th token as the cap. Sphere's
+        // CDialogDef serialises the same shape; mortechUO admin INPDLGs rely
+        // on it to keep INPDLG NAME, BODY, COLOR, … inside their script
+        // limits.
+        if (limit < 0) limit = 0;
+        _layout.Add($"{{ textentrylimited {x} {y} {width} {height} {hue} {entryId} {idx} {limit} }}");
+        return this;
+    }
+
     public GumpBuilder AddHtmlGump(int x, int y, int width, int height, string html, bool hasBackground, bool hasScrollbar)
     {
         int idx = AddText(html);

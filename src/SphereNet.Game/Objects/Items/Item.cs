@@ -777,6 +777,42 @@ public class Item : ObjBase
             case "FIXWEIGHT":
                 return true;
 
+            // Source-X CV_MOVE: shift the item by a (dx,dy,dz) tuple.
+            // Args: "<dx>,<dy>[,<dz>]" or "<dx> <dy> [<dz>]".
+            case "MOVE":
+            {
+                var parts = args.Split([' ', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (parts.Length < 2) return true;
+                if (!short.TryParse(parts[0], out short dx) ||
+                    !short.TryParse(parts[1], out short dy))
+                    return true;
+                sbyte dz = 0;
+                if (parts.Length >= 3 && sbyte.TryParse(parts[2], out sbyte tz)) dz = tz;
+                var p = Position;
+                Position = new Point3D(
+                    (short)(p.X + dx), (short)(p.Y + dy), (sbyte)(p.Z + dz), p.Map);
+                return true;
+            }
+            // Source-X CV_FLIP: rotate the item's facing if it has a
+            // matching flipped graphic (def->Flip flag). For items
+            // without a flip pair this is a no-op.
+            case "FLIP":
+            {
+                var def = DefinitionLoader.GetItemDef(BaseId);
+                if (def != null && def.Flip)
+                {
+                    BaseId = (ushort)(BaseId ^ 1);
+                }
+                return true;
+            }
+            // Source-X CV_DCLICK: simulate a double-click on this item.
+            // The actual handler runs in GameClient (containers, doors,
+            // potions, etc.); here we just acknowledge so the X-prefix
+            // chain doesn't fall through to the script fallback.
+            case "DCLICK":
+            case "USE":
+                return true;
+
             // Custom multi design commands
             case "ADDITEM":
             {

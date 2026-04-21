@@ -4,6 +4,154 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-21] - Admin dialog altyapisi, X-prefix verb fallback, INPDLG/TRYP, GM verb seti
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - INPDLG verbi icin 0xAB Gump Value Input + 0xAC reply paketi
+    eklendi (PacketGumpValueInput, PacketGumpTextEntry yeniden
+    duzenlendi). NetState.GumpTextEntryHandler imzasi
+    (serial, context, action, text) olarak Source-X send.cpp:3482
+    paritesine cevrildi; bos NAME/BODY/COLOR alanlarinin OK basildiginda
+    silinmesi engellendi (action=0 cancel). Caption/description
+    null-terminated, INPVAL_STYLE (NoEdit/Text/Numeric) ve maxLength
+    alanlari Sphere ile birebir.
+    Added 0xAB Gump Value Input + 0xAC reply for the INPDLG verb.
+    NetState.GumpTextEntryHandler signature now matches Source-X
+    (serial, context, action=0|1, text); caption/description and
+    INPVAL_STYLE wire layout are byte-for-byte compatible.
+  - GumpBuilder.AddTextEntryLimited eklendi: { textentrylimited x y w h
+    hue id idx limit } layout token'i emit ediyor. Admin INPDLG NAME 30
+    / BODY 30 / COLOR 16 / FOOD 4 limitleri client tarafinda zorlaniyor.
+    Layout dialog parser (DTEXTENTRYLIMITED) artik 7. token'i (maxChars)
+    builder'a aktariyor.
+    GumpBuilder.AddTextEntryLimited emits the textentrylimited layout
+    control so client-side input caps from INPDLG NAME/BODY/COLOR/...
+    are honored end to end.
+  - ScriptInterpreter'a TRYP <plevel> <verb args...> yorumlayicisi
+    eklendi (CObjBase.cpp:2869 paritesi). Standart property-edit
+    butonlari ("ON=100 TRYP 4 INPDLG BODY 30") plevel kontrolunden
+    sonra TrySetProperty / TryExecuteCommand zincirine dusuyor;
+    yetersiz plevel'da kullaniciya SysMessage donduruluyor.
+    Added TRYP <plevel> <verb...> handler to ScriptInterpreter so
+    every standard property-edit dialog button (admin tweak / charprop)
+    runs with proper PLEVEL gating.
+  - Source-X X-prefix verb fallback'i eklendi
+    (CommandHandler.OnAddVerbTargetRequested + ExecuteVerbForTarget).
+    Bilinmeyen .x<verb> komutlari (.xhits 100 / .xkill / .xinvul /
+    .xcolor / .xnuke / .xstr / ...) Counsel+ kullanicisinda otomatik
+    target cursor aciyor; secilen objede inner verb TrySetProperty ->
+    TryExecuteCommand -> ScriptFallbackExecutor sirasinda tek seferde
+    calistiriliyor.
+    Generic Source-X X-prefix command fallback: any unknown .x<verb>
+    opens a target cursor and re-dispatches the inner verb on the
+    picked object via the same pipeline used by .xedit.
+  - Source-X parite GM verb seti CommandHandler'a eklendi:
+    .NUKE [range] / .NUKECHAR [range] / .NUDGE [range] (alan-hedef:
+    iki kose secimi sonrasi alandaki tum item/mob silinir veya nudge
+    delta'siyla otelenir), .ANIM <id> (CV_ANIM, kendine animasyon),
+    .BANK [target] (kendi veya hedef karakterin bank kutusu),
+    .CONTROL (NPC'yi kontrol al), .DUPE (item duplika), .HEAL [self],
+    .SUICIDE, .SUMMONTO (hedef karakteri yanina cek), .UNMOUNT,
+    .MOUNT (target ile bineme), .SUMMONCAGE (hedefi etrafa demir
+    parmaklikla kafesle), .POLY <body[,hue]>. Hepsi ServerMessages'a
+    eklenen gm_* defmsg'leri ile sysmessage donuyor.
+    Added Source-X-parity GM verbs: .NUKE/.NUKECHAR/.NUDGE area
+    targeting, .ANIM/.BANK/.CONTROL/.DUPE/.HEAL/.SUICIDE/.SUMMONTO/
+    .UNMOUNT/.MOUNT/.SUMMONCAGE/.POLY with matching defmsg responses.
+  - "Guards!" cagrisi icin SpeechEngine.OnPlayerSpeech ile region-bazli
+    handler Program.cs'e eklendi: Guarded region disinda sessiz, icinde
+    yakindaki dusman NPC (Monster/Berserk/Dragon brain, master'siz)
+    araniyor; bulunursa "The guards have been called.", yoksa
+    "All looks quiet here." sysmessage gonderiliyor ve olay loglaniyor.
+    Region-aware "guards" / "help guards" handler: speaks the proper
+    "called" or "all quiet" message and logs the resolved hostile.
+  - Character.cs'e cross-cutting static delegate seti eklendi
+    (DisconnectClient, ResendTooltipForAll, OpenInfoDialog,
+    BeginTeleTarget, SummonCageAround, FollowUid, ResolveClientInfo,
+    BroadcastNearby, OpenPaperdollForOwner, OpenBackpackForOwner,
+    OpenBankboxForOwner). Tumu Program.cs'te GameClient'a baglandi;
+    Character verb tablosu artik client/server katmanlarini cagirabiliyor.
+    Cross-cutting static delegates on Character (disconnect, tooltip
+    refresh, info dialog, tele target, follow, broadcast nearby,
+    paperdoll/backpack/bank for owner). Wired in Program.cs.
+  - Program.cs'e RegisterBuiltinDefNames helper'i eklendi: Source-X
+    [DEFNAME ref_types] tablosu (tref_serv 0x000001, tref_account
+    0x000200, tref_world 0x004000, tref_client 0x010000, tref_object
+    0x020000, tref_char 0x040000, tref_item 0x080000, ...) defs.scp
+    yuklenmeden once defansif olarak resource holder'a ekleniyor.
+    Defensive RegisterBuiltinDefNames seeds the [DEFNAME ref_types]
+    table so <Def.TRef_*> guards work even with bare scripts/.
+  - Program.cs server property resolver'a Serv.Map(x,y,z,m).Region.Name
+    parantezli fonksiyon cagrisi, Serv.Resync, Serv.Save, Serv.Shutdown
+    kontrol verbleri ve Serv.AllClients <fn>/SYSMESSAGE/<verb> dispatch'i
+    eklendi. Serv.AllClients hem script function call hem de tum
+    bagli karakterler uzerinde verb yurutebiliyor.
+    Server resolver gained Serv.Map(...).Region.Name parenthesized
+    function, server-control verbs (Resync/Save/Shutdown) and a real
+    Serv.AllClients dispatcher.
+
+DUZELTMELER / FIXES:
+  - GETREFTYPE artik Source-X bit-mask degerlerini donuyor: char =
+    0x040000, item = 0x080000, fallback = 0x000001 (server context).
+    Eski 0x01/0x02/0x04 cevaplar <If <GetRefType>==<Def.TRef_Char>>
+    karsilastirmasini bozuyordu. Hem ScriptInterpreter hem de
+    GameClient.TryResolveScriptVariable ayni tabloya hizalandi.
+    GETREFTYPE now returns Source-X ref_types bit values; admin script
+    guards (<If <GetRefType>==<Def.TRef_*>>) compile cleanly.
+  - GameClient.ResolveDialogCoord '-N' negatif delta destegi (Button
+    +0 -2). DORIGIN tabanli yerlesimde admin sol menu artik dogru
+    konumda; +/- prefix farki Source-X dialogue.cpp ile birebir.
+    ResolveDialogCoord supports '-N' negative deltas (DORIGIN-relative
+    layout); admin left-rail is now positioned correctly.
+  - GameClient.TryExecuteScriptCommand'a SET / SETUID meta-verbleri
+    eklendi (Src.set dupe / Src.set remove): target cursor acip
+    secilen objede ic verb'i yeniden dispatch ediyor.
+    SET/SETUID meta-verb in TryExecuteScriptCommand opens a cursor and
+    re-dispatches the inner verb (Src.set dupe / remove pattern).
+  - ObjBase.TryGetProperty'ye P.X/Y/Z/M zinciri, TAGCOUNT, TAGAT.N(.KEY|
+    .VAL) iteratoru ve TAG0./DTAG0. yazma destegi eklendi. Admin
+    PlayerTags dialogu artik "For x 0 <Eval <TagCount>-1>" dongusunde
+    dogru anahtar/deger ciftlerini render ediyor. ObjBase.TrySetProperty
+    "HUE" alias'i ile COLOR setter'ini destekliyor.
+    ObjBase: P.X/Y/Z/M chained properties, TAGCOUNT, TAGAT.N.KEY/VAL
+    iteration and TAG0./DTAG0. write paths; HUE alias for COLOR.
+  - Item.TryExecuteCommand'a Source-X CV_MOVE (dx,dy,dz oteleme),
+    CV_FLIP (BaseId XOR 1, ItemDef.Flip kontrollu), CV_DCLICK / CV_USE
+    no-op acknowledge eklendi. X-prefix zinciri item uzerine dustugunde
+    artik "command not found" warning'i atmiyor.
+    Item: CV_MOVE / CV_FLIP / CV_DCLICK / CV_USE built-in handlers so
+    the X-prefix chain doesn't fall through on items.
+  - Character.cs'te bos kalan onemli verbler dolduruldu: CONSUME
+    (backpack subtree'sinden recursive ResolveItemBaseIdForVerb +
+    ConsumeFromContainer), ANIM/BOW/SALUTE (PacketAnimation
+    broadcast), SOUND (PacketSound), EFFECT (PacketEffect), BARK
+    (body'ye dayali sentetik ses), DCLICK/PACK/BANK (owner client'a
+    paperdoll / backpack / bank kutusu actirir), HUNGRY (food ayari
+    + DirtyFlag.Stats), FIXWEIGHT (status bar refresh), DISCONNECT/
+    KICK/RESENDTOOLTIP/INFO/TELE/T/NIGHTSIGHT/FOLLOW/SUMMONCAGE/
+    CLEARCTAGS verbleri. BOUNCE/DROP server-side drag-cursor
+    modellenmedigi icin yorumlu no-op'a cevrildi.
+    Filled previously stubbed Character verbs: CONSUME walks the
+    backpack subtree, ANIM/SOUND/EFFECT/BOW/SALUTE/BARK broadcast to
+    nearby clients, DCLICK/PACK/BANK open owner UI, HUNGRY/FIXWEIGHT
+    refresh stats, plus DISCONNECT/KICK/RESENDTOOLTIP/INFO/TELE/T/
+    NIGHTSIGHT/FOLLOW/SUMMONCAGE/CLEARCTAGS. BOUNCE/DROP are intentional
+    no-ops (no server-side drag layer in SphereNet).
+  - Character.TryGetProperty'ye MEMORYFINDTYPE.<def>.isValid/.Link.<prop>
+    zinciri (memory_guild minimum), SKILLCLASS.STATSUM/SKILLSUM/NAME,
+    REPORTEDCLIVER/CLIENTISKR/IS3D/ISENHANCED ve HOUSES/SHIPS
+    (House.N/Ship.N stub) resolverleri eklendi; admin ozellik dialoglari
+    artik bos satir ile cikmiyor.
+    Resolvers for MEMORYFINDTYPE / SKILLCLASS.STATSUM / client metadata
+    (ReportedCliver, ClientisKr, Is3D, IsEnhanced) and Houses/Ships
+    placeholders so admin property dialogs render fully.
+  - ServerMessages'a admin/GM verb cevaplari icin gm_xverb_target,
+    gm_nuke_*, gm_nudge_*, gm_anim_done, gm_bank_*, gm_control_*,
+    gm_dupe_*, gm_mount_*, gm_summoncage_*, gm_summonto_*, gm_poly_*,
+    gm_heal_*, gm_suicide_done defmsg sablonlari eklendi.
+    ServerMessages: 30+ new gm_* defmsgs covering the new verb set.
+
 [2026-04-20] - Vendor buy/sell pipeline, CharDef hash kimligi, isim pluralizasyonu, log ve tick optimizasyonlari
 ----------------------------------------
 

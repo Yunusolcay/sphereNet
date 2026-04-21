@@ -148,16 +148,58 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
             case "Y": value = _position.Y.ToString(); return true;
             case "Z": value = _position.Z.ToString(); return true;
             case "MAP": value = _position.Map.ToString(); return true;
+            // Sphere scripts also access P as a sub-object: <P.X> / <P.Y>
+            // / <P.Z> / <P.M>. mortechUO d_admin uses <REF1.P.X> in the
+            // map-region lookup row, so without these keys the world
+            // map call collapses to "Serv.Map(,,0,).Region.Name".
+            case "P.X": value = _position.X.ToString(); return true;
+            case "P.Y": value = _position.Y.ToString(); return true;
+            case "P.Z": value = _position.Z.ToString(); return true;
+            case "P.M":
+            case "P.MAP": value = _position.Map.ToString(); return true;
             case "COLOR": value = _hue.Value.ToString(); return true;
             case "ID": value = $"0{_baseId:X}"; return true;
             case "ATTR": value = ((uint)_attr).ToString(); return true;
+            case "TAGCOUNT": value = _tags.Count.ToString(); return true;
         }
 
         // Map point properties: TERRAIN, STATICS, REGION, ROOM, SECTOR
         if (TryGetMapPointProperty(key.ToUpperInvariant(), out value))
             return true;
 
+        // TAGAT.<index>.KEY / .VAL — ordered access to the object's tag
+        // dictionary, mirroring Source-X CVarDefMap. d_SphereAdmin_PlayerTags
+        // walks "For x 0 <Eval <TagCount>-1>" and reads
+        // <Tagat.<Local.x>.key> / .val to render the editable list.
+        if (key.StartsWith("TAGAT.", StringComparison.OrdinalIgnoreCase))
+        {
+            string rest = key[6..];
+            int dot = rest.IndexOf('.');
+            string idxStr = dot >= 0 ? rest[..dot] : rest;
+            string field = dot >= 0 ? rest[(dot + 1)..] : "";
+            if (int.TryParse(idxStr, out int idx) && idx >= 0)
+            {
+                int n = 0;
+                foreach (var pair in _tags.GetAll())
+                {
+                    if (n == idx)
+                    {
+                        if (field.Equals("KEY", StringComparison.OrdinalIgnoreCase))
+                        { value = pair.Key; return true; }
+                        if (field.Equals("VAL", StringComparison.OrdinalIgnoreCase) ||
+                            field.Equals("VALUE", StringComparison.OrdinalIgnoreCase) ||
+                            field.Length == 0)
+                        { value = pair.Value ?? ""; return true; }
+                    }
+                    n++;
+                }
+                value = "";
+                return true;
+            }
+        }
+
         if (key.StartsWith("TAG.", StringComparison.OrdinalIgnoreCase) ||
+            key.StartsWith("TAG0.", StringComparison.OrdinalIgnoreCase) ||
             key.StartsWith("DTAG.", StringComparison.OrdinalIgnoreCase) ||
             key.StartsWith("DTAG0.", StringComparison.OrdinalIgnoreCase))
         {
@@ -270,6 +312,7 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
                 _name = value;
                 return true;
             case "COLOR":
+            case "HUE":
                 {
                     string v = value.Trim();
                     if (v.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
@@ -338,6 +381,7 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
         // mirroring Source-X CClient::m_TagDefs). DTAG is just the
         // decimal-read convention of TAG; it shares TAG's storage.
         if (key.StartsWith("TAG.", StringComparison.OrdinalIgnoreCase) ||
+            key.StartsWith("TAG0.", StringComparison.OrdinalIgnoreCase) ||
             key.StartsWith("DTAG.", StringComparison.OrdinalIgnoreCase) ||
             key.StartsWith("DTAG0.", StringComparison.OrdinalIgnoreCase))
         {

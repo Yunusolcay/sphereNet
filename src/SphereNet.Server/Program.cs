@@ -873,6 +873,74 @@ public static class Program
                 }
             }
         };
+        // Source-X parity (CClient.cpp:921) — generic X-prefix verb fallback.
+        _commands.OnAddVerbTargetRequested += (gm, verb, verbArgs) =>
+        {
+            foreach (var c in _clients.Values)
+            {
+                if (c.Character == gm)
+                {
+                    c.BeginXVerbTarget(verb, verbArgs);
+                    break;
+                }
+            }
+        };
+        // Phase C: NUKE / NUKECHAR / NUDGE area-target verbs.
+        _commands.OnAreaTargetRequested += (gm, verb, range) =>
+        {
+            foreach (var c in _clients.Values)
+                if (c.Character == gm) { c.BeginAreaTarget(verb, range); break; }
+        };
+        _commands.OnSummonToTargetRequested += gm =>
+        {
+            foreach (var c in _clients.Values)
+                if (c.Character == gm) { c.BeginSummonToTarget(); break; }
+        };
+        _commands.OnControlTargetRequested += gm =>
+        {
+            foreach (var c in _clients.Values)
+                if (c.Character == gm) { c.BeginControlTarget(); break; }
+        };
+        _commands.OnDupeTargetRequested += gm =>
+        {
+            foreach (var c in _clients.Values)
+                if (c.Character == gm) { c.BeginDupeTarget(); break; }
+        };
+        _commands.OnHealTargetRequested += gm =>
+        {
+            foreach (var c in _clients.Values)
+                if (c.Character == gm) { c.BeginHealTarget(); break; }
+        };
+        _commands.OnBankTargetRequested += gm =>
+        {
+            foreach (var c in _clients.Values)
+                if (c.Character == gm) { c.BeginBankTarget(); break; }
+        };
+        _commands.OnBankSelfRequested += gm =>
+        {
+            foreach (var c in _clients.Values)
+                if (c.Character == gm) { c.OpenBankBox(); break; }
+        };
+        _commands.OnUnmountRequested += gm =>
+        {
+            foreach (var c in _clients.Values)
+                if (c.Character == gm) { c.UnmountSelf(); break; }
+        };
+        _commands.OnAnimRequested += (gm, animId) =>
+        {
+            foreach (var c in _clients.Values)
+                if (c.Character == gm) { c.PlayOwnAnimation(animId); break; }
+        };
+        _commands.OnMountTargetRequested += gm =>
+        {
+            foreach (var c in _clients.Values)
+                if (c.Character == gm) { c.BeginMountTarget(); break; }
+        };
+        _commands.OnSummonCageTargetRequested += gm =>
+        {
+            foreach (var c in _clients.Values)
+                if (c.Character == gm) { c.BeginSummonCageTarget(); break; }
+        };
         _commands.OnInspectRequested += (gm, uid) =>
         {
             foreach (var c in _clients.Values)
@@ -965,17 +1033,17 @@ public static class Program
             {
                 if (c.Character == ch)
                 {
-                    if (!c.TryShowScriptDialog(dialogName, page))
-                    {
-                        // Collect a few close-match suggestions so the user
-                        // can tell if it's a typo ("d_moongate" vs
-                        // "d_moongates") or a truly missing dialog.
-                        var suggestions = CollectDialogSuggestions(dialogName, maxCount: 5);
-                        string hint = suggestions.Count == 0
-                            ? ""
-                            : "  Similar: " + string.Join(", ", suggestions);
-                        c.SysMessage($"Dialog '{dialogName}' not found.{hint}");
-                    }
+                    if (c.TryShowScriptDialog(dialogName, page))
+                        break;
+
+                    // Collect a few close-match suggestions so the user
+                    // can tell if it's a typo ("d_moongate" vs
+                    // "d_moongates") or a truly missing dialog.
+                    var suggestions = CollectDialogSuggestions(dialogName, maxCount: 5);
+                    string hint = suggestions.Count == 0
+                        ? ""
+                        : "  Similar: " + string.Join(", ", suggestions);
+                    c.SysMessage($"Dialog '{dialogName}' not found.{hint}");
                     break;
                 }
             }
@@ -1343,6 +1411,151 @@ public static class Program
             return null;
         };
         SphereNet.Game.Objects.Items.Item.ResolveGuild = uid => _guildManager.GetGuild(uid);
+
+        // --- Admin dialog verb hooks (DISCONNECT/KICK/RESENDTOOLTIP/...).
+        // Each delegate routes a CChar verb back through the right
+        // engine. They are nullable for tests that spin up Character
+        // without a network/admin context.
+        SphereNet.Game.Objects.Characters.Character.DisconnectClient = (target, ban) =>
+        {
+            foreach (var c in _clients.Values)
+            {
+                if (c.Character == target)
+                {
+                    if (ban)
+                    {
+                        // Ban semantics: pull the account via the same
+                        // resolver Sphere uses for ACCOUNT.* lookups.
+                        var acct = SphereNet.Game.Objects.Characters.Character
+                            .ResolveAccountForChar?.Invoke(target.Uid);
+                        if (acct != null)
+                            acct.IsBanned = true;
+                    }
+                    c.NetState.MarkClosing();
+                    return;
+                }
+            }
+        };
+
+        SphereNet.Game.Objects.Characters.Character.ResendTooltipForAll = target =>
+        {
+            // No dedicated AOS tooltip-revision packet in the codebase
+            // yet. Mark the character's stat flags dirty so the view
+            // tick re-emits the status block on the next pass; that is
+            // close enough for the admin dialog use case (refresh after
+            // toggling Invul/Incognito/etc).
+            target.MarkDirty(SphereNet.Core.Enums.DirtyFlag.StatFlags);
+        };
+
+        SphereNet.Game.Objects.Characters.Character.OpenInfoDialog = target =>
+        {
+            // Show inspect dialog on the GM watching the target. The
+            // target here is who we want to inspect, not the requester:
+            // walk every active client and dispatch the inspect dialog
+            // for the target. Caller side (admin dialog) typically
+            // chains <Src.info> from the GM's own session, so the GM
+            // is the active speech-source — matching ShowInspectDialog
+            // expectations.
+            foreach (var c in _clients.Values)
+            {
+                if (c.Character == target)
+                {
+                    c.ShowInspectDialog(target.Uid.Value);
+                    return;
+                }
+            }
+        };
+
+        SphereNet.Game.Objects.Characters.Character.BeginTeleTarget = gm =>
+        {
+            foreach (var c in _clients.Values)
+            {
+                if (c.Character == gm)
+                {
+                    c.BeginTeleportTarget();
+                    return;
+                }
+            }
+        };
+
+        SphereNet.Game.Objects.Characters.Character.SummonCageAround = gm =>
+        {
+            foreach (var c in _clients.Values)
+            {
+                if (c.Character == gm)
+                {
+                    c.BeginSummonCageTarget();
+                    return;
+                }
+            }
+        };
+
+        SphereNet.Game.Objects.Characters.Character.ResolveClientInfo = ch =>
+        {
+            foreach (var c in _clients.Values)
+            {
+                if (c.Character == ch)
+                    return ((int)c.NetState.ClientVersionNumber,
+                        SphereNet.Game.Objects.Characters.Character.ClientType.ClassicWindows);
+            }
+            return (0, SphereNet.Game.Objects.Characters.Character.ClientType.ClassicWindows);
+        };
+
+        SphereNet.Game.Objects.Characters.Character.FollowUid = (gm, uid) =>
+        {
+            // No persistent follow engine yet — Source-X CChar follow
+            // skill ticks aren't implemented. Best-effort fallback:
+            // teleport the GM next to the target so the dialog row
+            // ("Follow this player") still has a useful side effect.
+            var targetSerial = new SphereNet.Core.Types.Serial(uid);
+            var target = _world?.FindChar(targetSerial);
+            if (target == null) return;
+            gm.MoveTo(target.Position);
+        };
+
+        // --- Observer-visible verbs (ANIM/SOUND/EFFECT/BOW/SALUTE/BARK)
+        // and per-owner UI verbs (DCLICK/PACK/BANK) ---
+        SphereNet.Game.Objects.Characters.Character.BroadcastNearby = (origin, range, pkt, exclude) =>
+        {
+            BroadcastNearby(origin, range, pkt, exclude);
+        };
+        SphereNet.Game.Objects.Characters.Character.OpenPaperdollForOwner = ch =>
+        {
+            foreach (var c in _clients.Values)
+            {
+                if (c.Character == ch)
+                {
+                    // 0x88 paperdoll — title is the rendered char name
+                    // plus any title; we use the plain name here as the
+                    // GM-context paperdoll doesn't need the full title
+                    // line composition that Source-X computes.
+                    c.NetState.Send(new SphereNet.Network.Packets.Outgoing.PacketOpenPaperdoll(
+                        ch.Uid.Value, ch.GetName(), 0));
+                    return;
+                }
+            }
+        };
+        SphereNet.Game.Objects.Characters.Character.OpenBackpackForOwner = ch =>
+        {
+            foreach (var c in _clients.Values)
+            {
+                if (c.Character == ch)
+                {
+                    var pack = ch.Backpack;
+                    if (pack != null)
+                        c.NetState.Send(new SphereNet.Network.Packets.Outgoing.PacketOpenContainer(
+                            pack.Uid.Value, 0x003C, c.NetState.IsClientPost7090));
+                    return;
+                }
+            }
+        };
+        SphereNet.Game.Objects.Characters.Character.OpenBankboxForOwner = ch =>
+        {
+            foreach (var c in _clients.Values)
+            {
+                if (c.Character == ch) { c.OpenBankBox(); return; }
+            }
+        };
 
         // Mounts
         _mountEngine = new SphereNet.Game.Mounts.MountEngine(_world);
@@ -1734,6 +1947,12 @@ public static class Program
             // --- SERV.MAP.n.SECTOR.n.property ---
             _ when upper.StartsWith("MAP.") => ResolveServMapSector(upper[4..]),
 
+            // --- SERV.MAP(x,y,z,m).property — Source-X function form
+            // Used by mortechUO d_admin houses/ships row to look up the
+            // region name at a given world point:
+            //   <Serv.Map(<REF1.P.X>,<REF1.P.Y>,0,<REF1.P.M>).Region.Name>
+            _ when upper.StartsWith("MAP(") => ResolveServMapPoint(property[4..]),
+
             // --- RTIME.FORMAT / RTICKS.FORMAT / RTICKS.FROMTIME (standalone, forwarded here) ---
             _ when upper.StartsWith("RTIME.FORMAT") => ResolveRtimeFormat(upper),
             _ when upper.StartsWith("RTICKS.FORMAT") => ResolveRticksFormat(upper),
@@ -1780,6 +1999,15 @@ public static class Program
             // online player, with the caller as src. Protocol format:
             // _ALLCLIENTS=<srcUid>|<funcName>.
             _ when upper.StartsWith("_ALLCLIENTS=") => HandleAllClients(property[12..]),
+
+            // serv.resync / serv.save / serv.shutdown — admin write
+            // verbs reachable from dialog buttons (d_admin_function).
+            // Sphere fires them as bare property reads on the server
+            // resolver; we hijack and run the matching engine action.
+            "RESYNC" => HandleServResync(),
+            "SAVE" => HandleServSave(),
+            "SHUTDOWN" => HandleServShutdown(""),
+            _ when upper.StartsWith("SHUTDOWN ") => HandleServShutdown(property[9..]),
 
             // Region property access
             _ when upper.StartsWith("_REGION_GET=") => HandleRegionGet(property[12..]),
@@ -1997,10 +2225,10 @@ public static class Program
     private static string? HandleAllClients(string data)
     {
         int pipe = data.IndexOf('|');
-        if (pipe <= 0 || _world == null || _triggerRunner == null) return "";
+        if (pipe <= 0 || _world == null) return "";
         string uidStr = data[..pipe].Trim();
-        string funcName = data[(pipe + 1)..].Trim();
-        if (string.IsNullOrEmpty(funcName)) return "";
+        string payload = data[(pipe + 1)..].Trim();
+        if (string.IsNullOrEmpty(payload)) return "";
 
         if (uidStr.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
             uidStr = uidStr[2..];
@@ -2013,9 +2241,16 @@ public static class Program
         if (srcObj is not SphereNet.Game.Objects.Characters.Character srcChar)
             return "";
 
-        // Snapshot so a function that mutates CTags on src (common
-        // "serv.allclients f_count" pattern) doesn't interfere with
-        // iteration.
+        // Source-X allows two payload shapes:
+        //   serv.allclients f_count_players          → call function f_count_players
+        //   serv.allclients sysmessage @0481 Booting → execute verb on every client
+        // Detect verb form by splitting first token and asking the
+        // target object whether it can execute it. Works for SYSMESSAGE,
+        // MESSAGE, EVENTS, SHRINK, KICK, ... — the standard CChar verbs.
+        int sp = payload.IndexOfAny(new[] { ' ', '\t' });
+        string head = sp > 0 ? payload[..sp] : payload;
+        string tail = sp > 0 ? payload[(sp + 1)..].TrimStart() : "";
+
         var snapshot = _clients.Values.Where(c => c.IsPlaying && c.Character != null).ToList();
         foreach (var client in snapshot)
         {
@@ -2025,8 +2260,73 @@ public static class Program
                 Object1 = target,
                 Object2 = srcChar,
             };
-            _triggerRunner.TryRunFunction(funcName, target, client, trigArgs, out _);
+
+            bool dispatched = false;
+            // Try as verb first — TryExecuteCommand returns false for
+            // unknown verbs, falling through to function-call form.
+            if (target.TryExecuteCommand(head, tail, client))
+                dispatched = true;
+            else if (client.TryExecuteScriptCommand(target, head, tail, trigArgs))
+                dispatched = true;
+
+            if (!dispatched && _triggerRunner != null)
+                _triggerRunner.TryRunFunction(payload, target, client, trigArgs, out _);
         }
+        return "";
+    }
+
+    /// <summary>Source-X <c>serv.resync</c> from a script: trigger the
+    /// same hot-reload pipeline used by the telnet/console RESYNC verb.</summary>
+    private static string? HandleServResync()
+    {
+        try { PerformScriptResync(); }
+        catch (Exception ex)
+        {
+            _log?.LogWarning(ex, "Script-driven serv.resync failed");
+        }
+        return "";
+    }
+
+    /// <summary>Source-X <c>serv.save</c>: route to the standard world
+    /// save path (<see cref="PerformSave"/>) so dialog-driven backups
+    /// produce identical .scp output.</summary>
+    private static string? HandleServSave()
+    {
+        try { PerformSave(); }
+        catch (Exception ex)
+        {
+            _log?.LogWarning(ex, "Script-driven serv.save failed");
+        }
+        return "";
+    }
+
+    /// <summary>Source-X <c>serv.shutdown [seconds]</c>. Without an arg,
+    /// shut down immediately; with a delay, schedule a single-shot
+    /// timer. The scheduling is best-effort — the server tick loop is
+    /// what actually exits when <c>_running</c> flips to false.</summary>
+    private static string? HandleServShutdown(string args)
+    {
+        int delaySec = 0;
+        if (!string.IsNullOrWhiteSpace(args))
+            int.TryParse(args.Trim(), out delaySec);
+
+        if (delaySec <= 0)
+        {
+            _running = false;
+            return "";
+        }
+
+        // Detached delay; we don't await it because the resolver runs on
+        // the script tick path and must return synchronously.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(delaySec * 1000);
+                _running = false;
+            }
+            catch { /* ignore */ }
+        });
         return "";
     }
 
@@ -2105,6 +2405,49 @@ public static class Program
             return dt.ToUnixTimeSeconds().ToString();
         }
         catch { return "0"; }
+    }
+
+    /// <summary>Resolve <c>SERV.MAP(x,y,z,m).Region.Name</c> and similar
+    /// Source-X function-form lookups. Splits the args inside parens on
+    /// commas, looks up the region containing the point, then forwards
+    /// the trailing <c>.Region.X</c> sub-property chain to the region
+    /// object via <see cref="HandleRegionGet"/>.</summary>
+    private static string? ResolveServMapPoint(string rest)
+    {
+        // rest is e.g. "1455,1612,0,0).Region.Name" — strip up to ')'.
+        int close = rest.IndexOf(')');
+        if (close < 0) return "0";
+        string argList = rest[..close];
+        string trailing = rest[(close + 1)..];
+        if (trailing.StartsWith('.')) trailing = trailing[1..];
+
+        var parts = argList.Split(',');
+        if (parts.Length < 2) return "0";
+
+        if (!int.TryParse(parts[0].Trim(), out int x)) return "0";
+        if (!int.TryParse(parts[1].Trim(), out int y)) return "0";
+        int z = parts.Length > 2 && int.TryParse(parts[2].Trim(), out int parsedZ) ? parsedZ : 0;
+        int m = parts.Length > 3 && int.TryParse(parts[3].Trim(), out int parsedM) ? parsedM : 0;
+
+        var pt = new SphereNet.Core.Types.Point3D((short)x, (short)y, (sbyte)z, (byte)m);
+        if (_world == null) return "0";
+
+        // Bare "MAP(x,y,z,m)" or trailing "P": just echo the point.
+        if (string.IsNullOrEmpty(trailing) || trailing.Equals("P", StringComparison.OrdinalIgnoreCase))
+            return pt.ToString();
+
+        // REGION[.prop] — delegate to the existing HandleRegionGet path.
+        if (trailing.StartsWith("REGION", StringComparison.OrdinalIgnoreCase))
+        {
+            var region = _world.FindRegion(pt);
+            if (region == null) return "";
+            string regionRest = trailing.Length > 6 && trailing[6] == '.' ? trailing[7..] : "";
+            if (string.IsNullOrEmpty(regionRest)) return region.Name;
+            return region.TryGetProperty(regionRest, out string rv) ? rv : "0";
+        }
+
+        // ROOM[.prop] — same idea but no per-point room lookup engine yet.
+        return null;
     }
 
     private static string? ResolveServMapSector(string rest)
@@ -3091,10 +3434,10 @@ public static class Program
 
     // ==================== Phase 3: Client Compatibility ====================
 
-    private static void OnGumpTextEntry(NetState state, uint serial, uint gumpId, uint buttonId, string text)
+    private static void OnGumpTextEntry(NetState state, uint serial, ushort context, byte action, string text)
     {
         if (_clients.TryGetValue(state.Id, out var client))
-            client.HandleGumpTextEntry(serial, gumpId, buttonId, text);
+            client.HandleGumpTextEntry(serial, context, action, text);
     }
 
     private static void OnAllNamesRequest(NetState state, uint serial)
@@ -4293,8 +4636,43 @@ public static class Program
 
     private static void RegisterBuiltinDefNames()
     {
-        // Reserved for core DEFNAME bootstrap values.
-        // Script packs provide most defnames at startup.
+        // Engine baseline DEFNAMEs — script packs (defs.scp) typically
+        // override these on load. We register them up-front so admin
+        // dialogs and core scripts that depend on them still resolve
+        // even when a barebones scripts/ directory is shipped.
+        if (_resources == null) return;
+
+        // [DEFNAME ref_types] from Source-X core defs.scp.
+        // Used by <GetRefType> == <Def.TRef_*> guards.
+        var refTypes = new (string Name, int Value)[]
+        {
+            ("tref_serv",          0x000001),
+            ("tref_file",          0x000002),
+            ("tref_newfile",       0x000004),
+            ("tref_db",            0x000008),
+            ("tref_resdef",        0x000010),
+            ("tref_resbase",       0x000020),
+            ("tref_functionargs",  0x000040),
+            ("tref_fileobj",       0x000080),
+            ("tref_fileobjcont",   0x000100),
+            ("tref_account",       0x000200),
+            ("tref_stonemember",   0x000800),
+            ("tref_serverdef",     0x001000),
+            ("tref_sector",        0x002000),
+            ("tref_world",         0x004000),
+            ("tref_gmpage",        0x008000),
+            ("tref_client",        0x010000),
+            ("tref_object",        0x020000),
+            ("tref_char",          0x040000),
+            ("tref_item",          0x080000),
+        };
+
+        foreach (var (name, val) in refTypes)
+        {
+            _resources.RegisterDefName(name,
+                new SphereNet.Core.Types.ResourceId(
+                    SphereNet.Core.Enums.ResType.DefName, val));
+        }
     }
 
     private static List<string> ResolveScriptDirectories(string basePath, string scpConfig)

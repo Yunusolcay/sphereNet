@@ -41,6 +41,74 @@ public class Character : ObjBase
     // has no active client.
     public static Action<Character, SphereNet.Network.Packets.PacketWriter>? SendPacketToOwner;
 
+    /// <summary>Disconnect the character's owning client (DISCONNECT/KICK
+    /// verbs from the admin dialogs). Wired in Program.cs against the
+    /// network manager. Optional second arg signals "ban" semantics so
+    /// the implementation can flag the account.</summary>
+    public static Action<Character, bool>? DisconnectClient;
+
+    /// <summary>Resend tooltip cliloc packet to every client viewing the
+    /// character. mortechUO admin dialog uses ResendTooltip after stat-
+    /// flag toggles so the tooltip refresh is immediate, not on next
+    /// move tick.</summary>
+    public static Action<Character>? ResendTooltipForAll;
+
+    /// <summary>Open the inspect/info dialog on a target character. Used
+    /// by the script <c>INFO</c> verb when no UID arg is supplied
+    /// (admin function dialog "Info" row).</summary>
+    public static Action<Character>? OpenInfoDialog;
+
+    /// <summary>Pop a target cursor for the GM's TELE verb. Source-X
+    /// behaviour: GM picks ground/object, server moves the GM there.</summary>
+    public static Action<Character>? BeginTeleTarget;
+
+    /// <summary>Drop a 'cage' of stone walls around the character.
+    /// Reuses the SUMMONCAGE speech command path.</summary>
+    public static Action<Character>? SummonCageAround;
+
+    /// <summary>Begin follow-target on a UID. mortechUO admin dialog
+    /// player tweak does <c>Src.Follow &lt;UID&gt;</c> to make the GM
+    /// auto-walk after a player.</summary>
+    public static Action<Character, uint>? FollowUid;
+
+    /// <summary>Resolve client metadata (reported version, client type
+    /// flags) for the active session of <paramref name="ch"/>. Returns
+    /// (0, ClassicWindows) when the character is offline or no session
+    /// info is recorded. Wired in Program.cs.</summary>
+    public static Func<Character, (int ReportedCliver, ClientType Type)>? ResolveClientInfo;
+
+    /// <summary>Broadcast a packet to every connected client whose
+    /// character is within <paramref name="range"/> tiles of
+    /// <paramref name="origin"/> on the same map. Used by script verbs
+    /// that need observer-visible side effects (ANIM/SOUND/EFFECT/BOW
+    /// /SALUTE/BARK). Wired in Program.cs against the global
+    /// BroadcastNearby helper.</summary>
+    public static Action<Point3D, int, SphereNet.Network.Packets.PacketWriter, uint>? BroadcastNearby;
+
+    /// <summary>Open this character's paperdoll on the owning client.
+    /// Used by the script <c>DCLICK</c> verb when the target is the
+    /// character itself (Source-X CChar::OnDoubleClickFromSelf).</summary>
+    public static Action<Character>? OpenPaperdollForOwner;
+
+    /// <summary>Open this character's backpack on the owning client.
+    /// Used by the script <c>PACK</c> verb (Source-X
+    /// CChar::Use_BackpackOpen).</summary>
+    public static Action<Character>? OpenBackpackForOwner;
+
+    /// <summary>Open this character's bank box on the owning client.
+    /// Used by the script <c>BANK</c> verb and admin shortcut.</summary>
+    public static Action<Character>? OpenBankboxForOwner;
+
+    /// <summary>UO client family flags exposed to scripts via
+    /// <c>ClientisKr</c> / <c>Is3D</c> / <c>IsEnhanced</c>.</summary>
+    public enum ClientType
+    {
+        ClassicWindows = 0,
+        Classic3D = 1,
+        KingdomReborn = 2,
+        Enhanced = 3,
+    }
+
     private bool _isDeleted;
     private bool _isPlayer;
 
@@ -666,6 +734,82 @@ public class Character : ObjBase
         value = "";
         var upper = key.ToUpperInvariant();
 
+        // <MemoryFindType.<def>[.isValid|.Link[.<prop>]]> — Source-X
+        // memory inspection. We only have a partial memory engine so we
+        // synthesize the two cases the admin dialogs care about:
+        //   memory_guild → resolve the player's guild from GuildManager
+        // and pretend the guild stone is the linked object. Everything
+        // else returns "0"/empty so the dialog renders the "no value"
+        // path instead of a literal "<MemoryFindType...>".
+        if (upper.StartsWith("MEMORYFINDTYPE.", StringComparison.Ordinal))
+        {
+            string rest = upper["MEMORYFINDTYPE.".Length..];
+            int dot1 = rest.IndexOf('.');
+            string memType = dot1 < 0 ? rest : rest[..dot1];
+            string sub = dot1 < 0 ? "" : rest[(dot1 + 1)..];
+
+            if (memType.Equals("MEMORY_GUILD", StringComparison.OrdinalIgnoreCase))
+            {
+                var gm = ResolveGuildManager?.Invoke(Uid);
+                var guild = gm?.FindGuildFor(Uid);
+                if (guild == null)
+                {
+                    if (sub.Equals("ISVALID", StringComparison.OrdinalIgnoreCase))
+                    { value = "0"; return true; }
+                    value = "0";
+                    return true;
+                }
+
+                if (sub.Length == 0)
+                {
+                    value = $"0{guild.StoneUid.Value:X8}";
+                    return true;
+                }
+                if (sub.Equals("ISVALID", StringComparison.OrdinalIgnoreCase))
+                { value = "1"; return true; }
+                if (sub.StartsWith("LINK", StringComparison.OrdinalIgnoreCase))
+                {
+                    string linkSub = sub.Length > 4 && sub[4] == '.' ? sub[5..] : "";
+                    if (linkSub.Length == 0)
+                    {
+                        value = $"0{guild.StoneUid.Value:X8}";
+                        return true;
+                    }
+                    if (linkSub.Equals("NAME", StringComparison.OrdinalIgnoreCase))
+                    { value = guild.Name ?? ""; return true; }
+                    if (linkSub.Equals("P", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Guild stone position not modelled; fall back
+                        // to the master's location so "Go <...Link.P>"
+                        // still goes somewhere sensible (admin dialog
+                        // row 688).
+                        var masterMember = guild.GetMaster();
+                        var master = masterMember != null
+                            ? ResolveCharByUid?.Invoke(masterMember.CharUid) : null;
+                        value = master != null ? master.Position.ToString() : Position.ToString();
+                        return true;
+                    }
+                }
+            }
+
+            // Unknown memory or sub: return false-y so callers using
+            // `<isEmpty ...>` or `If <...isValid>` take the empty branch.
+            if (sub.Equals("ISVALID", StringComparison.OrdinalIgnoreCase))
+            { value = "0"; return true; }
+            value = "";
+            return true;
+        }
+
+        // <House.N> / <Ship.N> indexed UID accessor — stubbed to 0
+        // until the housing engine ships, mirroring the count stub
+        // above so the dialog never iterates past the empty case.
+        if (upper.StartsWith("HOUSE.", StringComparison.Ordinal) ||
+            upper.StartsWith("SHIP.", StringComparison.Ordinal))
+        {
+            value = "0";
+            return true;
+        }
+
         // <FindLayer(N)> → UID of item equipped on layer N, or 0.
         // <FindLayer(N).property> → property on that item.
         if (upper.StartsWith("FINDLAYER(", StringComparison.Ordinal))
@@ -764,6 +908,69 @@ public class Character : ObjBase
             case "ISINWAR": value = IsInWarMode ? "1" : "0"; return true;
             case "TITLE": value = _title; return true;
             case "SKILLCLASS": value = _skillClass.ToString(); return true;
+            // <SkillClass.Statsum> / <SkillClass.SkillSum> / .Name
+            // mortechUO d_admin_PlayerTweak shows the active class cap
+            // next to STR/DEX/INT to make stat editing safer.
+            case "SKILLCLASS.STATSUM":
+            case "SKILLCLASS.STATSUMMAX":
+            {
+                var def = SphereNet.Game.Definitions.DefinitionLoader
+                    .GetSkillClassDef(_skillClass);
+                value = (def?.StatSumMax ?? 225).ToString();
+                return true;
+            }
+            case "SKILLCLASS.SKILLSUM":
+            case "SKILLCLASS.SKILLSUMMAX":
+            case "SKILLCLASS.MAXSKILLS":
+            {
+                var def = SphereNet.Game.Definitions.DefinitionLoader
+                    .GetSkillClassDef(_skillClass);
+                value = (def?.SkillSumMax ?? 7000).ToString();
+                return true;
+            }
+            case "SKILLCLASS.NAME":
+            {
+                var def = SphereNet.Game.Definitions.DefinitionLoader
+                    .GetSkillClassDef(_skillClass);
+                value = def?.Name ?? "";
+                return true;
+            }
+            // Source-X client introspection (CClient::GetReportedVer
+            // and friends). mortechUO admin search row uses these to
+            // decorate online players with their client kind.
+            case "REPORTEDCLIVER":
+            {
+                var info = ResolveClientInfo?.Invoke(this) ?? (0, ClientType.ClassicWindows);
+                value = info.ReportedCliver.ToString();
+                return true;
+            }
+            case "CLIENTISKR":
+            {
+                var info = ResolveClientInfo?.Invoke(this) ?? (0, ClientType.ClassicWindows);
+                value = info.Type == ClientType.KingdomReborn ? "1" : "0";
+                return true;
+            }
+            case "IS3D":
+            {
+                var info = ResolveClientInfo?.Invoke(this) ?? (0, ClientType.ClassicWindows);
+                value = info.Type == ClientType.Classic3D ? "1" : "0";
+                return true;
+            }
+            case "ISENHANCED":
+            {
+                var info = ResolveClientInfo?.Invoke(this) ?? (0, ClientType.ClassicWindows);
+                value = info.Type == ClientType.Enhanced ? "1" : "0";
+                return true;
+            }
+            // Houses / Ships ownership counts. We do not have a multi-
+            // tile housing engine yet; report 0 so the admin dialog
+            // renders the "Empty" branch instead of an unresolved
+            // <Houses> token. Indexed accessors (HOUSE.N / SHIP.N)
+            // similarly return "0" via the prefix branch below.
+            case "HOUSES":
+            case "SHIPS":
+                value = "0";
+                return true;
             case "REGION":
                 value = (TryGetTag("CURRENT_REGION_UID", out string? regionUid) ? regionUid : "") ?? "";
                 return true;
@@ -1299,7 +1506,7 @@ public class Character : ObjBase
             case "MAXHITS": if (short.TryParse(normalized, out short mhv)) MaxHits = mhv; return true;
             case "MAXMANA": if (short.TryParse(normalized, out short mmv)) MaxMana = mmv; return true;
             case "MAXSTAM": if (short.TryParse(normalized, out short msv)) MaxStam = msv; return true;
-            case "BODY": if (ushort.TryParse(normalized, out ushort bv)) _bodyId = bv; return true;
+            case "BODY": if (TryParseHexOrDecUshort(normalized, out ushort bv)) _bodyId = bv; return true;
             case "DIR": if (byte.TryParse(normalized, out byte drv)) _direction = (Direction)drv; return true;
             case "FAME": if (short.TryParse(normalized, out short fv)) _fame = fv; return true;
             case "KARMA": if (short.TryParse(normalized, out short kv)) _karma = kv; return true;
@@ -1638,6 +1845,32 @@ public class Character : ObjBase
 
     public override bool TryExecuteCommand(string key, string args, ITextConsole source)
     {
+        // Source-X chained method dispatch on the equipped-layer slot:
+        //   Src.FindLayer(21).Empty   → empty the worn pack
+        //   Src.FindLayer(11).Remove  → strip the worn helmet
+        // Resolve the layer to an item and re-route the trailing verb
+        // there so we do not have to add per-accessor handlers.
+        if (key.StartsWith("FINDLAYER(", StringComparison.OrdinalIgnoreCase))
+        {
+            int closeParen = key.IndexOf(')');
+            if (closeParen > 10)
+            {
+                string layerStr = key.Substring(10, closeParen - 10);
+                string tail = key[(closeParen + 1)..].TrimStart('.');
+                if (int.TryParse(layerStr, out int layerNum) && tail.Length > 0)
+                {
+                    var worn = GetEquippedItem((Layer)layerNum);
+                    if (worn == null || worn.IsDeleted) return true;
+                    if (tail.Equals("REMOVE", StringComparison.OrdinalIgnoreCase))
+                    {
+                        worn.Delete();
+                        return true;
+                    }
+                    return worn.TryExecuteCommand(tail, args, source);
+                }
+            }
+        }
+
         switch (key.ToUpperInvariant())
         {
             case "NEWITEM":
@@ -1656,8 +1889,37 @@ public class Character : ObjBase
             }
             case "CONSUME":
             {
-                // CONSUME amount i_type — consume items from pack
-                return true; // Stub — needs pack search
+                // Source-X CChar::Spell_CastDone / r_Verb CONSUME:
+                //   CONSUME [amount [defname|0xBASEID]]
+                // Walks the backpack subtree, decrementing the matching
+                // item's Amount and deleting it when the stack is empty.
+                // Empty defname falls back to "consume one of any item"
+                // — matching r_Verb behaviour where omitted args mean
+                // "the last NEWITEM defname". Returns silently if the
+                // requested resource is not present (Sphere never errors
+                // out on missing reagent counts; scripts gate on RESTEST
+                // before invoking CONSUME).
+                int wantAmount = 1;
+                string defArg = "";
+                var consumeParts = (args ?? "").Split(
+                    new[] { ' ', '\t' }, 2,
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (consumeParts.Length > 0 && int.TryParse(consumeParts[0], out int parsedAmount) && parsedAmount > 0)
+                {
+                    wantAmount = parsedAmount;
+                    if (consumeParts.Length > 1) defArg = consumeParts[1].Trim();
+                }
+                else if (consumeParts.Length > 0)
+                {
+                    defArg = (args ?? "").Trim();
+                }
+                if (string.IsNullOrEmpty(defArg)) defArg = NewItemId ?? "";
+
+                ushort wantBaseId = ResolveItemBaseIdForVerb(defArg);
+                if (wantBaseId == 0) return true;
+
+                ConsumeFromContainer(Backpack, wantBaseId, ref wantAmount);
+                return true;
             }
             case "KILL":
                 Kill();
@@ -1667,8 +1929,27 @@ public class Character : ObjBase
                 return true;
             case "ANIM":
             {
-                if (ushort.TryParse(args.Split(' ', ',')[0].Trim(), out ushort _))
-                    return true; // Animation — wired at packet level
+                // Source-X CChar::r_Verb ANIM action[,frameCount[,repeatCount[,backwards[,repeat[,delay]]]]]
+                // Broadcasts the 0x6E animation packet to every client
+                // observing the character. Only the action id is
+                // mandatory; the remaining tokens reuse Source-X
+                // defaults (frameCount=7, repeatCount=1, fwd, no
+                // repeat, delay=0) when omitted.
+                var aparts = (args ?? "").Split(
+                    new[] { ',', ' ', '\t' },
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (aparts.Length == 0 || !TryParseScriptUShort(aparts[0], out ushort animAction))
+                    return true;
+                ushort animFrames = aparts.Length > 1 && TryParseScriptUShort(aparts[1], out ushort fc) ? fc : (ushort)7;
+                ushort animRepeats = aparts.Length > 2 && TryParseScriptUShort(aparts[2], out ushort rc) ? rc : (ushort)1;
+                bool animBackwards = aparts.Length > 3 && aparts[3] != "0";
+                bool animRepeat = aparts.Length > 4 && aparts[4] != "0";
+                byte animDelay = aparts.Length > 5 && byte.TryParse(aparts[5], out byte d) ? d : (byte)0;
+                BroadcastNearby?.Invoke(Position, 18,
+                    new SphereNet.Network.Packets.Outgoing.PacketAnimation(
+                        Uid.Value, animAction, animFrames, animRepeats,
+                        forward: !animBackwards, repeat: animRepeat, delay: animDelay),
+                    0);
                 return true;
             }
             case "GO":
@@ -1692,16 +1973,57 @@ public class Character : ObjBase
                 return true;
             }
             case "BOUNCE":
-                // Bounce item back to pack — stub
+            {
+                // Source-X CChar::r_Verb BOUNCE bounces whatever the
+                // character is currently dragging back to its origin
+                // container. We don't model a server-side drag cursor
+                // (the 0x25 pickup is handled inline by GameClient and
+                // either places or rejects the item in the same tick),
+                // so there's nothing to bounce here. The verb is left
+                // wired for script compatibility — calling it is safe
+                // and silent.
                 return true;
+            }
             case "SOUND":
             {
-                if (ushort.TryParse(args.Split(' ', ',')[0].Trim(), out ushort _))
+                // SOUND id[, mode]. Broadcasts 0x54 to nearby observers
+                // at the character's tile. Mode default 1 (looped=false).
+                var sparts = (args ?? "").Split(
+                    new[] { ',', ' ', '\t' },
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (sparts.Length == 0 || !TryParseScriptUShort(sparts[0], out ushort soundId))
                     return true;
+                byte sndMode = sparts.Length > 1 && byte.TryParse(sparts[1], out byte m) ? m : (byte)1;
+                BroadcastNearby?.Invoke(Position, 18,
+                    new SphereNet.Network.Packets.Outgoing.PacketSound(soundId, X, Y, Z, sndMode),
+                    0);
                 return true;
             }
             case "EFFECT":
+            {
+                // Source-X r_Verb EFFECT type, id, speed, duration, explode[, hue, render]
+                // We honour the first five tokens which cover all
+                // mortechUO admin/spell scripts (the optional hue/render
+                // pair feeds the colored-particle packet which we don't
+                // implement yet — defaults to 0/0).
+                var eparts = (args ?? "").Split(
+                    new[] { ',', ' ', '\t' },
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (eparts.Length < 2
+                    || !byte.TryParse(eparts[0], out byte effType)
+                    || !TryParseScriptUShort(eparts[1], out ushort effId))
+                    return true;
+                byte effSpeed = eparts.Length > 2 && byte.TryParse(eparts[2], out byte sp) ? sp : (byte)5;
+                byte effDur = eparts.Length > 3 && byte.TryParse(eparts[3], out byte du) ? du : (byte)1;
+                bool effExplode = eparts.Length > 4 && eparts[4] != "0";
+                BroadcastNearby?.Invoke(Position, 18,
+                    new SphereNet.Network.Packets.Outgoing.PacketEffect(
+                        effType, Uid.Value, Uid.Value, effId,
+                        X, Y, Z, X, Y, Z,
+                        effSpeed, effDur, fixedDir: true, explode: effExplode),
+                    0);
                 return true;
+            }
 
             // --- New commands ---
             case "ALLSKILLS":
@@ -1945,22 +2267,38 @@ public class Character : ObjBase
             }
             case "BARK":
             {
-                // Sound alias — stub (handled at packet level)
+                // Source-X CChar::SoundChar(CRESND_RAND) — emit the
+                // body's idle/death sound. We don't ship the per-body
+                // sound table yet, so synthesise a tile-relative sound
+                // from the body id (good enough to make the verb
+                // audible) and broadcast it.
+                ushort barkSnd = (ushort)(0x0001 + (BodyId & 0x00FF));
+                BroadcastNearby?.Invoke(Position, 18,
+                    new SphereNet.Network.Packets.Outgoing.PacketSound(barkSnd, X, Y, Z),
+                    0);
                 return true;
             }
             case "BOW":
             {
-                // Bow animation (anim 32)
+                BroadcastNearby?.Invoke(Position, 18,
+                    new SphereNet.Network.Packets.Outgoing.PacketAnimation(Uid.Value, 32),
+                    0);
                 return true;
             }
             case "SALUTE":
             {
-                // Salute animation (anim 33)
+                BroadcastNearby?.Invoke(Position, 18,
+                    new SphereNet.Network.Packets.Outgoing.PacketAnimation(Uid.Value, 33),
+                    0);
                 return true;
             }
             case "DCLICK":
             {
-                // Double-click stub
+                // Source-X CChar::r_Verb DCLICK with no arg = dclick
+                // self. Open the paperdoll on the owning client. The
+                // optional UID arg form is dispatched by the script
+                // engine as <UID.0xN.DCLICK> on the target object.
+                OpenPaperdollForOwner?.Invoke(this);
                 return true;
             }
             case "FLIP":
@@ -1971,6 +2309,13 @@ public class Character : ObjBase
             }
             case "FIXWEIGHT":
             {
+                // Source-X CChar::r_Verb FIXWEIGHT recomputes the cached
+                // carry weight by walking the inventory. We don't cache
+                // weight separately — Item.TotalWeight is computed on
+                // demand — but the verb is also expected to refresh the
+                // status bar so the client picks up the new value, so
+                // mark the stat block dirty.
+                MarkDirty(DirtyFlag.Stats);
                 return true;
             }
             case "UPDATE":
@@ -1982,22 +2327,45 @@ public class Character : ObjBase
             }
             case "DROP":
             {
-                // Drop item — stub
+                // Source-X CChar::r_Verb DROP releases the dragged item
+                // to the ground. SphereNet handles drag cursors purely
+                // in the GameClient packet path (0x25 pickup → 0x07/0x08
+                // drop within the same tick); there is no persistent
+                // server-side "in hand" item to drop here. The verb is
+                // accepted for script compatibility and is a safe
+                // no-op.
                 return true;
             }
             case "PACK":
             {
-                // Open pack — handled at client level
+                OpenBackpackForOwner?.Invoke(this);
                 return true;
             }
             case "BANK":
             {
-                // Open bank — handled at client level
+                OpenBankboxForOwner?.Invoke(this);
                 return true;
             }
             case "HUNGRY":
             {
-                // Hunger check — stub
+                // Source-X CChar::r_Verb HUNGRY [amount] — adjust food
+                // level. Positive arg = set, negative = decrement,
+                // omitted = single tick of hunger (matches the @Hunger
+                // trigger CONSUME path). Triggers a stat refresh so the
+                // client picks up the FOOD bar change.
+                string hraw = (args ?? "").Trim();
+                if (hraw.Length == 0)
+                {
+                    if (_food > 0) _food--;
+                }
+                else if (int.TryParse(hraw, out int hAmount))
+                {
+                    if (hAmount < 0)
+                        _food = (ushort)Math.Max(0, _food + hAmount);
+                    else
+                        _food = (ushort)Math.Min(60, hAmount);
+                }
+                MarkDirty(DirtyFlag.Stats);
                 return true;
             }
             case "NUDGEUP":
@@ -2036,6 +2404,90 @@ public class Character : ObjBase
             {
                 string cell = args.Trim();
                 SetTag("JAIL", string.IsNullOrEmpty(cell) ? "1" : cell);
+                return true;
+            }
+
+            // --- Admin dialog verbs (Source-X CChar verb table) ---
+
+            case "DISCONNECT":
+            {
+                DisconnectClient?.Invoke(this, false);
+                return true;
+            }
+            case "KICK":
+            {
+                // Kick = disconnect + ban marker (SourceX flips the
+                // account's "blocked" bit). We pass ban=true and let the
+                // wired delegate decide how to enforce it.
+                DisconnectClient?.Invoke(this, true);
+                return true;
+            }
+            case "RESENDTOOLTIP":
+            {
+                ResendTooltipForAll?.Invoke(this);
+                return true;
+            }
+            case "INFO":
+            {
+                // Source-X <X>.INFO opens the per-target inspect dialog.
+                // No-arg form is the typical script call (admin dialog
+                // "Src.info" / per-row INFO button).
+                OpenInfoDialog?.Invoke(this);
+                return true;
+            }
+            case "TELE":
+            {
+                // Bare TELE on a character begins the targeted teleport
+                // flow. Source-X also accepts "TELE x,y,z[,m]" — we
+                // forward to the existing GO verb in that case so the
+                // coordinate parsing stays in one place.
+                if (!string.IsNullOrWhiteSpace(args) && args.Contains(','))
+                    return TryExecuteCommand("GO", args, source);
+                BeginTeleTarget?.Invoke(this);
+                return true;
+            }
+            case "T":
+            {
+                // Source-X CChar 'T' verb is the alias for TELE used by
+                // some script packs. Treat it identically.
+                if (!string.IsNullOrWhiteSpace(args) && args.Contains(','))
+                    return TryExecuteCommand("GO", args, source);
+                BeginTeleTarget?.Invoke(this);
+                return true;
+            }
+            case "NIGHTSIGHT":
+            {
+                if (!string.IsNullOrEmpty(args?.Trim()))
+                    _nightSight = args.Trim() != "0";
+                else
+                    _nightSight = !_nightSight;
+                MarkDirty(DirtyFlag.Stats);
+                return true;
+            }
+            case "FOLLOW":
+            {
+                string raw = args?.Trim() ?? "";
+                if (raw.Length == 0) return true;
+                if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    raw = raw[2..];
+                else if (raw.StartsWith('0') && raw.Length > 1)
+                    raw = raw[1..];
+                if (uint.TryParse(raw, System.Globalization.NumberStyles.HexNumber, null, out uint followUid))
+                    FollowUid?.Invoke(this, followUid);
+                return true;
+            }
+            case "SUMMONCAGE":
+            {
+                SummonCageAround?.Invoke(this);
+                return true;
+            }
+            case "CLEARCTAGS":
+            {
+                // Standalone form: drop every CTag under the given
+                // prefix on this character. mortechUO admin dialogs
+                // call <c>ClearCTags Dialog.Admin</c> directly (no
+                // PARTY. prefix) to reset the admin UI state.
+                CTags.RemoveByPrefix(args?.Trim() ?? string.Empty);
                 return true;
             }
         }
@@ -2437,6 +2889,85 @@ public class Character : ObjBase
     // write-order cache for ITEM/COLOR pairs.
     private Items.Item? _lastCreatedItem;
     private ushort _lastVerbHue;
+
+    /// <summary>Resolve a script item argument ("0x1F00", "i_gold",
+    /// "1234") down to a wire-side BaseId for FIND/CONSUME-style
+    /// verbs. Returns 0 when the token can't be matched, signalling
+    /// the caller to no-op (Sphere never errors on bad defnames here;
+    /// scripts pre-check via RESTEST/RESCOUNT).</summary>
+    private static ushort ResolveItemBaseIdForVerb(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token)) return 0;
+        string t = token.Trim();
+
+        // Hex literal (with or without 0x / leading zero per Sphere convention).
+        ReadOnlySpan<char> span = t;
+        if (span.Length > 2 && span[0] == '0' && (span[1] == 'x' || span[1] == 'X'))
+        {
+            return ushort.TryParse(span[2..], System.Globalization.NumberStyles.HexNumber, null, out ushort hex)
+                ? hex : (ushort)0;
+        }
+        if (span.Length > 1 && span[0] == '0')
+        {
+            return ushort.TryParse(span, System.Globalization.NumberStyles.HexNumber, null, out ushort hex2)
+                ? hex2 : (ushort)0;
+        }
+
+        // Try defname → ItemDef → DispIndex (wire graphic). Fall back to
+        // the resource id when the def has no explicit DispIndex (matches
+        // SpawnAndEquipItem's resolution).
+        var resources = Definitions.DefinitionLoader.StaticResources;
+        if (resources != null)
+        {
+            var rid = resources.ResolveDefName(t);
+            if (rid.IsValid && rid.Type == Core.Enums.ResType.ItemDef)
+            {
+                var idef = Definitions.DefinitionLoader.GetItemDef(rid.Index);
+                if (idef != null)
+                {
+                    if (idef.DispIndex != 0) return idef.DispIndex;
+                    if (idef.DupItemId != 0) return idef.DupItemId;
+                }
+                if (rid.Index <= 0xFFFF) return (ushort)rid.Index;
+            }
+        }
+
+        // Plain decimal id (rare but valid for explicit DISPID values).
+        return ushort.TryParse(t, out ushort dec) ? dec : (ushort)0;
+    }
+
+    /// <summary>Walk the container subtree and decrement
+    /// <paramref name="want"/> matching items in place, deleting
+    /// stacks that reach zero. Stops as soon as <paramref name="want"/>
+    /// hits zero. Mirrors Source-X CChar::ResourceConsume.</summary>
+    private static void ConsumeFromContainer(Items.Item? container, ushort baseId, ref int want)
+    {
+        if (container == null || want <= 0) return;
+        var snapshot = new List<Items.Item>(container.Contents);
+        foreach (var child in snapshot)
+        {
+            if (want <= 0) return;
+            if (child.IsDeleted) continue;
+            if (child.BaseId == baseId)
+            {
+                int take = Math.Min(want, child.Amount);
+                if (take >= child.Amount)
+                {
+                    container.RemoveItem(child);
+                    child.Delete();
+                }
+                else
+                {
+                    child.Amount = (ushort)(child.Amount - take);
+                }
+                want -= take;
+            }
+            else if (child.ContentCount > 0)
+            {
+                ConsumeFromContainer(child, baseId, ref want);
+            }
+        }
+    }
 
     /// <summary>Spawn an item by defname and put it on this NPC at
     /// its natural layer (falls back to the backpack). Resolves

@@ -134,12 +134,43 @@ public sealed class GameClient : ITextConsole
     private string? _pendingAddToken;
     private string? _pendingShowArgs;
     private string? _pendingEditArgs;
+    /// <summary>Source-X X-prefix verb fallback (CClient.cpp:921). When
+    /// the GM types e.g. <c>.xhits 100</c> the unknown-verb path opens a
+    /// target cursor and stores <c>(verb="HITS", args="100")</c>; on
+    /// pick, <see cref="SpeechEngine.ExecuteVerbForTarget"/> applies the
+    /// verb to the picked object.</summary>
+    private string? _pendingXVerb;
+    private string _pendingXVerbArgs = "";
+    // Phase C — Source-X parity targeted GM verbs.
+    /// <summary>"NUKE" / "NUKECHAR" / "NUDGE" — armed via
+    /// <see cref="BeginAreaTarget"/>. The picked tile is the area
+    /// centre; <see cref="_pendingAreaRange"/> is the half-extent.</summary>
+    private string? _pendingAreaVerb;
+    private int _pendingAreaRange;
+    private bool _pendingControlTarget;
+    private bool _pendingDupeTarget;
+    private bool _pendingHealTarget;
+    private bool _pendingBankTarget;
+    private bool _pendingSummonToTarget;
+    private bool _pendingMountTarget;
+    private bool _pendingSummonCageTarget;
     private Point3D? _lastScriptTargetPoint;
     private Action<uint, short, short, sbyte, ushort>? _pendingTargetCallback;
     private Item? _pendingScriptNewItem;
     private bool _targetCursorActive;
     private string? _pendingDialogCloseFunction;
     private string _pendingDialogArgs = "";
+    /// <summary>
+    /// Pending Source-X <c>INPDLG</c> prompt state. Keyed by the
+    /// <c>(targetSerial, context)</c> pair we encoded into the outgoing
+    /// 0xAB packet; the matching 0xAC reply restores the property name
+    /// to write the user-typed value into.
+    /// </summary>
+    private readonly Dictionary<(uint Serial, ushort Context), string> _pendingInputDlg = new();
+    /// <summary>Monotonic counter for fresh INPDLG <c>context</c> ids
+    /// (Source-X uses CLIMODE constants, but we just need uniqueness per
+    /// open prompt).</summary>
+    private ushort _nextInputDlgContext = 0x1000;
     private List<MenuOptionEntry>? _pendingMenuOptions;
     private ushort _pendingMenuId;
     private string _pendingMenuDefname = "";
@@ -4391,6 +4422,17 @@ public sealed class GameClient : ITextConsole
             _pendingTeleTarget = false;
             _pendingAddToken = null;
             _pendingRemoveTarget = false;
+            _pendingXVerb = null;
+            _pendingXVerbArgs = "";
+            _pendingAreaVerb = null;
+            _pendingAreaRange = 0;
+            _pendingControlTarget = false;
+            _pendingDupeTarget = false;
+            _pendingHealTarget = false;
+            _pendingBankTarget = false;
+            _pendingSummonToTarget = false;
+            _pendingMountTarget = false;
+            _pendingSummonCageTarget = false;
             _pendingTargetFunction = null;
             _pendingTargetArgs = "";
             _pendingTargetAllowGround = false;
@@ -4578,6 +4620,201 @@ public sealed class GameClient : ITextConsole
             }
 
             _commands.ExecuteEditForTarget(_character, editArgs, serial);
+            return;
+        }
+
+        // ---- Phase C: NUKE / NUKECHAR / NUDGE area handlers ----
+        if (!string.IsNullOrEmpty(_pendingAreaVerb))
+        {
+            string areaVerb = _pendingAreaVerb!;
+            int areaRange = _pendingAreaRange;
+            _pendingAreaVerb = null;
+            _pendingAreaRange = 0;
+
+            // Resolve the centre. If the GM clicked on an object use its
+            // position so NUDGE/NUKE applied to a chest also covers the
+            // surrounding tiles, mirroring Source-X's box centre behaviour.
+            Point3D centre;
+            if (serial != 0 && serial != 0xFFFFFFFF)
+            {
+                var picked = _world.FindObject(new Serial(serial));
+                centre = picked?.Position ?? new Point3D(x, y, z, _character.MapIndex);
+            }
+            else
+            {
+                centre = new Point3D(x, y, z, _character.MapIndex);
+            }
+
+            int affected = ExecuteAreaVerb(areaVerb, centre, areaRange);
+            switch (areaVerb)
+            {
+                case "NUKE":
+                    SysMessage(ServerMessages.GetFormatted("gm_nuke_done", affected));
+                    break;
+                case "NUKECHAR":
+                    SysMessage(ServerMessages.GetFormatted("gm_nukechar_done", affected));
+                    break;
+                case "NUDGE":
+                    SysMessage(ServerMessages.GetFormatted("gm_nudge_done", affected));
+                    break;
+            }
+            return;
+        }
+
+        if (_pendingControlTarget)
+        {
+            _pendingControlTarget = false;
+            var npc = ResolvePickedChar(serial);
+            if (npc == null) { SysMessage(ServerMessages.Get("target_must_object")); return; }
+            // Source-X CChar::NPC_PetSetOwner — give the NPC the GM as
+            // master. We mirror that with the conventional OWNER_UID tag
+            // (also used by the resurrect flow on corpses) and flag the
+            // NPC as a pet so AI / loyalty checks treat it accordingly.
+            npc.SetTag("OWNER_UID", _character.Uid.Value.ToString());
+            npc.SetStatFlag(StatFlag.Pet);
+            SysMessage(ServerMessages.GetFormatted("gm_control_done", npc.Name));
+            return;
+        }
+
+        if (_pendingDupeTarget)
+        {
+            _pendingDupeTarget = false;
+            var pickedItem = serial != 0 && serial != 0xFFFFFFFF
+                ? _world.FindItem(new Serial(serial))
+                : null;
+            if (pickedItem == null) { SysMessage(ServerMessages.Get("target_must_object")); return; }
+            var dup = DuplicateItem(pickedItem);
+            if (dup != null)
+                SysMessage(ServerMessages.GetFormatted("gm_dupe_done",
+                    pickedItem.Name ?? "item", dup.Uid.Value.ToString("X8")));
+            else
+                SysMessage(ServerMessages.Get("target_cant_remove"));
+            return;
+        }
+
+        if (_pendingHealTarget)
+        {
+            _pendingHealTarget = false;
+            var victim = ResolvePickedChar(serial);
+            if (victim == null) { SysMessage(ServerMessages.Get("target_must_object")); return; }
+            if (victim.IsDead) victim.Resurrect();
+            victim.Hits = victim.MaxHits;
+            victim.Mana = victim.MaxMana;
+            victim.Stam = victim.MaxStam;
+            SysMessage(ServerMessages.GetFormatted("gm_heal_done", victim.Name));
+            return;
+        }
+
+        if (_pendingBankTarget)
+        {
+            _pendingBankTarget = false;
+            var picked = ResolvePickedChar(serial);
+            if (picked == null) { SysMessage(ServerMessages.Get("target_must_object")); return; }
+            // We open the picked char's bank on *our* client. Source-X
+            // Eq's the BankBox onto the picked char then sends the owner
+            // GM a 0x24 OpenContainer; the bank items are then drawn
+            // from that container's content.
+            OpenForeignBank(picked);
+            return;
+        }
+
+        if (_pendingSummonToTarget)
+        {
+            _pendingSummonToTarget = false;
+            var picked = ResolvePickedChar(serial);
+            if (picked == null) { SysMessage(ServerMessages.Get("target_must_object")); return; }
+            _world.MoveCharacter(picked, _character.Position);
+            BroadcastDrawObject(picked);
+            SysMessage(ServerMessages.GetFormatted("gm_summonto_done", picked.Name));
+            return;
+        }
+
+        if (_pendingMountTarget)
+        {
+            _pendingMountTarget = false;
+            var npc = ResolvePickedChar(serial);
+            if (npc == null) { SysMessage(ServerMessages.Get("target_must_object")); return; }
+            if (_mountEngine == null || !_mountEngine.TryMount(_character, npc))
+            {
+                SysMessage(ServerMessages.Get("gm_mount_failed"));
+                return;
+            }
+            BroadcastDrawObject(_character);
+            SysMessage(ServerMessages.GetFormatted("gm_mount_done", npc.Name));
+            return;
+        }
+
+        if (_pendingSummonCageTarget)
+        {
+            _pendingSummonCageTarget = false;
+            var picked = ResolvePickedChar(serial);
+            if (picked == null) { SysMessage(ServerMessages.Get("target_must_object")); return; }
+            // Source-X CV_SUMMONCAGE: teleport the victim to the GM and
+            // ring them with iron-bar items. We use BaseId 0x0008/0x0009
+            // for vertical/horizontal bars (DEFNAMES i_bars_*).
+            _world.MoveCharacter(picked, _character.Position);
+            BroadcastDrawObject(picked);
+            SpawnCageAround(picked.Position);
+            SysMessage(ServerMessages.GetFormatted("gm_summoncage_done", picked.Name));
+            return;
+        }
+
+        // Source-X CClient.cpp:921 — generic X-prefix verb fallback:
+        // resolve the picked object and apply the inner verb to it via
+        // SpeechEngine.ExecuteVerbForTarget. Mirrors C++ addTargetVerb.
+        if (!string.IsNullOrEmpty(_pendingXVerb))
+        {
+            string verb = _pendingXVerb!;
+            string xargs = _pendingXVerbArgs;
+            _pendingXVerb = null;
+            _pendingXVerbArgs = "";
+
+            if (serial == 0 || serial == 0xFFFFFFFF)
+            {
+                SysMessage(ServerMessages.Get("target_must_object"));
+                return;
+            }
+
+            IScriptObj? obj = (IScriptObj?)_world.FindChar(new Serial(serial))
+                ?? _world.FindItem(new Serial(serial));
+            if (obj == null)
+            {
+                SysMessage(ServerMessages.GetFormatted("gm_object_serial", $"{serial:X8}"));
+                return;
+            }
+
+            // Snapshot the relevant fields we may need to broadcast on
+            // change (position / appearance) before mutating the target.
+            Point3D? posBefore = (obj as Character)?.Position;
+            ushort bodyBefore = (obj as Character)?.BodyId ?? 0;
+            ushort hueBefore = (obj as Character)?.Hue.Value ?? 0;
+
+            bool ok = _commands?.ExecuteVerbForTarget(_character, verb, xargs, obj) ?? false;
+
+            if (ok)
+            {
+                SysMessage(ServerMessages.GetFormatted("gm_xverb_applied", verb, obj.GetName()));
+
+                if (obj is Character ch)
+                {
+                    bool moved = posBefore.HasValue && !ch.Position.Equals(posBefore.Value);
+                    bool appearance = ch.BodyId != bodyBefore || ch.Hue.Value != hueBefore;
+                    if (moved)
+                    {
+                        _world.MoveCharacter(ch, ch.Position);
+                        if (ch == _character) Resync();
+                        BroadcastDrawObject(ch);
+                    }
+                    else if (appearance)
+                    {
+                        BroadcastDrawObject(ch);
+                    }
+                }
+            }
+            else
+            {
+                SysMessage(ServerMessages.GetFormatted("gm_xverb_failed", verb, obj.GetName()));
+            }
             return;
         }
 
@@ -5545,12 +5782,140 @@ public sealed class GameClient : ITextConsole
         _netState.Send(new PacketTarget(1, (uint)Random.Shared.Next(1, int.MaxValue)));
     }
 
+    /// <summary>Source-X parity (CClient.cpp:921 <c>addTargetVerb</c>):
+    /// stash an inner verb + arg pair, open a target cursor, and apply
+    /// the verb to whatever the GM picks. Used by the generic X-prefix
+    /// fallback (.xhits, .xcolor, .xinvul, ...).</summary>
+    public void BeginXVerbTarget(string verb, string args)
+    {
+        if (_character == null) return;
+        if (_targetCursorActive) return;
+        if (string.IsNullOrEmpty(verb)) return;
+
+        ClearPendingTargetState();
+        _pendingXVerb = verb.Trim();
+        _pendingXVerbArgs = args?.Trim() ?? "";
+        _targetCursorActive = true;
+        _netState.Send(new PacketTarget(1, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    /// <summary>Source-X CV_NUKE / CV_NUKECHAR / CV_NUDGE: open a
+    /// ground-target cursor and treat the picked tile as the centre of
+    /// an axis-aligned area of half-extent <paramref name="range"/>.
+    /// We deviate from Source-X (which prompts for two corner tiles —
+    /// see CClient_functions.tbl 'NUKE'); a single pick + fixed range
+    /// keeps the wire round-trip lean and is enough for GM cleanup.</summary>
+    public void BeginAreaTarget(string verb, int range)
+    {
+        if (_character == null) return;
+        if (_targetCursorActive) return;
+        if (string.IsNullOrEmpty(verb)) return;
+
+        ClearPendingTargetState();
+        _pendingAreaVerb = verb.Trim().ToUpperInvariant();
+        _pendingAreaRange = Math.Clamp(range, 1, 32);
+        _targetCursorActive = true;
+        // type=1 (ground allowed), so the GM can pick an empty tile.
+        _netState.Send(new PacketTarget(1, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    public void BeginControlTarget()
+    {
+        if (_character == null || _targetCursorActive) return;
+        ClearPendingTargetState();
+        _pendingControlTarget = true;
+        _targetCursorActive = true;
+        _netState.Send(new PacketTarget(0, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    public void BeginDupeTarget()
+    {
+        if (_character == null || _targetCursorActive) return;
+        ClearPendingTargetState();
+        _pendingDupeTarget = true;
+        _targetCursorActive = true;
+        _netState.Send(new PacketTarget(0, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    public void BeginHealTarget()
+    {
+        if (_character == null || _targetCursorActive) return;
+        ClearPendingTargetState();
+        _pendingHealTarget = true;
+        _targetCursorActive = true;
+        _netState.Send(new PacketTarget(0, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    public void BeginBankTarget()
+    {
+        if (_character == null || _targetCursorActive) return;
+        ClearPendingTargetState();
+        _pendingBankTarget = true;
+        _targetCursorActive = true;
+        _netState.Send(new PacketTarget(0, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    public void BeginSummonToTarget()
+    {
+        if (_character == null || _targetCursorActive) return;
+        ClearPendingTargetState();
+        _pendingSummonToTarget = true;
+        _targetCursorActive = true;
+        _netState.Send(new PacketTarget(0, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    public void BeginMountTarget()
+    {
+        if (_character == null || _targetCursorActive) return;
+        ClearPendingTargetState();
+        _pendingMountTarget = true;
+        _targetCursorActive = true;
+        _netState.Send(new PacketTarget(0, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    public void BeginSummonCageTarget()
+    {
+        if (_character == null || _targetCursorActive) return;
+        ClearPendingTargetState();
+        _pendingSummonCageTarget = true;
+        _targetCursorActive = true;
+        _netState.Send(new PacketTarget(0, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    /// <summary>Source-X CV_ANIM. Plays the given action on this client's
+    /// own character so the GM can verify animation IDs visually.</summary>
+    public void PlayOwnAnimation(ushort animId)
+    {
+        if (_character == null) return;
+        var pkt = new PacketAnimation(_character.Uid.Value, animId);
+        BroadcastNearby?.Invoke(_character.Position, UpdateRange, pkt, 0);
+    }
+
+    /// <summary>Convenience wrapper used by SpeechEngine event hookup —
+    /// dismount the GM's character if currently mounted.</summary>
+    public void UnmountSelf()
+    {
+        if (_character == null || _mountEngine == null) return;
+        _mountEngine.Dismount(_character);
+    }
+
     private void ClearPendingTargetState()
     {
         _pendingTeleTarget = false;
         _pendingAddToken = null;
         _pendingShowArgs = null;
         _pendingEditArgs = null;
+        _pendingXVerb = null;
+        _pendingXVerbArgs = "";
+        _pendingAreaVerb = null;
+        _pendingAreaRange = 0;
+        _pendingControlTarget = false;
+        _pendingDupeTarget = false;
+        _pendingHealTarget = false;
+        _pendingBankTarget = false;
+        _pendingSummonToTarget = false;
+        _pendingMountTarget = false;
+        _pendingSummonCageTarget = false;
         _pendingRemoveTarget = false;
         _pendingResurrectTarget = false;
         _pendingInspectTarget = false;
@@ -6086,6 +6451,165 @@ public sealed class GameClient : ITextConsole
             BroadcastMoveNearby.Invoke(ch.Position, UpdateRange, drawObj, _character?.Uid.Value ?? 0, ch);
         else
             BroadcastNearby?.Invoke(ch.Position, UpdateRange, drawObj, _character?.Uid.Value ?? 0);
+    }
+
+    /// <summary>Resolves a target serial to a <see cref="Character"/>.
+    /// If the serial is a corpse, falls back to the corpse's
+    /// <c>OWNER_UID</c> tag (set by <see cref="DeathEngine"/>).</summary>
+    private Character? ResolvePickedChar(uint uid)
+    {
+        if (uid == 0 || uid == 0xFFFFFFFF) return null;
+        var ch = _world.FindChar(new Serial(uid));
+        if (ch != null) return ch;
+        var corpse = _world.FindItem(new Serial(uid));
+        if (corpse != null && corpse.TryGetTag("OWNER_UID", out string? ownerStr) &&
+            uint.TryParse(ownerStr, out uint ownerUid))
+            return _world.FindChar(new Serial(ownerUid));
+        return null;
+    }
+
+    /// <summary>Source-X CV_NUKE / CV_NUKECHAR / CV_NUDGE area
+    /// implementation. Iterates the world sectors around
+    /// <paramref name="centre"/> at <paramref name="range"/> tiles and
+    /// applies the verb. Returns the number of objects affected.</summary>
+    private int ExecuteAreaVerb(string verb, Point3D centre, int range)
+    {
+        if (_character == null) return 0;
+        int affected = 0;
+        switch (verb)
+        {
+            case "NUKE":
+            {
+                // Snapshot first — DeleteObject mutates the sector lists.
+                var items = _world.GetItemsInRange(centre, range).ToList();
+                foreach (var item in items)
+                {
+                    if (item.IsEquipped) continue;          // GM gear safe
+                    if (item.ContainedIn.IsValid) continue; // bag contents safe
+                    BroadcastDeleteObject(item.Uid.Value);
+                    _world.DeleteObject(item);
+                    item.Delete();
+                    affected++;
+                }
+                break;
+            }
+            case "NUKECHAR":
+            {
+                var chars = _world.GetCharsInRange(centre, range).ToList();
+                foreach (var ch in chars)
+                {
+                    if (ch == _character) continue;
+                    if (ch.IsPlayer) continue;              // never auto-purge real players
+                    BroadcastDeleteObject(ch.Uid.Value);
+                    _world.DeleteObject(ch);
+                    ch.Delete();
+                    affected++;
+                }
+                break;
+            }
+            case "NUDGE":
+            {
+                // Source-X reads TARG.X/Y/Z TAGs as the displacement.
+                // We default to (0, 0, +1) when the GM has not set them
+                // — useful for "lift items 1 tile up to clear floors".
+                int dx = TryGetIntTag("NUDGE.DX", 0);
+                int dy = TryGetIntTag("NUDGE.DY", 0);
+                int dz = TryGetIntTag("NUDGE.DZ", 1);
+                if (dx == 0 && dy == 0 && dz == 0) dz = 1;
+                foreach (var item in _world.GetItemsInRange(centre, range).ToList())
+                {
+                    if (item.ContainedIn.IsValid) continue;
+                    var p = item.Position;
+                    var np = new Point3D(
+                        (short)(p.X + dx),
+                        (short)(p.Y + dy),
+                        (sbyte)(p.Z + dz),
+                        p.Map);
+                    BroadcastDeleteObject(item.Uid.Value);
+                    _world.PlaceItem(item, np);
+                    BroadcastNearby?.Invoke(np, UpdateRange,
+                        new PacketWorldItem(item.Uid.Value, item.DispIdFull, item.Amount,
+                            item.X, item.Y, item.Z, item.Hue), 0);
+                    affected++;
+                }
+                break;
+            }
+        }
+        return affected;
+    }
+
+    private int TryGetIntTag(string key, int defaultValue)
+    {
+        if (_character != null && _character.TryGetTag(key, out string? v) &&
+            int.TryParse(v, out int n))
+            return n;
+        return defaultValue;
+    }
+
+    /// <summary>Source-X CV_DUPE: clones an item next to the original.
+    /// Copies BaseId, Hue and Amount; container/equipped duplicates are
+    /// not supported (matches Source-X CClient_functions.tbl behaviour
+    /// for items in the world).</summary>
+    private Item? DuplicateItem(Item src)
+    {
+        if (_character == null) return null;
+        var dup = _world.CreateItem();
+        dup.BaseId = src.BaseId;
+        dup.Hue = src.Hue;
+        dup.Amount = src.Amount > 0 ? src.Amount : (ushort)1;
+        if (!string.IsNullOrEmpty(src.Name)) dup.Name = src.Name;
+        if (src.ContainedIn.IsValid)
+            PlaceItemInPack(_character, dup);
+        else
+            _world.PlaceItem(dup, src.Position);
+        BroadcastNearby?.Invoke(dup.Position, UpdateRange,
+            new PacketWorldItem(dup.Uid.Value, dup.DispIdFull, dup.Amount,
+                dup.X, dup.Y, dup.Z, dup.Hue), 0);
+        return dup;
+    }
+
+    /// <summary>Source-X CV_SUMMONCAGE helper: drop iron-bar items in
+    /// the 8 tiles surrounding <paramref name="centre"/> so the victim
+    /// can't walk away. The bars are real items (visible to the client)
+    /// and persist until manually removed.</summary>
+    private void SpawnCageAround(Point3D centre)
+    {
+        // Bar graphics:  0x0084 vertical, 0x0086 horizontal (Source-X
+        // i_bars_v / i_bars_h). We skip diagonal corners — the picture
+        // is a "+" pattern around the victim, enough to block movement.
+        var ring = new (short dx, short dy, ushort gfx)[]
+        {
+            ( 0, -1, 0x0086), ( 0,  1, 0x0086),
+            (-1,  0, 0x0084), ( 1,  0, 0x0084),
+        };
+        foreach (var (dx, dy, gfx) in ring)
+        {
+            var bar = _world.CreateItem();
+            bar.BaseId = gfx;
+            bar.Amount = 1;
+            var p = new Point3D((short)(centre.X + dx), (short)(centre.Y + dy),
+                centre.Z, centre.Map);
+            _world.PlaceItem(bar, p);
+            BroadcastNearby?.Invoke(p, UpdateRange,
+                new PacketWorldItem(bar.Uid.Value, bar.DispIdFull, bar.Amount,
+                    bar.X, bar.Y, bar.Z, bar.Hue), 0);
+        }
+    }
+
+    /// <summary>Source-X CV_BANK with a target arg: opens the picked
+    /// character's bank box on this client. Mirrors CChar::Use_Obj
+    /// for BankBox layer items.</summary>
+    private void OpenForeignBank(Character victim)
+    {
+        var bank = victim.GetEquippedItem(Layer.BankBox);
+        if (bank == null)
+        {
+            // Conjure a transient empty bank box so the GM still gets a UI.
+            OpenBankBox();
+            return;
+        }
+        // Reuse the standard open-container flow on the bank serial.
+        _netState.Send(new PacketOpenContainer(bank.Uid.Value, 0x003C));
     }
 
     private bool RemoveTargetedObject(uint uid)
@@ -6974,18 +7498,23 @@ public sealed class GameClient : ITextConsole
                 {
                     if (!currentPageVisible) break;
                     // DTEXTENTRYLIMITED x y w h hue entryId maxChars initialText...
-                    // (client doesn't enforce maxChars server-side; we just reuse textentry)
+                    // The 7th token (maxChars) is the client-side input cap;
+                    // forward it via the gump layout's textentrylimited
+                    // control so admin INPDLG rows respect their script
+                    // length (NAME 30, BODY 30, COLOR 16, FOOD 4, etc.).
                     var parts = SplitTokens(args, 7, keepRemainder: true);
                     if (parts.Length >= 8)
                     {
                         int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
                         int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
-                        gump.AddTextEntry(x, y,
+                        int maxLen = ParseIntToken(parts[6]);
+                        gump.AddTextEntryLimited(x, y,
                             ParseIntToken(parts[2]),
                             ParseIntToken(parts[3]),
                             ParseIntToken(parts[4]),
                             ParseIntToken(parts[5]),
-                            ResolveDialogHtml(parts[7], _character));
+                            ResolveDialogHtml(parts[7], _character),
+                            maxLen);
                     }
                     break;
                 }
@@ -7737,6 +8266,17 @@ public sealed class GameClient : ITextConsole
             cursor += delta;
             return cursor;
         }
+        if (token.StartsWith('-'))
+        {
+            // Source-X DORIGIN style: negative delta against the
+            // current cursor (e.g. "Button +0 -2 ..." means: same X as
+            // last cursor, Y two pixels above last DText). Without this
+            // mortechUO d_SphereAdmin_PlayerTweak side menu collapses
+            // because every other line uses "Button <x> -2".
+            int delta = ParseIntToken(token[1..]);
+            cursor -= delta;
+            return cursor;
+        }
         if (token.StartsWith('*'))
         {
             int delta = ParseIntToken(token[1..]);
@@ -8365,6 +8905,21 @@ public sealed class GameClient : ITextConsole
             return true;
         }
 
+        // Source-X SET meta-verb: "Src.set <verb> [args]" pops a target
+        // cursor and re-dispatches the verb against the picked object.
+        // mortechUO admin dialogs lean on this for "set dupe", "set
+        // remove", "set xinfo" rows on the player tweak panel.
+        if (upper == "SET" || upper == "SETUID")
+        {
+            string raw = args?.Trim() ?? "";
+            if (raw.Length == 0) return true;
+            int sp = raw.IndexOfAny(new[] { ' ', '\t' });
+            string verb = sp > 0 ? raw[..sp] : raw;
+            string verbArgs = sp > 0 ? raw[(sp + 1)..].TrimStart() : "";
+            BeginXVerbTarget(verb, verbArgs);
+            return true;
+        }
+
         // Sphere MESSAGE command: overhead text on the target object.
         // Syntax: message @<hue>[,<type>,<font>] <text>
         //   e.g.  message @0481,1,1 [Nimloth]
@@ -8481,6 +9036,34 @@ public sealed class GameClient : ITextConsole
                 _netState.Send(packet);
                 BroadcastNearby?.Invoke(origin, 18, packet, _character.Uid.Value);
             }
+            return true;
+        }
+
+        // INPDLG <prop> <maxLength> — open a Source-X style text-entry
+        // gump on this client. The reply (0xAC) writes the user-typed
+        // value into <prop> on the script verb's target object.
+        // Source-X: CObjBase.cpp:OV_INPDLG → CClient::addGumpInputVal.
+        if (upper == "INPDLG")
+        {
+            string raw = args.Trim();
+            if (raw.Length == 0)
+                return true;
+
+            string propName;
+            int maxLen = 1;
+            int sp = raw.IndexOf(' ');
+            if (sp > 0)
+            {
+                propName = raw[..sp].Trim();
+                if (!int.TryParse(raw[(sp + 1)..].Trim(), out maxLen) || maxLen <= 0)
+                    maxLen = 1;
+            }
+            else
+            {
+                propName = raw;
+            }
+
+            SendInputPromptGump(target, propName, maxLen);
             return true;
         }
 
@@ -9033,15 +9616,16 @@ public sealed class GameClient : ITextConsole
         if (_character == null) return false;
 
         // Common Sphere runtime constants used by admin/dialog scripts.
+        // GETREFTYPE — match Source-X [DEFNAME ref_types] bit layout so
+        // <GetRefType> == <Def.TRef_Char> works straight from script.
         if (varName.Equals("GETREFTYPE", StringComparison.OrdinalIgnoreCase))
         {
-            // We execute command scripts in character context, not server context.
-            value = "1";
-            return true;
-        }
-        if (varName.Equals("DEF.TREF_SERV", StringComparison.OrdinalIgnoreCase))
-        {
-            value = "0";
+            if (target is SphereNet.Game.Objects.Items.Item)
+                value = "0" + 0x080000.ToString("X");
+            else if (target is SphereNet.Game.Objects.Characters.Character)
+                value = "0" + 0x040000.ToString("X");
+            else
+                value = "0" + 0x010000.ToString("X");
             return true;
         }
 
@@ -9858,17 +10442,108 @@ public sealed class GameClient : ITextConsole
 
     // ==================== Phase 3: Client Compatibility Handlers ====================
 
-    /// <summary>Handle gump text entry reply (0xAC).</summary>
-    public void HandleGumpTextEntry(uint serial, uint gumpId, uint buttonId, string text)
+    /// <summary>Handle 0xAC Gump Value Input reply (response to a 0xAB
+    /// dialog opened by the Source-X <c>INPDLG</c> verb). Looks up the
+    /// pending <c>(serial, context)</c> entry stored when the prompt was
+    /// sent and writes <paramref name="text"/> into the named property
+    /// on the target object via <c>TrySetProperty</c>.</summary>
+    public void HandleGumpTextEntry(uint serial, ushort context, byte action, string text)
     {
         if (_character == null) return;
 
-        _logger.LogDebug("[gump_text_entry] char=0x{Uid:X8} gumpId=0x{Gump:X8} button={Button} text='{Text}'",
-            _character.Uid.Value, gumpId, buttonId, text);
+        var key = (serial, context);
+        if (!_pendingInputDlg.TryGetValue(key, out var propName))
+        {
+            _logger.LogDebug("[inpdlg] unexpected text input: serial=0x{S:X8} ctx=0x{C:X4}", serial, context);
+            return;
+        }
+        _pendingInputDlg.Remove(key);
 
-        // Route through gump response handler with the text as a text entry
-        HandleGumpResponse(serial, gumpId, buttonId, Array.Empty<uint>(),
-            new (ushort, string)[] { (0, text) });
+        if (action == 0)
+        {
+            _logger.LogDebug("[inpdlg] cancelled by user (serial=0x{S:X8} prop={P})", serial, propName);
+            return;
+        }
+
+        IScriptObj? target = _world.FindChar(new Serial(serial)) as IScriptObj
+            ?? _world.FindItem(new Serial(serial)) as IScriptObj;
+        if (target == null)
+        {
+            _logger.LogDebug("[inpdlg] target serial 0x{S:X8} no longer exists", serial);
+            return;
+        }
+
+        // Source-X parity: a single "#" means "default value" — currently
+        // we just clear the property (TrySetProperty empty arg).
+        string value = text == "#" ? "" : text;
+
+        var posBefore = (target as Character)?.Position;
+        ushort bodyBefore = (target as Character)?.BodyId ?? 0;
+        ushort hueBefore = (target as Character)?.Hue.Value ?? 0;
+
+        if (!target.TrySetProperty(propName, value))
+        {
+            // Source-X falls back to executing the verb if it isn't a
+            // straight property — handles "INPDLG ANIM 30" style edits.
+            target.TryExecuteCommand(propName, value, this);
+        }
+
+        if (target is Character ch)
+        {
+            bool moved = posBefore.HasValue && !ch.Position.Equals(posBefore.Value);
+            bool appearance = ch.BodyId != bodyBefore || ch.Hue.Value != hueBefore;
+            if (moved)
+            {
+                _world.MoveCharacter(ch, ch.Position);
+                if (ch == _character)
+                    Resync();
+                BroadcastDrawObject(ch);
+            }
+            else if (appearance)
+            {
+                BroadcastDrawObject(ch);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Open a Source-X style <c>INPDLG</c> input prompt on this client.
+    /// The user types a value into a small text-entry gump; on submit,
+    /// <see cref="HandleGumpTextEntry"/> writes that value into
+    /// <paramref name="propName"/> on <paramref name="target"/>.
+    /// </summary>
+    public void SendInputPromptGump(IScriptObj target, string propName, int maxLength)
+    {
+        if (target == null || string.IsNullOrWhiteSpace(propName))
+            return;
+
+        uint targetSerial = 0;
+        if (target is Character ch) targetSerial = ch.Uid.Value;
+        else if (target is Item it) targetSerial = it.Uid.Value;
+        else return;
+
+        ushort context = unchecked(_nextInputDlgContext++);
+        if (_nextInputDlgContext == 0)
+            _nextInputDlgContext = 0x1000;
+
+        _pendingInputDlg[(targetSerial, context)] = propName;
+
+        string current = ".";
+        if (target.TryGetProperty(propName, out var cur) && !string.IsNullOrEmpty(cur))
+            current = cur;
+
+        string caption = $"{propName} (# = default)";
+        string description = string.IsNullOrEmpty(current) ? "." : current;
+
+        var packet = new PacketGumpValueInput(
+            targetSerial,
+            context,
+            caption,
+            description,
+            (uint)Math.Max(1, maxLength),
+            PacketGumpValueInput.InputStyle.TextEdit,
+            cancel: true);
+        _netState.Send(packet);
     }
 
     /// <summary>Handle all names request (0x98).</summary>

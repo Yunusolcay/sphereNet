@@ -633,7 +633,22 @@ public sealed class PacketAssistVersion : PacketHandler
     }
 }
 
-/// <summary>0xAC — Gump text entry reply (generic text input from a gump dialog).</summary>
+/// <summary>
+/// 0xAC — Gump Value Input response (client → server). Matches the
+/// reply for the 0xAB <c>PacketGumpValueInput</c> opened by the script
+/// <c>INPDLG</c> verb.
+///
+/// Wire format (from Source-X receive.cpp:2009):
+/// <code>
+///   byte   cmd       = 0xAC
+///   word   length    (variable)
+///   dword  serial    (target object UID, echoed from 0xAB)
+///   word   context   (echoed CLIMODE / discriminator)
+///   byte   action    (1 = OK, 0 = CANCEL)
+///   word   textLen   (chars in <c>text</c>, NOT including null)
+///   bytes  text      (ASCII)
+/// </code>
+/// </summary>
 public sealed class PacketGumpTextEntry : PacketHandler
 {
     public PacketGumpTextEntry() : base(0xAC, 0) { }
@@ -641,12 +656,12 @@ public sealed class PacketGumpTextEntry : PacketHandler
     public override void OnReceive(PacketBuffer buffer, State.NetState state)
     {
         uint serial = buffer.ReadUInt32();
-        uint gumpId = buffer.ReadUInt32();
-        uint buttonId = buffer.ReadUInt32();
+        ushort context = buffer.ReadUInt16();
+        byte action = buffer.ReadByte();
         ushort textLen = buffer.Remaining >= 2 ? buffer.ReadUInt16() : (ushort)0;
         string text = textLen > 0 && buffer.Remaining >= textLen
             ? buffer.ReadAsciiFixed(textLen).TrimEnd('\0') : "";
-        state.OnGumpTextEntry(serial, gumpId, buttonId, text);
+        state.OnGumpTextEntry(serial, context, action, text);
     }
 }
 

@@ -221,6 +221,66 @@ public sealed class ScriptInterpreter
                     break;
                 }
 
+                // TRYP <plevel> <verb args...> — Source-X CObjBase.cpp:2869.
+                // First token is the minimum PrivLevel required; if SRC's
+                // PLEVEL is lower we abort with a SysMessage. Otherwise the
+                // remainder is executed exactly like TRY (verb on target).
+                // Used by every standard property-edit dialog button:
+                //   ON=100   TRYP 4 INPDLG BODY 30
+                case "TRYP":
+                {
+                    string trypLine = ResolveArgs(key.Arg, target, source, args, scope);
+                    if (string.IsNullOrWhiteSpace(trypLine))
+                    {
+                        i++;
+                        break;
+                    }
+
+                    int firstSpace = trypLine.IndexOf(' ');
+                    string plevelTok = firstSpace > 0 ? trypLine[..firstSpace].Trim() : trypLine.Trim();
+                    string rest = firstSpace > 0 ? trypLine[(firstSpace + 1)..].Trim() : "";
+
+                    if (!int.TryParse(plevelTok, out int minPlevel))
+                    {
+                        _logger.LogWarning("TRYP: invalid plevel token '{Tok}'", plevelTok);
+                        i++;
+                        break;
+                    }
+
+                    var actor = source ?? NullConsole.Instance;
+                    if ((int)actor.GetPrivLevel() < minPlevel)
+                    {
+                        actor.SysMessage($"You lack the privilege to change the {rest} property.");
+                        i++;
+                        break;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(rest))
+                    {
+                        i++;
+                        break;
+                    }
+
+                    int eqIdx = rest.IndexOf('=');
+                    if (eqIdx > 0)
+                    {
+                        string prop = rest[..eqIdx].Trim();
+                        string val = rest[(eqIdx + 1)..].Trim();
+                        if (!target.TrySetProperty(prop, val))
+                            target.TryExecuteCommand(prop, val, actor);
+                    }
+                    else
+                    {
+                        int spIdx2 = rest.IndexOf(' ');
+                        string trypVerb = spIdx2 > 0 ? rest[..spIdx2].Trim() : rest.Trim();
+                        string trypVerbArgs = spIdx2 > 0 ? rest[(spIdx2 + 1)..].Trim() : "";
+                        if (!target.TryExecuteCommand(trypVerb, trypVerbArgs, actor))
+                            actor.TryExecuteScriptCommand(target, trypVerb, trypVerbArgs, args);
+                    }
+                    i++;
+                    break;
+                }
+
                 // TRYLEVEL — same as TRY but with PLEVEL check (skip if SRC has lower plevel)
                 case "TRYLEVEL":
                     // Not commonly used; just execute like TRY for now
@@ -879,15 +939,27 @@ public sealed class ScriptInterpreter
             if (v != null) return v;
         }
 
-        // GETREFTYPE — object type code
+        // GETREFTYPE — object type code. Values match Source-X
+        // [DEFNAME ref_types] flags so script comparisons like
+        // <If (<GetRefType> == <Def.TRef_Char>)> work without extra
+        // tweaks. Bit layout (hex):
+        //   tref_serv     0x000001
+        //   tref_account  0x000200
+        //   tref_world    0x004000
+        //   tref_client   0x010000
+        //   tref_object   0x020000
+        //   tref_char     0x040000
+        //   tref_item     0x080000
         if (varName.Equals("GETREFTYPE", StringComparison.OrdinalIgnoreCase))
         {
-            // Determine type from target: 0x02=char, 0x04=item
             if (target.TryGetProperty("ISCHAR", out string isChar) && isChar == "1")
-                return "0x02";
+                return "0" + 0x040000.ToString("X");
             if (target.TryGetProperty("ISITEM", out string isItem) && isItem == "1")
-                return "0x04";
-            return "0x01"; // default to client context
+                return "0" + 0x080000.ToString("X");
+            // Fallback when target isn't a tangible object — treat as the
+            // server context, matching SPHERESCRIPT behaviour for verb
+            // sources like CONSOLE/SERVER.
+            return "0" + 0x000001.ToString("X");
         }
 
         // DEFMSG.* — server default messages

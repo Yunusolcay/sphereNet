@@ -387,6 +387,43 @@ public static partial class ServerMessages
         Def("gm_insuf_priv", "Insufficient privileges. Required=%s, YourPLEVEL=%s.");
         Def("cmd_invalid", "Not a valid command or format");
         Def("gm_object_serial", "Object not found: 0x%s");
+        Def("gm_xverb_target", "Select target for %s.");
+        Def("gm_xverb_applied", "Applied %s to %s.");
+        Def("gm_xverb_failed", "Could not apply %s to %s.");
+
+        // ===== Area-target verbs (NUKE / NUKECHAR / NUDGE) =====
+        Def("gm_nuke_select", "Select first corner of NUKE area.");
+        Def("gm_nuke_second", "Select opposite corner of NUKE area.");
+        Def("gm_nuke_done", "NUKE: removed %s items in area.");
+        Def("gm_nukechar_done", "NUKECHAR: removed %s mobiles in area.");
+        Def("gm_nudge_select", "Select first corner of NUDGE area.");
+        Def("gm_nudge_second", "Select opposite corner of NUDGE area.");
+        Def("gm_nudge_dxdydz", "Enter NUDGE delta as 'dx dy dz' (then re-issue .NUDGE).");
+        Def("gm_nudge_done", "NUDGE: shifted %s objects.");
+
+        // ===== CChar tool verbs =====
+        Def("gm_anim_done", "Animation %s played.");
+        Def("gm_bank_opened", "Bank box opened.");
+        Def("gm_bank_target", "Select character to open bank of.");
+        Def("gm_control_target", "Select NPC to take control of.");
+        Def("gm_control_done", "You now control %s.");
+        Def("gm_dupe_target", "Select item to duplicate.");
+        Def("gm_dupe_done", "Duplicated %s -> 0x%s.");
+        Def("gm_mount_target", "Select mount.");
+        Def("gm_unmount_done", "Dismounted.");
+        Def("gm_summoncage_done", "Cage summoned around %s.");
+        Def("gm_summoncage_target", "Select character to cage.");
+        Def("gm_summonto_done", "%s summoned to your location.");
+        Def("gm_summonto_target", "Select character to summon.");
+        Def("gm_poly_target", "Polymorph: enter body id then target.");
+        Def("gm_poly_done", "Polymorphed into body 0x%s.");
+        Def("gm_poly_usage", ".POLY <body_id[,hue]>");
+        Def("gm_mount_failed", "That target cannot be mounted.");
+        Def("gm_mount_done", "Mounted '%s'.");
+        Def("gm_heal_target", "Select character to fully heal.");
+        Def("gm_heal_done", "%s fully healed.");
+        Def("gm_suicide_done", "You committed suicide.");
+        Def("gm_nuke_no_world", "No world available.");
 
         // ===== World Save (Source-X: DEFMSG_WORLDSAVE_*) =====
         Def("worldsave_started", "Saving world...");

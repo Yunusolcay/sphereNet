@@ -296,7 +296,10 @@ public sealed class NetState : IDisposable
     public Action<NetState, uint, byte, byte, ushort, ushort>? MapPinEditHandler { get; set; }
 
     // Phase 3: Client Compatibility
-    public Action<NetState, uint, uint, uint, string>? GumpTextEntryHandler { get; set; }
+    /// <summary>Reply to a 0xAB Gump Value Input dialog.
+    /// Args: <c>(state, targetSerial, context, action, text)</c> where
+    /// <c>action</c> is 1 for OK and 0 for cancel.</summary>
+    public Action<NetState, uint, ushort, byte, string>? GumpTextEntryHandler { get; set; }
     public Action<NetState, uint>? AllNamesRequestHandler { get; set; }
 
     public string ClientVersion { get; set; } = "";
@@ -481,8 +484,8 @@ public sealed class NetState : IDisposable
         AssistVersion = version;
     }
 
-    internal void OnGumpTextEntry(uint serial, uint gumpId, uint buttonId, string text)
-        => GumpTextEntryHandler?.Invoke(this, serial, gumpId, buttonId, text);
+    internal void OnGumpTextEntry(uint serial, ushort context, byte action, string text)
+        => GumpTextEntryHandler?.Invoke(this, serial, context, action, text);
 
     internal void OnAllNamesRequest(uint serial)
         => AllNamesRequestHandler?.Invoke(this, serial);

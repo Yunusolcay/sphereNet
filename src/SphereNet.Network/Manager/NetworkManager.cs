@@ -544,7 +544,7 @@ public sealed class NetworkManager : IDisposable
         Action<NetState, uint>? mapDetail = null,
         Action<NetState, uint, byte, byte, ushort, ushort>? mapPinEdit = null,
         // Phase 3
-        Action<NetState, uint, uint, uint, string>? gumpTextEntry = null,
+        Action<NetState, uint, ushort, byte, string>? gumpTextEntry = null,
         Action<NetState, uint>? allNamesRequest = null)
     {
         foreach (var state in _states)

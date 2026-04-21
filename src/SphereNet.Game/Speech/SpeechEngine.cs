@@ -232,6 +232,50 @@ public sealed class CommandHandler
     /// diagnostic logging. Host wires this to ExpressionParser.DebugUnresolved.</summary>
     public event Action<bool>? OnScriptDebugToggleRequested;
     public event Action<Character, string>? OnAddTargetRequested;
+    /// <summary>
+    /// Source-X parity: a single X-prefixed verb (e.g. <c>.xhits 100</c>,
+    /// <c>.xkill</c>, <c>.xinvul</c>) requests a target cursor on the GM
+    /// client; once they pick an object the host re-dispatches the inner
+    /// verb (without the leading X) onto the picked target via
+    /// <see cref="ExecuteVerbForTarget"/>. Mirrors
+    /// <c>CClient::OnConsoleCmd</c> CClient.cpp:921.
+    /// </summary>
+    public event Action<Character, string, string>? OnAddVerbTargetRequested;
+    /// <summary>Source-X parity: <c>.NUKE</c> / <c>.NUKECHAR</c> /
+    /// <c>.NUDGE</c> open a single-tile target cursor; the picked point
+    /// is then expanded into an area and the verb runs on every object
+    /// in that area. Args: <c>(gm, verb, range)</c>.</summary>
+    public event Action<Character, string, int>? OnAreaTargetRequested;
+    /// <summary>Source-X parity: <c>.SUMMONTO</c> opens a target cursor
+    /// then teleports the picked character to the GM. Args: <c>(gm)</c>.</summary>
+    public event Action<Character>? OnSummonToTargetRequested;
+    /// <summary>Source-X parity: <c>.CONTROL</c> opens a target cursor;
+    /// the picked NPC becomes player-controlled.</summary>
+    public event Action<Character>? OnControlTargetRequested;
+    /// <summary>Source-X parity: <c>.DUPE</c> opens a target cursor and
+    /// duplicates the picked item.</summary>
+    public event Action<Character>? OnDupeTargetRequested;
+    /// <summary>Source-X parity: <c>.HEAL</c> with no UID opens a cursor
+    /// to fully heal the picked character (or the GM with arg "self").</summary>
+    public event Action<Character>? OnHealTargetRequested;
+    /// <summary>Source-X parity: <c>.BANK</c> with no UID opens cursor;
+    /// picked character's bank is opened on the GM client.</summary>
+    public event Action<Character>? OnBankTargetRequested;
+    /// <summary>Source-X parity: <c>.BANK</c> with no args opens the
+    /// caller's own bank box on the GM client.</summary>
+    public event Action<Character>? OnBankSelfRequested;
+    /// <summary>Source-X parity: <c>.UNMOUNT</c> dismounts the caller.</summary>
+    public event Action<Character>? OnUnmountRequested;
+    /// <summary>Source-X parity: <c>.ANIM &lt;id&gt;</c> plays an
+    /// animation on the caller. Args: <c>(gm, animId)</c>.</summary>
+    public event Action<Character, ushort>? OnAnimRequested;
+    /// <summary>Source-X parity: <c>.MOUNT</c> opens a target cursor;
+    /// the picked NPC becomes the GM's mount.</summary>
+    public event Action<Character>? OnMountTargetRequested;
+    /// <summary>Source-X parity: <c>.SUMMONCAGE</c> opens a cursor;
+    /// the picked character is summoned to the GM and locked in a
+    /// transient iron-bar cage of items at the GM's feet.</summary>
+    public event Action<Character>? OnSummonCageTargetRequested;
     public event Action<Character>? OnRemoveTargetRequested;
     /// <summary>Fired by .RESURRECT (no args = self, with UID = direct,
     /// no UID + alive caller = target cursor). Wired in Program.cs to
@@ -266,6 +310,36 @@ public sealed class CommandHandler
         ExecuteShowCommand(gm, args, forcedTargetSerial: targetSerial);
     public bool ExecuteEditForTarget(Character gm, string args, uint targetSerial) =>
         ExecuteEditCommand(gm, args, forcedTargetSerial: targetSerial);
+
+    /// <summary>
+    /// Apply <paramref name="verb"/> with <paramref name="args"/> to a
+    /// concrete target picked through the X-prefix fallback (Source-X
+    /// <c>addTargetVerb</c>). Tries (in order):
+    /// <c>TrySetProperty(verb, args)</c>, <c>TryExecuteCommand</c>, and
+    /// finally <c>ScriptFallbackExecutor</c> as a property-name=value
+    /// pair so script-defined functions still apply.
+    /// </summary>
+    public bool ExecuteVerbForTarget(Character gm, string verb, string args, IScriptObj target)
+    {
+        if (target == null || string.IsNullOrEmpty(verb))
+            return false;
+
+        var actor = (ITextConsole?)gm ?? NullConsole.Instance;
+        if (target.TrySetProperty(verb, args))
+            return true;
+        if (target.TryExecuteCommand(verb, args, actor))
+            return true;
+
+        // Script-defined function fallback (rarely used for sub-object
+        // verbs but mirrors CObjBase r_Verb chain).
+        if (ScriptFallbackExecutor != null)
+        {
+            string asAssign = string.IsNullOrEmpty(args) ? verb : $"{verb}={args}";
+            if (ScriptFallbackExecutor(gm, asAssign))
+                return true;
+        }
+        return false;
+    }
 
     private ushort ResolveCharBodyId(CharDef? charDef, ushort fallbackBaseId)
     {
@@ -357,6 +431,22 @@ public sealed class CommandHandler
                 return CommandResult.Executed;
             if (args.Length > 0 && gm.TrySetProperty(verb, args))
                 return CommandResult.Executed;
+
+            // Source-X CClient.cpp:921 — generic X-prefix targeting fallback.
+            // Any unknown verb starting with 'X' (.xhits, .xkill, .xinvul,
+            // .xcolor, .xnuke, ...) opens a target cursor and re-dispatches
+            // the inner verb on the picked object. Required PLEVEL matches
+            // Source-X's GetPrivCommandLevel("SET") = Counsel.
+            if (verb.Length > 1 && (verb[0] == 'x' || verb[0] == 'X'))
+            {
+                if (gm.PrivLevel < PrivLevel.Counsel)
+                    return CommandResult.InsufficientPriv;
+
+                string innerVerb = verb[1..];
+                OnAddVerbTargetRequested?.Invoke(gm, innerVerb, args);
+                OnSysMessage?.Invoke(gm, ServerMessages.GetFormatted("gm_xverb_target", innerVerb));
+                return CommandResult.Executed;
+            }
 
             OnScriptParityWarning?.Invoke(gm, verb, "Command not found in built-in map or [PLEVEL] script matrix.");
             return CommandResult.NotFound;
@@ -1020,6 +1110,154 @@ public sealed class CommandHandler
 
             OnCastRequested?.Invoke(ch, spellId);
         });
+
+        // ===== Phase C — Source-X parity: missing built-in GM verbs =====
+        // (CClient_functions.tbl + CChar_functions.tbl). Many of these
+        // are area-target or single-target operations; the heavy lifting
+        // happens in GameClient via the matching event below.
+
+        // .NUKE [range] — area item delete. Source-X CV_NUKE.
+        Register("NUKE", PrivLevel.Counsel, (gm, args) =>
+        {
+            int range = TryParseAreaRange(args, defaultRange: 4);
+            OnSysMessage?.Invoke(gm, ServerMessages.Get("gm_nuke_select"));
+            OnAreaTargetRequested?.Invoke(gm, "NUKE", range);
+        });
+
+        // .NUKECHAR [range] — area mobile delete (NPCs only by default).
+        Register("NUKECHAR", PrivLevel.Counsel, (gm, args) =>
+        {
+            int range = TryParseAreaRange(args, defaultRange: 4);
+            OnSysMessage?.Invoke(gm, ServerMessages.Get("gm_nuke_select"));
+            OnAreaTargetRequested?.Invoke(gm, "NUKECHAR", range);
+        });
+
+        // .NUDGE — area shift. Single-pick variant: shifts each object
+        // in range by the GM's last TARGP delta (kept simple for now).
+        Register("NUDGE", PrivLevel.Counsel, (gm, args) =>
+        {
+            int range = TryParseAreaRange(args, defaultRange: 2);
+            OnSysMessage?.Invoke(gm, ServerMessages.Get("gm_nudge_select"));
+            OnAreaTargetRequested?.Invoke(gm, "NUDGE", range);
+        });
+
+        // .ANIM <id> — play animation on self. Source-X CV_ANIM.
+        Register("ANIM", PrivLevel.GM, (gm, args) =>
+        {
+            if (!ushort.TryParse(args.Trim(), out ushort animId))
+                return;
+            OnAnimRequested?.Invoke(gm, animId);
+            OnSysMessage?.Invoke(gm, ServerMessages.GetFormatted("gm_anim_done", animId));
+        });
+
+        // .BANK [target] — open own bank, or open picked char's bank.
+        Register("BANK", PrivLevel.GM, (gm, args) =>
+        {
+            string raw = args.Trim();
+            if (string.IsNullOrEmpty(raw))
+            {
+                OnBankSelfRequested?.Invoke(gm);
+                OnSysMessage?.Invoke(gm, ServerMessages.Get("gm_bank_opened"));
+                return;
+            }
+            OnSysMessage?.Invoke(gm, ServerMessages.Get("gm_bank_target"));
+            OnBankTargetRequested?.Invoke(gm);
+        });
+
+        // .CONTROL — target an NPC to take control of it.
+        Register("CONTROL", PrivLevel.GM, (gm, _) =>
+        {
+            OnSysMessage?.Invoke(gm, ServerMessages.Get("gm_control_target"));
+            OnControlTargetRequested?.Invoke(gm);
+        });
+
+        // .DUPE — duplicate an item (target cursor).
+        Register("DUPE", PrivLevel.GM, (gm, _) =>
+        {
+            OnSysMessage?.Invoke(gm, ServerMessages.Get("gm_dupe_target"));
+            OnDupeTargetRequested?.Invoke(gm);
+        });
+
+        // .HEAL [self] — fully heal self or picked char.
+        Register("HEAL", PrivLevel.GM, (gm, args) =>
+        {
+            if (string.Equals(args.Trim(), "self", StringComparison.OrdinalIgnoreCase) ||
+                args.Trim().Length == 0)
+            {
+                if (gm.IsDead)
+                    gm.Resurrect();
+                gm.Hits = gm.MaxHits;
+                gm.Mana = gm.MaxMana;
+                gm.Stam = gm.MaxStam;
+                OnSysMessage?.Invoke(gm, ServerMessages.GetFormatted("gm_heal_done", gm.Name));
+                return;
+            }
+            OnSysMessage?.Invoke(gm, ServerMessages.Get("gm_heal_target"));
+            OnHealTargetRequested?.Invoke(gm);
+        });
+
+        // .SUICIDE — instant self-kill.
+        Register("SUICIDE", PrivLevel.Player, (gm, _) =>
+        {
+            gm.Hits = 0;
+            gm.Kill();
+            OnSysMessage?.Invoke(gm, ServerMessages.Get("gm_suicide_done"));
+        });
+
+        // .SUMMONTO — bring a target character to the GM.
+        Register("SUMMONTO", PrivLevel.GM, (gm, _) =>
+        {
+            OnSysMessage?.Invoke(gm, ServerMessages.Get("gm_summonto_target"));
+            OnSummonToTargetRequested?.Invoke(gm);
+        });
+
+        // .UNMOUNT — remove the GM's mount, if any.
+        Register("UNMOUNT", PrivLevel.Player, (gm, _) =>
+        {
+            OnUnmountRequested?.Invoke(gm);
+            OnSysMessage?.Invoke(gm, ServerMessages.Get("gm_unmount_done"));
+        });
+
+        // .MOUNT — target a mountable NPC and ride it.
+        Register("MOUNT", PrivLevel.GM, (gm, _) =>
+        {
+            OnSysMessage?.Invoke(gm, ServerMessages.Get("gm_mount_target"));
+            OnMountTargetRequested?.Invoke(gm);
+        });
+
+        // .SUMMONCAGE — target a character, summon them into a cage at GM.
+        Register("SUMMONCAGE", PrivLevel.GM, (gm, _) =>
+        {
+            OnSysMessage?.Invoke(gm, ServerMessages.Get("gm_summoncage_target"));
+            OnSummonCageTargetRequested?.Invoke(gm);
+        });
+
+        // .POLY <body[,hue]> — polymorph the GM's character into a body.
+        // Source-X CV_POLY: BODY=<id> + COLOR=<hue> in one line.
+        Register("POLY", PrivLevel.GM, (gm, args) =>
+        {
+            var parts = args.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0)
+            {
+                OnSysMessage?.Invoke(gm, ServerMessages.Get("gm_poly_usage"));
+                return;
+            }
+            string bodyArg = parts[0];
+            string? hueArg = parts.Length > 1 ? parts[1] : null;
+            // Defer to TrySetProperty so hex/dec parsing matches BODY/COLOR
+            // setters used by the .info dialog.
+            gm.TrySetProperty("BODY", bodyArg);
+            if (hueArg != null) gm.TrySetProperty("HUE", hueArg);
+            OnSysMessage?.Invoke(gm, ServerMessages.GetFormatted("gm_poly_done", gm.BodyId));
+        });
+    }
+
+    private static int TryParseAreaRange(string args, int defaultRange)
+    {
+        if (string.IsNullOrWhiteSpace(args)) return defaultRange;
+        if (int.TryParse(args.Trim(), out int n) && n > 0 && n <= 32)
+            return n;
+        return defaultRange;
     }
 
     private bool ExecuteShowCommand(Character gm, string args, uint? forcedTargetSerial)
