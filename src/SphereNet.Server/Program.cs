@@ -519,6 +519,8 @@ public static class Program
 
             // Initialize spawn components for IT_SPAWN_CHAR items
             InitializeSpawnItems();
+
+            ReconcileAccountCharPrivLevels();
         }
 
         // --- 7b. Game Engines ---
@@ -2923,6 +2925,65 @@ public static class Program
             client.SysMessage($"Your privilege level is now {level} ({(int)level}).");
             _log.LogInformation("Online privilege sync: account={Account} char=0x{Char:X8} -> {Level}",
                 accountName, client.Character.Uid.Value, level);
+        }
+    }
+
+    /// <summary>
+    /// Walk every loaded account, look at the player characters parked in its
+    /// CHARUID slots and force account.PrivLevel and char.PrivLevel to the
+    /// MAX of the two. Runs once at boot, right after world load.
+    ///
+    /// Why: legacy save paths (the old <c>.privset</c> command, the early
+    /// PRIVLEVEL setter) wrote PRIVLEVEL straight into the character file
+    /// without mirroring it to the account file. The disk could persist
+    /// "char=GM, account=Player" indefinitely; the next login then yanked
+    /// the character back down to Player because EnterWorld used the account
+    /// as the sole source of truth. Conversely an admin who ran
+    /// <c>account NAME plevel 7</c> while the character was offline only
+    /// touched the account; the character file kept the old (lower) level
+    /// and a future shutdown saved that lower value back over the synced
+    /// memory state.
+    ///
+    /// The reconciliation happens BEFORE any client connects, so by the time
+    /// HandleCharSelect/EnterWorld runs the in-memory pair is already in
+    /// agreement and the next save writes both files consistently. The fix
+    /// is idempotent — when the levels already match, nothing is logged or
+    /// modified.
+    /// </summary>
+    private static void ReconcileAccountCharPrivLevels()
+    {
+        if (_accounts == null || _world == null) return;
+
+        int repaired = 0;
+        foreach (var account in _accounts.GetAllAccounts())
+        {
+            for (int slot = 0; slot < 7; slot++)
+            {
+                var charUid = account.GetCharSlot(slot);
+                if (!charUid.IsValid) continue;
+
+                var ch = _world.FindChar(charUid);
+                if (ch == null) continue;
+
+                var max = ch.PrivLevel >= account.PrivLevel ? ch.PrivLevel : account.PrivLevel;
+                if (account.PrivLevel == max && ch.PrivLevel == max) continue;
+
+                _log.LogWarning(
+                    "PrivLevel mismatch: account='{Account}' (PLEVEL={AccLvl}) <-> char='{Char}' 0x{CharUid:X8} (PRIVLEVEL={ChLvl}). Promoting both to {Max}.",
+                    account.Name, account.PrivLevel, ch.Name, charUid.Value, ch.PrivLevel, max);
+
+                if (account.PrivLevel != max) account.PrivLevel = max;
+                // Use the property setter so the existing isPlayer→account
+                // mirror runs once more (no-op when already in sync) and any
+                // future hooks attached to the setter still fire.
+                if (ch.PrivLevel != max) ch.PrivLevel = max;
+                repaired++;
+            }
+        }
+
+        if (repaired > 0)
+        {
+            _log.LogInformation("PrivLevel reconciliation: repaired {Count} account/character pair(s). Save now to persist.", repaired);
         }
     }
 

@@ -4,6 +4,39 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-21] - PrivLevel save tutarsizligi #2: load-time reconcile, max-tabanli login senkronu
+----------------------------------------
+
+DUZELTMELER / FIXES:
+  - Program.ReconcileAccountCharPrivLevels: World ve account dosyalari
+    yuklendikten hemen sonra (henuz hicbir client baglanmadan) calisan
+    tek seferlik bir bos vardiya ekledi. Her hesabin CHARUID slot'lari
+    geziliyor, slot'taki karakter bulunduktan sonra
+    max(account.PrivLevel, char.PrivLevel) iki tarafa da yaziliyor.
+    Boylece "char=GM, account=Player" ya da "account=Owner, char=Player"
+    gibi miras kalmis bozuk save kombinasyonlari ilk login'den onuglu
+    bellekte tutarli hale geliyor; sonraki dunya save'i hem spherechars
+    hem sphereaccu'ya max degeri yaziyor. Mismatch bulununca ayrica
+    "PrivLevel mismatch: account=... char=... Promoting both to ..."
+    log satiri uretiliyor, repair sayisi info olarak ozetleniyor.
+    One-shot reconciliation pass after world+account load: walks each
+    account's char slots and promotes both sides to max(account, char).
+    Heals legacy "char=GM/account=Player" or "account=Owner/char=Player"
+    desyncs in memory before any client connects; the next save persists
+    the corrected pair to disk. Logs each repair plus a one-line summary.
+  - GameClient.EnterWorld PrivLevel sync: Eski "char>account ise hesabi
+    yukselt, aksi halde karakteri hesaptan indir" kuralinin yerine
+    simetrik max kuralina cevrildi. Kucuk olan taraf otomatik olarak
+    buyuk olana esitleniyor, hicbir taraf bir digerini demote etmiyor.
+    Mismatch durumunda "[LOGIN] PrivLevel sync: account=... PLEVEL=...
+    char=... PRIVLEVEL=... -> X" diagnostik log satiri basiliyor; sync
+    gereksizse log da basilmiyor. Boot reconcile zaten ayni i$i bir kez
+    daha yaptigi icin bu blok ek savunma katmani; her iki yol birden
+    devre disi kalmadikca PrivLevel demote olmuyor.
+    EnterWorld sync rewritten as symmetric max(account, char) — neither
+    side ever demotes the other. Mismatch logs the before/after for
+    debuggability; identical levels stay silent.
+
 [2026-04-21] - PrivLevel save tutarsizligi: login senkronu iki yonlu, PRIVSET hesabi guncelliyor
 ----------------------------------------
 

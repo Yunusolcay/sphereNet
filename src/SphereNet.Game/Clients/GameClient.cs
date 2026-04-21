@@ -426,24 +426,26 @@ public sealed class GameClient : ITextConsole
         _mountEngine?.EnsureMountedState(_character);
 
         // Sync PrivLevel between account and character on each login.
-        // Eski .privset / .privlevel yollari (ve daha onceki PRIVLEVEL
-        // setter'i) karakterin PrivLevel'ini yukseltirken hesabin PLEVEL
-        // alanini guncellemiyordu. O kayitlar diske
-        // PRIVLEVEL=GM + PLEVEL=Player olarak yaziliyor; ardindan her
-        // login burada karakteri tekrar Player'a indirdigi icin "oyuna
-        // girince leveli 1 oldu" sikayetinin kayit kaynagi bu. Iki yon:
-        //  - Karakterin saved PrivLevel'i hesaptan yuksekse hesabi
-        //    karakterin seviyesine cek (legacy save'i tek girişte
-        //    iyilestir, bir sonraki save iki tarafi da senkron yazar).
-        //  - Aksi halde klasik yon: hesabi otorite kabul edip karakteri
-        //    senkronla (admin tarafindan account uzerinden indirme yine
-        //    calissin).
+        // Asla demote etmiyoruz: max(account.PrivLevel, character.PrivLevel)
+        // her iki tarafa da yaziliyor. Bu kural hem eski "char=GM, acc=Player"
+        // save'lerini (hesap promote edilir) hem de "acc=Owner, char=Player"
+        // (admin offline iken seviyeyi yukseltmis) durumunu (karakter promote
+        // edilir) ilk girişte iyilestiriyor. Ayni reconciliation server boot
+        // sirasinda da bir kez (Program.ReconcileAccountCharPrivLevels)
+        // calisiyor; bu blok ona ek bir savunma satiri.
         if (_account != null)
         {
-            if (_character.PrivLevel > _account.PrivLevel)
-                _account.PrivLevel = _character.PrivLevel;
-            else
-                _character.PrivLevel = _account.PrivLevel;
+            var accLvl = _account.PrivLevel;
+            var chLvl = _character.PrivLevel;
+            var max = chLvl >= accLvl ? chLvl : accLvl;
+            if (chLvl != max || accLvl != max)
+            {
+                _logger.LogInformation(
+                    "[LOGIN] PrivLevel sync: account='{Acct}' PLEVEL={AccLvl} char=0x{Char:X8} PRIVLEVEL={ChLvl} -> {Max}",
+                    _account.Name, accLvl, _character.Uid.Value, chLvl, max);
+            }
+            if (_account.PrivLevel != max) _account.PrivLevel = max;
+            if (_character.PrivLevel != max) _character.PrivLevel = max;
         }
         _character.NormalizePlayerSkillClass();
 
