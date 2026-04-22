@@ -180,8 +180,10 @@ public sealed class NpcAI
 
         long nextAction = nowTick + 700 + DeterministicJitter(npc.Uid.Value, nowTick, 200);
 
-        // Keep combat-oriented brains on legacy path for behavior parity.
-        if (npc.NpcBrain is NpcBrainType.Guard or NpcBrainType.Monster or NpcBrainType.Dragon or NpcBrainType.Berserk)
+        // Pets and combat brains need the full OnTickAction path (ActPet,
+        // ActGuard, ActMonster etc.) — route them through Legacy.
+        if (npc.NpcMaster.IsValid ||
+            npc.NpcBrain is NpcBrainType.Guard or NpcBrainType.Monster or NpcBrainType.Dragon or NpcBrainType.Berserk)
         {
             return new NpcDecision(npc.Uid.Value, NpcDecisionType.Legacy, npc.Position, npc.Direction, nextAction);
         }
@@ -270,6 +272,7 @@ public sealed class NpcAI
     }
 
     public Action<Character, string>? OnNpcSay { get; set; }
+    public Action<Character>? OnGuardLightningStrike { get; set; }
 
     private void GuardEngage(Character guard, Character target)
     {
@@ -284,8 +287,11 @@ public sealed class NpcAI
         {
             if (dist > 1)
                 _world.MoveCharacter(guard, target.Position);
-            target.Hits = 1;
-            TrySwingAttack(guard, target);
+            OnGuardLightningStrike?.Invoke(target);
+            target.Hits = 0;
+            guard.FightTarget = Serial.Invalid;
+            guard.RemoveTag("GUARD_YELLED");
+            OnNpcKill?.Invoke(guard, target);
         }
         else
         {

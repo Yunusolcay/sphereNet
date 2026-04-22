@@ -4,6 +4,53 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-22] - Guvenlik sertlestirme, guard/stat/spawn duzeltmeleri
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - Paket guvenlik sinirlari: speech (4096 byte), gump response (1024 switch,
+    256 text), vendor buy/sell (255 item), book (64 sayfa), bulletin (32 satir),
+    unicode okuma (4096 karakter), decompression (256KB).
+    Packet security limits: speech (4096 bytes), gump response (1024 switches,
+    256 text entries), vendor buy/sell (255 items), book (64 pages), bulletin
+    (32 lines), unicode read (4096 chars), decompression (256KB).
+  - Paket flood algilama: 10 saniye icinde 5x kota asimi -> baglanti kesilir.
+    Packet flood detection: 5x quota exceeded in 10s window -> disconnect.
+  - Kimlik dogrulanmamis baglanti zaman asimi: 2 dakikadan 15 saniyeye dusuruldu.
+    Unauthenticated connection timeout: reduced from 2 minutes to 15 seconds.
+  - Guard sistemi: tum dusmanlari bulur (tek degil), hedefe iskinir, yildirim
+    efekti + gok gurultusu sesi gonderir, aninda oldurur.
+    Guard system: finds ALL hostiles (not just nearest), teleports to target,
+    sends lightning bolt effect + thunder sound, instant kill.
+  - .kill komutu: yildirim efekti eklendi.
+    .kill command: lightning bolt effect added.
+
+DUZELTMELER / FIXES:
+  - NPC spawn Hits bugu: @Create trigger'i STR'yi artirinca MaxHits takip
+    ediyordu ama Hits eski dusuk degerde kaliyordu. Artik @Create + @CreateLoot
+    sonrasi Hits/Stam/Mana max'a esitleniyor (.add, hex ve region spawn).
+    NPC spawn Hits bug: when @Create trigger raised STR, MaxHits followed but
+    Hits stayed at old low value. Now Hits/Stam/Mana synced to max after
+    @Create + @CreateLoot (.add, hex, and region spawn paths).
+  - Stat derivasyonu: STR setter MaxHits'i, DEX setter MaxStam'i, INT setter
+    MaxMana'yi otomatik takip ediyor (Source-X paritesi). Buff buyuleri artik
+    turetilmis statlari dogru gunceller.
+    Stat derivation: STR setter tracks MaxHits, DEX tracks MaxStam, INT tracks
+    MaxMana (Source-X parity). Buff spells now correctly update derived stats.
+  - Pet takip bugu: BuildDecision multicore yolunda NpcMaster kontrolu yoktu,
+    petler rastgele yuruyordu. Petler ve savas NPC'leri artik Legacy yoluna
+    yonlendiriliyor.
+    Pet follow bug: BuildDecision multicore path lacked NpcMaster check, pets
+    wandered randomly. Pets and combat NPCs now routed to Legacy path.
+  - Otomatik save kaldirildi: sunucu kapanirken otomatik dunya kaydi yapilmaz.
+    Auto-save removed: no automatic world save on server shutdown.
+  - Save suresi formati: ms yerine saniye gosteriliyor, save sayaci kaldirildi.
+    Save duration format: shows seconds instead of ms, save counter removed.
+  - Buffer overflow durumunda baglanti kesiliyor (sessiz veri kaybi yerine).
+    Buffer overflow disconnects client (instead of silently dropping data).
+  - Maksimum paket boyutu dogrulamasi (65535), gecersiz -> baglanti kesilir.
+    Max packet size validation (65535), invalid -> disconnect.
+
 [2026-04-22] - Animasyon ve yon sistemi Source-X paritesi
 ----------------------------------------
 

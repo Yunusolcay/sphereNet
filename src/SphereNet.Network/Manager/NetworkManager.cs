@@ -272,9 +272,20 @@ public sealed class NetworkManager : IDisposable
         {
             if (MaxPacketsPerTick > 0 && packetsProcessed >= MaxPacketsPerTick)
             {
+                long now = Environment.TickCount64;
+                if (now - state.PacketFloodWindowStart > 10_000)
+                {
+                    state.PacketFloodCount = 0;
+                    state.PacketFloodWindowStart = now;
+                }
+                state.PacketFloodCount++;
+                if (state.PacketFloodCount >= 5)
+                {
+                    _logger.LogWarning("Packet flood detected for #{Id}, dropping connection", state.Id);
+                    state.MarkClosing();
+                    break;
+                }
                 OnPacketQuotaExceeded?.Invoke(state, packetsProcessed);
-                _logger.LogWarning("Packet quota exceeded for #{Id}: processed={Processed}, max={Max}",
-                    state.Id, packetsProcessed, MaxPacketsPerTick);
                 break;
             }
 
@@ -289,7 +300,14 @@ public sealed class NetworkManager : IDisposable
                 packetLen = (data[consumed + 1] << 8) | data[consumed + 2];
             }
 
-            if (packetLen <= 0 || data.Length - consumed < packetLen) break;
+            const int MaxPacketSize = 65535;
+            if (packetLen <= 0 || packetLen > MaxPacketSize)
+            {
+                _logger.LogWarning("Invalid packet length {Len} from #{Id}, dropping connection", packetLen, state.Id);
+                state.MarkClosing();
+                break;
+            }
+            if (data.Length - consumed < packetLen) break;
 
             var handler = _packetManager.GetHandler(opcode);
             if (handler != null)
@@ -453,6 +471,7 @@ public sealed class NetworkManager : IDisposable
 
     /// <summary>Idle timeout: drop connections with no activity for this duration.</summary>
     private const long IdleTimeoutMs = 120_000; // 2 dakika
+    private const long UnauthIdleTimeoutMs = 15_000; // 15 saniye — seed/login olmayan bağlantılar
 
     /// <summary>
     /// Cleanup closed connections and drop idle ones. Called from main tick.
@@ -464,9 +483,10 @@ public sealed class NetworkManager : IDisposable
         {
             if (!state.IsInUse) continue;
 
-            // Idle timeout — uzun süredir veri gelmeyen bağlantıları kapat
+            // Idle timeout — unauthenticated bağlantılar 15s, normal 2 dakika
+            long timeout = state.IsSeeded ? IdleTimeoutMs : UnauthIdleTimeoutMs;
             if (!state.IsClosing && state.LastActivityTick > 0 &&
-                now - state.LastActivityTick > IdleTimeoutMs)
+                now - state.LastActivityTick > timeout)
             {
                 _logger.LogInformation("Connection #{Id} idle timeout ({Ms}ms)", state.Id,
                     now - state.LastActivityTick);

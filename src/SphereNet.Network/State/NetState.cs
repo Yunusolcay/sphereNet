@@ -39,6 +39,10 @@ public sealed class NetState : IDisposable
     public long WalkBufferRegenTime { get; set; }
     public uint LastFastWalkKey { get; set; }
 
+    // Packet flood detection
+    public int PacketFloodCount { get; set; }
+    public long PacketFloodWindowStart { get; set; }
+
     // Client info
     public string AccountName { get; set; } = "";
     public uint AuthId { get; set; }
@@ -160,7 +164,7 @@ public sealed class NetState : IDisposable
     {
         if (data.Length + _recvLength > _recvBuffer.Length)
         {
-            _recvLength = 0;
+            MarkClosing();
             return;
         }
         if (_recvLength > 0)

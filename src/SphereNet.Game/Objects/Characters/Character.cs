@@ -383,17 +383,47 @@ public class Character : ObjBase
     public short Str
     {
         get => _str;
-        set { _str = value; if (_maxHits <= 0) { _maxHits = value; } MarkDirty(DirtyFlag.Stats); }
+        set
+        {
+            short old = _str;
+            _str = value;
+            if (_maxHits == old || _maxHits <= 0)
+            {
+                _maxHits = value;
+                if (_hits > _maxHits) _hits = _maxHits;
+            }
+            MarkDirty(DirtyFlag.Stats);
+        }
     }
     public short Dex
     {
         get => _dex;
-        set { _dex = value; if (_maxStam <= 0) { _maxStam = value; } MarkDirty(DirtyFlag.Stats); }
+        set
+        {
+            short old = _dex;
+            _dex = value;
+            if (_maxStam == old || _maxStam <= 0)
+            {
+                _maxStam = value;
+                if (_stam > _maxStam) _stam = _maxStam;
+            }
+            MarkDirty(DirtyFlag.Stats);
+        }
     }
     public short Int
     {
         get => _int;
-        set { _int = value; if (_maxMana <= 0) { _maxMana = value; } MarkDirty(DirtyFlag.Stats); }
+        set
+        {
+            short old = _int;
+            _int = value;
+            if (_maxMana == old || _maxMana <= 0)
+            {
+                _maxMana = value;
+                if (_mana > _maxMana) _mana = _maxMana;
+            }
+            MarkDirty(DirtyFlag.Stats);
+        }
     }
     public short Hits
     {

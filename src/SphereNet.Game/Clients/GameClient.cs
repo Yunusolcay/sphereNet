@@ -7002,14 +7002,23 @@ public sealed class GameClient : ITextConsole
             if (rid.Type == ResType.CharDef)
             {
                 var npc = CreateNpcFromDef(rid.Index, cleaned);
+                _logger.LogDebug(
+                    "[npc_spawn] BEFORE @Create: def='{Def}' STR={Str} MaxHits={MH} Hits={H} DEX={Dex} INT={Int}",
+                    cleaned, npc.Str, npc.MaxHits, npc.Hits, npc.Dex, npc.Int);
                 _world.PlaceCharacter(npc, targetPos);
                 var preCreateBrain = npc.NpcBrain;
                 _triggerDispatcher?.FireCharTrigger(npc, CharTrigger.Create, new TriggerArgs { CharSrc = _character });
+                _logger.LogDebug(
+                    "[npc_spawn] AFTER @Create: def='{Def}' STR={Str} MaxHits={MH} Hits={H}",
+                    cleaned, npc.Str, npc.MaxHits, npc.Hits);
                 FinalizeNpcBrain(npc);
                 _triggerDispatcher?.FireCharTrigger(npc, CharTrigger.CreateLoot, new TriggerArgs { CharSrc = _character });
+                npc.Hits = npc.MaxHits;
+                npc.Stam = npc.MaxStam;
+                npc.Mana = npc.MaxMana;
                 _logger.LogDebug(
-                    "[npc_spawn] def='{Def}' name='{Name}' brainBefore={Pre} brainAfter={Post}",
-                    cleaned, npc.Name, preCreateBrain, npc.NpcBrain);
+                    "[npc_spawn] AFTER @CreateLoot: def='{Def}' STR={Str} MaxHits={MH} Hits={H} brain={Brain}",
+                    cleaned, npc.Str, npc.MaxHits, npc.Hits, npc.NpcBrain);
                 BroadcastDrawObject(npc);
                 SysMessage(ServerMessages.GetFormatted("gm_npc_created2", npc.Name, $"{rid.Index:X}", targetPos));
                 return true;
@@ -7039,6 +7048,9 @@ public sealed class GameClient : ITextConsole
         _triggerDispatcher?.FireCharTrigger(createdNpc, CharTrigger.Create, new TriggerArgs { CharSrc = _character });
         FinalizeNpcBrain(createdNpc);
         _triggerDispatcher?.FireCharTrigger(createdNpc, CharTrigger.CreateLoot, new TriggerArgs { CharSrc = _character });
+        createdNpc.Hits = createdNpc.MaxHits;
+        createdNpc.Stam = createdNpc.MaxStam;
+        createdNpc.Mana = createdNpc.MaxMana;
         BroadcastDrawObject(createdNpc);
         SysMessage(ServerMessages.GetFormatted("gm_npc_created_hex", createdNpc.Name, $"{idHex:X}", targetPos));
         return true;

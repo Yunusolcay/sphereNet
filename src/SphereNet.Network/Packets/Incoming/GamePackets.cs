@@ -168,9 +168,10 @@ public sealed class PacketSpeechUnicode : PacketHandler
                 }
             }
 
-            // UTF-8 bytes until null.
+            // UTF-8 bytes until null — cap to prevent OOM from malicious packets.
+            const int MaxSpeechBytes = 4096;
             var utf8 = new List<byte>(64);
-            while (buffer.Remaining > 0)
+            while (buffer.Remaining > 0 && utf8.Count < MaxSpeechBytes)
             {
                 byte b = buffer.ReadByte();
                 if (b == 0) break;
@@ -202,17 +203,19 @@ public sealed class PacketGumpResponse : PacketHandler
         uint gumpId = buffer.ReadUInt32();
         uint buttonId = buffer.ReadUInt32();
 
-        uint switchCount = buffer.Remaining >= 4 ? buffer.ReadUInt32() : 0;
+        const int MaxSwitches = 1024;
+        const int MaxTextEntries = 256;
+        uint switchCount = buffer.Remaining >= 4 ? Math.Min(buffer.ReadUInt32(), MaxSwitches) : 0;
         var switches = new uint[switchCount];
         for (int i = 0; i < switchCount && buffer.Remaining >= 4; i++)
             switches[i] = buffer.ReadUInt32();
 
-        uint textCount = buffer.Remaining >= 4 ? buffer.ReadUInt32() : 0;
+        uint textCount = buffer.Remaining >= 4 ? Math.Min(buffer.ReadUInt32(), MaxTextEntries) : 0;
         var textEntries = new (ushort Id, string Text)[textCount];
         for (int i = 0; i < textCount && buffer.Remaining >= 4; i++)
         {
             ushort id = buffer.ReadUInt16();
-            ushort len = buffer.ReadUInt16();
+            ushort len = Math.Min(buffer.ReadUInt16(), (ushort)1024);
             string text = buffer.ReadUnicodeFixed(len);
             textEntries[i] = (id, text);
         }
@@ -298,11 +301,11 @@ public sealed class PacketVendorBuy : PacketHandler
         uint vendorSerial = buffer.ReadUInt32();
         byte flag = buffer.ReadByte();
 
+        const int MaxVendorItems = 255;
         var items = new List<VendorBuyEntry>();
         if (flag != 0)
         {
-            // Each entry: Layer(1) + ItemSerial(4) + Amount(2) = 7 bytes
-            while (buffer.Remaining >= 7)
+            while (buffer.Remaining >= 7 && items.Count < MaxVendorItems)
             {
                 byte layer = buffer.ReadByte();
                 uint serial = buffer.ReadUInt32();
@@ -325,7 +328,8 @@ public sealed class PacketVendorSell : PacketHandler
         ushort count = buffer.ReadUInt16();
 
         var items = new List<VendorSellEntry>();
-        for (int i = 0; i < count && buffer.Remaining >= 6; i++)
+        int maxSell = Math.Min((int)count, 255);
+        for (int i = 0; i < maxSell && buffer.Remaining >= 6; i++)
         {
             uint serial = buffer.ReadUInt32();
             ushort amount = buffer.ReadUInt16();
@@ -464,21 +468,24 @@ public sealed class PacketBookPage : PacketHandler
         uint serial = buffer.ReadUInt32();
         ushort pageCount = buffer.ReadUInt16();
 
+        const int MaxPages = 64;
+        const int MaxLinesPerPage = 64;
         var pages = new List<(ushort PageNum, string[] Lines)>();
-        for (int i = 0; i < pageCount && buffer.Remaining >= 4; i++)
+        int maxPageCount = Math.Min((int)pageCount, MaxPages);
+        for (int i = 0; i < maxPageCount && buffer.Remaining >= 4; i++)
         {
             ushort pageNum = buffer.ReadUInt16();
             ushort lineCount = buffer.ReadUInt16();
 
             if (lineCount == 0xFFFF)
             {
-                // Read request — no line data
                 pages.Add((pageNum, Array.Empty<string>()));
                 continue;
             }
 
             var lines = new List<string>();
-            for (int j = 0; j < lineCount && buffer.Remaining > 0; j++)
+            int maxLines = Math.Min((int)lineCount, MaxLinesPerPage);
+            for (int j = 0; j < maxLines && buffer.Remaining > 0; j++)
             {
                 lines.Add(buffer.ReadAsciiNull());
             }
@@ -531,13 +538,14 @@ public sealed class PacketBulletinBoard : PacketHandler
                 if (buffer.Remaining >= 4)
                 {
                     uint replyTo = buffer.ReadUInt32();
-                    // Subject length (1 byte) + subject + body lines
                     byte subjectLen = buffer.Remaining > 0 ? buffer.ReadByte() : (byte)0;
                     string subject = subjectLen > 0 && buffer.Remaining >= subjectLen
                         ? buffer.ReadAsciiFixed(subjectLen).TrimEnd('\0') : "";
                     var bodyLines = new List<string>();
                     byte lineCount = buffer.Remaining > 0 ? buffer.ReadByte() : (byte)0;
-                    for (int i = 0; i < lineCount && buffer.Remaining > 0; i++)
+                    const int MaxBoardLines = 32;
+                    int maxLines = Math.Min((int)lineCount, MaxBoardLines);
+                    for (int i = 0; i < maxLines && buffer.Remaining > 0; i++)
                     {
                         byte lineLen = buffer.ReadByte();
                         string line = lineLen > 0 && buffer.Remaining >= lineLen

@@ -709,6 +709,10 @@ public static class Program
                 _triggerDispatcher?.FireCharTrigger(
                     npc, SphereNet.Core.Enums.CharTrigger.CreateLoot,
                     new SphereNet.Game.Scripting.TriggerArgs { CharSrc = npc });
+
+                npc.Hits = npc.MaxHits;
+                npc.Stam = npc.MaxStam;
+                npc.Mana = npc.MaxMana;
             }
             catch (Exception ex)
             {
@@ -1030,6 +1034,7 @@ public static class Program
                 return;
             }
 
+            BroadcastLightningStrike(victim);
             _deathEngine.ProcessDeath(victim, gm);
             if (_clientsByCharUid.TryGetValue(gm.Uid, out var gmClient3))
                 gmClient3.SysMessage($"Killed '{victim.Name}'.");
@@ -1183,6 +1188,10 @@ public static class Program
         _npcAI.OnNpcSay = (npc, text) =>
         {
             NpcSpeak(npc, text);
+        };
+        _npcAI.OnGuardLightningStrike = target =>
+        {
+            BroadcastLightningStrike(target);
         };
         _npcAI.OnNpcAttack = (attacker, target, damage) =>
         {
@@ -1895,15 +1904,7 @@ public static class Program
         _log.LogInformation("Shutting down...");
         _systemHooks.DispatchServer("exit", _serverHookContext);
 
-        _housingEngine?.SerializeAllToTags();
-        _shipEngine?.SerializeAllToTags();
-        _guildManager?.SerializeAllToTags(_world);
-        string shutdownSavePath = ResolvePath(basePath, _config.WorldSaveDir);
-        _saver.Save(_world, shutdownSavePath);
-        string shutdownAccDir = ResolvePath(basePath, _config.AccountDir);
-        SphereNet.Persistence.Accounts.AccountPersistence.Save(
-            _accounts, shutdownAccDir, _saver.Format,
-            _loggerFactory.CreateLogger("AccountPersistence"));
+        _log.LogInformation("Auto-save on shutdown is disabled. Use 'save' command before quitting to persist world state.");
 
         _telnet?.Dispose();
         _webStatus?.Dispose();
@@ -2825,9 +2826,10 @@ public static class Program
                 _loggerFactory.CreateLogger("AccountPersistence"));
             _saveCount++;
             sw.Stop();
-            _log.LogInformation("Save complete. (#{Count}, {Ms} ms)", _saveCount, sw.ElapsedMilliseconds);
+            double secs = sw.Elapsed.TotalSeconds;
+            _log.LogInformation("Save complete. ({Secs:F2} sec)", secs);
             BroadcastToAllPlayers(
-                ServerMessages.GetFormatted("worldsave_complete", _saveCount, sw.ElapsedMilliseconds),
+                ServerMessages.GetFormatted("worldsave_complete", _saveCount, $"{secs:F2}"),
                 SaveHue);
         }
         catch (Exception ex)
@@ -3980,41 +3982,71 @@ public static class Program
             return;
         }
 
-        // Source-X style: guards can be called on criminals/murderers and
-        // hostile monsters in guarded zones. Prefer nearest player offender,
-        // then nearest hostile NPC.
-        var hostile = FindGuardTarget(speaker);
+        var hostiles = FindAllGuardTargets(speaker);
 
         var gc = FindGameClient(speaker);
-        if (hostile == null)
+        if (hostiles.Count == 0)
         {
-            // No legitimate target — Source-X plays an "all looks quiet"
-            // SysMessage. We don't have a 1:1 defmessage so use the closest
-            // semantic match.
             gc?.SysMessage("All looks quiet here.");
             return;
         }
 
-        // Source-X CRegionWorld::CallGuards: guards are expected to react
-        // immediately when a valid hostile exists. Until template-based guard
-        // summoning is wired, use the current guard policy and resolve the
-        // hostile through the standard death pipeline so corpse/loot/events
-        // remain consistent with normal combat kills.
-        var summonedGuard = FindNearbyGuardResponder(speaker.Position) ?? SummonCityGuardNear(hostile, region.Name);
-        if (summonedGuard != null && !summonedGuard.IsDeleted)
-            summonedGuard.FightTarget = hostile.Uid;
-        bool killed = false;
-        if (_config.GuardsInstantKill && !hostile.IsDeleted && !hostile.IsDead)
+        int killCount = 0;
+        foreach (var hostile in hostiles)
         {
-            _deathEngine.ProcessDeath(hostile, null);
-            killed = true;
+            if (hostile.IsDeleted || hostile.IsDead) continue;
+            var summonedGuard = FindNearbyGuardResponder(speaker.Position) ?? SummonCityGuardNear(hostile, region.Name);
+            if (summonedGuard != null && !summonedGuard.IsDeleted)
+                summonedGuard.FightTarget = hostile.Uid;
+            if (_config.GuardsInstantKill)
+            {
+                BroadcastLightningStrike(hostile);
+                _deathEngine.ProcessDeath(hostile, summonedGuard);
+                if (summonedGuard != null)
+                {
+                    summonedGuard.FightTarget = Serial.Invalid;
+                    summonedGuard.RemoveTag("GUARD_YELLED");
+                }
+                killCount++;
+            }
         }
 
-        gc?.SysMessage(killed ? "Guards strike down your attacker." : "The guards have been called.");
-        _log.LogDebug(
-            "[guards] {Speaker} called guards in region '{Region}' against hostile 0x{HUid:X} ({HName}) guard=0x{GUid:X} killed={Killed}",
-            speaker.Name, region.Name, hostile.Uid.Value, hostile.Name ?? "?",
-            summonedGuard?.Uid.Value ?? 0, killed);
+        gc?.SysMessage(killCount > 0 ? "Guards strike down your attacker." : "The guards have been called.");
+    }
+
+    private static List<Character> FindAllGuardTargets(Character speaker)
+    {
+        var results = new List<Character>();
+        foreach (var ch in _world.GetCharsInRange(speaker.Position, 14))
+        {
+            if (ch == speaker || ch.IsDead || ch.IsDeleted) continue;
+            if (ch.PrivLevel >= PrivLevel.Counsel) continue;
+            if (ch.NpcBrain == NpcBrainType.Guard) continue;
+
+            if (ch.IsPlayer)
+            {
+                bool isCriminal = ch.IsCriminal || ch.IsStatFlag(StatFlag.Criminal);
+                bool isMurderer = _config.GuardsOnMurderers && ch.IsMurderer;
+                if (isCriminal || isMurderer) results.Add(ch);
+                continue;
+            }
+            if (ch.NpcMaster.IsValid) continue;
+
+            bool hostileNpc = ch.NpcBrain is NpcBrainType.Monster or NpcBrainType.Berserk or NpcBrainType.Dragon;
+            if (hostileNpc) results.Add(ch);
+        }
+        return results;
+    }
+
+    private static void BroadcastLightningStrike(Character target)
+    {
+        var effect = new PacketEffect(1, 0, target.Uid.Value, 0,
+            target.X, target.Y, (short)(target.Z + 20),
+            target.X, target.Y, target.Z,
+            6, 15, true, false);
+        var sound = new PacketSound(0x0029, target.X, target.Y, target.Z);
+        BroadcastNearby(target.Position, 18, effect, 0);
+        BroadcastNearby(target.Position, 18, sound, 0);
     }
 
     private static Character? FindGuardTarget(Character speaker)

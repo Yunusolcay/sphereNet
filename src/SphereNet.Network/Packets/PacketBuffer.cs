@@ -211,14 +211,16 @@ public sealed class PacketBuffer
         return result;
     }
 
-    public string ReadUnicodeNullBE()
+    public string ReadUnicodeNullBE(int maxChars = 4096)
     {
-        var sb = new System.Text.StringBuilder();
-        while (_position + 2 <= _length)
+        var sb = new System.Text.StringBuilder(Math.Min(maxChars, 256));
+        int count = 0;
+        while (_position + 2 <= _length && count < maxChars)
         {
             ushort ch = ReadUInt16();
             if (ch == 0) break;
             sb.Append((char)ch);
+            count++;
         }
         return sb.ToString();
     }
