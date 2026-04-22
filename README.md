@@ -127,7 +127,6 @@ The 200 bot test is a worst-case scenario — all bots fighting in the same loca
 
 | Emulator | Avg Tick |
 |----------|----------|
-| ServUO | 40-60ms |
 | Sphere 56x | 50-80ms |
 | **SphereNet** | **15.7ms** |
 
