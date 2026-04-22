@@ -99,6 +99,7 @@ public class Character : ObjBase
     /// Used by the script <c>BANK</c> verb and admin shortcut.</summary>
     public static Action<Character>? OpenBankboxForOwner;
 
+
     /// <summary>UO client family flags exposed to scripts via
     /// <c>ClientisKr</c> / <c>Is3D</c> / <c>IsEnhanced</c>.</summary>
     public enum ClientType
@@ -209,6 +210,8 @@ public class Character : ObjBase
     // OpenBankBox to spawn a fresh empty box on every "bank" word.
     private readonly Item?[] _equipment = new Item?[(int)Layer.Qty];
     private Item? _backpack;
+
+    private readonly List<Item> _memories = [];
 
     // NPC fields
     private NpcBrainType _npcBrain;
@@ -849,6 +852,7 @@ public class Character : ObjBase
         if (friend == null || !friend.Uid.IsValid)
             return false;
         SetTag($"FRIEND_{friend.Uid.Value}", "1");
+        Memory_AddObjTypes(friend.Uid, MemoryType.Friend);
         return true;
     }
 
@@ -856,7 +860,211 @@ public class Character : ObjBase
     {
         if (friend == null || !friend.Uid.IsValid)
             return false;
+        var mem = Memory_FindObjTypes(friend.Uid, MemoryType.Friend);
+        if (mem != null) Memory_ClearTypes(mem, MemoryType.Friend);
         return Tags.Remove($"FRIEND_{friend.Uid.Value}");
+    }
+
+    public IReadOnlyList<Item> Memories => _memories;
+
+    public Item? Memory_FindObj(Serial uid)
+    {
+        for (int i = 0; i < _memories.Count; i++)
+        {
+            var m = _memories[i];
+            if (m.ItemType == ItemType.EqMemoryObj && m.Link == uid)
+                return m;
+        }
+        return null;
+    }
+
+    public Item? Memory_FindTypes(MemoryType flags)
+    {
+        if (flags == MemoryType.None) return null;
+        for (int i = 0; i < _memories.Count; i++)
+        {
+            if (_memories[i].IsMemoryTypes(flags))
+                return _memories[i];
+        }
+        return null;
+    }
+
+    public Item? Memory_FindObjTypes(Serial uid, MemoryType flags)
+    {
+        var mem = Memory_FindObj(uid);
+        if (mem == null) return null;
+        return mem.IsMemoryTypes(flags) ? mem : null;
+    }
+
+    public Item Memory_CreateObj(Serial uid, MemoryType flags)
+    {
+        var mem = new Item
+        {
+            ItemType = ItemType.EqMemoryObj,
+            BaseId = 0x1F14,
+            Name = "Memory",
+        };
+        mem.Link = uid;
+        mem.SetAttr(ObjAttributes.Newbie);
+        mem.IsEquipped = true;
+        mem.EquipLayer = Layer.Special;
+        mem.ContainedIn = Uid;
+
+        mem.SetMemoryTypes(flags);
+        mem.MoreP = Position;
+        Memory_UpdateFlags(mem);
+
+        _memories.Add(mem);
+        return mem;
+    }
+
+    public Item Memory_AddObjTypes(Serial uid, MemoryType flags)
+    {
+        var mem = Memory_FindObj(uid);
+        if (mem == null)
+            return Memory_CreateObj(uid, flags);
+        Memory_AddTypes(mem, flags);
+        return mem;
+    }
+
+    public void Memory_AddTypes(Item mem, MemoryType flags)
+    {
+        mem.SetMemoryTypes(mem.GetMemoryTypes() | flags);
+        mem.MoreP = Position;
+        Memory_UpdateFlags(mem);
+    }
+
+    public bool Memory_UpdateClearTypes(Item mem, MemoryType flags)
+    {
+        var prev = mem.GetMemoryTypes();
+        var remaining = prev & ~flags;
+        mem.SetMemoryTypes(remaining);
+
+        if ((flags & MemoryType.IPet) != 0 && (prev & MemoryType.IPet) != 0)
+        {
+            if (Memory_FindTypes(MemoryType.IPet) == null)
+                ClearStatFlag(StatFlag.Pet);
+        }
+
+        if (remaining == MemoryType.None)
+            return false;
+
+        return Memory_UpdateFlags(mem);
+    }
+
+    public bool Memory_ClearTypes(Item mem, MemoryType flags)
+    {
+        if (Memory_UpdateClearTypes(mem, flags))
+            return true;
+        Memory_Delete(mem);
+        return false;
+    }
+
+    public void Memory_ClearAllTypes(MemoryType flags)
+    {
+        for (int i = _memories.Count - 1; i >= 0; i--)
+        {
+            var m = _memories[i];
+            if (!m.IsMemoryTypes(flags)) continue;
+            Memory_ClearTypes(m, flags);
+        }
+    }
+
+    public void Memory_Delete(Item mem)
+    {
+        _memories.Remove(mem);
+    }
+
+    public bool Memory_UpdateFlags(Item mem)
+    {
+        var flags = mem.GetMemoryTypes();
+        if (flags == MemoryType.None) return false;
+
+        long timeout;
+        if ((flags & MemoryType.IPet) != 0)
+            SetStatFlag(StatFlag.Pet);
+
+        if ((flags & MemoryType.Fight) != 0)
+            timeout = 30_000;
+        else if ((flags & (MemoryType.IPet | MemoryType.Guard | MemoryType.Guild | MemoryType.Town)) != 0)
+            timeout = -1;
+        else if (!IsPlayer)
+            timeout = 5 * 60_000;
+        else
+            timeout = 20 * 60_000;
+
+        mem.SetTimeout(timeout);
+        return true;
+    }
+
+    public bool Memory_OnTick(Item mem)
+    {
+        if (mem.Link == Serial.Invalid)
+            return false;
+
+        if (mem.IsMemoryTypes(MemoryType.Fight))
+            return Memory_Fight_OnTick(mem);
+
+        if (mem.IsMemoryTypes(MemoryType.IPet | MemoryType.Guard | MemoryType.Guild | MemoryType.Town))
+            return true;
+
+        return false;
+    }
+
+    public void Memory_Fight_Start(Character target)
+    {
+        var mem = Memory_FindObj(target.Uid);
+        MemoryType aggFlags;
+
+        if (mem == null)
+        {
+            var targMem = target.Memory_FindObj(Uid);
+            if (targMem != null)
+            {
+                if (targMem.IsMemoryTypes(MemoryType.IAggressor))
+                    aggFlags = MemoryType.HarmedBy;
+                else if (targMem.IsMemoryTypes(MemoryType.HarmedBy | MemoryType.SawCrime | MemoryType.Aggreived))
+                    aggFlags = MemoryType.IAggressor;
+                else
+                    aggFlags = MemoryType.None;
+            }
+            else
+            {
+                aggFlags = MemoryType.IAggressor;
+            }
+            Memory_CreateObj(target.Uid, MemoryType.Fight | aggFlags);
+            return;
+        }
+
+        if (mem.IsMemoryTypes(MemoryType.HarmedBy | MemoryType.SawCrime | MemoryType.Aggreived))
+            aggFlags = MemoryType.None;
+        else
+            aggFlags = MemoryType.IAggressor;
+
+        Memory_AddTypes(mem, MemoryType.Fight | aggFlags);
+    }
+
+    private bool Memory_Fight_OnTick(Item mem)
+    {
+        var world = ResolveWorld?.Invoke();
+        if (world == null) return false;
+
+        var target = world.FindChar(mem.Link);
+        if (target == null || target.IsDeleted || target.IsStatFlag(StatFlag.Dead))
+        {
+            Memory_ClearTypes(mem, MemoryType.Fight | MemoryType.IAggressor | MemoryType.Aggreived);
+            return true;
+        }
+
+        int dist = Position.GetDistanceTo(target.Position);
+        if (dist > 32)
+        {
+            Memory_ClearTypes(mem, MemoryType.Fight | MemoryType.IAggressor | MemoryType.Aggreived);
+            return true;
+        }
+
+        mem.SetTimeout(30_000);
+        return true;
     }
 
     public IReadOnlyList<IScriptObj> GetMemoryEntriesByType(string rawType)
@@ -864,35 +1072,28 @@ public class Character : ObjBase
         string normalized = NormalizeMemoryType(rawType);
         var result = new List<IScriptObj>();
 
-        if (normalized == "MEMORY_GUILD")
-            return result;
-
-        var world = ResolveWorld?.Invoke();
-        if (world == null)
-            return result;
-
-        if (normalized is "MEMORY_IPET" or "MEMORY_OWNER" or "MEMORY_CONTROLLER")
+        MemoryType? filter = normalized switch
         {
-            Character? link = normalized == "MEMORY_CONTROLLER"
-                ? world.FindChar(ControllerSerial)
-                : world.FindChar(OwnerSerial);
-            if (link != null)
-                result.Add(new ScriptMemoryEntry(this, link, normalized));
-            return result;
-        }
+            "MEMORY_IPET" or "MEMORY_OWNER" => MemoryType.IPet,
+            "MEMORY_FRIEND" => MemoryType.Friend,
+            "MEMORY_FIGHT" => MemoryType.Fight,
+            "MEMORY_GUARD" => MemoryType.Guard,
+            "MEMORY_GUILD" => MemoryType.Guild,
+            "MEMORY_TOWN" => MemoryType.Town,
+            "MEMORY_SAWCRIME" => MemoryType.SawCrime,
+            "MEMORY_IAGGRESSOR" => MemoryType.IAggressor,
+            "MEMORY_HARMEDBY" => MemoryType.HarmedBy,
+            "MEMORY_AGGREIVED" => MemoryType.Aggreived,
+            "MEMORY_SPEAK" => MemoryType.Speak,
+            _ => null
+        };
 
-        if (normalized == "MEMORY_FRIEND")
+        if (filter.HasValue)
         {
-            foreach (var kvp in Tags.GetAll())
+            for (int i = 0; i < _memories.Count; i++)
             {
-                if (!kvp.Key.StartsWith("FRIEND_", StringComparison.OrdinalIgnoreCase))
-                    continue;
-                Serial friendUid = ParseSerial(kvp.Key["FRIEND_".Length..]);
-                if (!friendUid.IsValid)
-                    continue;
-                var friend = world.FindChar(friendUid);
-                if (friend != null && !friend.IsDeleted)
-                    result.Add(new ScriptMemoryEntry(this, friend, normalized));
+                if (_memories[i].IsMemoryTypes(filter.Value))
+                    result.Add(_memories[i]);
             }
         }
 
@@ -989,12 +1190,14 @@ public class Character : ObjBase
         {
             SetTag("OWNER_UID", ownerUid.Value.ToString());
             SetTag("MEMORYLINK.MEMORY_IPET", ownerUid.Value.ToString());
+            Memory_AddObjTypes(ownerUid, MemoryType.IPet);
         }
         else
         {
             RemoveTag("OWNER_UID");
             RemoveTag("OWNER_UUID");
             RemoveTag("MEMORYLINK.MEMORY_IPET");
+            Memory_ClearAllTypes(MemoryType.IPet);
         }
 
         if (controllerUid.IsValid)
@@ -1232,6 +1435,8 @@ public class Character : ObjBase
             {
                 if (sub.Length == 0)
                     return memory.TryGetProperty("LINK", out value);
+                if (sub.Equals("ISVALID", StringComparison.OrdinalIgnoreCase))
+                { value = "1"; return true; }
                 return memory.TryGetProperty(sub, out value);
             }
 
@@ -3404,6 +3609,19 @@ public class Character : ObjBase
         // Criminal timer expiry
         if (_criminalTimer > 0 && now >= _criminalTimer)
             _criminalTimer = 0;
+
+        // Memory item ticks
+        for (int i = _memories.Count - 1; i >= 0; i--)
+        {
+            var mem = _memories[i];
+            long mt = mem.Timeout;
+            if (mt > 0 && now >= mt)
+            {
+                mem.SetTimeout(0);
+                if (!Memory_OnTick(mem))
+                    _memories.RemoveAt(i);
+            }
+        }
 
         return true;
     }

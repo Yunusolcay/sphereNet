@@ -161,6 +161,14 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
             case "ID": value = $"0{_baseId:X}"; return true;
             case "ATTR": value = ((uint)_attr).ToString(); return true;
             case "TAGCOUNT": value = _tags.Count.ToString(); return true;
+            case "TIMER":
+            {
+                long t = Timeout;
+                if (t <= 0) { value = "-1"; return true; }
+                long remaining = (t - Environment.TickCount64) / 1000;
+                value = remaining > 0 ? remaining.ToString() : "0";
+                return true;
+            }
         }
 
         // Map point properties: TERRAIN, STATICS, REGION, ROOM, SECTOR

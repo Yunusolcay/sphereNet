@@ -327,6 +327,7 @@ public sealed class NpcAI
             }
 
             npc.FightTarget = bestTarget.Uid;
+            npc.Memory_Fight_Start(bestTarget);
             if (bestDist <= GetAttackRange(npc))
                 TrySwingAttack(npc, bestTarget);
             else
@@ -358,6 +359,7 @@ public sealed class NpcAI
         if (nearest != null)
         {
             npc.FightTarget = nearest.Uid;
+            npc.Memory_Fight_Start(nearest);
 
             if (nearestDist <= GetAttackRange(npc))
             {

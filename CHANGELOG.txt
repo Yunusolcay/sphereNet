@@ -4,6 +4,67 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-22] - i_memory sistemi, item timer, xedit NPC, dismount fix
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - i_memory sistemi (IT_EQ_MEMORY_OBJ): Source-X paritesiyle item-tabanli
+    bellek sistemi eklendi. MemoryType flags enum (SawCrime, IPet, Fight,
+    IAggressor, HarmedBy, IrritatedBy, Speak, Aggreived, Guard, Guild, Town,
+    Friend). Her karakter icin _memories listesi, LAYER_SPECIAL'da birden fazla
+    memory item destegi.
+    i_memory system (IT_EQ_MEMORY_OBJ): item-based memory system with Source-X
+    parity. MemoryType flags enum, per-character _memories list, multiple
+    memory items in LAYER_SPECIAL.
+  - Memory API: Memory_FindObj, Memory_FindTypes, Memory_CreateObj,
+    Memory_AddObjTypes, Memory_ClearTypes, Memory_ClearAllTypes,
+    Memory_UpdateFlags, Memory_OnTick, Memory_Fight_Start, Memory_Fight_OnTick.
+    Full Source-X CCharMemory.cpp function parity.
+  - Savas bellegi (MEMORY_FIGHT): Savas baslangicinda otomatik memory
+    olusturma, aggressor/defender takibi, mesafe/olum kontroluyle otomatik
+    temizlik. Player ve NPC savasi icin entegrasyon.
+    Combat memory (MEMORY_FIGHT): auto-create on fight start, aggressor/defender
+    tracking, auto-cleanup on distance/death. Integrated in player and NPC combat.
+  - Memory timer tikleri: OnTick icerisinde memory sureleri kontrol ediliyor.
+    Fight=30sn, IPet/Guard/Guild/Town=sonsuz, NPC=5dk, Player=20dk.
+    Memory timer ticks in OnTick. Fight=30s, IPet/Guard/Guild/Town=infinite,
+    NPC=5min, Player=20min.
+  - Item TIMER sistemi (Source-X paritesi): @Timer trigger ateslemesi,
+    RETURN 1=yasasin, RETURN 0=silinsin, handler yoksa=yasasin. Tek seferlik
+    timer, script yeniden zamanlamali.
+    Item TIMER system (Source-X parity): @Timer trigger firing, RETURN 1=keep,
+    RETURN 0=delete, no handler=keep alive. One-shot timer, script reschedules.
+  - TIMER property (ObjBase): Kalan sureyi saniye olarak okuyan property eklendi.
+    TIMER property on ObjBase: returns remaining seconds readable by scripts.
+  - Item LINK.xxx zincir cozumleme: LINK.NAME, LINK.P gibi property zincirleri
+    Item uzerinden linked objeye yonlendiriliyor.
+    Item LINK.xxx chain resolution: property chains like LINK.NAME resolve
+    through to the linked object.
+  - Memory persistence: IPet, Guard, Guild, Town, Friend bellekleri save/load
+    destegi. Gecici bellekler (Fight vs.) kaydedilmiyor.
+    Memory persistence: IPet, Guard, Guild, Town, Friend memories saved/loaded.
+    Transient memories (Fight etc.) not persisted.
+
+DUZELTMELER / FIXES:
+  - Xedit NPC: NPC'ye xedit yapinca artik memory itemlar da dahil equip
+    edilen tum itemler listeleniyor (CollectContainerChildren).
+    Xedit NPC: memory items now included in equipped item list when using
+    xedit on NPCs (CollectContainerChildren).
+  - Dismount: Binek indikten sonra BroadcastCharacterAppear cagrisi eklendi,
+    pet artik hemen gorunur ve sahibini takip edebilir.
+    Dismount: BroadcastCharacterAppear after unmount so pet is immediately
+    visible and can follow owner.
+  - Owner/Friend entegrasyonu: SetOwnerControllerRaw ve AddFriend/RemoveFriend
+    artik memory item olusturuyor/kaldiriyor (TAG + memory item paralel).
+    Owner/Friend integration: SetOwnerControllerRaw and AddFriend/RemoveFriend
+    now create/remove memory items alongside TAGs.
+  - CharTrigger.Timer kaldirildi: Source-X'te karakter timer trigger'i yok,
+    sadece item timer var.
+    CharTrigger.Timer removed: Source-X has no character timer trigger, only
+    item timer.
+  - Item.cs duplicate using uyarisi temizlendi.
+    Item.cs duplicate using warning cleaned up.
+
 [2026-04-22] - Guard body cozumlemesi, NPC yurume terrain kontrolu
 ----------------------------------------
 

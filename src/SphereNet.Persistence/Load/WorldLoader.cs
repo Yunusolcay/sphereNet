@@ -374,6 +374,16 @@ public sealed class WorldLoader
                     // Deferred — equipment linking happens via CONT resolution pass.
                     break;
                 }
+                if (upper == "MEMORY")
+                {
+                    var parts = val.Split(',');
+                    if (parts.Length >= 2 && TryParseHexOrDec(parts[0], out uint mUid) &&
+                        ushort.TryParse(parts[1], out ushort mFlags))
+                    {
+                        ch.Memory_CreateObj(new Serial(mUid), (SphereNet.Core.Enums.MemoryType)mFlags);
+                    }
+                    break;
+                }
                 ch.TrySetProperty(key, val);
                 break;
         }

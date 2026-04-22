@@ -426,6 +426,21 @@ public sealed class WorldSaver
                 w.WriteProperty("EVENTS", eventsCsv);
         }
 
+        foreach (var mem in ch.Memories)
+        {
+            var flags = mem.GetMemoryTypes();
+            if (flags == 0) continue;
+            // Only persist non-transient memories
+            const SphereNet.Core.Enums.MemoryType persistent =
+                SphereNet.Core.Enums.MemoryType.IPet |
+                SphereNet.Core.Enums.MemoryType.Guard |
+                SphereNet.Core.Enums.MemoryType.Guild |
+                SphereNet.Core.Enums.MemoryType.Town |
+                SphereNet.Core.Enums.MemoryType.Friend;
+            if ((flags & persistent) == 0) continue;
+            w.WriteProperty("MEMORY", $"0{mem.Link.Value:X8},{(ushort)flags}");
+        }
+
         foreach (var (key, val) in ch.Tags.GetAll())
         {
             if (key.Equals("ACCOUNT", StringComparison.OrdinalIgnoreCase))

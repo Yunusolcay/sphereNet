@@ -1428,6 +1428,12 @@ public static class Program
                     child.DecayTime = Environment.TickCount64 + GameWorld.DefaultDecayTimeMs;
             }
         };
+        SphereNet.Game.Objects.Items.Item.OnTimerExpired = item =>
+        {
+            return _triggerDispatcher?.FireItemTrigger(item,
+                ItemTrigger.Timer,
+                new TriggerArgs { ItemSrc = item });
+        };
         SphereNet.Game.Objects.Items.Item.ResolveShipEngine = () => _shipEngine;
         SphereNet.Game.Objects.Items.Item.ResolveWorld = () => _world;
         SphereNet.Game.Objects.ObjBase.ResolveWorld = () => _world;

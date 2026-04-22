@@ -1033,6 +1033,9 @@ public sealed class GameClient : ITextConsole
                 return;
         }
 
+        _character.Memory_Fight_Start(target);
+        target.Memory_Fight_Start(_character);
+
         // Set initial swing delay so the first hit isn't instant
         if (_character.NextAttackTime == 0)
         {
@@ -2067,9 +2070,12 @@ public sealed class GameClient : ITextConsole
                         BroadcastNearby?.Invoke(_character.Position, UpdateRange, movePacket, _character.Uid.Value);
 
                     // Clear Ridden flag AFTER sending all dismount packets.
-                    // View delta filters Ridden NPCs, so the NPC will appear on the
-                    // NEXT tick — giving the client time to process mount item deletion first.
                     npc.ClearStatFlag(StatFlag.Ridden);
+
+                    // Broadcast the dismounted NPC to nearby clients so it appears
+                    // immediately. Without this the pet is invisible until the next
+                    // view-delta tick and cannot be seen following the owner.
+                    BroadcastCharacterAppear?.Invoke(npc);
                 }
                 return;
             }
@@ -6357,6 +6363,8 @@ public sealed class GameClient : ITextConsole
                 if (eq != null)
                     result.Add(eq);
             }
+            foreach (var mem in ch.Memories)
+                result.Add(mem);
         }
         return result;
     }

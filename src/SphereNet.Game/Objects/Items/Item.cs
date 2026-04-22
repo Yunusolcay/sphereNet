@@ -32,6 +32,12 @@ public class Item : ObjBase
     /// reference so Item.cs stays free of world / placement plumbing.</summary>
     public static Action<Item>? OnCorpseDecay;
 
+    /// <summary>Invoked when an item's TIMER expires. Program.cs wires this
+    /// to fire the @Timer trigger via TriggerDispatcher. Returns the
+    /// trigger result so OnTick can decide: True=keep, False=delete,
+    /// Default=no handler (keep unless ATTR_DECAY).</summary>
+    public static Func<Item, TriggerResult?>? OnTimerExpired;
+
     private ItemType _type;
     private ushort _amount = 1;
     private Serial _containedIn = Serial.Invalid;
@@ -150,6 +156,11 @@ public class Item : ObjBase
     public int Price { get => _price; set => _price = value; }
     public ushort Quality { get => _quality; set => _quality = value; }
 
+    public MemoryType GetMemoryTypes() => (MemoryType)Hue.Value;
+    public void SetMemoryTypes(MemoryType flags) => Hue = new Core.Types.Color((ushort)flags);
+    public bool IsMemoryTypes(MemoryType flags) =>
+        _type == ItemType.EqMemoryObj && (GetMemoryTypes() & flags) != 0;
+
     /// <summary>Weapon swing speed read from ITEMDEF.SPEED. 0 = unspecified
     /// (combat code falls back to a sensible default). Used by
     /// <c>GetSwingDelayMs</c> to compute swing recoil per Source-X
@@ -259,6 +270,7 @@ public class Item : ObjBase
             case "MOREY": value = _moreP.Y.ToString(); return true;
             case "MOREZ": value = _moreP.Z.ToString(); return true;
             case "LINK": value = _link.IsValid ? $"0{_link.Value:X}" : ""; return true;
+            case "MEMORYTYPES": value = ((ushort)GetMemoryTypes()).ToString(); return true;
             case "PRICE": value = _price.ToString(); return true;
             case "QUALITY": value = _quality.ToString(); return true;
 
@@ -580,6 +592,20 @@ public class Item : ObjBase
                 case "ISARMOR": value = (def.DefenseMin > 0 || def.DefenseMax > 0) ? "1" : "0"; return true;
                 case "ISWEAPON": value = (def.AttackMin > 0 || def.AttackMax > 0) ? "1" : "0"; return true;
             }
+        }
+
+        if (upper.StartsWith("LINK.", StringComparison.Ordinal) && _link.IsValid)
+        {
+            string sub = key["LINK.".Length..];
+            var world = ResolveWorld?.Invoke();
+            if (world != null)
+            {
+                var linked = world.FindObject(_link);
+                if (linked != null)
+                    return linked.TryGetProperty(sub, out value);
+            }
+            value = "";
+            return true;
         }
 
         return base.TryGetProperty(key, out value);
@@ -1161,9 +1187,6 @@ public class Item : ObjBase
         // Item decay: if DecayTime is set and elapsed, mark deleted
         if (DecayTime > 0 && Environment.TickCount64 >= DecayTime)
         {
-            // Corpses drop their remaining contents to the ground as
-            // the body rots. ServUO/Source-X both do this at decay
-            // time rather than destroying the items with the corpse.
             if (_type == ItemType.Corpse && _contents.Count > 0)
             {
                 OnCorpseDecay?.Invoke(this);
@@ -1171,6 +1194,28 @@ public class Item : ObjBase
             _isDeleted = true;
             SpawnChar?.KillAll();
             return false;
+        }
+
+        // TIMER expiry — Source-X CItem::_OnTick parity:
+        // 1. Fire @Timer trigger
+        // 2. RETURN 1 → keep item alive
+        // 3. RETURN 0 → delete item
+        // 4. Default (no handler) → item-type specific; delete only if decay
+        long timeout = Timeout;
+        if (timeout > 0 && Environment.TickCount64 >= timeout)
+        {
+            SetTimeout(0);
+            var trigResult = OnTimerExpired?.Invoke(this);
+            if (trigResult == TriggerResult.True)
+            {
+                // keep alive
+            }
+            else if (trigResult.HasValue && trigResult != TriggerResult.True)
+            {
+                _isDeleted = true;
+                return false;
+            }
+            // no handler → keep alive, timer consumed
         }
 
         // Spawn component ticks
