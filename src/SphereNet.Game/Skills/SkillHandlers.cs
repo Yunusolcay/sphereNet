@@ -281,17 +281,17 @@ public sealed class SkillHandlers
     {
         if (target == null) return false;
 
-        // Try region-based resource gathering first
+        BroadcastSkillAnimation(ch, (ushort)Core.Enums.AnimationType.Attack1HBash, 0x0125);
+
         if (_gatheringEngine != null &&
             _gatheringEngine.TryGather(ch, SkillType.Mining, target.Value, out bool regionSuccess, out _, out _))
             return regionSuccess;
 
-        // Hardcoded fallback
         bool success = SkillEngine.UseQuick(ch, SkillType.Mining, 50);
         if (success)
         {
             var ore = _world.CreateItem();
-            ore.BaseId = 0x19B9; // iron ore
+            ore.BaseId = 0x19B9;
             ore.Name = "iron ore";
             ore.Amount = (ushort)new Random().Next(1, 3);
             if (ch.Backpack != null)
@@ -306,17 +306,17 @@ public sealed class SkillHandlers
     {
         if (target == null) return false;
 
-        // Try region-based resource gathering first
+        BroadcastSkillAnimation(ch, (ushort)Core.Enums.AnimationType.AttackWeapon, 0x0240);
+
         if (_gatheringEngine != null &&
             _gatheringEngine.TryGather(ch, SkillType.Fishing, target.Value, out bool regionSuccess, out _, out _))
             return regionSuccess;
 
-        // Hardcoded fallback
         bool success = SkillEngine.UseQuick(ch, SkillType.Fishing, 40);
         if (success)
         {
             var fish = _world.CreateItem();
-            fish.BaseId = 0x09CC; // fish
+            fish.BaseId = 0x09CC;
             fish.Name = "fish";
             fish.Amount = 1;
             if (ch.Backpack != null)
@@ -331,17 +331,17 @@ public sealed class SkillHandlers
     {
         if (target == null) return false;
 
-        // Try region-based resource gathering first
+        BroadcastSkillAnimation(ch, (ushort)Core.Enums.AnimationType.Attack2HSlash, 0x013E);
+
         if (_gatheringEngine != null &&
             _gatheringEngine.TryGather(ch, SkillType.Lumberjacking, target.Value, out bool regionSuccess, out _, out _))
             return regionSuccess;
 
-        // Hardcoded fallback
         bool success = SkillEngine.UseQuick(ch, SkillType.Lumberjacking, 50);
         if (success)
         {
             var logs = _world.CreateItem();
-            logs.BaseId = 0x1BDD; // logs
+            logs.BaseId = 0x1BDD;
             logs.Name = "logs";
             logs.Amount = (ushort)new Random().Next(1, 5);
             if (ch.Backpack != null)
@@ -350,6 +350,14 @@ public sealed class SkillHandlers
                 _world.PlaceItemWithDecay(logs, ch.Position);
         }
         return success;
+    }
+
+    private static void BroadcastSkillAnimation(Character ch, ushort animId, ushort soundId)
+    {
+        var animPkt = new SphereNet.Network.Packets.Outgoing.PacketAnimation(ch.Uid.Value, animId);
+        Character.BroadcastNearby?.Invoke(ch.Position, 18, animPkt, 0);
+        var soundPkt = new SphereNet.Network.Packets.Outgoing.PacketSound(soundId, ch.X, ch.Y, ch.Z);
+        Character.BroadcastNearby?.Invoke(ch.Position, 18, soundPkt, 0);
     }
 
     private bool HandleTaming(Character ch, Point3D? target)

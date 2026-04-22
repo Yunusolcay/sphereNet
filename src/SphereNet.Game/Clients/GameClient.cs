@@ -1225,6 +1225,9 @@ public sealed class GameClient : ITextConsole
             var hitSoundPacket = new PacketSound(hitSound, target.X, target.Y, target.Z);
             BroadcastNearby?.Invoke(target.Position, UpdateRange, hitSoundPacket, 0);
 
+            var getHitAnim = new PacketAnimation(target.Uid.Value, (ushort)AnimationType.GetHit);
+            BroadcastNearby?.Invoke(target.Position, UpdateRange, getHitAnim, 0);
+
             var damagePacket = new PacketDamage(target.Uid.Value, (ushort)Math.Min(damage, ushort.MaxValue));
             BroadcastNearby?.Invoke(target.Position, UpdateRange, damagePacket, 0);
 
@@ -1329,7 +1332,8 @@ public sealed class GameClient : ITextConsole
                             targetDir);
                         BroadcastNearby?.Invoke(targetPos, UpdateRange, corpsePacket, 0);
 
-                        uint npcFallDir = (uint)Random.Shared.Next(2);
+                        var dirToKiller = target.Position.GetDirectionTo(_character.Position);
+                        uint npcFallDir = (uint)dirToKiller <= 3 ? 1u : 0u;
                         var deathAnim = new PacketDeathAnimation(target.Uid.Value, corpse.Uid.Value, npcFallDir);
                         BroadcastNearby?.Invoke(targetPos, UpdateRange, deathAnim, 0);
 
@@ -9179,41 +9183,52 @@ public sealed class GameClient : ITextConsole
     /// ServUO MobileAnimation / Source-X AnimationRange tables.</summary>
     private static ushort GetSwingAction(Character attacker, Item? weapon)
     {
-        if (attacker.IsMounted)
+        bool mounted = attacker.IsMounted;
+
+        if (weapon == null)
+            return mounted ? (ushort)AnimationType.HorseSlap : (ushort)AnimationType.AttackWrestle;
+
+        bool twoHand = weapon.EquipLayer == Layer.TwoHanded;
+
+        if (mounted)
         {
-            if (weapon == null) return 26;
             return weapon.ItemType switch
             {
-                Core.Enums.ItemType.WeaponBow or
-                Core.Enums.ItemType.WeaponXBow => 28,
-                Core.Enums.ItemType.WeaponFence => 27,
-                _ => 26,
+                ItemType.WeaponBow => (ushort)AnimationType.HorseAttackBow,
+                ItemType.WeaponXBow => (ushort)AnimationType.HorseAttackXBow,
+                _ => (ushort)AnimationType.HorseAttack,
             };
         }
 
-        if (weapon == null)
-            return 31; // wrestling punch
         return weapon.ItemType switch
         {
-            Core.Enums.ItemType.WeaponBow => 18,
-            Core.Enums.ItemType.WeaponXBow => 19,
-            Core.Enums.ItemType.WeaponSword or
-            Core.Enums.ItemType.WeaponAxe => 9,
-            Core.Enums.ItemType.WeaponFence => 13,
-            Core.Enums.ItemType.WeaponMaceSmith or
-            Core.Enums.ItemType.WeaponMaceSharp or
-            Core.Enums.ItemType.WeaponMaceStaff or
-            Core.Enums.ItemType.WeaponMaceCrook or
-            Core.Enums.ItemType.WeaponMacePick or
-            Core.Enums.ItemType.WeaponWhip => 11,
-            Core.Enums.ItemType.WeaponThrowing => 12,
-            _ => 9,
+            ItemType.WeaponBow => (ushort)AnimationType.AttackBow,
+            ItemType.WeaponXBow => (ushort)AnimationType.AttackXBow,
+            ItemType.WeaponSword => twoHand
+                ? (ushort)AnimationType.Attack2HSlash : (ushort)AnimationType.AttackWeapon,
+            ItemType.WeaponAxe => twoHand
+                ? (ushort)AnimationType.Attack2HPierce : (ushort)AnimationType.Attack1HPierce,
+            ItemType.WeaponFence => twoHand
+                ? (ushort)AnimationType.Attack2HPierce : (ushort)AnimationType.Attack1HPierce,
+            ItemType.WeaponMaceSmith or ItemType.WeaponMaceSharp or
+            ItemType.WeaponMaceStaff or ItemType.WeaponMaceCrook or
+            ItemType.WeaponMacePick or ItemType.WeaponWhip => twoHand
+                ? (ushort)AnimationType.Attack2HBash : (ushort)AnimationType.Attack1HBash,
+            ItemType.WeaponThrowing => (ushort)AnimationType.Attack2HBash,
+            _ => (ushort)AnimationType.AttackWeapon,
         };
     }
 
-    /// <summary>Swing-start sound (the whoosh / draw sound that plays
-    /// when the attacker actually swings, separate from the hit-land
-    /// sound that plays at the target when the blow connects).</summary>
+    public static ushort GetNpcSwingAction(Character npc)
+    {
+        bool isHumanBody = npc.BodyId == 400 || npc.BodyId == 401;
+        if (!isHumanBody)
+            return 4; // ANIM_MON_ATTACK1
+
+        var weapon = npc.GetEquippedItem(Layer.OneHanded) ?? npc.GetEquippedItem(Layer.TwoHanded);
+        return GetSwingAction(npc, weapon);
+    }
+
     private static ushort GetSwingSound(Item? weapon)
     {
         if (weapon == null)

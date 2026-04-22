@@ -1152,6 +1152,11 @@ public static class Program
                 caster.Hue, flags, noto);
             BroadcastNearby(caster.Position, 18, pkt, 0);
         };
+        _spellEngine.OnCastAnimation = (caster, animId) =>
+        {
+            var animPkt = new PacketAnimation(caster.Uid.Value, animId);
+            BroadcastNearby(caster.Position, 18, animPkt, 0);
+        };
         _deathEngine = new DeathEngine(_world);
         // NOTE: DeathEngine.OnDeath fires from inside ProcessDeath, after the
         // corpse object is created but BEFORE the corpse spawn packets are
@@ -1196,15 +1201,17 @@ public static class Program
                 attacker.Hue, attackerFlags, /*notoriety*/ 3);
             BroadcastNearby(attacker.Position, 18, movePkt, 0);
 
-            // Broadcast attack animation and damage to nearby clients
-            var animPkt = new PacketAnimation(attacker.Uid.Value, 4); // swing anim
+            ushort swingAnim = SphereNet.Game.Clients.GameClient.GetNpcSwingAction(attacker);
+            var animPkt = new PacketAnimation(attacker.Uid.Value, swingAnim);
             BroadcastNearby(attacker.Position, 18, animPkt, 0);
 
-            // Broadcast damage number
+            var getHitAnim = new PacketAnimation(target.Uid.Value,
+                (ushort)SphereNet.Core.Enums.AnimationType.GetHit);
+            BroadcastNearby(target.Position, 18, getHitAnim, 0);
+
             var dmgPkt = new PacketDamage(target.Uid.Value, (ushort)Math.Min(damage, ushort.MaxValue));
             BroadcastNearby(target.Position, 18, dmgPkt, 0);
 
-            // Update target health bar for the victim's client
             var healthPkt = new PacketUpdateHealth(target.Uid.Value, target.MaxHits, target.Hits);
             BroadcastNearby(target.Position, 18, healthPkt, 0);
 
@@ -1292,7 +1299,8 @@ public static class Program
                         victimDir);
                     BroadcastNearby(victimPos, 18, corpsePacket, 0);
 
-                    uint npcFallDir = (uint)Random.Shared.Next(2);
+                    var dirToKiller = victim.Position.GetDirectionTo(killer.Position);
+                    uint npcFallDir = (uint)dirToKiller <= 3 ? 1u : 0u;
                     var deathAnim = new PacketDeathAnimation(victim.Uid.Value, corpse.Uid.Value, npcFallDir);
                     BroadcastNearby(victimPos, 18, deathAnim, 0);
 

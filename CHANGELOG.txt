@@ -4,6 +4,44 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-22] - Animasyon ve yon sistemi Source-X paritesi
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - AnimationType enum: Source-X ANIM_TYPE ile birebir eslesen tum animasyon
+    ID'leri (WalkUnarmed-Eat, 0x00-0x22 + Horse animasyonlari).
+    AnimationType enum: all animation IDs matching Source-X ANIM_TYPE
+    (WalkUnarmed-Eat, 0x00-0x22 + Horse animations).
+  - Buyu cast animasyonu: CastDirected (hedefli) veya CastArea (self/alan)
+    animasyonu buyu baslangicinda gonderiliyor.
+    Spell cast animation: CastDirected (targeted) or CastArea (self/area)
+    animation sent on cast start.
+  - Skill animasyonlari: Mining (1HBash + kazmaci sesi 0x0125), Fishing
+    (AttackWeapon + olta sesi 0x0240), Lumberjacking (2HSlash + balta sesi
+    0x013E) animasyon ve sesleri eklendi.
+    Skill animations: Mining (1HBash + pickaxe sound), Fishing (AttackWeapon
+    + fishing sound), Lumberjacking (2HSlash + chop sound) added.
+
+DUZELTMELER / FIXES:
+  - Silah-spesifik saldiri animasyonu: 1H/2H ayirimi (EquipLayer kontrolu),
+    Sword->Slash, Axe/Fence->Pierce, Mace->Bash, Bow/XBow ayri, mounted
+    durumda Horse_Attack/Bow/XBow varyantlari.
+    Weapon-specific attack animation: 1H/2H distinction (EquipLayer check),
+    Sword->Slash, Axe/Fence->Pierce, Mace->Bash, Bow/XBow separate, mounted
+    Horse_Attack/Bow/XBow variants.
+  - GetHit (flinch) animasyonu: Hem player hem NPC saldirisinda hedefe
+    ANIM_GET_HIT (0x14) gonderiliyor.
+    GetHit (flinch) animation: ANIM_GET_HIT (0x14) sent to target on both
+    player and NPC attacks.
+  - Olum animasyonu yonu: Saldirganin pozisyonuna gore hesaplaniyor (onceki
+    rastgele deger yerine).
+    Death animation direction: calculated from attacker position instead of
+    random value.
+  - NPC saldiri animasyonu: Insan body -> silaha gore animasyon, monster
+    body -> ANIM_MON_ATTACK1 (4).
+    NPC attack animation: human body -> weapon-based animation, monster
+    body -> ANIM_MON_ATTACK1 (4).
+
 [2026-04-22] - i_memory sistemi, item timer, xedit NPC, dismount fix
 ----------------------------------------
 

@@ -42,6 +42,7 @@ public sealed class SpellEngine
     /// animation plays. Without this, the caster appears to throw the
     /// spell sideways.</summary>
     public Action<Character>? OnCasterFacingChanged { get; set; }
+    public Action<Character, ushort>? OnCastAnimation { get; set; }
 
     /// <summary>Callback fired when a character's personal light level
     /// changes (e.g. after Night Sight). Program.cs wires this to the
@@ -197,9 +198,6 @@ public sealed class SpellEngine
         caster.SetTag("SPELL_TARGET_Y", targetPos.Y.ToString());
         caster.SetTag("SPELL_TARGET_Z", targetPos.Z.ToString());
 
-        // Source-X CCharSkill::Skill_Magery -> UpdateDir(m_Act_p): turn the
-        // caster to face the spell target so the cast animation plays in
-        // the correct direction. Skip if self-target or same-tile.
         if (!targetPos.Equals(caster.Position))
         {
             var newDir = caster.Position.GetDirectionTo(targetPos);
@@ -210,7 +208,13 @@ public sealed class SpellEngine
             }
         }
 
-        return castTimeTenths * 100; // convert to ms
+        bool isAreaSpell = targetUid == caster.Uid;
+        ushort castAnim = isAreaSpell
+            ? (ushort)Core.Enums.AnimationType.CastArea
+            : (ushort)Core.Enums.AnimationType.CastDirected;
+        OnCastAnimation?.Invoke(caster, castAnim);
+
+        return castTimeTenths * 100;
     }
 
     /// <summary>
