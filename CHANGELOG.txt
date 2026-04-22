@@ -4,6 +4,25 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-22] - Guard body cozumlemesi, NPC yurume terrain kontrolu
+----------------------------------------
+
+DUZELTMELER / FIXES:
+  - Guard body ID: ID=C_MAN gibi defname referanslarinda rid.Index hash'i
+    ushort'a truncate ediliyordu, gecersiz body ID olusuyordu. Simdi once
+    DispIndex, sonra DisplayIdRef uzerinden zincirli cozumleme yapiliyor.
+    Guard body ID fix: defname alias (ID=C_MAN) was truncated from hash to
+    ushort giving invalid body. Now chains DispIndex -> DisplayIdRef -> ref
+    CharDef resolution like GameClient.ResolveCharBodyId.
+  - NPC Wander: IsPassable kontrolu eklendi, NPC'ler artik su/duvar/dagdan
+    gecemiyor. GetEffectiveZ ile yukseklik farki kontrolu (max 12 tile) eklendi.
+    NPC Wander: added IsPassable + GetEffectiveZ checks, NPCs no longer walk
+    through water, walls, or over mountains.
+  - NPC MoveToward: Yol bulunamadiginda veya pathfinding kapali oldugunda
+    engelli kareye zorla hareket kaldirildi, NPC sadece yonunu donduruyor.
+    NPC MoveToward: removed forced movement into blocked tiles when path not
+    found or pathfinding disabled — NPC only turns to face the target.
+
 [2026-04-22] - Bellek optimizasyonu, guard/NPC AI fix, gold status, vendor staff, paperdoll throttle
 ----------------------------------------
 

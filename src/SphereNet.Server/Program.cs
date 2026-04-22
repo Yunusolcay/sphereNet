@@ -4141,12 +4141,18 @@ public static class Program
         guard.IsPlayer = false;
         guard.CharDefIndex = rid.Index;
 
-        ushort bodyId = charDef.DispIndex > 0 ? charDef.DispIndex : (ushort)Math.Clamp(rid.Index, 0, ushort.MaxValue);
+        ushort bodyId = charDef.DispIndex;
         if (bodyId == 0 && !string.IsNullOrWhiteSpace(charDef.DisplayIdRef))
         {
             var bodyRid = _resources.ResolveDefName(charDef.DisplayIdRef.Trim());
-            if (bodyRid.IsValid && bodyRid.Index <= ushort.MaxValue)
-                bodyId = (ushort)bodyRid.Index;
+            if (bodyRid.IsValid)
+            {
+                var refDef = DefinitionLoader.GetCharDef(bodyRid.Index);
+                if (refDef?.DispIndex > 0)
+                    bodyId = refDef.DispIndex;
+                else if (bodyRid.Index >= 0 && bodyRid.Index <= ushort.MaxValue)
+                    bodyId = (ushort)bodyRid.Index;
+            }
         }
         if (bodyId == 0) bodyId = 0x0190;
         guard.BodyId = bodyId;

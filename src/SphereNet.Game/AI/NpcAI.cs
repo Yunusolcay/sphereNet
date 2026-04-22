@@ -670,12 +670,15 @@ public sealed class NpcAI
         int dy = _rand.Next(-1, 2);
         if (dx == 0 && dy == 0) return;
 
-        var newPos = new Point3D(
-            (short)(npc.X + dx),
-            (short)(npc.Y + dy),
-            npc.Z,
-            npc.MapIndex
-        );
+        short nx = (short)(npc.X + dx);
+        short ny = (short)(npc.Y + dy);
+        var mapData = _world.MapData;
+        sbyte nz = mapData?.GetEffectiveZ(npc.MapIndex, nx, ny, npc.Z) ?? npc.Z;
+        if (Math.Abs(nz - npc.Z) > 12)
+            return;
+        var newPos = new Point3D(nx, ny, nz, npc.MapIndex);
+        if (mapData != null && !mapData.IsPassable(newPos.Map, newPos.X, newPos.Y, newPos.Z))
+            return;
 
         _world.MoveCharacter(npc, newPos);
     }
@@ -739,7 +742,6 @@ public sealed class NpcAI
         if (!Flags.HasFlag(NpcAIFlags.Path))
         {
             npc.Direction = dir;
-            _world.MoveCharacter(npc, directPos);
             return;
         }
 
@@ -756,9 +758,7 @@ public sealed class NpcAI
             path = _pathfinder.FindPath(npc.Position, target, npc.MapIndex);
             if (path == null || path.Count == 0)
             {
-                // No path found — try direct move anyway
                 npc.Direction = dir;
-                _world.MoveCharacter(npc, directPos);
                 return;
             }
             _pathCache[uid] = path;
