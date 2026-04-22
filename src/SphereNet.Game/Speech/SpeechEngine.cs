@@ -458,7 +458,10 @@ public sealed class CommandHandler
             return CommandResult.NotFound;
         }
 
-        if (_privLevels.TryGetValue(verb, out var minLevel) && gm.PrivLevel < minLevel)
+        var effectiveLevel = _scriptCommandPrivLevels.TryGetValue(verb, out var scriptLvl)
+            ? scriptLvl
+            : _privLevels.GetValueOrDefault(verb, PrivLevel.Guest);
+        if (gm.PrivLevel < effectiveLevel)
             return CommandResult.InsufficientPriv;
 
         // Script-first parity: if a function with this verb exists, execute it first.
@@ -484,10 +487,10 @@ public sealed class CommandHandler
             return null;
         int spaceIdx = commandLine.IndexOf(' ');
         string verb = spaceIdx > 0 ? commandLine[..spaceIdx] : commandLine;
-        if (_privLevels.TryGetValue(verb, out var level))
-            return level;
         if (_scriptCommandPrivLevels.TryGetValue(verb, out var scriptLevel))
             return scriptLevel;
+        if (_privLevels.TryGetValue(verb, out var level))
+            return level;
         // Script function exists but no explicit [PLEVEL] mapping -> default to 7.
         if (ScriptFallbackExecutor != null)
             return DefaultScriptCommandPrivLevel;

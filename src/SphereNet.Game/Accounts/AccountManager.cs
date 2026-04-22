@@ -47,8 +47,15 @@ public sealed class AccountManager
                 return null;
             }
 
+            _logger.LogWarning("[AUTH] Account '{Name}' not found, auto-creating (DefaultPrivLevel={Def})",
+                name, DefaultPrivLevel);
             account = CreateAccount(name, password);
             if (account == null) return null;
+        }
+        else
+        {
+            _logger.LogDebug("[AUTH] Account '{Name}' found, PLEVEL={Level}({LevelInt})",
+                name, account.PrivLevel, (int)account.PrivLevel);
         }
 
         if (account.IsBanned)

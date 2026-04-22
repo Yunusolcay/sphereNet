@@ -119,27 +119,57 @@ public sealed class DeathEngine
         return corpse;
     }
 
-    /// <summary>Apply Karma/Fame changes when killer kills victim.</summary>
+    /// <summary>Apply Karma/Fame changes when killer kills victim.
+    /// Source-X: Calc_FameKill + Calc_KarmaKill + Calc_KarmaScale.</summary>
     private static void ApplyKarmaFameChange(Character killer, Character victim)
     {
-        // Fame: killing something stronger gives more fame
-        int tier = Math.Max(1, (victim.Str + victim.Dex + victim.Int) / 100);
-        short fameGain = (short)Math.Clamp(tier * 10, 1, 100);
-        killer.Fame = (short)Math.Clamp(killer.Fame + fameGain, -10000, 10000);
+        // Fame: Source-X Calc_FameKill — PC kill /10, NPC kill /200
+        int rawFame = Math.Max(0, (int)victim.Fame);
+        int fameGain = victim.IsPlayer ? rawFame / 10 : rawFame / 200;
+        fameGain = Math.Clamp(fameGain, 1, 200);
+        killer.Fame = (short)Math.Clamp(killer.Fame + fameGain, 0, 10000);
 
-        // Karma: killing good = bad karma, killing evil = good karma
-        if (victim.Karma > 0)
+        // Source-X: no karma loss for killing criminal/red
+        if (victim.IsCriminal || victim.IsMurderer)
         {
-            // Killing an innocent — lose karma
-            short karmaLoss = (short)Math.Clamp(victim.Karma / 5 + 10, 5, 200);
-            killer.Karma = (short)Math.Clamp(killer.Karma - karmaLoss, -10000, 10000);
+            if (victim.Karma < 0)
+            {
+                int gain = Math.Clamp(-victim.Karma / 10, 1, 50);
+                gain = ScaleKarma(killer.Karma, gain);
+                killer.Karma = (short)Math.Clamp(killer.Karma + gain, -10000, 10000);
+            }
+            return;
         }
-        else if (victim.Karma < -50)
+
+        // Source-X Calc_KarmaKill: karma change = negative of victim karma
+        int karmaChange = -victim.Karma;
+        if (victim.IsPlayer)
         {
-            // Killing evil ��� gain karma
-            short karmaGain = (short)Math.Clamp(-victim.Karma / 10, 1, 50);
-            killer.Karma = (short)Math.Clamp(killer.Karma + karmaGain, -10000, 10000);
+            if (karmaChange < 0 && karmaChange > -5000)
+                karmaChange = -5000;
+            karmaChange /= 10;
         }
+        else
+        {
+            if (karmaChange < 0 && karmaChange > -1000)
+                karmaChange = -1000;
+            karmaChange /= 20;
+        }
+
+        karmaChange = ScaleKarma(killer.Karma, karmaChange);
+        killer.Karma = (short)Math.Clamp(killer.Karma + karmaChange, -10000, 10000);
+    }
+
+    /// <summary>Source-X Calc_KarmaScale: good chars lose karma 2x faster, gain 0.5x.</summary>
+    private static int ScaleKarma(short currentKarma, int change)
+    {
+        if (currentKarma > 0)
+        {
+            if (change < 0) return change * 2;        // losing karma: double penalty
+            if (change > 0 && change < currentKarma / 64) return 0; // diminishing returns
+            return change / 2;                         // gaining karma: halved
+        }
+        return change;
     }
 
     /// <summary>Create a corpse item at the victim's position.</summary>

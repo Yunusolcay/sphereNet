@@ -1,3 +1,4 @@
+using SphereNet.Core.Configuration;
 using SphereNet.Core.Enums;
 using SphereNet.Core.Types;
 using SphereNet.Game.Combat;
@@ -53,15 +54,17 @@ public sealed class NpcAI
 
     private readonly GameWorld _world;
     private readonly Pathfinder _pathfinder;
+    private readonly SphereConfig _config;
     private readonly Random _rand = new();
 
     // Cached paths per NPC UID — avoids recalculating every tick
     private readonly Dictionary<uint, List<Point3D>> _pathCache = [];
     private readonly Dictionary<uint, int> _pathIndex = [];
 
-    public NpcAI(GameWorld world)
+    public NpcAI(GameWorld world, SphereConfig config)
     {
         _world = world;
+        _config = config;
         _pathfinder = new Pathfinder(world);
     }
 
@@ -219,28 +222,22 @@ public sealed class NpcAI
             var assigned = _world.FindChar(npc.FightTarget);
             if (assigned != null && !assigned.IsDead && !assigned.IsDeleted)
             {
-                int assignedDist = npc.Position.GetDistanceTo(assigned.Position);
-                if (assignedDist <= GetAttackRange(npc))
-                    TrySwingAttack(npc, assigned);
-                else
-                    MoveToward(npc, assigned.Position);
+                GuardEngage(npc, assigned);
                 return;
             }
             npc.FightTarget = Serial.Invalid;
         }
 
+        bool guardMurderers = _config.GuardsOnMurderers;
         foreach (var target in _world.GetCharsInRange(npc.Position, 12))
         {
             if (target == npc || target.IsDead) continue;
-
-            if (target.IsStatFlag(StatFlag.Criminal) || target.IsCriminal || target.IsMurderer)
+            bool isCriminal = target.IsStatFlag(StatFlag.Criminal) || target.IsCriminal;
+            bool isMurderer = guardMurderers && target.IsMurderer;
+            if (isCriminal || isMurderer)
             {
                 npc.FightTarget = target.Uid;
-                int dist = npc.Position.GetDistanceTo(target.Position);
-                if (dist <= GetAttackRange(npc))
-                    TrySwingAttack(npc, target);
-                else
-                    MoveToward(npc, target.Position);
+                GuardEngage(npc, target);
                 return;
             }
         }
@@ -248,12 +245,30 @@ public sealed class NpcAI
         Wander(npc);
     }
 
+    private void GuardEngage(Character guard, Character target)
+    {
+        int dist = guard.Position.GetDistanceTo(target.Position);
+        if (_config.GuardsInstantKill)
+        {
+            if (dist > 1)
+                _world.MoveCharacter(guard, target.Position);
+            target.Hits = 1;
+            TrySwingAttack(guard, target);
+        }
+        else
+        {
+            if (dist <= GetAttackRange(guard))
+                TrySwingAttack(guard, target);
+            else
+                MoveToward(guard, target.Position);
+        }
+    }
+
     /// <summary>
     /// Monster/Dragon: look for targets to attack, fight, or wander.
     /// </summary>
     private void ActMonster(Character npc)
     {
-        // Look for nearest player target
         Character? bestTarget = null;
         int bestDist = int.MaxValue;
 
@@ -272,22 +287,23 @@ public sealed class NpcAI
 
         if (bestTarget != null)
         {
-            npc.FightTarget = bestTarget.Uid;
+            // Source-X: flee when HP < 25% of max (motivation < 0)
+            if (npc.MaxHits > 0 && npc.Hits < npc.MaxHits / 4)
+            {
+                MoveAway(npc, bestTarget.Position);
+                return;
+            }
 
+            npc.FightTarget = bestTarget.Uid;
             if (bestDist <= GetAttackRange(npc))
-            {
-                // Weapon range mirrors the player path for bow/xbow brains too.
                 TrySwingAttack(npc, bestTarget);
-            }
             else
-            {
                 MoveToward(npc, bestTarget.Position);
-            }
             return;
         }
 
         npc.FightTarget = Serial.Invalid;
-        Wander(npc);
+        WanderHome(npc);
     }
 
     /// <summary>Berserk: attack nearest visible character (hostile to everyone).</summary>
@@ -323,22 +339,43 @@ public sealed class NpcAI
         }
 
         npc.FightTarget = Serial.Invalid;
-        Wander(npc);
+        WanderHome(npc);
     }
 
-    /// <summary>Healer: look for dead players to resurrect, then act human.</summary>
+    /// <summary>Healer: resurrect dead, heal wounded, refuse criminals/evil.</summary>
     private void ActHealer(Character npc)
     {
-        foreach (var ch in _world.GetCharsInRange(npc.Position, 4))
+        // Priority 1: resurrect dead players in range (Source-X: 3 tiles)
+        foreach (var ch in _world.GetCharsInRange(npc.Position, 3))
         {
             if (ch == npc || !ch.IsDead || !ch.IsPlayer) continue;
+            if (ch.IsCriminal || ch.IsMurderer) continue;
 
+            OnHealerAction?.Invoke(npc, ch, true);
             ch.Resurrect();
             return;
         }
 
+        // Priority 2: heal wounded friendly NPCs/players (HP < 50%)
+        foreach (var ch in _world.GetCharsInRange(npc.Position, 3))
+        {
+            if (ch == npc || ch.IsDead) continue;
+            if (ch.IsCriminal || ch.IsMurderer) continue;
+            if (ch.MaxHits > 0 && ch.Hits < ch.MaxHits / 2)
+            {
+                int heal = Math.Max(1, npc.Int / 5);
+                ch.Hits = (short)Math.Min(ch.Hits + heal, ch.MaxHits);
+                OnHealerAction?.Invoke(npc, ch, false);
+                return;
+            }
+        }
+
         ActHuman(npc);
     }
+
+    /// <summary>Callback: healer performs action. Parameters: healer, target, isResurrect.
+    /// Used by Program.cs to broadcast cast animation and sound.</summary>
+    public Action<Character, Character, bool>? OnHealerAction { get; set; }
 
     /// <summary>Vendor/Banker/Stable: stay near home, respond to speech.</summary>
     private void ActVendor(Character npc)
@@ -370,27 +407,25 @@ public sealed class NpcAI
     /// <summary>Animal: wander, flee from combat.</summary>
     private void ActAnimal(Character npc)
     {
-        // Check for nearby threats
         foreach (var ch in _world.GetCharsInRange(npc.Position, 6))
         {
             if (ch == npc || ch.IsDead) continue;
             if (ch.IsStatFlag(StatFlag.War))
             {
-                // Flee
                 MoveAway(npc, ch.Position);
                 return;
             }
         }
 
-        if (_rand.Next(100) < 20) // 20% chance to wander each tick
-            Wander(npc);
+        if (_rand.Next(100) < 20)
+            WanderHome(npc);
     }
 
     /// <summary>Human: idle, look around, wander occasionally.</summary>
     private void ActHuman(Character npc)
     {
         if (_rand.Next(100) < 10)
-            Wander(npc);
+            WanderHome(npc);
     }
 
     /// <summary>
@@ -611,6 +646,26 @@ public sealed class NpcAI
         );
 
         _world.MoveCharacter(npc, newPos);
+    }
+
+    /// <summary>Wander with home range check. Source-X: m_Home_Dist_Wander.</summary>
+    private void WanderHome(Character npc)
+    {
+        if (npc.TryGetTag("HOME_X", out string? hx) && npc.TryGetTag("HOME_Y", out string? hy) &&
+            short.TryParse(hx, out short homeX) && short.TryParse(hy, out short homeY))
+        {
+            int homeDist = npc.TryGetTag("HOME_DIST", out string? hdStr) && int.TryParse(hdStr, out int hd) ? hd : 10;
+            int curDist = Math.Abs(npc.X - homeX) + Math.Abs(npc.Y - homeY);
+            if (curDist > homeDist)
+            {
+                sbyte homeZ = npc.Z;
+                if (npc.TryGetTag("HOME_Z", out string? hz))
+                    sbyte.TryParse(hz, out homeZ);
+                MoveToward(npc, new Point3D(homeX, homeY, homeZ, npc.MapIndex));
+                return;
+            }
+        }
+        Wander(npc);
     }
 
     private void MoveToward(Character npc, Point3D target)

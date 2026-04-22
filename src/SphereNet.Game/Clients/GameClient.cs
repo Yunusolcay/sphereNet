@@ -183,6 +183,8 @@ public sealed class GameClient : ITextConsole
     private List<MenuOptionEntry>? _pendingMenuOptions;
     private ushort _pendingMenuId;
     private string _pendingMenuDefname = "";
+    private const ushort EditMenuId = 0xFFED;
+    private uint[]? _pendingEditMenuUids;
     private short _lastHits, _lastMana, _lastStam;
     private long _lastVitalsPacketTick;
     private const int VitalsPacketIntervalMs = 250;
@@ -415,6 +417,23 @@ public sealed class GameClient : ITextConsole
             return;
         }
 
+        if (_account != null)
+        {
+            _character.SetTag("ACCOUNT", _account.Name);
+            bool slotFound = false;
+            for (int i = 0; i < 7; i++)
+            {
+                if (_account.GetCharSlot(i) == _character.Uid)
+                { slotFound = true; break; }
+            }
+            if (!slotFound)
+            {
+                int free = _account.FindFreeSlot();
+                if (free >= 0)
+                    _account.SetCharSlot(free, _character.Uid);
+            }
+        }
+
         _logger.LogInformation("[LOGIN] '{Name}' pos: {X},{Y},{Z} map={Map}",
             _character.Name, _character.X, _character.Y, _character.Z, _character.Position.Map);
         _character.IsOnline = true;
@@ -425,14 +444,6 @@ public sealed class GameClient : ITextConsole
         EnsurePlayerBackpack(_character);
         _mountEngine?.EnsureMountedState(_character);
 
-        // Sync PrivLevel between account and character on each login.
-        // Asla demote etmiyoruz: max(account.PrivLevel, character.PrivLevel)
-        // her iki tarafa da yaziliyor. Bu kural hem eski "char=GM, acc=Player"
-        // save'lerini (hesap promote edilir) hem de "acc=Owner, char=Player"
-        // (admin offline iken seviyeyi yukseltmis) durumunu (karakter promote
-        // edilir) ilk girişte iyilestiriyor. Ayni reconciliation server boot
-        // sirasinda da bir kez (Program.ReconcileAccountCharPrivLevels)
-        // calisiyor; bu blok ona ek bir savunma satiri.
         if (_account != null)
         {
             var accLvl = _account.PrivLevel;
@@ -999,6 +1010,16 @@ public sealed class GameClient : ITextConsole
                 region != null && region.IsFlag(Core.Enums.RegionFlag.Guarded))
             {
                 _character.MakeCriminal();
+            }
+
+            // Source-X: helping a criminal fight an innocent flags you criminal
+            if (Character.HelpingCriminalsIsACrimeEnabled && !_character.IsCriminal &&
+                (target.IsCriminal || target.IsMurderer) &&
+                target.FightTarget.IsValid)
+            {
+                var victim = _world.FindChar(target.FightTarget);
+                if (victim != null && victim.IsPlayer && !victim.IsCriminal && !victim.IsMurderer)
+                    _character.MakeCriminal();
             }
         }
 
@@ -2672,6 +2693,24 @@ public sealed class GameClient : ITextConsole
         {
             SysMessage(ServerMessages.Get(Msg.NpcPetFailure));
             return false;
+        }
+
+        // Source-X: conjured/summoned NPCs can't be transferred or friended
+        if (pet.IsSummoned && verb is "transfer" or "friend" or "unfriend")
+        {
+            NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetFailure));
+            return true;
+        }
+
+        // Source-X: dead bonded pets accept only passive commands
+        if (pet.IsDead)
+        {
+            bool allowed = verb is "follow me" or "come" or "stay" or "stop" or "follow";
+            if (!allowed)
+            {
+                NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetFailure));
+                return true;
+            }
         }
 
         switch (verb)
@@ -4885,7 +4924,11 @@ public sealed class GameClient : ITextConsole
                 SysMessage(ServerMessages.Get("target_must_object"));
                 return;
             }
-            ShowInspectDialog(serial);
+            var infoObj = _world.FindObject(new Serial(serial));
+            if (infoObj != null)
+                OpenInspectPropDialog(infoObj, 0);
+            else
+                SysMessage(ServerMessages.GetFormatted("gm_object_serial", $"{serial:X8}"));
             return;
         }
 
@@ -4904,7 +4947,7 @@ public sealed class GameClient : ITextConsole
             return;
         }
 
-        if (!string.IsNullOrWhiteSpace(_pendingEditArgs))
+        if (_pendingEditArgs != null)
         {
             string editArgs = _pendingEditArgs;
             _pendingEditArgs = null;
@@ -6221,8 +6264,11 @@ public sealed class GameClient : ITextConsole
         _targetCursorActive = false;
     }
 
-    /// <summary>Source-X edit/info dialog parity. Binds the object as
-    /// CLIMODE_DIALOG subject and opens the shipped script dialog only.</summary>
+    /// <summary>Source-X Cmd_EditItem parity (CClientUse.cpp:577).
+    /// If the target is a container (Item with contents, or Character with
+    /// equipment) we display a 0x7C item-list menu so the GM can pick a
+    /// child object to inspect.  Non-containers go straight to the prop
+    /// dialog.</summary>
     public void ShowInspectDialog(uint uid, int requestedPage = 0)
     {
         if (_character == null) return;
@@ -6233,6 +6279,51 @@ public sealed class GameClient : ITextConsole
             return;
         }
 
+        var childItems = CollectContainerChildren(obj);
+        if (childItems.Count == 0)
+        {
+            OpenInspectPropDialog(obj, requestedPage);
+            return;
+        }
+
+        var entries = new List<MenuItemEntry>();
+        var uids = new List<uint>();
+        int max = Math.Min(childItems.Count, 254);
+        for (int i = 0; i < max; i++)
+        {
+            var item = childItems[i];
+            uids.Add(item.Uid.Value);
+            ushort hue = 0;
+            if (item.ItemType != Core.Enums.ItemType.EqMemoryObj)
+            {
+                ushort rawHue = item.Hue;
+                if (rawHue != 0)
+                    hue = rawHue == 1 ? (ushort)0x7FF : (ushort)(rawHue - 1);
+            }
+            entries.Add(new MenuItemEntry(item.BaseId, hue, item.Name));
+        }
+
+        _pendingEditMenuUids = uids.ToArray();
+        _netState.Send(new PacketMenuDisplay(
+            obj.Uid.Value, EditMenuId,
+            $"Contents of {obj.Name}", entries));
+    }
+
+    public void HandleEditMenuChoice(ushort index)
+    {
+        if (_character == null) return;
+        var uids = _pendingEditMenuUids;
+        _pendingEditMenuUids = null;
+
+        if (uids == null || index == 0 || index > uids.Length)
+            return;
+
+        uint picked = uids[index - 1];
+        ShowInspectDialog(picked);
+    }
+
+    public void OpenInspectPropDialog(ObjBase obj, int requestedPage)
+    {
         if (obj is Character)
             SendSkillList();
 
@@ -6241,7 +6332,27 @@ public sealed class GameClient : ITextConsole
         if (OpenNamedDialog(dialogId, page, obj))
             return;
 
-        SysMessage(ServerMessages.GetFormatted("gm_object_not_found", $"{uid:X8}"));
+        SysMessage(ServerMessages.GetFormatted("gm_object_not_found", $"{obj.Uid.Value:X8}"));
+    }
+
+    private static List<Item> CollectContainerChildren(ObjBase obj)
+    {
+        var result = new List<Item>();
+        if (obj is Item item && item.Contents.Count > 0)
+        {
+            foreach (var child in item.Contents)
+                result.Add(child);
+        }
+        else if (obj is Character ch)
+        {
+            for (int i = 0; i < (int)Layer.Qty; i++)
+            {
+                var eq = ch.GetEquippedItem((Layer)i);
+                if (eq != null)
+                    result.Add(eq);
+            }
+        }
+        return result;
     }
 
     public void ShowTextDialog(string title, IReadOnlyList<string> lines)
@@ -8887,8 +8998,8 @@ public sealed class GameClient : ITextConsole
             case CommandResult.InsufficientPriv:
                 var required = _commands.GetRequiredPrivLevel(commandLine) ?? PrivLevel.Counsel;
                 SysMessage(ServerMessages.GetFormatted("gm_insuf_priv", required, _character.PrivLevel));
-                _logger.LogDebug("[command_priv_reject] account={Account} char=0x{Char:X8} cmd='{Cmd}' required={Req} has={Has}",
-                    _account?.Name ?? "?", _character.Uid.Value, commandLine, required, _character.PrivLevel);
+                _logger.LogDebug("[command_priv_reject] account={Account} accountPLEVEL={AccLvl} char=0x{Char:X8} charPrivLevel={ChLvl} cmd='{Cmd}' required={Req}",
+                    _account?.Name ?? "?", _account?.PrivLevel, _character.Uid.Value, _character.PrivLevel, commandLine, required);
                 return true;
 
             case CommandResult.NotFound:
@@ -9130,20 +9241,32 @@ public sealed class GameClient : ITextConsole
         if (ch.IsStatFlag(StatFlag.Invul))
             return 7;
 
+        // Incognito — always grey (Source-X: STATF_INCOGNITO → NOTO_NEUTRAL)
+        if (ch.IsStatFlag(StatFlag.Incognito))
+            return 3;
+
+        // Arena region — everyone neutral (Source-X: REGION_FLAG_ARENA)
+        var targetRegion = _world?.FindRegion(ch.Position);
+        if (targetRegion != null && targetRegion.IsFlag(RegionFlag.Arena))
+            return 3;
+
+        // Red zone — reversed notoriety (Source-X: REGION_FLAG_RED)
+        bool isRedZone = targetRegion != null && targetRegion.IsFlag(RegionFlag.RedZone);
+        if (isRedZone)
+        {
+            if (ch.IsMurderer) return 1; // murderers are "innocent" in red zones
+            if (ch.Karma > 0) return 6;  // good karma is "evil" in red zones
+        }
+
         // Murderers are red even if they share a guild with the viewer.
-        // Threshold mirrors Character.MurderMinCount (sphere.ini).
         if (ch.IsMurderer)
             return 6;
 
-        // Active criminal flag from MakeCriminal() — grey with "flagged"
-        // bit. 4 triggers the client's criminal highlight in newer
-        // expansions; older clients fall back to plain grey anyway.
+        // Active criminal flag from MakeCriminal()
         if (ch.IsCriminal || ch.IsStatFlag(StatFlag.Criminal))
             return 4;
 
         // Guild relations: same guild / ally = green, at-war = orange.
-        // Resolved via the guild manager static delegate; when a guild
-        // system is not loaded this falls through to innocent.
         var guildMgr = Character.ResolveGuildManager?.Invoke(_character.Uid);
         if (guildMgr != null)
         {
@@ -9162,12 +9285,10 @@ public sealed class GameClient : ITextConsole
         if (myParty != null && myParty.IsMember(ch.Uid))
             return 2;
 
-        // Legacy Sphere saves don't always write the ISPLAYER flag, but
-        // any character with a linked ACCOUNT tag is authoritatively a
-        // player — treat that case as IsPlayer for the overhead hue.
-        // (WorldLoader now sets IsPlayer=true during account linking,
-        // so this branch only matters for shards already running off
-        // a pre-fix world file.)
+        // PermaGrey tag — Source-X: NOTO.PERMAGREY
+        if (ch.TryGetTag("NOTO.PERMAGREY", out string? pg) && pg == "1")
+            return 3;
+
         bool isActuallyPlayer = ch.IsPlayer || ch.TryGetTag("ACCOUNT", out _);
         if (!isActuallyPlayer)
             return GetNpcNotoriety(ch);
@@ -9184,31 +9305,35 @@ public sealed class GameClient : ITextConsole
     ///  - karma overrides: very negative → red, negative → grey criminal,
     ///    very positive → blue — lets scripts flip a normally-blue
     ///    townsfolk into a red renegade via SET KARMA.</summary>
+    /// <summary>Source-X Noto_IsEvil + Noto_CalcFlag for NPCs. Evil thresholds
+    /// differ per brain type: Monster/Dragon karma&lt;0, Berserk always,
+    /// Animal karma&lt;=-800, NPC karma&lt;=-3000.</summary>
     private static byte GetNpcNotoriety(Character ch)
     {
-        // Karma-based override comes first — a scripted peaceful NPC
-        // turned murderer via SET KARMA should read as red even though
-        // its brain is "human".
-        if (ch.Karma <= -2000) return 6; // murderer / red
-        if (ch.Karma <= -500) return 4;  // criminal / grey flagged
-
         switch (ch.NpcBrain)
         {
-            case Core.Enums.NpcBrainType.Monster:
-            case Core.Enums.NpcBrainType.Berserk:
-            case Core.Enums.NpcBrainType.Dragon:
-                return 6; // red — attacks on sight
-            case Core.Enums.NpcBrainType.Healer:
-            case Core.Enums.NpcBrainType.Banker:
+            case NpcBrainType.Monster:
+            case NpcBrainType.Dragon:
+                return ch.Karma < 0 ? (byte)6 : (byte)3;
+            case NpcBrainType.Berserk:
+                return 6; // always evil
+            case NpcBrainType.Healer:
+            case NpcBrainType.Banker:
                 return 7; // yellow — invul by role
-            case Core.Enums.NpcBrainType.Guard:
-            case Core.Enums.NpcBrainType.Vendor:
-            case Core.Enums.NpcBrainType.Stable:
-            case Core.Enums.NpcBrainType.Human:
-                return 1; // blue — friendly townfolk
-            case Core.Enums.NpcBrainType.Animal:
-                return 3; // grey — wild animal, neutral
+            case NpcBrainType.Guard:
+                return 1; // blue — law enforcement
+            case NpcBrainType.Vendor:
+            case NpcBrainType.Stable:
+            case NpcBrainType.Human:
+                if (ch.Karma <= -3000) return 6; // evil NPC
+                if (ch.Karma <= -500) return 4;  // criminal NPC
+                return 1; // friendly
+            case NpcBrainType.Animal:
+                if (ch.Karma <= -800) return 6; // evil animal
+                return 3; // neutral wildlife
             default:
+                if (ch.Karma <= -3000) return 6;
+                if (ch.Karma <= -500) return 4;
                 return ch.Karma > 500 ? (byte)1 : (byte)3;
         }
     }
@@ -10691,6 +10816,12 @@ public sealed class GameClient : ITextConsole
 
         _logger.LogDebug("[menu_choice] char=0x{Uid:X8} serial=0x{Serial:X8} menuId={MenuId} index={Index} modelId=0x{Model:X4}",
             _character.Uid.Value, serial, menuId, index, modelId);
+
+        if (menuId == EditMenuId)
+        {
+            HandleEditMenuChoice(index);
+            return;
+        }
 
         var options = _pendingMenuOptions;
         var defname = _pendingMenuDefname;

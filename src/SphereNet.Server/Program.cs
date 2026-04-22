@@ -454,8 +454,9 @@ public static class Program
         Character.CriminalTimerSeconds     = _config.CriminalTimer;
         Character.MurderMinCount           = _config.MurderMinCount;
         Character.MurderDecayTimeSeconds   = _config.MurderDecayTime;
-        Character.AttackingIsACrimeEnabled = _config.AttackingIsACrime;
-        Character.SnoopCriminalEnabled     = _config.SnoopCriminal;
+        Character.AttackingIsACrimeEnabled        = _config.AttackingIsACrime;
+        Character.HelpingCriminalsIsACrimeEnabled = _config.HelpingCriminalsIsACrime;
+        Character.SnoopCriminalEnabled            = _config.SnoopCriminal;
         Character.ReagentsRequiredEnabled  = _config.ReagentsRequired;
 
         // --- 5. World ---
@@ -519,8 +520,6 @@ public static class Program
 
             // Initialize spawn components for IT_SPAWN_CHAR items
             InitializeSpawnItems();
-
-            ReconcileAccountCharPrivLevels();
         }
 
         // --- 7b. Game Engines ---
@@ -981,7 +980,9 @@ public static class Program
             {
                 if (c.Character == gm)
                 {
-                    c.ShowInspectDialog(uid);
+                    var obj = _world.FindObject(new Serial(uid));
+                    if (obj != null)
+                        c.OpenInspectPropDialog(obj, 0);
                     break;
                 }
             }
@@ -1171,7 +1172,7 @@ public static class Program
         _deathEngine.CorpseDecayPlayer = _config.CorpsePlayerDecay * 60;
         _deathEngine.PartyManager = _partyManager;
         _tradeManager = new TradeManager();
-        _npcAI = new NpcAI(_world);
+        _npcAI = new NpcAI(_world, _config);
         _npcTimerWheel = new SphereNet.Game.Scheduling.TimerWheel(Environment.TickCount64);
         _npcAI.OnNpcAttack = (attacker, target, damage) =>
         {
@@ -1303,6 +1304,14 @@ public static class Program
                     break;
                 }
             }
+        };
+        _npcAI.OnHealerAction = (healer, target, isResurrect) =>
+        {
+            var anim = new PacketAnimation(healer.Uid.Value, 16, 4, 1, false, false, 0);
+            BroadcastNearby(healer.Position, 18, anim, 0);
+            var sound = new PacketSound(isResurrect ? (ushort)0x0214 : (ushort)0x01F2,
+                healer.X, healer.Y, healer.Z);
+            BroadcastNearby(healer.Position, 18, sound, 0);
         };
         var gatheringEngine = new GatheringEngine(_world, _triggerDispatcher);
         _skillHandlers = new SkillHandlers(_world, gatheringEngine);
@@ -1463,7 +1472,6 @@ public static class Program
             if (ch == null) return null;
             if (ch.TryGetTag("ACCOUNT", out string? acctName) && !string.IsNullOrEmpty(acctName))
                 return _accounts.FindAccount(acctName);
-            // Fallback: search accounts for matching char slot
             foreach (var acct in _accounts.GetAllAccounts())
             {
                 for (int i = 0; i < 7; i++)
@@ -1475,6 +1483,7 @@ public static class Program
             return null;
         };
         SphereNet.Game.Objects.Items.Item.ResolveGuild = uid => _guildManager.GetGuild(uid);
+
 
         // --- Admin dialog verb hooks (DISCONNECT/KICK/RESENDTOOLTIP/...).
         // Each delegate routes a CChar verb back through the right
@@ -2921,69 +2930,10 @@ public static class Program
             if (!client.IsPlaying || client.Account == null || client.Character == null) continue;
             if (!client.Account.Name.Equals(accountName, StringComparison.OrdinalIgnoreCase)) continue;
 
-            client.Character.PrivLevel = level;
+            client.Account.PrivLevel = level;
             client.SysMessage($"Your privilege level is now {level} ({(int)level}).");
             _log.LogInformation("Online privilege sync: account={Account} char=0x{Char:X8} -> {Level}",
                 accountName, client.Character.Uid.Value, level);
-        }
-    }
-
-    /// <summary>
-    /// Walk every loaded account, look at the player characters parked in its
-    /// CHARUID slots and force account.PrivLevel and char.PrivLevel to the
-    /// MAX of the two. Runs once at boot, right after world load.
-    ///
-    /// Why: legacy save paths (the old <c>.privset</c> command, the early
-    /// PRIVLEVEL setter) wrote PRIVLEVEL straight into the character file
-    /// without mirroring it to the account file. The disk could persist
-    /// "char=GM, account=Player" indefinitely; the next login then yanked
-    /// the character back down to Player because EnterWorld used the account
-    /// as the sole source of truth. Conversely an admin who ran
-    /// <c>account NAME plevel 7</c> while the character was offline only
-    /// touched the account; the character file kept the old (lower) level
-    /// and a future shutdown saved that lower value back over the synced
-    /// memory state.
-    ///
-    /// The reconciliation happens BEFORE any client connects, so by the time
-    /// HandleCharSelect/EnterWorld runs the in-memory pair is already in
-    /// agreement and the next save writes both files consistently. The fix
-    /// is idempotent — when the levels already match, nothing is logged or
-    /// modified.
-    /// </summary>
-    private static void ReconcileAccountCharPrivLevels()
-    {
-        if (_accounts == null || _world == null) return;
-
-        int repaired = 0;
-        foreach (var account in _accounts.GetAllAccounts())
-        {
-            for (int slot = 0; slot < 7; slot++)
-            {
-                var charUid = account.GetCharSlot(slot);
-                if (!charUid.IsValid) continue;
-
-                var ch = _world.FindChar(charUid);
-                if (ch == null) continue;
-
-                var max = ch.PrivLevel >= account.PrivLevel ? ch.PrivLevel : account.PrivLevel;
-                if (account.PrivLevel == max && ch.PrivLevel == max) continue;
-
-                _log.LogWarning(
-                    "PrivLevel mismatch: account='{Account}' (PLEVEL={AccLvl}) <-> char='{Char}' 0x{CharUid:X8} (PRIVLEVEL={ChLvl}). Promoting both to {Max}.",
-                    account.Name, account.PrivLevel, ch.Name, charUid.Value, ch.PrivLevel, max);
-
-                if (account.PrivLevel != max) account.PrivLevel = max;
-                // Use the property setter so the existing isPlayer→account
-                // mirror runs once more (no-op when already in sync) and any
-                // future hooks attached to the setter still fire.
-                if (ch.PrivLevel != max) ch.PrivLevel = max;
-                repaired++;
-            }
-        }
-
-        if (repaired > 0)
-        {
-            _log.LogInformation("PrivLevel reconciliation: repaired {Count} account/character pair(s). Save now to persist.", repaired);
         }
     }
 

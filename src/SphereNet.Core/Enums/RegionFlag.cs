@@ -21,5 +21,6 @@ public enum RegionFlag : uint
     Underground = 0x0800,
     Jail = 0x1000,
     NoBuild = 0x2000,
-    Safe = 0x4000
+    Safe = 0x4000,
+    RedZone = 0x8000
 }

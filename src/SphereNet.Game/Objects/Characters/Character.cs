@@ -341,6 +341,8 @@ public class Character : ObjBase
     public static int MurderDecayTimeSeconds { get; set; } = 28800;
     /// <summary>Whether attacking an innocent turns the aggressor criminal. sphere.ini ATTACKINGISACRIME.</summary>
     public static bool AttackingIsACrimeEnabled { get; set; } = true;
+    /// <summary>Whether helping a criminal fight an innocent flags you criminal. sphere.ini HELPINGCRIMINALSISACRIME.</summary>
+    public static bool HelpingCriminalsIsACrimeEnabled { get; set; }
     /// <summary>Whether failed snooping flags the snooper criminal. sphere.ini SNOOPCRIMINAL.</summary>
     public static bool SnoopCriminalEnabled { get; set; } = true;
     /// <summary>Whether spells must consume reagents from backpack. sphere.ini REAGENTSREQUIRED.</summary>
@@ -447,18 +449,23 @@ public class Character : ObjBase
     public StatFlag StatFlags { get => _statFlags; set => _statFlags = value; }
     public PrivLevel PrivLevel
     {
-        get => _privLevel;
+        get
+        {
+            var acct = ResolveAccountForChar?.Invoke(Uid);
+            return acct?.PrivLevel ?? _privLevel;
+        }
         set
         {
             _privLevel = value;
             if (_isPlayer)
             {
                 var account = ResolveAccountForChar?.Invoke(Uid);
-                if (account != null)
+                if (account != null && value > account.PrivLevel)
                     account.PrivLevel = value;
             }
         }
     }
+
     public short Fame { get => _fame; set => _fame = value; }
     public short Karma { get => _karma; set => _karma = value; }
     public byte LightLevel { get => _lightLevel; set => _lightLevel = value; }
@@ -1136,6 +1143,19 @@ public class Character : ObjBase
         ClearStatFlag(StatFlag.Dead);
         _hits = (short)(_maxHits / 2);
         _attackers.Clear();
+
+        // Source-X: murderer resurrection penalties (stat/skill loss ~1%)
+        if (IsMurderer && IsPlayer)
+        {
+            _str = (short)Math.Max(1, _str - Math.Max((short)1, (short)(_str / 100)));
+            _dex = (short)Math.Max(1, _dex - Math.Max((short)1, (short)(_dex / 100)));
+            _int = (short)Math.Max(1, _int - Math.Max((short)1, (short)(_int / 100)));
+            for (int i = 0; i < _skillValues.Length; i++)
+            {
+                if (_skillValues[i] > 0)
+                    _skillValues[i] = (ushort)Math.Max(0, _skillValues[i] - Math.Max(1, _skillValues[i] / 100));
+            }
+        }
     }
 
     public void Delete()
@@ -1316,8 +1336,8 @@ public class Character : ObjBase
             case "FLAGS": value = ((uint)_statFlags).ToString(); return true;
             case "FAME": value = _fame.ToString(); return true;
             case "KARMA": value = _karma.ToString(); return true;
-            case "ISGM": value = (_privLevel >= PrivLevel.GM) ? "1" : "0"; return true;
-            case "GM": value = (_privLevel >= PrivLevel.GM) ? "1" : "0"; return true;
+            case "ISGM": value = (PrivLevel >= PrivLevel.GM) ? "1" : "0"; return true;
+            case "GM": value = (PrivLevel >= PrivLevel.GM) ? "1" : "0"; return true;
             case "INVUL": value = IsStatFlag(StatFlag.Invul) ? "1" : "0"; return true;
             case "ALLSHOW": value = _allShow ? "1" : "0"; return true;
             case "PRIVSHOW": value = _privShow ? "1" : "0"; return true;
@@ -1325,7 +1345,7 @@ public class Character : ObjBase
             case "ISNPC": value = (!_isPlayer && _npcBrain != NpcBrainType.None) ? "1" : "0"; return true;
             case "NPCBRAIN": value = ((int)_npcBrain).ToString(); return true;
             case "FOOD": value = _food.ToString(); return true;
-            case "PRIVLEVEL": value = ((int)_privLevel).ToString(); return true;
+            case "PRIVLEVEL": value = ((int)PrivLevel).ToString(); return true;
             case "ISMOUNTED": value = IsMounted ? "1" : "0"; return true;
             case "ISDEAD": value = IsDead ? "1" : "0"; return true;
             case "ISINWAR": value = IsInWarMode ? "1" : "0"; return true;

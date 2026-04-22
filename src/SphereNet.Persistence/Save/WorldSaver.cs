@@ -388,7 +388,6 @@ public sealed class WorldSaver
         if (!string.IsNullOrEmpty(ch.Profile)) w.WriteProperty("PROFILE", ch.Profile);
         if (ch.PFlag != 0) w.WriteProperty("PFLAG", ch.PFlag.ToString());
         if (ch.Tithing != 0) w.WriteProperty("TITHING", ch.Tithing.ToString());
-        if (ch.PrivLevel != SphereNet.Core.Enums.PrivLevel.Player) w.WriteProperty("PRIVLEVEL", ((int)ch.PrivLevel).ToString());
         if (ch.SkillClass != 0) w.WriteProperty("SKILLCLASS", ch.SkillClass.ToString());
 
         if (ch.IsPlayer) w.WriteProperty("ISPLAYER", "1");
