@@ -40,6 +40,7 @@ using SphereNet.Persistence.Save;
 using SphereNet.Scripting.Execution;
 using TriggerArgs = SphereNet.Game.Scripting.TriggerArgs;
 using SphereNet.Scripting.Expressions;
+using SphereNet.Scripting.Definitions;
 using SphereNet.Scripting.Resources;
 #if WINFORMS
 using SphereNet.Server.Admin;
@@ -1174,6 +1175,10 @@ public static class Program
         _tradeManager = new TradeManager();
         _npcAI = new NpcAI(_world, _config);
         _npcTimerWheel = new SphereNet.Game.Scheduling.TimerWheel(Environment.TickCount64);
+        _npcAI.OnNpcSay = (npc, text) =>
+        {
+            NpcSpeak(npc, text);
+        };
         _npcAI.OnNpcAttack = (attacker, target, damage) =>
         {
             // Broadcast the attacker's new facing first (Source-X
@@ -3954,9 +3959,10 @@ public static class Program
         var region = _world.FindRegion(speaker.Position);
         if (region == null || !region.IsFlag(SphereNet.Core.Enums.RegionFlag.Guarded))
         {
-            // Not a guarded zone — nothing to summon. Source-X is silent here
-            // (NPC guard NPCs may still echo if any are within hearing range
-            // via OnNpcHearSpeech), but the speaker gets no callback.
+            _log.LogDebug("[guards] {Speaker} called guards but region={Region} guarded={Guarded} at {Pos}",
+                speaker.Name, region?.Name ?? "(none)",
+                region?.IsFlag(SphereNet.Core.Enums.RegionFlag.Guarded) ?? false,
+                speaker.Position);
             return;
         }
 
@@ -4003,15 +4009,28 @@ public static class Program
         int bestPlayerDist = int.MaxValue;
         Character? bestNpc = null;
         int bestNpcDist = int.MaxValue;
+        int scanned = 0;
 
         foreach (var ch in _world.GetCharsInRange(speaker.Position, 14))
         {
+            scanned++;
             if (ch == speaker || ch.IsDead || ch.IsDeleted)
+            {
+                _log.LogDebug("[guard_scan] skip 0x{Uid:X} '{Name}' reason={Reason}",
+                    ch.Uid.Value, ch.Name ?? "?",
+                    ch == speaker ? "self" : ch.IsDead ? "dead" : "deleted");
                 continue;
+            }
             if (ch.PrivLevel >= PrivLevel.Counsel)
-                continue; // staff are never guard-call targets
+            {
+                _log.LogDebug("[guard_scan] skip 0x{Uid:X} '{Name}' reason=staff", ch.Uid.Value, ch.Name ?? "?");
+                continue;
+            }
 
             int dist = ch.Position.GetDistanceTo(speaker.Position);
+            _log.LogDebug("[guard_scan] eval 0x{Uid:X} '{Name}' brain={Brain} isPlayer={IsPlayer} master={Master} dist={Dist}",
+                ch.Uid.Value, ch.Name ?? "?", ch.NpcBrain, ch.IsPlayer, ch.NpcMaster.Value, dist);
+
             if (ch.IsPlayer)
             {
                 bool isCriminal = ch.IsCriminal || ch.IsStatFlag(StatFlag.Criminal);
@@ -4026,7 +4045,6 @@ public static class Program
 
             if (ch.NpcMaster.IsValid)
             {
-                // Pet/summon aggression is attributed to its master for guard calls.
                 var owner = _world.FindChar(ch.NpcMaster);
                 if (owner != null && !owner.IsDeleted && !owner.IsDead && owner.IsPlayer &&
                     owner.PrivLevel < PrivLevel.Counsel)
@@ -4059,6 +4077,8 @@ public static class Program
             }
         }
 
+        _log.LogDebug("[guard_scan] scanned={Scanned} bestPlayer={BP} bestNpc={BN}",
+            scanned, bestPlayer?.Name ?? "(none)", bestNpc?.Name ?? "(none)");
         return bestPlayer ?? bestNpc;
     }
 
@@ -4098,36 +4118,136 @@ public static class Program
         if (hostile.IsDeleted)
             return null;
 
+        string defName = Random.Shared.Next(2) == 0 ? "C_GUARD" : "C_GUARD_F";
+        var rid = _resources.ResolveDefName(defName);
+        if (!rid.IsValid || rid.Type != ResType.CharDef)
+        {
+            rid = _resources.ResolveDefName("C_GUARD");
+            if (!rid.IsValid || rid.Type != ResType.CharDef)
+            {
+                _log.LogWarning("[guard] CHARDEF C_GUARD / C_GUARD_F not found in scripts, cannot summon guard");
+                return null;
+            }
+        }
+
+        var charDef = DefinitionLoader.GetCharDef(rid.Index);
+        if (charDef == null)
+        {
+            _log.LogWarning("[guard] CharDef index 0x{Index:X} resolved but definition missing", rid.Index);
+            return null;
+        }
+
         var guard = _world.CreateCharacter();
         guard.IsPlayer = false;
-        guard.Name = string.IsNullOrWhiteSpace(regionName) ? "city guard" : $"{regionName} guard";
-        guard.BodyId = 0x0190;
-        guard.BaseId = 0x0190;
-        guard.NpcBrain = NpcBrainType.Guard;
-        guard.Str = 250;
-        guard.Dex = 90;
-        guard.Int = 70;
-        guard.MaxHits = 250;
-        guard.Hits = 250;
-        guard.MaxStam = 90;
-        guard.Stam = 90;
-        guard.MaxMana = 70;
-        guard.Mana = 70;
-        guard.Fame = 10_000;
-        guard.Karma = 10_000;
+        guard.CharDefIndex = rid.Index;
+
+        ushort bodyId = charDef.DispIndex > 0 ? charDef.DispIndex : (ushort)Math.Clamp(rid.Index, 0, ushort.MaxValue);
+        if (bodyId == 0 && !string.IsNullOrWhiteSpace(charDef.DisplayIdRef))
+        {
+            var bodyRid = _resources.ResolveDefName(charDef.DisplayIdRef.Trim());
+            if (bodyRid.IsValid && bodyRid.Index <= ushort.MaxValue)
+                bodyId = (ushort)bodyRid.Index;
+        }
+        if (bodyId == 0) bodyId = 0x0190;
+        guard.BodyId = bodyId;
+        guard.BaseId = bodyId;
+
+        if (!string.IsNullOrWhiteSpace(charDef.Name))
+            guard.Name = DefinitionLoader.ResolveNames(charDef.Name);
+        else
+            guard.Name = string.IsNullOrWhiteSpace(regionName) ? "city guard" : $"{regionName} guard";
+
+        int strVal = charDef.StrMax > 0 ? charDef.StrMax : Math.Max(1, charDef.StrMin);
+        int dexVal = charDef.DexMax > 0 ? charDef.DexMax : Math.Max(1, charDef.DexMin);
+        int intVal = charDef.IntMax > 0 ? charDef.IntMax : Math.Max(1, charDef.IntMin);
+        guard.Str = (short)Math.Clamp(strVal, 1, short.MaxValue);
+        guard.Dex = (short)Math.Clamp(dexVal, 1, short.MaxValue);
+        guard.Int = (short)Math.Clamp(intVal, 1, short.MaxValue);
+        int hits = charDef.HitsMax > 0 ? charDef.HitsMax : Math.Max(1, strVal);
+        guard.MaxHits = (short)Math.Clamp(hits, 1, short.MaxValue);
+        guard.Hits = guard.MaxHits;
+        guard.MaxStam = guard.Dex;
+        guard.Stam = guard.Dex;
+        guard.MaxMana = guard.Int;
+        guard.Mana = guard.Int;
+
+        if (charDef.NpcBrain != NpcBrainType.None)
+            guard.NpcBrain = charDef.NpcBrain;
+        else
+            guard.NpcBrain = NpcBrainType.Guard;
+
         guard.SetStatFlag(StatFlag.Invul);
         guard.SetTag("IS_CITY_GUARD", "1");
         guard.SetTag("GUARD_SPAWNED_AT", Environment.TickCount64.ToString());
         guard.FightTarget = hostile.Uid;
+
+        _world.PlaceCharacter(guard, hostile.Position);
+
+        _triggerDispatcher?.FireCharTrigger(guard, CharTrigger.Create, new TriggerArgs { CharSrc = guard });
+
+        if (guard.NpcBrain == NpcBrainType.None)
+            guard.NpcBrain = NpcBrainType.Guard;
+
+        EquipGuardNewbieItems(guard, charDef);
 
         long lingerMs = Math.Max(1, _config.GuardLinger) * 1000L;
         long expireAt = Environment.TickCount64 + lingerMs;
         guard.SetTag("GUARD_EXPIRE_AT", expireAt.ToString());
         _summonedGuardExpiry[guard.Uid] = expireAt;
 
-        _world.PlaceCharacter(guard, hostile.Position);
         BroadcastCharacterAppear(guard);
         return guard;
+    }
+
+    private static void EquipGuardNewbieItems(Character guard, CharDef charDef)
+    {
+        foreach (var entry in charDef.NewbieItems)
+        {
+            string defName = entry.DefName?.Trim() ?? "";
+            if (defName.Length == 0) continue;
+
+            var rid = _resources.ResolveDefName(defName);
+            if (!rid.IsValid || rid.Type != ResType.ItemDef)
+                continue;
+
+            var itemDef = DefinitionLoader.GetItemDef(rid.Index);
+            ushort dispId = 0;
+            if (itemDef != null)
+            {
+                if (itemDef.DispIndex != 0) dispId = itemDef.DispIndex;
+                else if (itemDef.DupItemId != 0) dispId = itemDef.DupItemId;
+            }
+            if (dispId == 0 && rid.Index <= 0xFFFF) dispId = (ushort)rid.Index;
+            if (dispId == 0) continue;
+
+            var item = _world.CreateItem();
+            item.BaseId = dispId;
+            if (itemDef != null && !string.IsNullOrWhiteSpace(itemDef.Name))
+                item.Name = itemDef.Name;
+
+            if (!string.IsNullOrWhiteSpace(entry.Color))
+            {
+                string cv = entry.Color!.Trim();
+                var colorRid = _resources.ResolveDefName(cv);
+                if (colorRid.IsValid)
+                    item.Hue = new Core.Types.Color((ushort)colorRid.Index);
+                else if (cv.StartsWith("0", StringComparison.Ordinal) &&
+                         ushort.TryParse(cv, System.Globalization.NumberStyles.HexNumber, null, out ushort hue))
+                    item.Hue = new Core.Types.Color(hue);
+            }
+
+            Layer layer = itemDef?.Layer ?? Layer.None;
+            if (layer == Layer.None && _world.MapData != null)
+            {
+                var tile = _world.MapData.GetItemTileData(item.BaseId);
+                if ((tile.Flags & SphereNet.MapData.Tiles.TileFlag.Wearable) != 0 &&
+                    tile.Quality > 0 && tile.Quality <= (byte)Layer.Horse)
+                    layer = (Layer)tile.Quality;
+            }
+
+            if (layer != Layer.None)
+                guard.Equip(item, layer);
+        }
     }
 
     private static void OnNpcHearSpeech(Character speaker, Character npc, string text, TalkMode mode)
@@ -4581,6 +4701,7 @@ public static class Program
         decisionList.Sort(static (a, b) => a.NpcUid.CompareTo(b.NpcUid));
         foreach (var decision in decisionList)
             _npcAI.ApplyDecision(decision);
+        _npcAI.PurgeStalePaths();
 
         foreach (var client in clientSnapshot)
         {

@@ -30,11 +30,11 @@ public sealed class ScriptSection
         {
             int tabIdx = header.IndexOf('\t');
             if (tabIdx < 0)
-                return (header.ToString().ToUpperInvariant(), "");
+                return (string.Intern(header.ToString().ToUpperInvariant()), "");
             spaceIdx = tabIdx;
         }
 
-        string name = header[..spaceIdx].Trim().ToString().ToUpperInvariant();
+        string name = string.Intern(header[..spaceIdx].Trim().ToString().ToUpperInvariant());
         string arg = header[(spaceIdx + 1)..].Trim().ToString();
         return (name, arg);
     }

@@ -385,28 +385,37 @@ public sealed class ResourceHolder
         if (string.IsNullOrEmpty(input) || !input.Contains('#'))
             return input;
 
-        int idx = input.IndexOf('#');
-        while (idx >= 0 && idx < input.Length)
+        var sb = new System.Text.StringBuilder(input.Length);
+        int pos = 0;
+        while (pos < input.Length)
         {
-            // Find the end of the #NAMES_xxx token
+            int idx = input.IndexOf('#', pos);
+            if (idx < 0)
+            {
+                sb.Append(input, pos, input.Length - pos);
+                break;
+            }
+
+            sb.Append(input, pos, idx - pos);
+
             int end = idx + 1;
             while (end < input.Length && input[end] != ' ' && input[end] != ',')
                 end++;
 
-            string token = input[(idx + 1)..end]; // without #
+            string token = input[(idx + 1)..end];
             string? replacement = GetRandomName(token);
             if (replacement != null)
             {
-                input = input[..idx] + replacement + input[end..];
-                idx = input.IndexOf('#', idx + replacement.Length);
+                sb.Append(replacement);
             }
             else
             {
-                idx = input.IndexOf('#', end);
+                sb.Append(input, idx, end - idx);
             }
+            pos = end;
         }
 
-        return input;
+        return sb.ToString();
     }
 
     public IEnumerable<ResourceLink> GetAllResources() => _resources.GetAll();

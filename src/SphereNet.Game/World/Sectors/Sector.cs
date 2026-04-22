@@ -268,9 +268,9 @@ public sealed class Sector : IScriptObj
                 // Execute command on all items — handled by caller
                 return true;
             case "RESPAWN":
-                // Respawn dead NPCs in this sector
-                foreach (var ch in _characters.ToArray())
+                for (int i = _characters.Count - 1; i >= 0; i--)
                 {
+                    var ch = _characters[i];
                     if (!ch.IsPlayer && ch.IsDead)
                         ch.Resurrect();
                 }

@@ -156,11 +156,15 @@ public static class VendorEngine
         foreach (var entry in items)
             totalCost += entry.Price * entry.Amount;
 
-        int playerGold = CountGold(player);
-        if (playerGold < totalCost)
-            return -1;
+        bool isStaff = player.PrivLevel >= Core.Enums.PrivLevel.GM;
+        if (!isStaff)
+        {
+            int playerGold = CountGold(player);
+            if (playerGold < totalCost)
+                return -1;
 
-        RemoveGold(player, totalCost);
+            RemoveGold(player, totalCost);
+        }
 
         if (World != null)
         {

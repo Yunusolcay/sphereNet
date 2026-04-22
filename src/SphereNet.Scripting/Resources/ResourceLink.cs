@@ -12,7 +12,12 @@ public class ResourceLink : ResourceDef
 {
     private readonly Dictionary<int, int> _triggerBitmask = [];
 
-    public string? ScriptFilePath { get; set; }
+    private string? _scriptFilePath;
+    public string? ScriptFilePath
+    {
+        get => _scriptFilePath;
+        set => _scriptFilePath = value != null ? string.Intern(value) : null;
+    }
     public int ScriptLineNumber { get; set; }
     public bool HasBeenScanned { get; set; }
 

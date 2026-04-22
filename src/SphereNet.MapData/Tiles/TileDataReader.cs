@@ -145,7 +145,8 @@ public sealed class TileDataReader : IDisposable
         var bytes = _reader.ReadBytes(length);
         int end = Array.IndexOf(bytes, (byte)0);
         if (end < 0) end = length;
-        return Encoding.ASCII.GetString(bytes, 0, end);
+        if (end == 0) return "";
+        return string.Intern(Encoding.ASCII.GetString(bytes, 0, end));
     }
 
     public LandTileData GetLandTile(int tileId)

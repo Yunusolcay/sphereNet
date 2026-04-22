@@ -541,13 +541,14 @@ public sealed class ExpressionParser
         // variable of the same name elsewhere.
         if (DialogArgResolver != null)
         {
-            string upper = varExpr.ToUpperInvariant();
-            if (upper == "ARGN" || upper == "ARGV" ||
-                upper == "ARGCHK" || upper == "ARGCHKID" ||
-                upper.StartsWith("ARGV[", StringComparison.Ordinal) ||
-                upper.StartsWith("ARGV.", StringComparison.Ordinal) ||
-                upper.StartsWith("ARGTXT[", StringComparison.Ordinal) ||
-                upper.StartsWith("ARGCHK[", StringComparison.Ordinal))
+            if (varExpr.Equals("ARGN", StringComparison.OrdinalIgnoreCase) ||
+                varExpr.Equals("ARGV", StringComparison.OrdinalIgnoreCase) ||
+                varExpr.Equals("ARGCHK", StringComparison.OrdinalIgnoreCase) ||
+                varExpr.Equals("ARGCHKID", StringComparison.OrdinalIgnoreCase) ||
+                varExpr.StartsWith("ARGV[", StringComparison.OrdinalIgnoreCase) ||
+                varExpr.StartsWith("ARGV.", StringComparison.OrdinalIgnoreCase) ||
+                varExpr.StartsWith("ARGTXT[", StringComparison.OrdinalIgnoreCase) ||
+                varExpr.StartsWith("ARGCHK[", StringComparison.OrdinalIgnoreCase))
             {
                 string? v = DialogArgResolver(varExpr);
                 if (v != null) return v;

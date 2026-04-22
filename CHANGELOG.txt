@@ -4,6 +4,63 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-22] - Bellek optimizasyonu, guard/NPC AI fix, gold status, vendor staff, paperdoll throttle
+----------------------------------------
+
+BELLEK OPTIMIZASYONU / MEMORY OPTIMIZATION:
+  - TileDataReader: string.Intern() ile tile isimleri deduplike edildi, bos
+    string optimizasyonu eklendi.
+    string.Intern() deduplication for tile names, empty string optimization.
+  - ScriptKey/ScriptSection/ResourceLink: string.Intern() ile dosya yollari
+    ve section isimleri deduplike edildi.
+    string.Intern() deduplication for file paths and section names.
+  - ResourceHolder: ResolveNamesInString icinde StringBuilder kullanimi,
+    gereksiz string concat kaldirildi.
+    StringBuilder usage in ResolveNamesInString, removed string concat.
+  - ExpressionParser: ToUpperInvariant() yerine OrdinalIgnoreCase karsilastirma.
+    OrdinalIgnoreCase comparison instead of ToUpperInvariant() allocation.
+  - CryptoState: _pendingRelays icin 60s TTL eklendi, eski girisleri temizliyor.
+    60s TTL for _pendingRelays, purges stale entries.
+  - GameClient: Disconnect'te _tooltipHashCache, _knownItems, _knownChars,
+    _lastKnownPos temizleniyor.
+    Clear caches on disconnect to free memory.
+  - Sector: RESPAWN icinde ToArray() yerine ters for-dongusu.
+    Reverse for-loop instead of ToArray() in RESPAWN.
+
+DUZELTMELER / FIXES:
+  - NpcMaster/ControllerSerial: ParseSerialTag fallback Serial(0) yerine
+    Serial.Invalid kullaniliyor. Serial(0) gecerli kabul edildigi icin tum
+    NPC'ler pet AI'ina yonleniyordu, ne monster ne guard hareket ediyordu.
+    ParseSerialTag fallback changed from Serial(0) to Serial.Invalid. Serial(0)
+    was treated as valid, routing all NPCs to pet AI — monsters and guards
+    stood still.
+  - .xkill crash: SpeechEngine'de (ITextConsole?)gm explicit cast yerine
+    "gm as ITextConsole" kullanildi, InvalidCastException onlendi.
+    .xkill crash fix: safe cast instead of explicit cast to ITextConsole.
+  - Gold status: PacketStatusFull'da gold alani 0 yerine backpack'teki gercek
+    gold miktari hesaplanip gonderiliyor. Item pickup/drop sonrasi status
+    yenileniyor.
+    Gold field in status packet now calculated from backpack contents. Status
+    refreshed after gold pickup/drop.
+
+YENI OZELLIKLER / NEW FEATURES:
+  - Guard sistemi script-tabanli: SummonCityGuardNear artik C_GUARD/C_GUARD_F
+    CHARDEF'inden olusturuyor. @Create trigger atesileniyor, ITEMNEWBIE ekipmani
+    giydiriliyor. Script'te tanimsizsa log uyarisi veriyor.
+    Script-based guard summoning via C_GUARD/C_GUARD_F CHARDEF. Fires @Create
+    trigger, equips ITEMNEWBIE items. Warns if definitions not found in scripts.
+  - Guard konusmasi: NpcAI.OnNpcSay callback ile guard hedefi gorunde
+    "Halt, villain!" diyor, NpcSpeak uzerinden yakinlara broadcast ediliyor.
+    Guard speech via OnNpcSay callback, broadcasts to nearby clients.
+  - Vendor ucretsiz alisveris: PrivLevel >= GM olan oyuncular vendordan gold
+    harcamadan alisveris yapabiliyor.
+    Free vendor purchases for staff with PrivLevel >= GM.
+  - Paperdoll throttle: Ayni karakter icin 2 saniye icinde tekrar paperdoll
+    paketi gonderilmiyor, surekli acilma sorunu onlendi.
+    Paperdoll throttle: 2s cooldown per character prevents repeated opens.
+  - NPC AI: PurgeStalePaths() ile 30 saniyeden eski yol cache'leri temizleniyor.
+    PurgeStalePaths() cleans stale path caches older than 30 seconds.
+
 [2026-04-21] - PrivLevel save tutarsizligi #2: load-time reconcile, max-tabanli login senkronu
 ----------------------------------------
 

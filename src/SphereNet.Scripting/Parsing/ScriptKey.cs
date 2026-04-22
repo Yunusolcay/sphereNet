@@ -13,8 +13,14 @@ public sealed class ScriptKey
     /// <summary>Source file path the line was parsed from (set by
     /// <see cref="ScriptFile"/>). Used for diagnostic messages so
     /// scriptdebug warnings can pinpoint the offending line; never
-    /// affects execution. Empty for keys built in code.</summary>
-    public string SourceFile { get; set; } = "";
+    /// affects execution. Empty for keys built in code.
+    /// Interned to avoid duplicate path strings across thousands of keys.</summary>
+    private string _sourceFile = "";
+    public string SourceFile
+    {
+        get => _sourceFile;
+        set => _sourceFile = string.IsNullOrEmpty(value) ? "" : string.Intern(value);
+    }
 
     /// <summary>1-based source line number, set together with
     /// <see cref="SourceFile"/>. Zero when unknown.</summary>

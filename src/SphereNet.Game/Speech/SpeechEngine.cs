@@ -330,7 +330,7 @@ public sealed class CommandHandler
         if (target == null || string.IsNullOrEmpty(verb))
             return false;
 
-        var actor = (ITextConsole?)gm ?? NullConsole.Instance;
+        var actor = gm as ITextConsole ?? NullConsole.Instance;
         if (target.TrySetProperty(verb, args))
             return true;
         if (target.TryExecuteCommand(verb, args, actor))

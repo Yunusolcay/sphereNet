@@ -691,7 +691,7 @@ public class Character : ObjBase
         {
             if (_npcMaster.IsValid)
                 return _npcMaster;
-            return ParseSerialTag("OWNER_UID");
+            return ParseSerialTag("OWNER_UID", Serial.Invalid);
         }
         set => SetOwnerControllerRaw(value, value, mirrorLegacySummon: false);
     }
@@ -729,7 +729,7 @@ public class Character : ObjBase
     {
         get
         {
-            Serial controller = ParseSerialTag("CONTROLLER_UID");
+            Serial controller = ParseSerialTag("CONTROLLER_UID", Serial.Invalid);
             return controller.IsValid ? controller : OwnerSerial;
         }
     }

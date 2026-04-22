@@ -30,12 +30,26 @@ public sealed class CryptoState
     /// <summary>
     /// Pending relay keys: authId → (MasterHi=Key1, MasterLo=Key2) from the login detection.
     /// Source-X RelayGameCryptStart uses these to derive the game Twofish seed.
+    /// Entries expire after 60 seconds to prevent unbounded growth from failed connections.
     /// </summary>
-    private static readonly ConcurrentDictionary<uint, (uint Key1, uint Key2, uint ClientVersion)> _pendingRelays = new();
+    private static readonly ConcurrentDictionary<uint, (uint Key1, uint Key2, uint ClientVersion, long StoredAt)> _pendingRelays = new();
+    private static long _lastRelayPurge = Environment.TickCount64;
+    private const long RelayTtlMs = 60_000;
 
     public static void StoreRelayKeys(uint authId, uint key1, uint key2, uint clientVersion = 0)
     {
-        _pendingRelays[authId] = (key1, key2, clientVersion);
+        long now = Environment.TickCount64;
+        _pendingRelays[authId] = (key1, key2, clientVersion, now);
+
+        if (now - _lastRelayPurge > RelayTtlMs)
+        {
+            _lastRelayPurge = now;
+            foreach (var kv in _pendingRelays)
+            {
+                if (now - kv.Value.StoredAt > RelayTtlMs)
+                    _pendingRelays.TryRemove(kv.Key, out _);
+            }
+        }
     }
 
     public static bool TryGetRelayKeys(uint authId, out uint key1, out uint key2, out uint clientVersion)

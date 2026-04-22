@@ -60,6 +60,30 @@ public sealed class NpcAI
     // Cached paths per NPC UID — avoids recalculating every tick
     private readonly Dictionary<uint, List<Point3D>> _pathCache = [];
     private readonly Dictionary<uint, int> _pathIndex = [];
+    private long _lastPathPurge;
+
+    public void PurgeStalePaths()
+    {
+        long now = Environment.TickCount64;
+        if (now - _lastPathPurge < 30_000) return;
+        _lastPathPurge = now;
+
+        List<uint>? stale = null;
+        foreach (var uid in _pathCache.Keys)
+        {
+            var obj = _world.FindObject(new Core.Types.Serial(uid));
+            if (obj is not Character ch || ch.IsDeleted || ch.IsDead)
+                (stale ??= []).Add(uid);
+        }
+        if (stale != null)
+        {
+            foreach (var uid in stale)
+            {
+                _pathCache.Remove(uid);
+                _pathIndex.Remove(uid);
+            }
+        }
+    }
 
     public NpcAI(GameWorld world, SphereConfig config)
     {
@@ -245,8 +269,16 @@ public sealed class NpcAI
         Wander(npc);
     }
 
+    public Action<Character, string>? OnNpcSay { get; set; }
+
     private void GuardEngage(Character guard, Character target)
     {
+        if (!guard.TryGetTag("GUARD_YELLED", out _))
+        {
+            guard.SetTag("GUARD_YELLED", "1");
+            OnNpcSay?.Invoke(guard, "Halt, villain! Guards!");
+        }
+
         int dist = guard.Position.GetDistanceTo(target.Position);
         if (_config.GuardsInstantKill)
         {

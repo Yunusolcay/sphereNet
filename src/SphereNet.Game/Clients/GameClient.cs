@@ -212,6 +212,11 @@ public sealed class GameClient : ITextConsole
             _character.CTags.RemoveByPrefix("");
             OnCharacterOffline?.Invoke(_character);
             _world.RemoveOnlinePlayer(_character);
+            _tooltipHashCache.Clear();
+            _knownItems.Clear();
+            _knownChars.Clear();
+            _lastKnownPos.Clear();
+            _paperdollThrottle.Clear();
             _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.LogOut,
                 new TriggerArgs { CharSrc = _character });
             _logger.LogInformation("Client '{Name}' disconnected", _character.Name);
@@ -538,11 +543,7 @@ public sealed class GameClient : ITextConsole
         SendSkillList();
 
         // Send paperdoll info on login so the client has name/title immediately.
-        // Without this, the auto-opened paperdoll shows empty on first login.
-        string paperdollTitle = string.IsNullOrEmpty(_character.Title)
-            ? _character.GetName()
-            : $"{_character.GetName()}, {_character.Title}";
-        _netState.Send(new PacketOpenPaperdoll(_character.Uid.Value, paperdollTitle, 0x01));
+        SendPaperdoll(_character);
         _netState.Send(new PacketGlobalLight(_world.GlobalLight));
         _netState.Send(new PacketPersonalLight(_character.Uid.Value, _character.LightLevel));
         _netState.Send(new PacketSeason((byte)_world.CurrentSeason));
@@ -4522,6 +4523,9 @@ public sealed class GameClient : ITextConsole
 
         item.ContainedIn = _character.Uid;
         _character.SetTag("DRAGGING", serial.ToString());
+
+        if (item.BaseId == 0x0EED)
+            SendCharacterStatus(_character);
     }
 
     // ==================== Item Drop ====================
@@ -4596,6 +4600,8 @@ public sealed class GameClient : ITextConsole
                     container.Uid.Value, item.Hue,
                     _netState.IsClientPost6017));
                 _netState.Send(new PacketDropAck());
+                if (item.BaseId == 0x0EED)
+                    SendCharacterStatus(_character);
                 return;
             }
 
@@ -6483,6 +6489,9 @@ public sealed class GameClient : ITextConsole
             item.Amount, item.X, item.Y,
             pack.Uid.Value, item.Hue,
             _netState.IsClientPost6017));
+
+        if (item.BaseId == 0x0EED && target == _character)
+            SendCharacterStatus(_character);
     }
 
     private void SendOpenContainer(Item container)
@@ -6632,24 +6641,15 @@ public sealed class GameClient : ITextConsole
         SendOpenContainer(bankBox);
     }
 
+    private readonly Dictionary<uint, long> _paperdollThrottle = [];
+
     private void SendPaperdoll(Character ch)
     {
-        // Source-X CClient::addCharPaperdoll dispatches a single 0x88
-        // PacketOpenPaperdoll. The mobile/equipment data the gump
-        // renders comes from the client's own world.Mobiles cache,
-        // which BuildViewDelta / NotifyCharacterAppear / death+resurrect
-        // dispatch already keep current. Re-broadcasting a 0x78
-        // PacketDrawObject here would be:
-        //   1. Redundant — ClassicUO doesn't repaint the paperdoll
-        //      gump when it receives 0x78; it repaints when 0x88
-        //      arrives.
-        //   2. Confusing during ghost transitions — every paperdoll
-        //      open during a death/resurrect cycle would re-push the
-        //      mobile graphic and could race the per-observer dispatch
-        //      that's also pushing fresh draw objects to specific
-        //      clients (one of the symptoms behind the "extra
-        //      paperdolls in the background" report).
-        // Keep this method laser-focused on the gump open packet.
+        long now = Environment.TickCount64;
+        if (_paperdollThrottle.TryGetValue(ch.Uid.Value, out long last) && now - last < 2000)
+            return;
+        _paperdollThrottle[ch.Uid.Value] = now;
+
         string title = string.IsNullOrEmpty(ch.Title)
             ? ch.GetName()
             : $"{ch.GetName()}, {ch.Title}";
@@ -6677,14 +6677,18 @@ public sealed class GameClient : ITextConsole
         var (stam, maxStam) = NormalizeStatusPair(ch.Stam, ch.MaxStam, ch.Dex);
         var (mana, maxMana) = NormalizeStatusPair(ch.Mana, ch.MaxMana, ch.Int);
 
+        int gold = 0;
+        var pack = ch.Backpack;
+        if (pack != null)
+            foreach (var gi in pack.Contents)
+                if (gi.BaseId == 0x0EED) gold += gi.Amount;
+
         _netState.Send(new PacketStatusFull(
             ch.Uid.Value, statusName,
             hits, maxHits,
             ch.Str, ch.Dex, ch.Int,
             stam, maxStam, mana, maxMana,
-            includeExtendedStats ? 0 : (ushort)0,
-            includeExtendedStats ? (ushort)0 : (ushort)0,
-            includeExtendedStats ? (ushort)0 : (ushort)0,
+            gold, (ushort)0, (ushort)0,
             ch.Fame, ch.Karma, 0, expansion
         ));
 
