@@ -273,6 +273,7 @@ public sealed class NpcAI
 
     public Action<Character, string>? OnNpcSay { get; set; }
     public Action<Character>? OnGuardLightningStrike { get; set; }
+    public Action<Character>? OnNpcTeleport { get; set; }
 
     private void GuardEngage(Character guard, Character target)
     {
@@ -286,7 +287,10 @@ public sealed class NpcAI
         if (_config.GuardsInstantKill)
         {
             if (dist > 1)
+            {
                 _world.MoveCharacter(guard, target.Position);
+                OnNpcTeleport?.Invoke(guard);
+            }
             OnGuardLightningStrike?.Invoke(target);
             target.Hits = 0;
             guard.FightTarget = Serial.Invalid;

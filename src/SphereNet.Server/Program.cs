@@ -1193,6 +1193,10 @@ public static class Program
         {
             BroadcastLightningStrike(target);
         };
+        _npcAI.OnNpcTeleport = npc =>
+        {
+            BroadcastCharacterAppear(npc);
+        };
         _npcAI.OnNpcAttack = (attacker, target, damage) =>
         {
             // Broadcast the attacker's new facing first (Source-X
@@ -3997,7 +4001,14 @@ public static class Program
             if (hostile.IsDeleted || hostile.IsDead) continue;
             var summonedGuard = FindNearbyGuardResponder(speaker.Position) ?? SummonCityGuardNear(hostile, region.Name);
             if (summonedGuard != null && !summonedGuard.IsDeleted)
+            {
                 summonedGuard.FightTarget = hostile.Uid;
+                if (summonedGuard.Position.GetDistanceTo(hostile.Position) > 1)
+                {
+                    _world.MoveCharacter(summonedGuard, hostile.Position);
+                    BroadcastCharacterAppear(summonedGuard);
+                }
+            }
             if (_config.GuardsInstantKill)
             {
                 BroadcastLightningStrike(hostile);

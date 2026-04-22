@@ -817,12 +817,12 @@ public sealed class ExpressionParser
             return "0";
         }
 
-        // D — force decimal evaluation
+        // D — force decimal evaluation (e.g. <DHITS>, <dsrc.hits>, <ddef.X>)
         if (varExpr.Length > 1 && (varExpr[0] == 'D' || varExpr[0] == 'd') &&
             !varExpr.StartsWith("DEFMSG", StringComparison.OrdinalIgnoreCase) &&
             !varExpr.StartsWith("DEF.", StringComparison.OrdinalIgnoreCase) &&
             !varExpr.StartsWith("DEF0.", StringComparison.OrdinalIgnoreCase) &&
-            (char.IsUpper(varExpr[1]) || char.IsDigit(varExpr[1]) || varExpr[1] == '<' || varExpr[1] == '0'))
+            char.IsLetterOrDigit(varExpr[1]))
         {
             // <Dproperty> or <D expression> — evaluate and return as decimal
             string inner = varExpr[1..];

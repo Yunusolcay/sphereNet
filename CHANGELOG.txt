@@ -4,6 +4,23 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-22] - Guard isinlanma, D-prefix decimal duzeltmesi
+----------------------------------------
+
+DUZELTMELER / FIXES:
+  - Guard isinlanma: Guard hedefe yaklasarak degil, aninda isinlanarak olduruyor.
+    Hem "guards" cagrisi hem NPC AI tick'inde guard hedefe MoveCharacter +
+    BroadcastCharacterAppear ile tasinir, client'lar guncellenir.
+    Guard teleport: guards now teleport to target instead of walking. Both
+    "guards" speech handler and NPC AI tick use MoveCharacter +
+    BroadcastCharacterAppear so clients see the guard appear at the target.
+  - D-prefix decimal degerlendirme: <ddef.X>, <dsrc.X> gibi kucuk harfli
+    D-prefix ifadeleri artik dogru cozuluyor. Onceki kod ikinci karakterin
+    buyuk harf olmasini gerektiriyordu (char.IsUpper), simdi char.IsLetterOrDigit.
+    D-prefix decimal evaluation: lowercase D-prefix expressions like <ddef.X>,
+    <dsrc.X> now resolve correctly. Previous code required uppercase second
+    char (char.IsUpper), now accepts char.IsLetterOrDigit.
+
 [2026-04-22] - Guvenlik sertlestirme, guard/stat/spawn duzeltmeleri
 ----------------------------------------
 
