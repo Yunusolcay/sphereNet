@@ -171,4 +171,5 @@ Acik kaynak / Open source — [LICENSE](LICENSE)
 ## Tesekkurler / Acknowledgments
 
 - [SphereServer Source-X](https://github.com/Sphereserver/Source-X)
+- [ServUO](https://github.com/ServUO/ServUO)
 - [Ultima Online](https://uo.com/) — Origin Systems / Electronic Arts
