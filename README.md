@@ -15,7 +15,82 @@
 - Blowfish, Twofish, Huffman sifreleme / encryption
 - Windows (GUI + headless), Linux, macOS
 - Telnet yonetim konsolu + HTTP durum sayfasi / Telnet admin console + HTTP status page
-- MemoryMapped harita, multicore tick pipeline / MemoryMapped maps, multicore tick pipeline
+
+---
+
+## Source-X'te Olmayan Ozellikler / Beyond Source-X
+
+### Coklu Kaydetme Formati / Multiple Save Formats
+
+Source-X yalnizca duz metin `.scp` formatinda kaydeder. SphereNet 4 farkli formati destekler ve runtime'da format degistirilebilir.
+Source-X only saves in plain text `.scp` format. SphereNet supports 4 formats with runtime switching.
+
+| Format | Uzanti / Ext | Boyut / Size | Aciklama / Description |
+|---|---|---|---|
+| `Text` | `.scp` | 100% | Source-X uyumlu, insan okunabilir / Source-X compatible, human-readable |
+| `TextGz` | `.scp.gz` | ~15% | Ayni metin, GZip sarili / Same text, GZip-wrapped |
+| `Binary` | `.sbin` | ~50% | Tag-stream binary |
+| `BinaryGz` | `.sbin.gz` | ~8-10% | En kucuk, en hizli / Smallest and fastest |
+
+**Shard destegi / Shard support:** `SAVESHARDS=0` tek dosya, `1` size-based rolling, `2-16` paralel hash shard (UID % N, paralel I/O).
+Runtime'da `.SAVEFORMAT BinaryGz 4` komutuyla format + shard degistirilir, migration tek adimda. /
+Runtime `.SAVEFORMAT BinaryGz 4` command switches format + shards, one-shot migration.
+
+### Coklu Veritabani / Multi-Database
+
+Source-X tek bir MySQL baglantisi destekler. SphereNet ayni anda birden fazla veritabanina baglanir — her birinin kendi ayarlari, thread modu ve timeout'u vardir.
+Source-X supports a single MySQL connection. SphereNet connects to multiple databases simultaneously — each with its own settings, thread mode and timeouts.
+
+```ini
+[MYSQL default]
+Host=localhost
+User=root
+Password=secret
+Database=sphere
+AutoConnect=1
+
+[MYSQL logging]
+Host=10.0.0.2
+User=logger
+Password=logpass
+Database=logs
+UseThread=1
+```
+
+Script'te `db.select <isim>` ile aktif baglanti degistirilir / Switch active connection with `db.select <name>` in scripts:
+```
+db.select logging
+db.execute "INSERT INTO logs (msg) VALUES ('event')"
+db.select default
+db.query "SELECT * FROM users WHERE id=1"
+```
+
+### Multicore Tick Pipeline
+
+Source-X tek thread'de calisir. SphereNet tick islemeyi dort faza ayirir, paralel calistirir — hata durumunda otomatik tek thread'e duser.
+Source-X runs single-threaded. SphereNet splits tick processing into four parallel phases — auto-fallback to single-thread on failure.
+
+| Faz / Phase | Tur / Type | Aciklama / Description |
+|---|---|---|
+| Snapshot | Paralel | Sektor tick, NPC snapshot |
+| Build | Paralel | NPC karar hesabi (salt okunur) / NPC decisions (read-only) |
+| Apply | Seri | Kararlar UID sirasinda uygulanir / Decisions applied in UID order |
+| Flush | Seri | Decay, isik, telnet, web / Decay, light, telnet, web |
+
+### MemoryMapped Harita / MemoryMapped Maps
+
+Source-X harita dosyalarini tamamen RAM'e yukler. SphereNet `MemoryMappedFile` ile yukler — isletim sistemi hangi sayfalarin RAM'de kalacagini yonetir, ~200MB tasarruf.
+Source-X loads map files entirely into RAM. SphereNet uses `MemoryMappedFile` — the OS manages page residency, saving ~200MB.
+
+### WinForms Yonetim Konsolu / WinForms Admin Console
+
+Source-X'te yalnizca terminal ciktisi vardir. SphereNet Windows'ta renk kodlu log, CPU/RAM metrikleri, canli istatistikler ve komut gecmisi sunan bir GUI konsol icerir.
+Source-X only has terminal output. SphereNet includes a Windows GUI console with color-coded logs, CPU/RAM metrics, live stats and command history.
+
+### NPC Timer Wheel
+
+Source-X her NPC'yi her tick'te tarar. SphereNet 256 slotlu zamanlama carki kullanir — NPC'ler `nextActionTime`'a gore slot'lara atanir, O(1) zamanlama.
+Source-X scans every NPC every tick. SphereNet uses a 256-slot hashed timer wheel — NPCs assigned by `nextActionTime`, O(1) scheduling.
 
 ---
 
@@ -76,60 +151,10 @@ src/
 
 ---
 
-## Yapilandirma / Configuration
-
-`config/sphere.ini` icinde tum ayarlar Source-X esdegeridir / All settings in `config/sphere.ini` map to Source-X equivalents.
-
-<details>
-<summary>Temel ayarlar / Basic settings</summary>
-
-```ini
-SERVNAME=My Shard
-SERVPORT=2593
-CLIENTVERSION=7.0.15.1
-MULFILES=C:\UO\
-SAVEFORMAT=BinaryGz
-```
-</details>
-
-<details>
-<summary>Kaydetme formatlari / Save formats</summary>
-
-| Format | Uzanti / Ext | Boyut / Size |
-|---|---|---|
-| `Text` | `.scp` | 100% |
-| `TextGz` | `.scp.gz` | ~15% |
-| `Binary` | `.sbin` | ~50% |
-| `BinaryGz` | `.sbin.gz` | ~8-10% |
-
-Shard modu: `SAVESHARDS=0` tek dosya, `1` rolling, `2-16` paralel hash shard.
-</details>
-
-<details>
-<summary>Veritabani / Database</summary>
-
-Tek veya coklu MySQL baglantisi desteklenir / Single or multi MySQL connections supported.
-
-```ini
-[MYSQL default]
-Host=localhost
-User=root
-Password=secret
-Database=sphere
-AutoConnect=1
-```
-
-Script'te: `db.connect`, `db.query`, `db.execute`, `db.select <name>`, `db.close`
-</details>
-
----
-
 ## On Kosullar / Prerequisites
 
 - [.NET 9.0 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)
 - Ultima Online istemci dosyalari / UO client data files
-
----
 
 ## Test
 
