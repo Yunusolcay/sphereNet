@@ -1967,6 +1967,19 @@ public sealed class GameClient : ITextConsole
     };
 
     /// <summary>
+    /// Consolidated client tick: runs combat, spell casting, and stat updates.
+    /// Call this once per server tick instead of calling TickCombat, TickSpellCast,
+    /// and TickStatUpdate separately. This ensures consistent tick order and
+    /// simplifies maintenance (single place to modify if new tick types are added).
+    /// </summary>
+    public void TickClientState()
+    {
+        TickCombat();
+        TickSpellCast();
+        TickStatUpdate();
+    }
+
+    /// <summary>
     /// Detect stat changes (from regen, combat, etc.) and send updates to client.
     /// Called each server tick.
     /// </summary>
@@ -8322,28 +8335,18 @@ public sealed class GameClient : ITextConsole
         if (c.Length >= 2 && c[0] == '(' && c[^1] == ')')
             c = c[1..^1].Trim();
         if (string.IsNullOrEmpty(c) || c == "0")
-        {
-            _logger.LogDebug("[if_eval] raw='{Raw}' → false (empty/zero)", condition);
             return false;
-        }
 
         bool hasOperator = c.AsSpan().IndexOfAny("!+-*/%&|()<>=~^") >= 0;
 
         var parser = new ExpressionParser();
         long v = parser.Evaluate(c.AsSpan());
         if (v != 0)
-        {
-            _logger.LogDebug("[if_eval] raw='{Raw}' stripped='{C}' parser={V} → true", condition, c, v);
             return true;
-        }
         if (hasOperator)
-        {
-            _logger.LogDebug("[if_eval] raw='{Raw}' stripped='{C}' parser=0 hasOp=true → false", condition, c);
             return false;
-        }
         bool truthy = !long.TryParse(c, System.Globalization.NumberStyles.Any,
             System.Globalization.CultureInfo.InvariantCulture, out _);
-        _logger.LogDebug("[if_eval] raw='{Raw}' stripped='{C}' parser=0 hasOp=false → {Truthy}", condition, c, truthy);
         return truthy;
     }
 
@@ -8438,14 +8441,10 @@ public sealed class GameClient : ITextConsole
                     if (_commands.Resources.TryGetDefValue(origKey, out string defTextVal))
                     {
                         string stripped = StripSurroundingQuotes(defTextVal);
-                        _logger.LogDebug("[def_get] varName='{V}' key='{Key}' raw='{Raw}' out='{Out}'",
-                            varName, origKey, defTextVal, stripped);
                         return stripped;
                     }
                     var defRid = _commands.Resources.ResolveDefName(origKey);
                     if (defRid.IsValid) return defRid.Index.ToString();
-                    _logger.LogDebug("[def_miss] varName='{V}' key='{Key}' prefix={Prefix}",
-                        varName, origKey, upper.StartsWith("DEF.") ? "DEF." : "DEF0.");
                     return "0";
                 }
                 if ((upper.StartsWith("SRC.") || upper.StartsWith("DSRC.")) && _character != null)

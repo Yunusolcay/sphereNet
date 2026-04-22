@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Logging;
 using SphereNet.Core.Interfaces;
 
 namespace SphereNet.Scripting.Execution;
@@ -10,7 +9,6 @@ namespace SphereNet.Scripting.Execution;
 public sealed class ScriptSystemHooks
 {
     private readonly TriggerRunner _runner;
-    private readonly ILogger<ScriptSystemHooks> _logger;
     private static readonly Dictionary<string, string[]> ServerHookAliases = new(StringComparer.OrdinalIgnoreCase)
     {
         ["start"] = ["onserver_start"],
@@ -29,10 +27,9 @@ public sealed class ScriptSystemHooks
         ["quotaexceed"] = ["exceed_network_quota"]
     };
 
-    public ScriptSystemHooks(TriggerRunner runner, ILogger<ScriptSystemHooks> logger)
+    public ScriptSystemHooks(TriggerRunner runner)
     {
         _runner = runner;
-        _logger = logger;
     }
 
     public bool Dispatch(
@@ -47,10 +44,7 @@ public sealed class ScriptSystemHooks
     {
         IScriptObj? target = source ?? argo;
         if (target == null)
-        {
-            _logger.LogDebug("Hook skipped (no target): {Function}", functionName);
             return false;
-        }
 
         var triggerArgs = new TriggerArgs(source, argn1, argn2, args)
         {
@@ -60,10 +54,7 @@ public sealed class ScriptSystemHooks
         };
 
         if (!_runner.TryRunFunction(functionName, target, console, triggerArgs, out var result))
-        {
-            _logger.LogDebug("Hook function not found: {Function}", functionName);
             return false;
-        }
 
         return result == Core.Enums.TriggerResult.True;
     }

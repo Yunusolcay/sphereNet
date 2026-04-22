@@ -100,6 +100,7 @@ public static class Program
     private static SphereNet.Game.Ships.ShipEngine? _shipEngine;
     private static SphereNet.Game.Mounts.MountEngine? _mountEngine;
     private static SphereNet.Game.Diagnostics.StressTestEngine? _stressEngine;
+    private static SphereNet.Game.Diagnostics.BotEngine? _botEngine;
     private static SphereNet.Game.NPCs.StableEngine _stableEngine = new();
     private static SphereNet.Game.Scheduling.TimerWheel _npcTimerWheel = null!;
     private static TriggerDispatcher _triggerDispatcher = null!;
@@ -134,6 +135,11 @@ public static class Program
     private static long _telemetryApplyUs;
     private static long _telemetryFlushUs;
     private static long _telemetryMaxTickUs;
+    private static long _lastSlowTickWarningMs;
+    private static long _lastTickStatsLogMs;
+    private static long _tickStatsTotalUs;
+    private static long _tickStatsMaxUs;
+    private static int _tickStatsCount;
     private static bool _headless;
 
     [STAThread]
@@ -540,7 +546,7 @@ public static class Program
         };
         var scriptInterpreter = new ScriptInterpreter(exprParser, _loggerFactory.CreateLogger<ScriptInterpreter>());
         _triggerRunner = new TriggerRunner(scriptInterpreter, _resources, _loggerFactory.CreateLogger<TriggerRunner>());
-        _systemHooks = new ScriptSystemHooks(_triggerRunner, _loggerFactory.CreateLogger<ScriptSystemHooks>());
+        _systemHooks = new ScriptSystemHooks(_triggerRunner);
         _scriptDb = new ScriptDbAdapter(_loggerFactory.CreateLogger<ScriptDbAdapter>());
         InitDbConnections(_config, _scriptDb);
         if (_config.HasFileCommands)
@@ -1670,6 +1676,12 @@ public static class Program
         _commands.OnStressGenerateRequested += (items, npcs) => _stressEngine.QueueGenerate(items, npcs);
         _commands.OnStressReportRequested   += () => _stressEngine.LogReport();
         _commands.OnStressCleanupRequested  += () => _stressEngine.QueueCleanup();
+
+        // Bot stress test engine (.bot / .botmenu)
+        _botEngine = new SphereNet.Game.Diagnostics.BotEngine(_loggerFactory.CreateLogger<SphereNet.Game.Diagnostics.BotEngine>());
+        _commands.OnBotCommandRequested += HandleBotCommand;
+        _commands.OnBotMenuRequested += ShowBotManagerDialog;
+
         _commands.OnSaveFormatChangeRequested += HandleSaveFormatChange;
         _commands.OnScriptDebugToggleRequested += on =>
         {
@@ -1829,7 +1841,7 @@ public static class Program
         _running = true;
         var sw = Stopwatch.StartNew();
         long lastTickMs = 0;
-        const int TickIntervalMs = 250; // 4 ticks per second (Source-X default)
+        const int TickIntervalMs = 100; // 10 ticks per second (optimized for performance)
 
         while (_running)
         {
@@ -2003,7 +2015,7 @@ public static class Program
             "TIMEUP" => ((int)(DateTime.UtcNow - _serverStartTime).TotalSeconds).ToString(),
             "RTIME" => DateTime.Now.ToString("ddd MMM dd HH:mm:ss yyyy"),
             "RTICKS" => DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(),
-            "TICKPERIOD" => "250",
+            "TICKPERIOD" => "100",
 
             // --- Save ---
             "SAVECOUNT" => _saveCount.ToString(),
@@ -2894,6 +2906,252 @@ public static class Program
         _log.LogInformation("SAVEFORMAT: switching to {Format} (shards={Shards}) and saving now",
             fmt, _saver.ShardCount);
         PerformSave();
+    }
+
+    private static void HandleBotCommand(int count, string behavior, bool isStop)
+    {
+        if (_botEngine == null) return;
+
+        if (isStop)
+        {
+            _botEngine.StopAllBots();
+            return;
+        }
+
+        if (behavior.Equals("STATUS", StringComparison.OrdinalIgnoreCase))
+        {
+            _botEngine.LogStats();
+            return;
+        }
+
+        if (behavior.Equals("START", StringComparison.OrdinalIgnoreCase))
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    int port = _config?.ServPort ?? 2593;
+                    await _botEngine.RestartBotsAsync("127.0.0.1", port);
+                }
+                catch (Exception ex)
+                {
+                    _log.LogError(ex, "[BOT] Failed to restart bots");
+                }
+            });
+            return;
+        }
+
+        if (behavior.Equals("CLEAN", StringComparison.OrdinalIgnoreCase))
+        {
+            CleanBotCharacters();
+            return;
+        }
+
+        if (behavior.StartsWith("SPAWN:", StringComparison.OrdinalIgnoreCase))
+        {
+            string cityName = behavior[6..];
+            var city = cityName.ToUpperInvariant() switch
+            {
+                "BRITAIN" => SphereNet.Game.Diagnostics.BotSpawnCity.Britain,
+                "TRINSIC" => SphereNet.Game.Diagnostics.BotSpawnCity.Trinsic,
+                "MOONGLOW" => SphereNet.Game.Diagnostics.BotSpawnCity.Moonglow,
+                "YEW" => SphereNet.Game.Diagnostics.BotSpawnCity.Yew,
+                "MINOC" => SphereNet.Game.Diagnostics.BotSpawnCity.Minoc,
+                "VESPER" => SphereNet.Game.Diagnostics.BotSpawnCity.Vesper,
+                "SKARA" => SphereNet.Game.Diagnostics.BotSpawnCity.Skara,
+                "JHELOM" => SphereNet.Game.Diagnostics.BotSpawnCity.Jhelom,
+                _ => SphereNet.Game.Diagnostics.BotSpawnCity.All
+            };
+            _botEngine.SetSpawnCity(city);
+            return;
+        }
+
+        // Parse behavior and optional city from "BEHAVIOR:CITY" format
+        string behaviorPart = behavior;
+        string? cityPart = null;
+        int colonIdx = behavior.IndexOf(':');
+        if (colonIdx > 0)
+        {
+            behaviorPart = behavior[..colonIdx];
+            cityPart = behavior[(colonIdx + 1)..];
+        }
+
+        var botBehavior = behaviorPart.ToUpperInvariant() switch
+        {
+            "WALK" => SphereNet.Game.Diagnostics.BotBehavior.RandomWalk,
+            "COMBAT" => SphereNet.Game.Diagnostics.BotBehavior.Combat,
+            "IDLE" => SphereNet.Game.Diagnostics.BotBehavior.Idle,
+            _ => SphereNet.Game.Diagnostics.BotBehavior.FullSimulation
+        };
+
+        // Set city if specified
+        if (!string.IsNullOrEmpty(cityPart))
+        {
+            var city = cityPart.ToUpperInvariant() switch
+            {
+                "BRITAIN" => SphereNet.Game.Diagnostics.BotSpawnCity.Britain,
+                "TRINSIC" => SphereNet.Game.Diagnostics.BotSpawnCity.Trinsic,
+                "MOONGLOW" => SphereNet.Game.Diagnostics.BotSpawnCity.Moonglow,
+                "YEW" => SphereNet.Game.Diagnostics.BotSpawnCity.Yew,
+                "MINOC" => SphereNet.Game.Diagnostics.BotSpawnCity.Minoc,
+                "VESPER" => SphereNet.Game.Diagnostics.BotSpawnCity.Vesper,
+                "SKARA" => SphereNet.Game.Diagnostics.BotSpawnCity.Skara,
+                "JHELOM" => SphereNet.Game.Diagnostics.BotSpawnCity.Jhelom,
+                _ => SphereNet.Game.Diagnostics.BotSpawnCity.All
+            };
+            _botEngine.SetSpawnCity(city);
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                int port = _config?.ServPort ?? 2593;
+                await _botEngine.SpawnBotsAsync(count, botBehavior, "127.0.0.1", port);
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, "[BOT] Failed to spawn bots");
+            }
+        });
+    }
+
+    private static void CleanBotCharacters()
+    {
+        if (_botEngine == null || _world == null) return;
+
+        _log.LogInformation("[BOT] Cleaning bot characters and accounts...");
+
+        // Step 1: Find and delete bot characters (and their items)
+        int charsDeleted = 0;
+        int itemsDeleted = 0;
+        var toDelete = new List<SphereNet.Game.Objects.Characters.Character>();
+
+        foreach (var obj in _world.GetAllObjects())
+        {
+            if (obj is SphereNet.Game.Objects.Characters.Character ch && 
+                ch.Name != null && 
+                SphereNet.Game.Diagnostics.BotClient.IsBotCharName(ch.Name))
+            {
+                toDelete.Add(ch);
+            }
+        }
+
+        foreach (var ch in toDelete)
+        {
+            try
+            {
+                // Delete items in backpack/equipment first
+                var backpack = ch.Backpack;
+                if (backpack != null)
+                {
+                    var items = _world.GetContainerContents(backpack.Uid).ToList();
+                    foreach (var item in items)
+                    {
+                        _world.DeleteObject(item);
+                        itemsDeleted++;
+                    }
+                    _world.DeleteObject(backpack);
+                    itemsDeleted++;
+                }
+
+                _world.DeleteObject(ch);
+                charsDeleted++;
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "[BOT] Failed to delete character {Name}", ch.Name);
+            }
+        }
+
+        // Step 2: Delete bot accounts
+        int accountsDeleted = 0;
+        var botAccounts = _accounts.GetAllAccounts()
+            .Where(a => SphereNet.Game.Diagnostics.BotClient.IsBotAccountName(a.Name))
+            .Select(a => a.Name)
+            .ToList();
+
+        foreach (var accName in botAccounts)
+        {
+            if (_accounts.DeleteAccount(accName))
+                accountsDeleted++;
+        }
+
+        _botEngine.ResetBotCounter();
+        _log.LogInformation("[BOT] Cleanup complete: {Chars} characters, {Items} items, {Accounts} accounts deleted.",
+            charsDeleted, itemsDeleted, accountsDeleted);
+    }
+
+    private static void ShowBotManagerDialog(SphereNet.Game.Objects.Characters.Character gm)
+    {
+        if (_botEngine == null) return;
+
+        // Find the GameClient for this character
+        if (!_clientsByCharUid.TryGetValue(gm.Uid, out var client)) return;
+
+        var stats = _botEngine.GetStats();
+        var currentCity = _botEngine.SpawnCity;
+        int lastCount = _botEngine.GetMaxBotId() > 0 ? _botEngine.GetMaxBotId() : 100;
+
+        var gump = SphereNet.Game.Diagnostics.BotManagerDialog.Build(
+            gm.Uid.Value, stats, currentCity, lastCount);
+
+        client.SendGump(gump, (buttonId, switches, textEntries) =>
+        {
+            var action = SphereNet.Game.Diagnostics.BotManagerDialog.ParseResponse(buttonId, switches, textEntries);
+            HandleBotDialogAction(gm, action);
+        });
+    }
+
+    private static void HandleBotDialogAction(SphereNet.Game.Objects.Characters.Character gm, 
+        SphereNet.Game.Diagnostics.BotDialogAction action)
+    {
+        if (_botEngine == null) return;
+
+        switch (action.ActionType)
+        {
+            case SphereNet.Game.Diagnostics.BotActionType.Start:
+                if (action.BotCount <= 0) action.BotCount = 100;
+                _botEngine.SetSpawnCity(action.City);
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        int port = _config?.ServPort ?? 2593;
+                        await _botEngine.SpawnBotsAsync(action.BotCount, action.Behavior, "127.0.0.1", port);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.LogError(ex, "[BOT] Failed to spawn bots");
+                    }
+                });
+                if (_clientsByCharUid.TryGetValue(gm.Uid, out var startClient))
+                    startClient.SysMessage($"Starting {action.BotCount} bots with {action.Behavior} in {action.City}...");
+                break;
+
+            case SphereNet.Game.Diagnostics.BotActionType.Stop:
+                _botEngine.StopAllBots();
+                if (_clientsByCharUid.TryGetValue(gm.Uid, out var stopClient))
+                    stopClient.SysMessage("All bots stopped.");
+                break;
+
+            case SphereNet.Game.Diagnostics.BotActionType.Clean:
+                CleanBotCharacters();
+                if (_clientsByCharUid.TryGetValue(gm.Uid, out var cleanClient))
+                    cleanClient.SysMessage("Bot characters cleaned.");
+                break;
+
+            case SphereNet.Game.Diagnostics.BotActionType.Refresh:
+                ShowBotManagerDialog(gm);
+                return;
+        }
+
+        // Reopen dialog after action (except for refresh which already does it)
+        if (action.ActionType != SphereNet.Game.Diagnostics.BotActionType.Refresh &&
+            action.ActionType != SphereNet.Game.Diagnostics.BotActionType.None)
+        {
+            Task.Delay(500).ContinueWith(_ => ShowBotManagerDialog(gm));
+        }
     }
 
     /// <summary>
@@ -4577,7 +4835,7 @@ public static class Program
         {
             if (_multicoreRuntimeEnabled)
             {
-                _log.LogError(ex, "Multicore tick failure. Falling back to single-thread mode.");
+                _log.LogWarning(ex, "Multicore tick failure. Falling back to single-thread mode.");
                 _multicoreRuntimeEnabled = false;
                 RunSingleThreadTick();
             }
@@ -4592,11 +4850,14 @@ public static class Program
             if (totalUs > _telemetryMaxTickUs)
                 _telemetryMaxTickUs = totalUs;
 
-            // Slow-tick detector: anything over 50ms will show up as ping jitter
-            // on a 250ms tick budget. Log per-phase breakdown so the cause is
-            // visible without running a profiler.
-            if (totalUs > 50_000)
+            // Slow-tick detector: anything over 25ms will show up as ping jitter
+            // on a 100ms tick budget. Log per-phase breakdown so the cause is
+            // visible without running a profiler. Throttled to max 1 per 10 seconds
+            // to avoid flooding console during stress tests.
+            long nowMs = Environment.TickCount64;
+            if (totalUs > 25_000 && nowMs - _lastSlowTickWarningMs > 10_000)
             {
+                _lastSlowTickWarningMs = nowMs;
                 _log.LogWarning(
                     "[slow_tick] mode={Mode} tick={Tick} total={TotalMs}ms snapshot={SnapshotMs}ms compute={ComputeMs}ms apply={ApplyMs}ms flush={FlushMs}ms",
                     _multicoreRuntimeEnabled ? "multicore" : "single",
@@ -4606,6 +4867,40 @@ public static class Program
                     (_telemetryComputeUs / 1000.0).ToString("F1"),
                     (_telemetryApplyUs / 1000.0).ToString("F1"),
                     (_telemetryFlushUs / 1000.0).ToString("F1"));
+            }
+
+            // Periodic tick stats: log average and max tick time every 30 seconds
+            _tickStatsTotalUs += totalUs;
+            if (totalUs > _tickStatsMaxUs) _tickStatsMaxUs = totalUs;
+            _tickStatsCount++;
+
+            if (nowMs - _lastTickStatsLogMs >= 30_000)
+            {
+                double avgMs = _tickStatsCount > 0 ? (_tickStatsTotalUs / _tickStatsCount / 1000.0) : 0;
+                double maxMs = _tickStatsMaxUs / 1000.0;
+                int onlinePlayers = _clients.Values.Count(c => c.IsPlaying);
+                var (chars, items, _) = _world.GetStats();
+
+                // Include bot stats if bots are active
+                if (_botEngine != null && _botEngine.TotalBots > 0)
+                {
+                    var botStats = _botEngine.GetStats();
+                    _log.LogInformation(
+                        "[tick_stats] ticks={Count} avg={AvgMs:F1}ms max={MaxMs:F1}ms players={Players} chars={Chars} items={Items} bots={Bots}/{BotTotal} pps_in={PpsIn:F0} pps_out={PpsOut:F0}",
+                        _tickStatsCount, avgMs, maxMs, onlinePlayers, chars, items,
+                        botStats.ActiveBots, botStats.TotalBots, botStats.PacketsPerSecIn, botStats.PacketsPerSecOut);
+                }
+                else
+                {
+                    _log.LogInformation(
+                        "[tick_stats] ticks={Count} avg={AvgMs:F1}ms max={MaxMs:F1}ms players={Players} chars={Chars} items={Items}",
+                        _tickStatsCount, avgMs, maxMs, onlinePlayers, chars, items);
+                }
+
+                _tickStatsTotalUs = 0;
+                _tickStatsMaxUs = 0;
+                _tickStatsCount = 0;
+                _lastTickStatsLogMs = nowMs;
             }
         }
     }
@@ -4635,9 +4930,7 @@ public static class Program
 
         foreach (var client in _clients.Values)
         {
-            client.TickCombat();
-            client.TickSpellCast();
-            client.TickStatUpdate();
+            client.TickClientState();
             client.UpdateClientView();
         }
 
@@ -4718,15 +5011,23 @@ public static class Program
         }
 
         foreach (var client in clientSnapshot)
-        {
-            client.TickCombat();
-            client.TickSpellCast();
-            client.TickStatUpdate();
-        }
+            client.TickClientState();
+
+        // Apply NPC decisions BEFORE building view deltas so that other
+        // players see up-to-date NPC positions in the same tick. Previously
+        // BuildViewDelta ran first, causing a one-tick position lag.
+        // Determinism: NPCs apply in UID order. Sort in-place — the
+        // List<T>.Sort overload with Comparison<T> uses introsort and
+        // doesn't allocate (the lambda is cached by the JIT here).
+        decisionList.Sort(static (a, b) => a.NpcUid.CompareTo(b.NpcUid));
+        foreach (var decision in decisionList)
+            _npcAI.ApplyDecision(decision);
+        _npcAI.PurgeStalePaths();
 
         // View delta build: parallel only when there's enough work to
         // amortize the partitioner setup. Single-client steady state
         // (~95% of real shards) hits the sequential fast path.
+        // Now runs AFTER ApplyDecision so NPC positions are current.
         var clientDeltas = _reusableClientDeltas;
         clientDeltas.Clear();
         if (clientSnapshot.Count >= ParallelComputeMinBatch)
@@ -4758,14 +5059,6 @@ public static class Program
         _telemetryComputeUs = ToMicroseconds(Stopwatch.GetTimestamp() - p1);
 
         long p2 = Stopwatch.GetTimestamp();
-        // Determinism: NPCs apply in UID order. Sort in-place — the
-        // List<T>.Sort overload with Comparison<T> uses introsort and
-        // doesn't allocate (the lambda is cached by the JIT here).
-        decisionList.Sort(static (a, b) => a.NpcUid.CompareTo(b.NpcUid));
-        foreach (var decision in decisionList)
-            _npcAI.ApplyDecision(decision);
-        _npcAI.PurgeStalePaths();
-
         foreach (var client in clientSnapshot)
         {
             if (clientDeltas.TryGetValue(client.NetState.Id, out var delta))

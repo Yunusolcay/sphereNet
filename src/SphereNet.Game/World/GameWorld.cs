@@ -358,25 +358,6 @@ public sealed class GameWorld
         }
         ch.Position = newPos;
         var newRegion = FindRegion(newPos);
-        if (ch.IsPlayer && _logger.IsEnabled(LogLevel.Debug))
-        {
-            // Temporary diagnostic — every player MoveCharacter call logs the
-            // region lookup so we can see whether AREADEF rects are matching.
-            // Also list every overlapping AREADEF (smallest first) so we can
-            // catch parser bugs where regions from other maps leak into the
-            // hit set.
-            var matches = FindAllRegions(newPos).Take(5).ToList();
-            var overlapDesc = matches.Count == 0
-                ? "<none>"
-                : string.Join(", ", matches.Select(m => $"{m.Region.Name}(map={m.Region.MapIndex},rects={m.Region.Rects.Count},area={m.Area})"));
-            _logger.LogDebug(
-                "[REGION_LOOKUP] {Name} pos={X},{Y},{Z} map={Map} regions={Total} old={Old} new={New} matches=[{Matches}]",
-                ch.Name, newPos.X, newPos.Y, newPos.Z, newPos.Map,
-                _regions.Count,
-                oldRegion?.Name ?? "<null>",
-                newRegion?.Name ?? "<null>",
-                overlapDesc);
-        }
         if (oldRegion != newRegion)
         {
             // Source-X CChar::Region_Update parity: keep the character's
@@ -643,8 +624,18 @@ public sealed class GameWorld
 
     /// <summary>
     /// Multicore-friendly world tick: sector updates can run in parallel because each
-    /// sector owns its own item/character lists. Mutations crossing sectors should stay
-    /// in later apply phases.
+    /// sector owns its own item/character lists.
+    /// <para>
+    /// <b>THREAD-SAFETY CONTRACT:</b> During parallel sector tick, <c>Character.OnTick()</c>
+    /// and <c>Item.OnTick()</c> MUST NOT call <c>MoveCharacter</c>, <c>PlaceCharacter</c>,
+    /// or any method that modifies sector lists. These mutations must be deferred to
+    /// sequential apply phases (e.g., <c>NpcAI.ApplyDecision</c>). Violating this contract
+    /// causes race conditions on <c>Sector._characters</c> / <c>Sector._items</c> lists.
+    /// </para>
+    /// <para>
+    /// Safe operations during parallel tick: regeneration, stat updates, timer checks,
+    /// dirty flag marking, spawn component ticks (which queue spawns for later).
+    /// </para>
     /// </summary>
     public void OnTickParallel(int workerCount = 0, CancellationToken cancellationToken = default)
     {
@@ -693,6 +684,14 @@ public sealed class GameWorld
                 CancellationToken = cancellationToken
             };
             Parallel.ForEach(sectors, po, sector => sector.OnTick(currentTime));
+        }
+
+        // Notoriety decay for online players — must match single-threaded OnTick behavior.
+        // Without this, murder counts (_kills) never decay in multicore mode.
+        foreach (var player in _onlinePlayers)
+        {
+            if (player.IsDeleted) continue;
+            player.TickNotorietyDecay(currentTime);
         }
     }
 

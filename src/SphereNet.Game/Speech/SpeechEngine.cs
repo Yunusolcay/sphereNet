@@ -227,6 +227,11 @@ public sealed class CommandHandler
     public event Action? OnStressReportRequested;
     /// <summary>Fired by .STRESSCLEAN — deletes all stress-tagged objects.</summary>
     public event Action? OnStressCleanupRequested;
+    /// <summary>Fired by .BOT to spawn/stop stress test bots with TCP connections.
+    /// Args: (count, behavior, isStop). isStop=true means stop all bots.</summary>
+    public event Action<int, string, bool>? OnBotCommandRequested;
+    /// <summary>Fired by .BOTMENU to open the bot manager dialog. Args: (gm character).</summary>
+    public event Action<Character>? OnBotMenuRequested;
     /// <summary>Fired by .SAVEFORMAT — switches save format (and optional shard
     /// count) then forces a full save in the new format. Argument string is
     /// already parsed: (format, shards). shards=-1 means "keep current".</summary>
@@ -722,6 +727,76 @@ public sealed class CommandHandler
         {
             OnSysMessage?.Invoke(gm, "Stress cleanup queued. Watch server log for progress.");
             OnStressCleanupRequested?.Invoke();
+        });
+
+        Register("BOT", PrivLevel.Owner, (gm, args) =>
+        {
+            // .BOT 100              -> 100 bot baslat (full simulation)
+            // .BOT 50 walk          -> 50 bot sadece yurume
+            // .BOT 200 combat       -> 200 bot combat
+            // .BOT stop             -> tum botlari durdur (TCP disconnect)
+            // .BOT start            -> durdurulmus botlari yeniden baslat
+            // .BOT clean            -> bot karakterlerini dunyadan sil
+            // .BOT status           -> istatistik
+            // .BOT spawn britain    -> spawn sehrini ayarla
+            var toks = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (toks.Length == 0)
+            {
+                OnSysMessage?.Invoke(gm, "Usage: .BOT <count> [walk|combat|full] [city]");
+                OnSysMessage?.Invoke(gm, "       .BOT stop | start | clean | status");
+                OnSysMessage?.Invoke(gm, "       .BOT spawn <britain|trinsic|moonglow|yew|minoc|all>");
+                return;
+            }
+
+            string first = toks[0].ToUpperInvariant();
+            if (first == "STOP")
+            {
+                OnSysMessage?.Invoke(gm, "Stopping all bots (TCP disconnect)...");
+                OnBotCommandRequested?.Invoke(0, "stop", true);
+                return;
+            }
+            if (first == "START")
+            {
+                OnSysMessage?.Invoke(gm, "Resuming bot connections...");
+                OnBotCommandRequested?.Invoke(0, "start", false);
+                return;
+            }
+            if (first == "CLEAN")
+            {
+                OnSysMessage?.Invoke(gm, "Deleting bot characters from world...");
+                OnBotCommandRequested?.Invoke(0, "clean", false);
+                return;
+            }
+            if (first == "STATUS")
+            {
+                OnSysMessage?.Invoke(gm, "Bot status dumped to server log.");
+                OnBotCommandRequested?.Invoke(0, "status", false);
+                return;
+            }
+            if (first == "SPAWN")
+            {
+                string city = toks.Length >= 2 ? toks[1].ToUpperInvariant() : "ALL";
+                OnSysMessage?.Invoke(gm, $"Bot spawn location set to: {city}");
+                OnBotCommandRequested?.Invoke(0, $"spawn:{city}", false);
+                return;
+            }
+
+            if (!int.TryParse(first, out int count) || count <= 0)
+            {
+                OnSysMessage?.Invoke(gm, "Usage: .BOT <count> [walk|combat|full] [city]");
+                return;
+            }
+
+            string behavior = toks.Length >= 2 ? toks[1].ToUpperInvariant() : "FULL";
+            string spawnCity = toks.Length >= 3 ? toks[2].ToUpperInvariant() : "";
+            string cmd = string.IsNullOrEmpty(spawnCity) ? behavior : $"{behavior}:{spawnCity}";
+            OnSysMessage?.Invoke(gm, $"Spawning {count} bots with {behavior} behavior. Watch server log for progress.");
+            OnBotCommandRequested?.Invoke(count, cmd, false);
+        });
+
+        Register("BOTMENU", PrivLevel.Owner, (gm, _) =>
+        {
+            OnBotMenuRequested?.Invoke(gm);
         });
 
         Register("SCRIPTDEBUG", PrivLevel.Owner, (gm, args) =>

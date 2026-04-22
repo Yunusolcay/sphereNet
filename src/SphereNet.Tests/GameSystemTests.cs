@@ -893,7 +893,7 @@ public class GameSystemTests
 
         var interpreter = new ScriptInterpreter(new ExpressionParser(), loggerFactory.CreateLogger<ScriptInterpreter>());
         var runner = new TriggerRunner(interpreter, resources, loggerFactory.CreateLogger<TriggerRunner>());
-        var hooks = new ScriptSystemHooks(runner, loggerFactory.CreateLogger<ScriptSystemHooks>());
+        var hooks = new ScriptSystemHooks(runner);
 
         var serverObj = new Character();
         var obj = new Character();
@@ -996,7 +996,7 @@ public class GameSystemTests
         var runner = new TriggerRunner(interpreter, resources, loggerFactory.CreateLogger<TriggerRunner>());
         dispatcher.Runner = runner;
         dispatcher.Resources = resources;
-        var hooks = new ScriptSystemHooks(runner, loggerFactory.CreateLogger<ScriptSystemHooks>());
+        var hooks = new ScriptSystemHooks(runner);
 
         client.SetEngines(triggerDispatcher: dispatcher);
         client.SetScriptServices(hooks, null, k => resources.TryGetDefMessage(k, out var v) ? v : null);

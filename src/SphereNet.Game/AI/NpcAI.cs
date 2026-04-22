@@ -118,8 +118,9 @@ public sealed class NpcAI
         // which floods nearby clients with 0x20 movement updates.
         npc.NextNpcActionTime = now + 700 + _rand.Next(0, 200);
 
-        // Regen
-        npc.OnTick();
+        // Note: npc.OnTick() is NOT called here — Sector.OnTick already handles
+        // character ticks (regen, poison, etc.) for all characters including NPCs.
+        // Calling it again would double-tick regeneration and other time-based effects.
 
         // Pet behavior — owned NPCs follow pet AI mode
         if (npc.NpcMaster.IsValid)

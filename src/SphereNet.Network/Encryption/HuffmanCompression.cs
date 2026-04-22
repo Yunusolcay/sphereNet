@@ -76,7 +76,7 @@ public static class HuffmanCompression
     };
 
     /// <summary>
-    /// Decompress Huffman-encoded data from the client.
+    /// Decompress Huffman-encoded data from the client (uses DecompTree).
     /// Returns decompressed byte array.
     /// </summary>
     public static byte[] Decompress(byte[] input, int offset, int length)
@@ -108,6 +108,148 @@ public static class HuffmanCompression
             if (output.Count >= MaxDecompressedSize) break;
         }
 
+        return output.ToArray();
+    }
+
+    // Decompression tree built from CompressBase (lazy initialized)
+    private static int[,]? _serverDecompTree;
+    private static readonly object _treeLock = new();
+
+    /// <summary>
+    /// Build decompression tree from CompressBase table.
+    /// This tree decodes data that was compressed using Compress().
+    /// </summary>
+    private static int[,] BuildServerDecompTree()
+    {
+        // Max tree size - each code path needs nodes
+        // Use int.MinValue as "uninitialized" marker (not -1 since that could be a valid leaf)
+        const int Uninitialized = int.MinValue;
+        var tree = new int[1024, 2];
+        int nextNode = 1; // Node 0 is root
+        
+        // Initialize all nodes to uninitialized
+        for (int i = 0; i < 1024; i++)
+        {
+            tree[i, 0] = Uninitialized;
+            tree[i, 1] = Uninitialized;
+        }
+
+        // Build tree from CompressBase entries
+        for (int byteVal = 0; byteVal <= 256; byteVal++)
+        {
+            ushort entry = CompressBase[byteVal];
+            int nBits = entry & 0xF;
+            int code = entry >> 4;
+
+            if (nBits == 0) continue;
+
+            int node = 0;
+            for (int bitIdx = nBits - 1; bitIdx >= 0; bitIdx--)
+            {
+                int bit = (code >> bitIdx) & 1;
+                
+                if (bitIdx == 0)
+                {
+                    // Leaf node - store negative value (-(byteVal + 1))
+                    // -1 = byte 0, -2 = byte 1, ..., -257 = byte 256 (EOF)
+                    tree[node, bit] = -(byteVal + 1);
+                }
+                else
+                {
+                    // Internal node - create child if needed
+                    if (tree[node, bit] == Uninitialized)
+                    {
+                        tree[node, bit] = nextNode++;
+                    }
+                    // Move to child node (must be positive)
+                    node = tree[node, bit];
+                }
+            }
+        }
+
+        return tree;
+    }
+
+    /// <summary>
+    /// Decompress data that was compressed using Compress() (CompressBase table).
+    /// Use this for decoding server→client data on the client side.
+    /// </summary>
+    public static byte[] DecompressFromServer(byte[] input, int offset, int length)
+    {
+        return DecompressFromServer(input, offset, length, out _);
+    }
+
+    /// <summary>
+    /// Decompress data that was compressed using Compress() (CompressBase table).
+    /// Returns number of input bytes consumed (for handling multiple compressed packets).
+    /// </summary>
+    public static byte[] DecompressFromServer(byte[] input, int offset, int length, out int bytesConsumed)
+    {
+        bytesConsumed = length; // Default: assume all consumed
+        
+        // Lazy initialize the decompression tree
+        if (_serverDecompTree == null)
+        {
+            lock (_treeLock)
+            {
+                _serverDecompTree ??= BuildServerDecompTree();
+            }
+        }
+
+        const int MaxDecompressedSize = 262_144;
+        var output = new List<byte>(length * 2);
+        int bitPos = 0;
+        int totalBits = length * 8;
+
+        while (bitPos < totalBits)
+        {
+            int node = 0;
+
+            // Traverse tree until we hit a leaf (negative value)
+            while (node >= 0)
+            {
+                if (bitPos >= totalBits)
+                {
+                    bytesConsumed = length;
+                    return output.ToArray();
+                }
+
+                int byteIdx = offset + (bitPos >> 3);
+                if (byteIdx >= offset + length)
+                {
+                    bytesConsumed = length;
+                    return output.ToArray();
+                }
+                
+                int bitIdx = 7 - (bitPos & 7);
+                int bit = (input[byteIdx] >> bitIdx) & 1;
+                bitPos++;
+
+                int next = _serverDecompTree[node, bit];
+                if (next == int.MinValue) 
+                {
+                    // Uninitialized path - invalid compressed data
+                    bytesConsumed = (bitPos + 7) >> 3; // Round up to byte
+                    return output.ToArray();
+                }
+                node = next;
+            }
+
+            // Leaf node: node is negative, decode as -(byteVal + 1)
+            int value = -(node + 1);
+            if (value == 256) 
+            {
+                // EOF marker - calculate bytes consumed (round up to next byte boundary)
+                bytesConsumed = (bitPos + 7) >> 3;
+                return output.ToArray();
+            }
+            if (value < 0 || value > 255) break; // Invalid value
+            
+            output.Add((byte)value);
+            if (output.Count >= MaxDecompressedSize) break;
+        }
+
+        bytesConsumed = length;
         return output.ToArray();
     }
 

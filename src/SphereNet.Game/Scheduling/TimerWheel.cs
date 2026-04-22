@@ -4,16 +4,17 @@ namespace SphereNet.Game.Scheduling;
 
 /// <summary>
 /// Hashed timer wheel for scheduling NPC AI ticks.
-/// 256 slots × 250ms = 64 second cycle.
+/// 256 slots × 125ms = 32 second cycle.
 /// Schedule is O(1), Advance is O(slot size).
 /// </summary>
 public sealed class TimerWheel
 {
     private const int SlotCount = 256;
-    private const long SlotDurationMs = 250;
+    private const long SlotDurationMs = 125;
 
     private readonly List<Character>[] _slots;
     private readonly HashSet<uint> _scheduled = [];
+    private readonly List<Character> _advanceResult = new(256);
     private long _currentTime;
     private int _currentSlot;
 
@@ -46,10 +47,12 @@ public sealed class TimerWheel
     /// <summary>
     /// Advance the wheel to the current time.
     /// Returns all NPCs whose timers have fired.
+    /// Note: The returned list is reused across calls to avoid GC pressure.
+    /// Callers must consume or copy the result before the next Advance() call.
     /// </summary>
     public List<Character> Advance(long nowMs)
     {
-        var result = new List<Character>();
+        _advanceResult.Clear();
 
         int targetSlot = TimeToSlot(nowMs);
 
@@ -63,17 +66,17 @@ public sealed class TimerWheel
             foreach (var npc in slot)
             {
                 if (!npc.IsDeleted && !npc.IsPlayer)
-                    result.Add(npc);
+                    _advanceResult.Add(npc);
                 _scheduled.Remove(npc.Uid.Value);
             }
             slot.Clear();
 
-            // Safety: don't spin more than full cycle
-            if (result.Count > 100_000) break;
+            // Safety: don't spin more than full cycle (raised for stress tests)
+            if (_advanceResult.Count > 500_000) break;
         }
 
         _currentTime = nowMs;
-        return result;
+        return _advanceResult;
     }
 
     /// <summary>Remove an NPC from the wheel (e.g. on delete).</summary>

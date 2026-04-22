@@ -183,7 +183,8 @@ public sealed class NetworkManager : IDisposable
     }
 
     /// <summary>
-    /// Process all incoming data. Called from main tick after World.OnTick.
+    /// Process all incoming data. Called from main loop BEFORE World.OnTick/RunServerTick
+    /// to ensure packets are handled promptly for low latency.
     /// </summary>
     public void ProcessAllInput()
     {

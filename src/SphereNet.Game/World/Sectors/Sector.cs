@@ -99,7 +99,17 @@ public sealed class Sector : IScriptObj
         }
     }
 
-    /// <summary>Tick all objects in this sector. Characters always tick for regen.</summary>
+    /// <summary>
+    /// Tick all objects in this sector. Characters always tick for regen.
+    /// <para>
+    /// <b>THREAD-SAFETY:</b> When called from <c>GameWorld.OnTickParallel</c>, multiple
+    /// sectors may tick concurrently. <c>Character.OnTick()</c> and <c>Item.OnTick()</c>
+    /// MUST NOT call <c>GameWorld.MoveCharacter</c> or any method that modifies sector
+    /// lists (<c>_characters</c>, <c>_items</c>). Cross-sector mutations must be deferred
+    /// to sequential phases.
+    /// </para>
+    /// </summary>
+    /// <param name="currentTime">Current tick timestamp (currently unused, reserved for future use).</param>
     public void OnTick(long currentTime)
     {
         for (int i = _characters.Count - 1; i >= 0; i--)
