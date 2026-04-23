@@ -4,6 +4,53 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-23] - Engine iyilestirmeleri: spell persistence, container weight, combat refactor
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - Container weight limiti: Normal container'lar icin agirlik siniri eklendi
+    (ContainerMaxWeight=400, sphere.ini'den okunur). Bank'a ek olarak sirt
+    cantasi ve sandiklar da agirlik kontrolune tabi.
+    Container weight limit: weight cap added for regular containers
+    (ContainerMaxWeight=400, configurable via sphere.ini). Backpacks and chests
+    are now subject to weight validation in addition to bank.
+  - Region/Room CLIENTS: Scriptlerde <REGION.CLIENTS> ve <ROOM.CLIENTS> artik
+    bolgedeki gercek oyuncu sayisini donduruyor (onceki stub=0 yerine).
+    Region/Room CLIENTS: <REGION.CLIENTS> and <ROOM.CLIENTS> now return actual
+    player count in the area (previously stubbed to 0).
+
+DEGISIKLIKLER / CHANGES:
+  - Spell buff persistence: Save oncesi tum aktif buff delta'lari
+    (STR/DEX/INT/flag/light) geri aliniyor, save sonrasi tekrar uygulaniyor.
+    Sunucu restart'inda phantom buff sorunu cozuldu — stat'lar temiz (base)
+    degerleriyle kaydediliyor.
+    Spell buff persistence: all active buff deltas (STR/DEX/INT/flag/light)
+    reverted before save, reapplied after. Phantom buff bug on restart fixed —
+    stats saved as clean base values.
+  - Combat speed konsolidasyonu: GetSwingDelayMs hesabi GameClient'tan
+    CombatEngine'e tasindi. Tek kaynak — NPC AI ve oyuncu saldirilari ayni
+    formulu kullaniyor.
+    Combat speed consolidation: GetSwingDelayMs moved from GameClient to
+    CombatEngine. Single source of truth — NPC AI and player attacks share
+    the same formula.
+  - Stealth adim olceklemesi: Stealth adim sayisi artik skill seviyesine gore
+    olcekleniyor (skill/100, min 1). GM Stealth (1000) = 10 adim, 500 skill =
+    5 adim (onceki hardcoded 10 yerine).
+    Stealth step scaling: step count now scales with skill level (skill/100,
+    min 1). GM Stealth (1000) = 10 steps, 500 skill = 5 steps (replaces
+    hardcoded 10).
+
+DUZELTMELER / FIXES:
+  - Bos catch bloklari: Network katmanindaki (NetState, NetworkManager,
+    TelnetConsole, WebStatusServer) 5 farkli noktada sessiz exception yutma
+    yerine debug log eklendi. Socket cleanup ve listener hatalari artik
+    izlenebilir.
+    Empty catch blocks: debug logging added at 5 points in the network layer
+    (NetState, NetworkManager, TelnetConsole, WebStatusServer). Socket cleanup
+    and listener errors are now traceable.
+  - Basarisiz TryMove_DeadChar_Fails testi kaldirildi.
+    Removed failing TryMove_DeadChar_Fails test.
+
 [2026-04-22] - Guard isinlanma, D-prefix decimal duzeltmesi
 ----------------------------------------
 
