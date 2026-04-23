@@ -4,6 +4,24 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-23] - Crafting tool'lari varsayilan crafting menusune baglandi
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - Crafting tool double-click'leri artik varsayilan crafting gump'ini aciyor:
+    Crafting tool double-clicks now open the default crafting gump:
+    * Mortar → Alchemy, TinkerTools → Tinkering, SewingKit → Tailoring,
+      Carpentry/CarpentryChop → Carpentry, CartographyTool → Cartography,
+      CookingTool → Cooking, ScrollBlank → Inscription,
+      Forge/Ingot/Anvil → Blacksmithing, Loom/SpinWheel → Tailoring,
+      Fletching → Bowcraft
+  - Script override destegi: @DClick trigger'i RETURN 1 donerse varsayilan
+    menu engellenir, script kendi DIALOG/gump'ini acabilir.
+    Script override support: if @DClick trigger returns RETURN 1, default
+    menu is blocked, scripts can open their own DIALOG/gump.
+  - Ore double-click artik Mining skill target'i atiyor.
+    Ore double-click now fires Mining skill target.
+
 [2026-04-23] - Item use, spellbook, combat mesaj duzeltmeleri
 ----------------------------------------
 

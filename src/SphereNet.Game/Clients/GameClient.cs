@@ -2401,43 +2401,38 @@ public sealed class GameClient : ITextConsole
                 SysMessage("You unroll the map."); // gump pending
                 break;
 
-            // ---- ore / forge / ingot ----
+            // ---- ore / forge / ingot (overridable via @DClick trigger) ----
             case ItemType.Ore:
-                SysMessage("You select the ore for smelting.");
-                SetPendingTarget((serial, x, y, z, gfx) => { /* smelt routine pending */ });
+                SysMessage(ServerMessages.Get(Msg.ItemuseForge));
+                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Mining, new Serial(serial)));
                 break;
             case ItemType.Forge:
-                SysMessage(ServerMessages.Get(Msg.ItemuseForge));
-                SetPendingTarget((serial, x, y, z, gfx) => { /* combine routine pending */ });
-                break;
             case ItemType.Ingot:
-                SysMessage("Select what to smith.");
+                OpenCraftingGump(SkillType.Blacksmithing);
                 break;
 
-            // ---- crafting toolbenches (skill menu pending) ----
+            // ---- crafting tools → default crafting gump (overridable via @DClick trigger) ----
             case ItemType.Mortar:
-                SysMessage("Select an item to alchemize.");
+                OpenCraftingGump(SkillType.Alchemy);
                 break;
             case ItemType.Carpentry:
-                SysMessage("Select an item to craft.");
-                break;
             case ItemType.CarpentryChop:
-                SysMessage(ServerMessages.Get("target_promt"));
+                OpenCraftingGump(SkillType.Carpentry);
                 break;
             case ItemType.CartographyTool:
-                SysMessage("Select a destination on the map.");
+                OpenCraftingGump(SkillType.Cartography);
                 break;
             case ItemType.CookingTool:
-                SysMessage("Select what to cook.");
+                OpenCraftingGump(SkillType.Cooking);
                 break;
             case ItemType.TinkerTools:
-                SysMessage("Select an item to tinker.");
+                OpenCraftingGump(SkillType.Tinkering);
                 break;
             case ItemType.SewingKit:
-                SysMessage(ServerMessages.GetFormatted(Msg.ItemuseSewkitPromt, item.Name ?? "sewing kit"));
+                OpenCraftingGump(SkillType.Tailoring);
                 break;
             case ItemType.ScrollBlank:
-                SysMessage("Select a spell to inscribe.");
+                OpenCraftingGump(SkillType.Inscription);
                 break;
 
             // ---- ship / sign / shrine / runes ----
@@ -2649,18 +2644,13 @@ public sealed class GameClient : ITextConsole
                 SysMessage("The fire is warm.");
                 break;
 
-            // ---- crafting stations ----
+            // ---- crafting stations (overridable via @DClick trigger) ----
             case ItemType.Loom:
-                SysMessage("Select the thread to weave.");
-                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Tailoring, new Serial(serial)));
-                break;
             case ItemType.SpinWheel:
-                SysMessage("Select the wool or cotton to spin.");
-                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Tailoring, new Serial(serial)));
+                OpenCraftingGump(SkillType.Tailoring);
                 break;
             case ItemType.Anvil:
-                SysMessage("Select the ingot to smith.");
-                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Blacksmithing, new Serial(serial)));
+                OpenCraftingGump(SkillType.Blacksmithing);
                 break;
 
             // ---- beehive / seed / pitcher ----
@@ -2723,8 +2713,7 @@ public sealed class GameClient : ITextConsole
 
             // ---- fletching tool ----
             case ItemType.Fletching:
-                SysMessage("Select wood to create arrows or bolts.");
-                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Bowcraft, new Serial(serial)));
+                OpenCraftingGump(SkillType.Bowcraft);
                 break;
 
             case ItemType.EqBankBox:
