@@ -742,7 +742,7 @@ public sealed class CommandHandler
             var toks = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (toks.Length == 0)
             {
-                OnSysMessage?.Invoke(gm, "Usage: .BOT <count> [walk|combat|full] [city]");
+                OnSysMessage?.Invoke(gm, "Usage: .BOT <count> [walk|combat|full|smart] [city]");
                 OnSysMessage?.Invoke(gm, "       .BOT stop | start | clean | status");
                 OnSysMessage?.Invoke(gm, "       .BOT spawn <britain|trinsic|moonglow|yew|minoc|all>");
                 return;
@@ -783,7 +783,7 @@ public sealed class CommandHandler
 
             if (!int.TryParse(first, out int count) || count <= 0)
             {
-                OnSysMessage?.Invoke(gm, "Usage: .BOT <count> [walk|combat|full] [city]");
+                OnSysMessage?.Invoke(gm, "Usage: .BOT <count> [walk|combat|full|smart] [city]");
                 return;
             }
 

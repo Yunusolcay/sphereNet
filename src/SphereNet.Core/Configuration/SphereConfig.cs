@@ -97,6 +97,8 @@ public sealed class SphereConfig
     public bool GuardsOnMurderers { get; set; } = true;
     public bool SnoopCriminal { get; set; } = true;
     public int NotoTimeout { get; set; } = 30;
+    public bool MonsterFight { get; set; }
+    public bool MonsterFear { get; set; } = true;
 
     // Death & Resurrection
     public int CorpseNpcDecay { get; set; } = 7;
@@ -309,6 +311,8 @@ public sealed class SphereConfig
         GuardsOnMurderers = ini.GetBool(section, "GuardsOnMurderers", GuardsOnMurderers);
         SnoopCriminal = ini.GetBool(section, "SnoopCriminal", SnoopCriminal);
         NotoTimeout = ini.GetInt(section, "NotoTimeout", NotoTimeout);
+        MonsterFight = ini.GetBool(section, "MonsterFight", MonsterFight);
+        MonsterFear = ini.GetBool(section, "MonsterFear", MonsterFear);
 
         CorpseNpcDecay = ini.GetInt(section, "CorpseNpcDecay", CorpseNpcDecay);
         CorpsePlayerDecay = ini.GetInt(section, "CorpsePlayerDecay", CorpsePlayerDecay);

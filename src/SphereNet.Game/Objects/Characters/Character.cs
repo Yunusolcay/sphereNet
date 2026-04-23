@@ -741,6 +741,20 @@ public class Character : ObjBase
     public long NextAttackTime { get; set; }
     public long NextNpcActionTime { get; set; }
 
+    // NPC spell list — populated from CHARDEF or spellbook items
+    private List<SpellType>? _npcSpells;
+    public IReadOnlyList<SpellType> NpcSpells => _npcSpells ?? (IReadOnlyList<SpellType>)Array.Empty<SpellType>();
+    public void NpcSpellAdd(SpellType spell)
+    {
+        _npcSpells ??= [];
+        if (!_npcSpells.Contains(spell))
+            _npcSpells.Add(spell);
+    }
+
+    // NPC flee state
+    public int FleeStepsCurrent { get; set; }
+    public int FleeStepsMax { get; set; }
+
     // --- Stat Flags ---
     public bool IsStatFlag(StatFlag flag) => (_statFlags & flag) != 0;
     public void SetStatFlag(StatFlag flag) { _statFlags |= flag; MarkDirty(DirtyFlag.StatFlags); }
@@ -2249,6 +2263,10 @@ public class Character : ObjBase
             case "NPCBRAIN":
                 if (TryParseNpcBrain(normalized, out var brain)) _npcBrain = brain;
                 return true;
+            case "NPCSPELL":
+                if (int.TryParse(normalized, out int spellId) && Enum.IsDefined(typeof(SpellType), spellId))
+                    NpcSpellAdd((SpellType)spellId);
+                return true;
             case "SKILLCLASS":
                 if (string.IsNullOrWhiteSpace(normalized))
                     _skillClass = 0;
@@ -2642,9 +2660,16 @@ public class Character : ObjBase
             }
             case "EQUIP":
             {
-                // EQUIP — equip the most recently created NEWITEM
-                // Actual equip logic needs GameWorld context — store as pending
                 PendingEquip = true;
+                return true;
+            }
+            case "NPCSPELL":
+            {
+                var raw = args.Trim();
+                if (int.TryParse(raw, out int sid) && Enum.IsDefined(typeof(SpellType), sid))
+                    NpcSpellAdd((SpellType)sid);
+                else if (Enum.TryParse<SpellType>(raw, true, out var st))
+                    NpcSpellAdd(st);
                 return true;
             }
             case "CONSUME":

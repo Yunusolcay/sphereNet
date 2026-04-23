@@ -29,6 +29,16 @@ public enum NpcAIFlags : uint
     Threat = 0x0400,
 }
 
+/// <summary>Source-X CRESND_TYPE — creature sound categories.</summary>
+public enum CreatureSoundType : byte
+{
+    Idle = 0,
+    Notice = 1,
+    Hit = 2,
+    GetHit = 3,
+    Die = 4,
+}
+
 /// <summary>
 /// NPC AI engine. Maps to CChar::NPC_* functions in Source-X CCharNPCAct.cpp.
 /// Handles brain-based decision making and action execution per tick.
@@ -309,56 +319,79 @@ public sealed class NpcAI
 
     /// <summary>
     /// Monster/Dragon: look for targets to attack, fight, or wander.
+    /// Source-X: NPC_Act_Idle → NPC_LookAround → NPC_LookAtCharMonster + NPC_Act_Fight.
     /// </summary>
     private void ActMonster(Character npc)
     {
-        Character? bestTarget = null;
-        int bestDist = int.MaxValue;
+        int sightRange = GetNpcSight(npc);
 
-        foreach (var ch in _world.GetCharsInRange(npc.Position, 10))
+        // If we have an existing target, check if it's still valid
+        if (npc.FightTarget.IsValid)
         {
-            if (ch == npc || ch.IsDead || !ch.IsPlayer) continue;
-            if (ch.IsStatFlag(StatFlag.Invisible) || ch.IsStatFlag(StatFlag.Hidden)) continue;
-
-            int dist = npc.Position.GetDistanceTo(ch.Position);
-            if (dist < bestDist)
+            var current = _world.FindChar(npc.FightTarget);
+            if (current != null && !current.IsDead && !current.IsDeleted && IsAttackable(current))
             {
-                bestDist = dist;
-                bestTarget = ch;
+                int curMotivation = GetAttackMotivation(npc, current);
+                if (curMotivation > 0)
+                {
+                    // Periodically scan for better target (Source-X: NPC_Act_Fight → NPC_LookAround)
+                    if (_rand.Next(4) == 0)
+                    {
+                        var (betterTarget, betterMotivation) = FindBestTarget(npc, sightRange);
+                        if (betterTarget != null && betterTarget != current && betterMotivation > curMotivation)
+                        {
+                            npc.FightTarget = betterTarget.Uid;
+                            npc.Memory_Fight_Start(betterTarget);
+                            current = betterTarget;
+                            curMotivation = betterMotivation;
+                        }
+                    }
+
+                    ActFight(npc, current, curMotivation);
+                    return;
+                }
             }
+            npc.FightTarget = Serial.Invalid;
         }
 
-        if (bestTarget != null)
+        // No current target — scan for new one
+        var (bestTarget, bestMotivation) = FindBestTarget(npc, sightRange);
+        if (bestTarget != null && bestMotivation > 0)
         {
-            // Source-X: flee when HP < 25% of max (motivation < 0)
-            if (npc.MaxHits > 0 && npc.Hits < npc.MaxHits / 4)
-            {
-                MoveAway(npc, bestTarget.Position);
-                return;
-            }
-
             npc.FightTarget = bestTarget.Uid;
             npc.Memory_Fight_Start(bestTarget);
-            if (bestDist <= GetAttackRange(npc))
-                TrySwingAttack(npc, bestTarget);
-            else
-                MoveToward(npc, bestTarget.Position);
+            ActFight(npc, bestTarget, bestMotivation);
             return;
         }
 
         npc.FightTarget = Serial.Invalid;
+        if (_rand.Next(8) == 0)
+            EmitSound(npc, _rand.Next(2) == 0 ? CreatureSoundType.Idle : CreatureSoundType.Notice);
         WanderHome(npc);
     }
 
     /// <summary>Berserk: attack nearest visible character (hostile to everyone).</summary>
     private void ActBerserk(Character npc)
     {
+        int sightRange = GetNpcSight(npc);
+
+        if (npc.FightTarget.IsValid)
+        {
+            var current = _world.FindChar(npc.FightTarget);
+            if (current != null && !current.IsDead && !current.IsDeleted && IsAttackable(current))
+            {
+                ActFight(npc, current, 100);
+                return;
+            }
+            npc.FightTarget = Serial.Invalid;
+        }
+
         Character? nearest = null;
         int nearestDist = int.MaxValue;
 
-        foreach (var ch in _world.GetCharsInRange(npc.Position, 8))
+        foreach (var ch in _world.GetCharsInRange(npc.Position, sightRange))
         {
-            if (ch == npc || ch.IsDead) continue;
+            if (ch == npc || !IsAttackable(ch)) continue;
             int dist = npc.Position.GetDistanceTo(ch.Position);
             if (dist < nearestDist)
             {
@@ -371,20 +404,290 @@ public sealed class NpcAI
         {
             npc.FightTarget = nearest.Uid;
             npc.Memory_Fight_Start(nearest);
-
-            if (nearestDist <= GetAttackRange(npc))
-            {
-                TrySwingAttack(npc, nearest);
-            }
-            else
-            {
-                MoveToward(npc, nearest.Position);
-            }
+            ActFight(npc, nearest, 100);
             return;
         }
 
         npc.FightTarget = Serial.Invalid;
+        if (_rand.Next(6) == 0)
+            EmitSound(npc, CreatureSoundType.Idle);
         WanderHome(npc);
+    }
+
+    /// <summary>
+    /// Shared fight action. Source-X: NPC_Act_Fight — flee / special / spell / archery / melee.
+    /// </summary>
+    private void ActFight(Character npc, Character target, int motivation)
+    {
+        // Source-X: flee when motivation < 0 (non-pets only)
+        if (!npc.IsStatFlag(StatFlag.Pet) && motivation < 0)
+        {
+            npc.FleeStepsMax = 20;
+            npc.FleeStepsCurrent = 0;
+            ActFlee(npc, target);
+            return;
+        }
+
+        // Already fleeing? Continue.
+        if (npc.FleeStepsCurrent > 0 && npc.FleeStepsCurrent < npc.FleeStepsMax)
+        {
+            ActFlee(npc, target);
+            return;
+        }
+        npc.FleeStepsCurrent = 0;
+
+        int dist = npc.Position.GetDistanceTo(target.Position);
+
+        // Random idle combat sound (Source-X: Berserk or 1/6 chance)
+        if (npc.NpcBrain == NpcBrainType.Berserk || _rand.Next(6) == 0)
+            EmitSound(npc, CreatureSoundType.Idle);
+
+        // Dragon breath (Source-X: NPCACT_BREATH, range 2-8, DEX gate)
+        if (npc.NpcBrain == NpcBrainType.Dragon && dist >= 2 && dist <= 8
+            && npc.Stam >= npc.MaxStam)
+        {
+            int breathDmg = GetBreathDamage(npc);
+            if (breathDmg > 0)
+            {
+                npc.Stam = (short)Math.Max(0, npc.Stam - 10);
+                OnNpcBreath?.Invoke(npc, target, breathDmg);
+                return;
+            }
+        }
+
+        // Object throwing (Source-X: NPCACT_THROWING, range 2-8)
+        if (dist >= 2 && dist <= 8 && npc.Stam >= npc.MaxStam
+            && npc.TryGetTag("THROWOBJ", out _))
+        {
+            int throwDmg = Math.Max(1, npc.Dex / 4 + _rand.Next(npc.Dex / 4 + 1));
+            int throwMin = 2, throwMax = 8;
+            if (npc.TryGetTag("THROWRANGE", out string? trStr) && !string.IsNullOrWhiteSpace(trStr))
+            {
+                var parts = trStr.Split(',', 2, StringSplitOptions.TrimEntries);
+                if (parts.Length == 2 && int.TryParse(parts[0], out int mn) && int.TryParse(parts[1], out int mx))
+                { throwMin = mn; throwMax = mx; }
+                else if (int.TryParse(parts[0], out int single))
+                    throwMax = single;
+            }
+            if (npc.TryGetTag("THROWDAM", out string? tdStr) && !string.IsNullOrWhiteSpace(tdStr))
+            {
+                var parts = tdStr.Split(',', 2, StringSplitOptions.TrimEntries);
+                if (parts.Length == 2 && int.TryParse(parts[0], out int lo) && int.TryParse(parts[1], out int hi))
+                    throwDmg = lo + _rand.Next(hi - lo + 1);
+                else if (int.TryParse(parts[0], out int flat))
+                    throwDmg = flat;
+            }
+            if (dist >= throwMin && dist <= throwMax)
+            {
+                npc.Stam = (short)Math.Max(0, npc.Stam - _rand.Next(4, 11));
+                OnNpcThrow?.Invoke(npc, target, throwDmg);
+                return;
+            }
+        }
+
+        // NPC spellcasting (Source-X: NPC_FightMagery)
+        if (TryNpcCastSpell(npc, target, dist))
+            return;
+
+        // Melee / ranged
+        if (dist <= GetAttackRange(npc))
+            TrySwingAttack(npc, target);
+        else
+            MoveToward(npc, target.Position);
+    }
+
+    /// <summary>Source-X: NPC_Act_Flee — step-counted retreat.</summary>
+    private void ActFlee(Character npc, Character target)
+    {
+        npc.FleeStepsCurrent++;
+        if (npc.FleeStepsCurrent >= npc.FleeStepsMax)
+        {
+            npc.FleeStepsCurrent = 0;
+            npc.FightTarget = Serial.Invalid;
+            return;
+        }
+        MoveAway(npc, target.Position);
+    }
+
+    /// <summary>
+    /// Source-X: NPC_FightMagery — attempt to cast a spell at the target.
+    /// Requires INT >= 5, spell list on NPC, distance 3+ (kiting), mana available.
+    /// </summary>
+    private bool TryNpcCastSpell(Character npc, Character target, int dist)
+    {
+        if (npc.Int < 5 || npc.NpcSpells.Count == 0)
+            return false;
+        if (dist < 3 || dist > GetNpcSight(npc))
+            return false;
+
+        // NoMagic region check
+        var region = _world.FindRegion(npc.Position);
+        if (region != null && region.NoMagic)
+            return false;
+
+        // Mana-based cast chance (Source-X formula)
+        int mana = npc.Mana;
+        int intStat = npc.Int;
+        int chance = mana >= intStat / 2 ? mana : intStat - mana;
+        if (_rand.Next(chance + 1) < intStat / 4)
+        {
+            // Failed chance — but if mana is decent, kite instead
+            if (mana > intStat / 3)
+            {
+                if (dist < 4)
+                    MoveAway(npc, target.Position);
+                else if (dist > 8)
+                    MoveToward(npc, target.Position);
+                return true;
+            }
+            return false;
+        }
+
+        // Pick a random spell from the NPC's list
+        int startIdx = _rand.Next(npc.NpcSpells.Count);
+        for (int i = 0; i < npc.NpcSpells.Count; i++)
+        {
+            var spell = npc.NpcSpells[(startIdx + i) % npc.NpcSpells.Count];
+            if (spell == SpellType.None) continue;
+
+            OnNpcCastSpell?.Invoke(npc, target, spell);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>Source-X: BREATH.DAM — defaults to STR*5/100, clamped 1-200.</summary>
+    private static int GetBreathDamage(Character npc)
+    {
+        if (npc.TryGetTag("BREATH.DAM", out string? dmgStr) && int.TryParse(dmgStr, out int custom))
+            return Math.Clamp(custom, 1, 500);
+        int dmg = npc.Str * 5 / 100;
+        return Math.Clamp(dmg, 1, 200);
+    }
+
+    /// <summary>
+    /// Find the best target in sight range by motivation score.
+    /// Source-X: NPC_LookAround → NPC_LookAtCharMonster loop.
+    /// </summary>
+    private (Character? target, int motivation) FindBestTarget(Character npc, int sightRange)
+    {
+        Character? bestTarget = null;
+        int bestMotivation = 0;
+
+        foreach (var ch in _world.GetCharsInRange(npc.Position, sightRange))
+        {
+            if (ch == npc || !IsAttackable(ch)) continue;
+            int motivation = GetAttackMotivation(npc, ch);
+            if (motivation > bestMotivation)
+            {
+                bestMotivation = motivation;
+                bestTarget = ch;
+            }
+        }
+
+        return (bestTarget, bestMotivation);
+    }
+
+    /// <summary>
+    /// Source-X: NPC_GetAttackMotivation — computes how much this NPC wants to attack target.
+    /// Returns &lt;0 to flee, 0 for no interest, &gt;0 to attack.
+    /// </summary>
+    private int GetAttackMotivation(Character npc, Character target)
+    {
+        var region = _world.FindRegion(target.Position);
+        if (region != null && region.IsFlag(RegionFlag.Safe))
+            return 0;
+
+        int hostility = GetHostilityLevel(npc, target);
+        if (hostility <= 0)
+            return hostility;
+
+        if (npc.NpcBrain == NpcBrainType.Berserk || npc.NpcBrain == NpcBrainType.Guard)
+            return 100;
+
+        int motivation = hostility;
+
+        // Bonus for current target (Source-X: +10)
+        if (npc.FightTarget == target.Uid)
+            motivation += 10;
+
+        // Distance penalty
+        motivation -= npc.Position.GetDistanceTo(target.Position);
+
+        // Fear: flee if HP is low (Source-X: MonsterFear + STR check)
+        if (_config.MonsterFear && npc.MaxHits > 0 && npc.Hits < npc.MaxHits / 2)
+            motivation -= 50 + (npc.Int / 16);
+
+        return motivation;
+    }
+
+    /// <summary>
+    /// Source-X: NPC_GetHostilityLevelToward — base hostility by creature type.
+    /// 100=extreme hatred, 0=neutral, -100=love.
+    /// </summary>
+    private int GetHostilityLevel(Character npc, Character target)
+    {
+        // If target is a pet, evaluate hostility toward its owner
+        if (target.OwnerSerial.IsValid)
+        {
+            var owner = target.ResolveOwnerCharacter();
+            if (owner != null && owner != npc)
+                return GetHostilityLevel(npc, owner);
+        }
+
+        // Players and berserk always hostile
+        if (target.IsPlayer || npc.NpcBrain == NpcBrainType.Berserk)
+            return 100;
+
+        // NPC vs NPC
+        if (!target.IsPlayer)
+        {
+            if (!_config.MonsterFight)
+                return 0;
+
+            // Same body type → never attack own kind
+            if (npc.BodyId == target.BodyId)
+                return -100;
+
+            // Same brain type → mild alliance
+            if (npc.NpcBrain == target.NpcBrain)
+                return -30;
+
+            return 100;
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Source-X: Fight_IsAttackable — checks if a character can be targeted.
+    /// </summary>
+    private static bool IsAttackable(Character ch)
+    {
+        if (ch.IsDead) return false;
+        if (ch.IsStatFlag(StatFlag.Invul)) return false;
+        if (ch.IsStatFlag(StatFlag.Stone)) return false;
+        if (ch.IsStatFlag(StatFlag.Invisible)) return false;
+        if (ch.IsStatFlag(StatFlag.Hidden)) return false;
+        if (ch.IsStatFlag(StatFlag.Insubstantial)) return false;
+        return true;
+    }
+
+    /// <summary>
+    /// NPC sight range. Source-X uses a per-NPC GetSight() value (typically 14-16).
+    /// We use INT-based range: smarter monsters see further.
+    /// </summary>
+    private static int GetNpcSight(Character npc)
+    {
+        int baseRange = 10 + Math.Clamp(npc.Int / 20, 0, 8);
+        return Math.Min(baseRange, 18);
+    }
+
+    /// <summary>Source-X: SoundChar — emit a creature sound via callback.</summary>
+    private void EmitSound(Character npc, CreatureSoundType type)
+    {
+        OnNpcSound?.Invoke(npc, type);
     }
 
     /// <summary>Healer: resurrect dead, heal wounded, refuse criminals/evil.</summary>
@@ -462,6 +765,8 @@ public sealed class NpcAI
             }
         }
 
+        if (_rand.Next(12) == 0)
+            EmitSound(npc, CreatureSoundType.Idle);
         if (_rand.Next(100) < 20)
             WanderHome(npc);
     }
@@ -583,6 +888,20 @@ public sealed class NpcAI
     /// </summary>
     public Action<Character, Character>? OnNpcKill { get; set; }
 
+    /// <summary>Callback: NPC casts a spell. Parameters: caster, target, spell.
+    /// Program.cs handles SpellEngine.CastStart + broadcast.</summary>
+    public Action<Character, Character, SpellType>? OnNpcCastSpell { get; set; }
+
+    /// <summary>Callback: dragon breath attack. Parameters: npc, target, damage.</summary>
+    public Action<Character, Character, int>? OnNpcBreath { get; set; }
+
+    /// <summary>Callback: NPC throws object. Parameters: npc, target, damage.</summary>
+    public Action<Character, Character, int>? OnNpcThrow { get; set; }
+
+    /// <summary>Callback: creature sound. Parameters: npc, sound type.
+    /// Program.cs resolves body-specific sound ID and broadcasts 0x54.</summary>
+    public Action<Character, CreatureSoundType>? OnNpcSound { get; set; }
+
     /// <summary>
     /// Try to swing attack a target with swing timer throttle.
     /// Uses the same pre-AOS Source-X swing-speed formula as players
@@ -664,15 +983,25 @@ public sealed class NpcAI
         int damage = CombatEngine.ResolveAttack(npc, target, weapon);
         if (damage > 0)
         {
+            EmitSound(npc, CreatureSoundType.Hit);
+            if (!target.IsPlayer)
+                EmitSound(target, CreatureSoundType.GetHit);
             OnNpcAttack?.Invoke(npc, target, damage);
 
             if (target.Hits <= 0 && !target.IsDead)
+            {
+                if (!target.IsPlayer)
+                    EmitSound(target, CreatureSoundType.Die);
                 OnNpcKill?.Invoke(npc, target);
+            }
         }
 
         // Reactive armor reflect may have killed the attacker
         if (npc.Hits < hpBefore && npc.Hits <= 0 && !npc.IsDead)
+        {
+            EmitSound(npc, CreatureSoundType.Die);
             OnNpcKill?.Invoke(npc, npc);
+        }
     }
 
     // --- Movement helpers ---

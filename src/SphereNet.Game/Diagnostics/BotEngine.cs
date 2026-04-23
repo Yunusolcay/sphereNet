@@ -15,7 +15,7 @@ public sealed class BotEngine : IDisposable
     private int _nextBotId;
     private bool _disposed;
     private BotSpawnCity _spawnCity = BotSpawnCity.All;
-    private BotBehavior _lastBehavior = BotBehavior.FullSimulation;
+    private BotBehavior _lastBehavior = BotBehavior.SmartAI;
     private int _lastCount;
 
     // Stats

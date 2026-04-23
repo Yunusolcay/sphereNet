@@ -80,8 +80,11 @@ public static class BotManagerDialog
         gump.AddRadio(310, 195, RadioOff, RadioOn, false, RadioBehaviorBase + 2);
         gump.AddText(335, 197, 0, "Combat");
 
-        gump.AddRadio(370, 195, RadioOff, RadioOn, true, RadioBehaviorBase + 3);
+        gump.AddRadio(370, 195, RadioOff, RadioOn, false, RadioBehaviorBase + 3);
         gump.AddText(395, 197, 0, "Full");
+
+        gump.AddRadio(310, 217, RadioOff, RadioOn, true, RadioBehaviorBase + 4);
+        gump.AddText(335, 219, 68, "Smart AI");
 
         // Divider
         gump.AddGumpPicTiled(20, 225, 410, 2, 2620);
@@ -164,7 +167,8 @@ public static class BotManagerDialog
                     0 => BotBehavior.Idle,
                     1 => BotBehavior.RandomWalk,
                     2 => BotBehavior.Combat,
-                    _ => BotBehavior.FullSimulation
+                    3 => BotBehavior.FullSimulation,
+                    _ => BotBehavior.SmartAI
                 };
             }
             // City radios (200-208)

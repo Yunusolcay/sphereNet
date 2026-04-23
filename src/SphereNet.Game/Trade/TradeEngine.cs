@@ -157,7 +157,8 @@ public static class VendorEngine
             totalCost += entry.Price * entry.Amount;
 
         bool isStaff = player.PrivLevel >= Core.Enums.PrivLevel.GM;
-        if (!isStaff)
+        bool isBot = Diagnostics.BotClient.IsBotCharName(player.Name ?? "");
+        if (!isStaff && !isBot)
         {
             int playerGold = CountGold(player);
             if (playerGold < totalCost)

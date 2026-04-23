@@ -82,6 +82,8 @@ public sealed class CharDef : BaseDef
     public short DamPoison { get; set; }
     public short DamEnergy { get; set; }
 
+    public List<int> NpcSpells { get; } = [];
+
     public CharDef(ResourceId id) : base(id) { }
 
     public void LoadFromKey(string key, string value)
@@ -154,6 +156,10 @@ public sealed class CharDef : BaseDef
             case "THROWDAMTYPE": int.TryParse(value, out int tdt); ThrowDamType = tdt; break;
             case "THROWOBJ": ThrowObj = ParseHexOrDec(value); break;
             case "THROWRANGE": int.TryParse(value, out int tr); ThrowRange = tr; break;
+            case "NPCSPELL":
+                if (int.TryParse(value.Trim(), out int spId) && spId > 0 && !NpcSpells.Contains(spId))
+                    NpcSpells.Add(spId);
+                break;
             case "RESLEVEL": byte.TryParse(value, out byte rsl); ResLevel = rsl; break;
             case "RESDISPDNHUE": ResDispDnHue = ParseHexOrDec(value); break;
             case "RESDISPDNID": ResDispDnId = ParseHexOrDec(value); break;

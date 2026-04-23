@@ -362,6 +362,11 @@ public sealed class WorldSaver
         if (!string.IsNullOrEmpty(ch.Title)) w.WriteProperty("TITLE", ch.Title);
         w.WriteProperty("FLAGS", ((uint)ch.StatFlags).ToString());
         w.WriteProperty("NPCBRAIN", ((int)ch.NpcBrain).ToString());
+        if (ch.NpcSpells.Count > 0)
+        {
+            foreach (var spell in ch.NpcSpells)
+                w.WriteProperty("NPCSPELL", ((int)spell).ToString());
+        }
 
         if (ch.OStr != 0) w.WriteProperty("OSTR", ch.OStr.ToString());
         if (ch.ODex != 0) w.WriteProperty("ODEX", ch.ODex.ToString());

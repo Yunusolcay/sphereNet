@@ -4,6 +4,117 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-23] - Bot AI: akilli davranis motoru, restock, olum/dirilis, binek
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - SmartAI davranis modu: Durum makinesi tabanli bot AI — Idle, Wandering,
+    Fighting, Fleeing, Dead, SeekingHealer, Recovering, SeekingMount durumlari.
+    SmartAI behavior mode: state machine-based bot AI — Idle, Wandering,
+    Fighting, Fleeing, Dead, SeekingHealer, Recovering, SeekingMount states.
+  - Dunya modeli (BotWorldModel): Gelen paketlerden (0x78, 0x77, 0x1D, 0xA1,
+    0xA2, 0xA3, 0x20, 0x21, 0x22, 0x6C) konum, HP, mana, stam, yakin
+    mobile'lar ve hedef bilgisi takibi.
+    World model (BotWorldModel): track position, HP, mana, stam, nearby
+    mobiles, and target info from incoming packets.
+  - Olum/dirilis dongusu: Bot oldugunde (HP=0) en yakin healer NPC'ye (invul,
+    human body) yurur, sunucu tarafli healer AI otomatik diriltir.
+    Death/resurrect cycle: when dead (HP=0), bot walks to nearest healer NPC
+    (invulnerable, human body), server-side healer AI auto-resurrects.
+  - Akilli savas: Yakin dusman (notoriety 5/6) tespit edildiginde war mode
+    acilir, hedefe dogru yurur ve saldiri paketi gonderir.
+    Smart combat: detects nearby enemies (notoriety 5/6), enables war mode,
+    walks toward target, and sends attack packets.
+  - Kacis sistemi: HP %25'in altina dustugunde ters yone kosarak 15 adim
+    kacis, sonra recovery moduna gecis.
+    Flee system: when HP below 25%, runs in opposite direction for 15 steps,
+    then enters recovery mode.
+  - Binek sistemi: Yakin mount body'si (at, llama vb.) tespit edildiginde
+    yanina yuruyup double-click ile biner.
+    Mount system: detects nearby mountable bodies (horse, llama, etc.),
+    walks up and double-clicks to mount.
+  - Ucretsiz vendor alisverisi: Bot karakterler vendor'lardan para
+    harcamadan alisveris yapabilir (VendorEngine gold kontrolu bypass).
+    Free vendor shopping: bot characters can buy from vendors without
+    spending gold (VendorEngine gold check bypass).
+  - Sunucu tarafli restock: Her 3 dakikada bot karakterlerin envanterleri
+    kontrol edilir — bandaj (30), heal potion (5), silah ve yakin at
+    yenilenir.
+    Server-side restock: every 3 minutes, bot character inventories are
+    checked — bandages (30), heal potions (5), weapon and nearby horse
+    are refreshed.
+  - Takılma onleme: Ardisik move reject'lerde yon degistirerek takılma
+    dongusunden cikiyor.
+    Stuck prevention: on consecutive move rejects, changes direction
+    to break out of stuck loops.
+  - Rastgele konusma: Wander sirasinda ~1 dakikada bir rastgele chat
+    mesaji ("Hail!", "Selling regs!", vb.)
+    Random speech: during wander, occasional chat messages (~1 per minute).
+
+DEGISIKLIKLER / CHANGES:
+  - Varsayilan bot davranisi SmartAI olarak degistirildi (eskisi:
+    FullSimulation).
+    Default bot behavior changed to SmartAI (was: FullSimulation).
+  - .BOT komutu: "smart" davranis secenegi eklendi, varsayilan artik smart.
+    .BOT command: "smart" behavior option added, default is now smart.
+  - Bot Manager gump: Smart AI radio butonu eklendi.
+    Bot Manager gump: Smart AI radio button added.
+
+[2026-04-23] - NPC AI: savaş karar ağacı, spell sistemi, creature ses ve efektler
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - NPC motivation-based hedef secimi: Source-X NPC_GetAttackMotivation
+    formuluyle hostility + mesafe + korku + mevcut hedef bonusu hesabi.
+    Periyodik olarak daha iyi hedef aranir.
+    NPC motivation-based target selection: Source-X NPC_GetAttackMotivation
+    formula with hostility + distance + fear + current target bonus.
+    Periodic re-scan for better targets.
+  - NPC hostility sistemi: Oyunculara 100, ayni body'ye -100, ayni brain'e
+    -30. MonsterFight=0 ise NPC'ler birbirine saldirmaz.
+    NPC hostility system: Players=100, same body=-100, same brain=-30.
+    NPCs won't fight each other when MonsterFight=0.
+  - IsAttackable kontrolu: Invul, Dead, Invisible, Hidden, Insubstantial,
+    Stone flag'lari saldiri oncesi kontrol ediliyor.
+    IsAttackable check: Invul, Dead, Invisible, Hidden, Insubstantial,
+    Stone flags verified before attacking.
+  - Dragon breath: BREATH.DAM tag'indan veya STR*5/100 varsayilan hasar,
+    menzil 2-8 tile, DEX gate, ates efekti (0x36D4) + ses broadcast.
+    Dragon breath: damage from BREATH.DAM tag or STR*5/100 default,
+    range 2-8 tiles, DEX gate, fire effect (0x36D4) + sound broadcast.
+  - NPC obje firlatma: THROWOBJ/THROWDAM/THROWRANGE tag'lari, projectile
+    efekti, hasar uygulama.
+    NPC object throwing: THROWOBJ/THROWDAM/THROWRANGE tags, projectile
+    effect, damage application.
+  - NPC spell sistemi: INT>=5, mesafe 3+, mana-based cast sansi, kiting
+    davranisi. SpellEngine.CastStart() ile gercek buyu entegrasyonu.
+    NPC spell system: INT>=5, range 3+, mana-based cast chance, kiting
+    behavior. Real spell integration via SpellEngine.CastStart().
+  - NPCSPELL komutu: Script ve CHARDEF'ten NPC'ye buyu ekleme. Save/load
+    ile persistence destegi.
+    NPCSPELL command: Add spells to NPCs from scripts and CHARDEF. Save/load
+    persistence support.
+  - Creature sesleri: CharDef'ten body-based ses ID cozumlemesi (Idle,
+    Notice, Hit, GetHit, Die). Savas, wander ve olum anlarinda broadcast.
+    Creature sounds: body-based sound ID resolution from CharDef (Idle,
+    Notice, Hit, GetHit, Die). Broadcast during combat, wander, and death.
+  - Flee (kacis) sistemi: Step-counted retreat (maks 20 adim), motivation
+    negatif oldugunda tetiklenir, sonra idle'a doner.
+    Flee system: step-counted retreat (max 20 steps), triggered when
+    motivation goes negative, returns to idle after.
+
+DEGISIKLIKLER / CHANGES:
+  - MonsterFight ve MonsterFear INI konfigurasyonu: sphere.ini'den
+    ayarlanabilir (varsayilan MonsterFight=0, MonsterFear=1).
+    MonsterFight and MonsterFear INI configuration: configurable from
+    sphere.ini (defaults MonsterFight=0, MonsterFear=1).
+  - NPC spawn pipeline: CharDef'ten spell listesi otomatik yukleniyor.
+    NPC spawn pipeline: spell list auto-loaded from CharDef.
+  - ActFight karar agaci: Source-X uyumlu sira — flee > breath > throw >
+    spell > melee/ranged.
+    ActFight decision tree: Source-X compatible order — flee > breath >
+    throw > spell > melee/ranged.
+
 [2026-04-23] - SQLite desteği ve Source-X DB uyumlulugu
 ----------------------------------------
 

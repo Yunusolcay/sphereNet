@@ -105,6 +105,7 @@ public static class Program
     private static SphereNet.Game.Mounts.MountEngine? _mountEngine;
     private static SphereNet.Game.Diagnostics.StressTestEngine? _stressEngine;
     private static SphereNet.Game.Diagnostics.BotEngine? _botEngine;
+    private static long _lastBotRestockMs;
     private static SphereNet.Game.NPCs.StableEngine _stableEngine = new();
     private static SphereNet.Game.Scheduling.TimerWheel _npcTimerWheel = null!;
     private static TriggerDispatcher _triggerDispatcher = null!;
@@ -723,6 +724,16 @@ public static class Program
                 _triggerDispatcher?.FireCharTrigger(
                     npc, SphereNet.Core.Enums.CharTrigger.CreateLoot,
                     new SphereNet.Game.Scripting.TriggerArgs { CharSrc = npc });
+
+                var spawnCharDef = DefinitionLoader.GetCharDef(npc.CharDefIndex);
+                if (spawnCharDef != null)
+                {
+                    foreach (int spellId in spawnCharDef.NpcSpells)
+                    {
+                        if (Enum.IsDefined(typeof(SpellType), spellId))
+                            npc.NpcSpellAdd((SpellType)spellId);
+                    }
+                }
 
                 npc.Hits = npc.MaxHits;
                 npc.Stam = npc.MaxStam;
@@ -1369,6 +1380,73 @@ public static class Program
                 healer.X, healer.Y, healer.Z);
             BroadcastNearby(healer.Position, 18, sound, 0);
         };
+        _npcAI.OnNpcSound = (npc, type) =>
+        {
+            var charDef = DefinitionLoader.GetCharDef(npc.CharDefIndex);
+            if (charDef == null) return;
+            ushort soundId = type switch
+            {
+                CreatureSoundType.Idle => charDef.SoundIdle,
+                CreatureSoundType.Notice => charDef.SoundNotice,
+                CreatureSoundType.Hit => charDef.SoundHit,
+                CreatureSoundType.GetHit => charDef.SoundGetHit,
+                CreatureSoundType.Die => charDef.SoundDie,
+                _ => 0
+            };
+            if (soundId == 0) return;
+            var snd = new PacketSound(soundId, npc.X, npc.Y, npc.Z);
+            BroadcastNearby(npc.Position, 18, snd, 0);
+        };
+        _npcAI.OnNpcBreath = (npc, target, damage) =>
+        {
+            // Fire breath effect: moving fireball from NPC to target
+            var fx = new PacketEffect(0, npc.Uid.Value, target.Uid.Value, 0x36D4,
+                npc.X, npc.Y, (short)(npc.Z + 10),
+                target.X, target.Y, (short)(target.Z + 10),
+                7, 10, true, true);
+            BroadcastNearby(npc.Position, 18, fx, 0);
+            var breathSound = new PacketSound(0x0227, npc.X, npc.Y, npc.Z);
+            BroadcastNearby(npc.Position, 18, breathSound, 0);
+
+            target.Hits -= (short)Math.Min(damage, target.Hits);
+            var dmgPkt = new PacketDamage(target.Uid.Value, (ushort)Math.Min(damage, ushort.MaxValue));
+            BroadcastNearby(target.Position, 18, dmgPkt, 0);
+            var healthPkt = new PacketUpdateHealth(target.Uid.Value, target.MaxHits, target.Hits);
+            BroadcastNearby(target.Position, 18, healthPkt, 0);
+
+            if (target.Hits <= 0 && !target.IsDead)
+                _npcAI.OnNpcKill?.Invoke(npc, target);
+        };
+        _npcAI.OnNpcThrow = (npc, target, damage) =>
+        {
+            ushort throwGfx = 0x0F51;
+            if (npc.TryGetTag("THROWOBJ", out string? objStr) && !string.IsNullOrWhiteSpace(objStr))
+            {
+                var cleanObj = objStr.Trim();
+                if (cleanObj.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    cleanObj = cleanObj[2..];
+                if (ushort.TryParse(cleanObj, System.Globalization.NumberStyles.HexNumber, null, out ushort gfx) && gfx > 0)
+                    throwGfx = gfx;
+            }
+            var fx = new PacketEffect(0, npc.Uid.Value, target.Uid.Value, throwGfx,
+                npc.X, npc.Y, (short)(npc.Z + 10),
+                target.X, target.Y, (short)(target.Z + 10),
+                10, 5, true, false);
+            BroadcastNearby(npc.Position, 18, fx, 0);
+
+            target.Hits -= (short)Math.Min(damage, target.Hits);
+            var dmgPkt = new PacketDamage(target.Uid.Value, (ushort)Math.Min(damage, ushort.MaxValue));
+            BroadcastNearby(target.Position, 18, dmgPkt, 0);
+            var healthPkt = new PacketUpdateHealth(target.Uid.Value, target.MaxHits, target.Hits);
+            BroadcastNearby(target.Position, 18, healthPkt, 0);
+
+            if (target.Hits <= 0 && !target.IsDead)
+                _npcAI.OnNpcKill?.Invoke(npc, target);
+        };
+        _npcAI.OnNpcCastSpell = (npc, target, spell) =>
+        {
+            _spellEngine.CastStart(npc, spell, target.Uid, target.Position);
+        };
         var gatheringEngine = new GatheringEngine(_world, _triggerDispatcher);
         _skillHandlers = new SkillHandlers(_world, gatheringEngine);
         _craftingEngine = new CraftingEngine(_world);
@@ -1911,6 +1989,13 @@ public static class Program
             {
                 if (_stressEngine.IsGenerating) _stressEngine.OnTick();
                 if (_stressEngine.IsCleaning)   _stressEngine.TickCleanup();
+            }
+
+            // Bot restock — every 3 minutes, refresh bot inventories
+            if (now - _lastBotRestockMs > 180_000)
+            {
+                _lastBotRestockMs = now;
+                RestockBotCharacters();
             }
 
             _network.ProcessAllOutput();
@@ -3008,7 +3093,8 @@ public static class Program
             "WALK" => SphereNet.Game.Diagnostics.BotBehavior.RandomWalk,
             "COMBAT" => SphereNet.Game.Diagnostics.BotBehavior.Combat,
             "IDLE" => SphereNet.Game.Diagnostics.BotBehavior.Idle,
-            _ => SphereNet.Game.Diagnostics.BotBehavior.FullSimulation
+            "SMART" => SphereNet.Game.Diagnostics.BotBehavior.SmartAI,
+            _ => SphereNet.Game.Diagnostics.BotBehavior.SmartAI
         };
 
         // Set city if specified
@@ -3041,6 +3127,72 @@ public static class Program
                 _log.LogError(ex, "[BOT] Failed to spawn bots");
             }
         });
+    }
+
+    private static void RestockBotCharacters()
+    {
+        if (_world == null) return;
+        foreach (var ch in _world.OnlinePlayers)
+        {
+            if (!SphereNet.Game.Diagnostics.BotClient.IsBotCharName(ch.Name ?? "")) continue;
+            var pack = ch.Backpack;
+            if (pack == null) continue;
+
+            RestockItem(pack, 0x0E21, "Bandage", 30);  // bandages
+            RestockItem(pack, 0x0F0C, "Heal Potion", 5); // heal potions
+
+            var weapon = ch.GetEquippedItem(Layer.OneHanded) ?? ch.GetEquippedItem(Layer.TwoHanded);
+            if (weapon == null)
+            {
+                var sword = _world.CreateItem();
+                sword.BaseId = 0x0F5E; // broadsword
+                sword.Name = "Broadsword";
+                ch.Equip(sword, Layer.TwoHanded);
+            }
+
+            // Spawn a mount nearby if none exists within 5 tiles
+            bool hasMountNearby = ch.GetEquippedItem(Layer.Horse) != null;
+            if (!hasMountNearby)
+            {
+                foreach (var nearby in _world.GetCharsInRange(ch.Position, 5))
+                {
+                    if (nearby != ch && nearby.BodyId is >= 0x00C8 and <= 0x00E4)
+                    { hasMountNearby = true; break; }
+                }
+            }
+            if (!hasMountNearby && !ch.IsDead)
+            {
+                var horse = _world.CreateCharacter();
+                horse.BodyId = 0x00C8;
+                horse.Name = "Horse";
+                horse.NpcBrain = NpcBrainType.Animal;
+                horse.Hits = 50;
+                horse.MaxHits = 50;
+                horse.SetTag("STRESS_TEST", "1");
+                var horsePos = new Point3D(
+                    (short)(ch.X + 1), (short)(ch.Y + 1), ch.Z, ch.MapIndex);
+                _world.PlaceCharacter(horse, horsePos);
+            }
+        }
+    }
+
+    private static void RestockItem(Item pack, ushort baseId, string name, int targetAmount)
+    {
+        if (_world == null) return;
+        int current = 0;
+        foreach (var item in pack.Contents)
+        {
+            if (item.BaseId == baseId)
+                current += item.Amount;
+        }
+        if (current >= targetAmount / 2) return;
+        int toAdd = targetAmount - current;
+        if (toAdd <= 0) return;
+        var newItem = _world.CreateItem();
+        newItem.BaseId = baseId;
+        newItem.Name = name;
+        newItem.Amount = (ushort)toAdd;
+        pack.AddItem(newItem);
     }
 
     private static void CleanBotCharacters()

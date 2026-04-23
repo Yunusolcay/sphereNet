@@ -27,6 +27,9 @@ public sealed class BotClient : IDisposable
     private short _x, _y;
     private sbyte _z;
     private bool _disposed;
+
+    private readonly BotWorldModel _world = new();
+    private BotAI? _ai;
     
     // Buffers for game server packets (Huffman compressed)
     private readonly List<byte> _decompressedBuffer = new();
@@ -218,6 +221,12 @@ public sealed class BotClient : IDisposable
             {
                 State = BotState.Playing;
                 LastActivityMs = Environment.TickCount64;
+                _world.CharUid = _charUid;
+                _world.X = _x;
+                _world.Y = _y;
+                _world.Z = _z;
+                _world.MaxHits = 100;
+                _world.Hits = 100;
                 return true;
             }
 
@@ -263,6 +272,9 @@ public sealed class BotClient : IDisposable
                     case BotBehavior.FullSimulation:
                         await DoFullSimulationAsync(ct);
                         break;
+                    case BotBehavior.SmartAI:
+                        await DoSmartAIAsync(ct);
+                        break;
                 }
 
                 LastActivityMs = Environment.TickCount64;
@@ -304,19 +316,135 @@ public sealed class BotClient : IDisposable
     private void ProcessIncomingPacket(byte[] packet)
     {
         if (packet.Length == 0) return;
-        
+        long now = Environment.TickCount64;
+
         switch (packet[0])
         {
-            case 0x20: // Update mobile (movement ack)
+            case 0x20: // Draw Game Player (19 bytes)
                 if (packet.Length >= 19)
                 {
-                    _x = (short)ReadUInt16BE(packet, 5);
-                    _y = (short)ReadUInt16BE(packet, 7);
-                    _z = (sbyte)packet[9];
+                    _world.Body = ReadUInt16BE(packet, 5);
+                    _world.X = _x = (short)ReadUInt16BE(packet, 11);
+                    _world.Y = _y = (short)ReadUInt16BE(packet, 13);
+                    _world.Direction = packet[17];
+                    _world.Z = _z = (sbyte)packet[18];
                 }
                 break;
-            case 0x77: // Mobile moving
-            case 0x78: // Draw object
+
+            case 0x78: // Draw Object (mobile appears)
+                if (packet.Length >= 19)
+                {
+                    uint serial78 = ReadUInt32BE(packet, 3);
+                    if (serial78 == _charUid || (serial78 & 0x40000000) != 0) break;
+                    _world.Mobiles[serial78] = new KnownMobile
+                    {
+                        Serial = serial78,
+                        Body = ReadUInt16BE(packet, 7),
+                        X = (short)ReadUInt16BE(packet, 9),
+                        Y = (short)ReadUInt16BE(packet, 11),
+                        Z = (sbyte)packet[13],
+                        Notoriety = packet[18],
+                        LastSeenMs = now
+                    };
+                }
+                break;
+
+            case 0x77: // Mobile Moving (17 bytes)
+                if (packet.Length >= 17)
+                {
+                    uint serial77 = ReadUInt32BE(packet, 1);
+                    if (serial77 == _charUid) break;
+                    if (_world.Mobiles.TryGetValue(serial77, out var mob77))
+                    {
+                        mob77.Body = ReadUInt16BE(packet, 5);
+                        mob77.X = (short)ReadUInt16BE(packet, 7);
+                        mob77.Y = (short)ReadUInt16BE(packet, 9);
+                        mob77.Z = (sbyte)packet[11];
+                        mob77.Notoriety = packet[16];
+                        mob77.LastSeenMs = now;
+                    }
+                    else
+                    {
+                        _world.Mobiles[serial77] = new KnownMobile
+                        {
+                            Serial = serial77,
+                            Body = ReadUInt16BE(packet, 5),
+                            X = (short)ReadUInt16BE(packet, 7),
+                            Y = (short)ReadUInt16BE(packet, 9),
+                            Z = (sbyte)packet[11],
+                            Notoriety = packet[16],
+                            LastSeenMs = now
+                        };
+                    }
+                }
+                break;
+
+            case 0x1D: // Delete Object (5 bytes)
+                if (packet.Length >= 5)
+                {
+                    uint serialDel = ReadUInt32BE(packet, 1);
+                    _world.Mobiles.Remove(serialDel);
+                }
+                break;
+
+            case 0xA1: // Health Update (9 bytes)
+                if (packet.Length >= 9)
+                {
+                    uint serialHp = ReadUInt32BE(packet, 1);
+                    if (serialHp == _charUid)
+                    {
+                        _world.MaxHits = (short)ReadUInt16BE(packet, 5);
+                        _world.Hits = (short)ReadUInt16BE(packet, 7);
+                        _world.IsDead = _world.Hits <= 0 && _world.MaxHits > 0;
+                    }
+                }
+                break;
+
+            case 0xA2: // Mana Update (9 bytes)
+                if (packet.Length >= 9)
+                {
+                    uint serialMana = ReadUInt32BE(packet, 1);
+                    if (serialMana == _charUid)
+                    {
+                        _world.MaxMana = (short)ReadUInt16BE(packet, 5);
+                        _world.Mana = (short)ReadUInt16BE(packet, 7);
+                    }
+                }
+                break;
+
+            case 0xA3: // Stam Update (9 bytes)
+                if (packet.Length >= 9)
+                {
+                    uint serialStam = ReadUInt32BE(packet, 1);
+                    if (serialStam == _charUid)
+                    {
+                        _world.MaxStam = (short)ReadUInt16BE(packet, 5);
+                        _world.Stam = (short)ReadUInt16BE(packet, 7);
+                    }
+                }
+                break;
+
+            case 0x22: // Move Ack (3 bytes)
+                _world.MoveRejectCount = 0;
+                break;
+
+            case 0x21: // Move Rejected (8 bytes)
+                if (packet.Length >= 8)
+                {
+                    _world.MoveRejectCount++;
+                    _world.X = _x = (short)ReadUInt16BE(packet, 2);
+                    _world.Y = _y = (short)ReadUInt16BE(packet, 4);
+                    _world.Direction = packet[6];
+                    _world.Z = _z = (sbyte)packet[7];
+                }
+                break;
+
+            case 0x6C: // Target Cursor (19 bytes)
+                if (packet.Length >= 7)
+                {
+                    _world.HasPendingTarget = true;
+                    _world.TargetCursorId = ReadUInt32BE(packet, 2);
+                }
                 break;
         }
     }
@@ -363,6 +491,53 @@ public sealed class BotClient : IDisposable
             ushort skillId = (ushort)_rng.Next(0, 50);
             await SendPacketAsync(BotPacketBuilder.BuildSkillUse(skillId), ct);
             await Task.Delay(_rng.Next(500, 1000), ct);
+        }
+    }
+
+    private async Task DoSmartAIAsync(CancellationToken ct)
+    {
+        _ai ??= new BotAI(_world, _rng);
+        var action = _ai.Tick();
+        await ExecuteActionAsync(action, ct);
+    }
+
+    private async Task ExecuteActionAsync(BotAction action, CancellationToken ct)
+    {
+        switch (action.Type)
+        {
+            case BotAIActionType.Move:
+                await SendPacketAsync(BotPacketBuilder.BuildMoveRequest(action.Direction, _moveSequence++), ct);
+                await Task.Delay(_rng.Next(150, 400), ct);
+                break;
+            case BotAIActionType.Attack:
+                await SendPacketAsync(BotPacketBuilder.BuildAttackRequest(action.TargetSerial), ct);
+                await Task.Delay(_rng.Next(500, 1200), ct);
+                break;
+            case BotAIActionType.DoubleClick:
+                await SendPacketAsync(BotPacketBuilder.BuildDoubleClick(action.TargetSerial), ct);
+                await Task.Delay(_rng.Next(300, 600), ct);
+                break;
+            case BotAIActionType.EnableWarMode:
+                _world.IsWarMode = true;
+                await SendPacketAsync(BotPacketBuilder.BuildWarMode(true), ct);
+                await Task.Delay(200, ct);
+                break;
+            case BotAIActionType.DisableWarMode:
+                _world.IsWarMode = false;
+                await SendPacketAsync(BotPacketBuilder.BuildWarMode(false), ct);
+                await Task.Delay(200, ct);
+                break;
+            case BotAIActionType.Speech:
+                if (action.Text != null)
+                    await SendPacketAsync(BotPacketBuilder.BuildSpeech(action.Text), ct);
+                await Task.Delay(_rng.Next(300, 600), ct);
+                break;
+            case BotAIActionType.Wait:
+                await Task.Delay(Math.Max(100, action.DelayMs), ct);
+                break;
+            case BotAIActionType.None:
+                await Task.Delay(200, ct);
+                break;
         }
     }
 
@@ -662,5 +837,6 @@ public enum BotBehavior
     Idle,
     RandomWalk,
     Combat,
-    FullSimulation
+    FullSimulation,
+    SmartAI
 }
