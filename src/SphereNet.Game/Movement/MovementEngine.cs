@@ -18,6 +18,10 @@ public sealed class MovementEngine
     /// <summary>Optional SpellEngine for interrupting casts on movement.</summary>
     public SpellEngine? SpellEngine { get; set; }
 
+    /// <summary>Fired when a character is teleported (telepad/moongate step-on).
+    /// Program.cs wires this to send DrawPlayer + resync to the client.</summary>
+    public Action<Objects.Characters.Character, Point3D>? OnTeleport { get; set; }
+
     /// <summary>Source-X CClient::SysMessage hook used by region enter/leave
     /// announcements. Program.cs wires this so the moving character receives
     /// MSG_REGION_ENTER / MSG_REGION_GUARDED / MSG_REGION_PVPSAFE strings on
@@ -224,20 +228,15 @@ public sealed class MovementEngine
                     break;
                 case ItemType.Telepad:
                 case ItemType.Moongate:
-                    if (item.TryGetTag("LINK_X", out string? lx) &&
-                        item.TryGetTag("LINK_Y", out string? ly))
+                {
+                    var dest = item.MoreP;
+                    if (dest.X != 0 || dest.Y != 0)
                     {
-                        short.TryParse(lx, out short tx);
-                        short.TryParse(ly, out short ty);
-                        sbyte tz = 0;
-                        if (item.TryGetTag("LINK_Z", out string? lz))
-                            sbyte.TryParse(lz, out tz);
-                        byte mapId = ch.MapIndex;
-                        if (item.TryGetTag("LINK_MAP", out string? lm) && byte.TryParse(lm, out byte tm))
-                            mapId = tm;
-                        _world.MoveCharacter(ch, new Point3D(tx, ty, tz, mapId));
+                        _world.MoveCharacter(ch, dest);
+                        OnTeleport?.Invoke(ch, dest);
                     }
                     break;
+                }
             }
 
             // Field damage (fire field, poison field, etc.)

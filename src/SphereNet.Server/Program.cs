@@ -536,6 +536,9 @@ public static class Program
             InitializeSpawnItems();
         }
 
+        // --- 7a. Teleporters from [TELEPORTERS] script sections ---
+        PlaceTeleporters();
+
         // --- 7b. Game Engines ---
         _log.LogInformation("Initializing game engines...");
         _triggerDispatcher = new TriggerDispatcher();
@@ -639,6 +642,20 @@ public static class Program
             foreach (var c in _clients.Values)
             {
                 if (c.Character == mover) { c.SysMessage(text); break; }
+            }
+        };
+
+        _movement.OnTeleport = (mover, dest) =>
+        {
+            foreach (var c in _clients.Values)
+            {
+                if (c.Character == mover)
+                {
+                    c.SendSelfRedraw();
+                    var snd = new PacketSound(0x01FE, mover.X, mover.Y, mover.Z);
+                    BroadcastNearby(mover.Position, 18, snd, 0);
+                    break;
+                }
             }
         };
 
@@ -828,6 +845,17 @@ public static class Program
                 if (c.Character == ch)
                 {
                     c.SysMessage(msg);
+                    break;
+                }
+            }
+        };
+        _commands.OnCharVisualUpdate += (ch) =>
+        {
+            foreach (var c in _clients.Values)
+            {
+                if (c.Character == ch)
+                {
+                    c.SendSelfRedraw();
                     break;
                 }
             }
@@ -1380,6 +1408,7 @@ public static class Program
                 healer.X, healer.Y, healer.Z);
             BroadcastNearby(healer.Position, 18, sound, 0);
         };
+        _npcAI.OnWakeNpc = WakeNpc;
         _npcAI.OnNpcSound = (npc, type) =>
         {
             var charDef = DefinitionLoader.GetCharDef(npc.CharDefIndex);
@@ -1409,6 +1438,12 @@ public static class Program
             BroadcastNearby(npc.Position, 18, breathSound, 0);
 
             target.Hits -= (short)Math.Min(damage, target.Hits);
+            if (!target.IsPlayer && !target.IsDead && !target.FightTarget.IsValid)
+            {
+                target.FightTarget = npc.Uid;
+                target.NextNpcActionTime = 0;
+                WakeNpc(target);
+            }
             var dmgPkt = new PacketDamage(target.Uid.Value, (ushort)Math.Min(damage, ushort.MaxValue));
             BroadcastNearby(target.Position, 18, dmgPkt, 0);
             var healthPkt = new PacketUpdateHealth(target.Uid.Value, target.MaxHits, target.Hits);
@@ -1435,6 +1470,12 @@ public static class Program
             BroadcastNearby(npc.Position, 18, fx, 0);
 
             target.Hits -= (short)Math.Min(damage, target.Hits);
+            if (!target.IsPlayer && !target.IsDead && !target.FightTarget.IsValid)
+            {
+                target.FightTarget = npc.Uid;
+                target.NextNpcActionTime = 0;
+                WakeNpc(target);
+            }
             var dmgPkt = new PacketDamage(target.Uid.Value, (ushort)Math.Min(damage, ushort.MaxValue));
             BroadcastNearby(target.Position, 18, dmgPkt, 0);
             var healthPkt = new PacketUpdateHealth(target.Uid.Value, target.MaxHits, target.Hits);
@@ -1541,6 +1582,14 @@ public static class Program
             (ch, client) => _clientsByCharUid[ch.Uid] = client;
         SphereNet.Game.Clients.GameClient.OnCharacterOffline =
             ch => _clientsByCharUid.Remove(ch.Uid);
+        SphereNet.Game.Clients.GameClient.OnWakeNpc = WakeNpc;
+        SphereNet.Game.Clients.GameClient.BotSpawnLocationProvider = acctName =>
+        {
+            if (_botEngine == null || !SphereNet.Game.Diagnostics.BotClient.IsBotAccountName(acctName))
+                return null;
+            var (x, y, z) = _botEngine.GetRandomSpawnLocation(new Random(acctName.GetHashCode()));
+            return new Point3D(x, y, z, 0);
+        };
 
         // Corpse decay -> drop contents to the ground. Invoked by the
         // per-item decay timer in Item.OnTick; replaces the old per-tick
@@ -1916,27 +1965,32 @@ public static class Program
         _webStatus.Start(webPort);
         _log.LogInformation("Type 'help' for commands. Enter commands directly (e.g. save, status, quit).");
 
-        // Schedule all existing NPCs into the timer wheel. Without jitter,
-        // 750K+ NPCs would all be "due" on the first tick after load and drain
-        // in one massive batch — pinning the main loop for 300-500ms. Spread
-        // the initial fire over 60s so at most ~3K NPCs come due per tick.
+        // Schedule all existing NPCs into the timer wheel. Spread
+        // the initial fire proportional to NPC count: ~50 NPCs per tick
+        // (per 100ms) is comfortable, so stagger = count * 100ms / 50,
+        // clamped to 1-30 seconds.
         if (_npcTimerWheel != null)
         {
             long now = Environment.TickCount64;
             var jitter = new Random(0);
             int scheduled = 0;
+            int npcCount = 0;
+            foreach (var obj in _world.GetAllObjects())
+                if (obj is Character c && !c.IsPlayer && !c.IsDead && !c.IsDeleted)
+                    npcCount++;
+            int staggerMs = Math.Clamp(npcCount * 2, 1000, 30_000);
             foreach (var obj in _world.GetAllObjects())
             {
                 if (obj is Character npc && !npc.IsPlayer && !npc.IsDead && !npc.IsDeleted)
                 {
                     long when = npc.NextNpcActionTime > 0
                         ? npc.NextNpcActionTime
-                        : now + jitter.Next(0, 60_000);
+                        : now + jitter.Next(0, staggerMs);
                     _npcTimerWheel.Schedule(npc, when);
                     scheduled++;
                 }
             }
-            _log.LogInformation("NPC timer wheel initialized: {Count} NPCs scheduled (60s stagger)", scheduled);
+            _log.LogInformation("NPC timer wheel initialized: {Count} NPCs scheduled ({StaggerMs}ms stagger)", scheduled, staggerMs);
         }
 
         // --- 9. Main Game Loop ---
@@ -3413,6 +3467,42 @@ public static class Program
         }
         if (spawns > 0)
             _log.LogInformation("Initialized {Count} spawn items", spawns);
+    }
+
+    private static void PlaceTeleporters()
+    {
+        var teleporters = _resources.Teleporters;
+        if (teleporters.Count == 0) return;
+
+        // Remove previously placed script teleporters (Static + Telepad)
+        var toRemove = new List<SphereNet.Game.Objects.Items.Item>();
+        foreach (var obj in _world.GetAllObjects())
+        {
+            if (obj is SphereNet.Game.Objects.Items.Item item &&
+                item.ItemType == ItemType.Telepad &&
+                item.IsAttr(ObjAttributes.Static))
+            {
+                toRemove.Add(item);
+            }
+        }
+        foreach (var item in toRemove)
+            item.Delete();
+
+        int placed = 0;
+        foreach (var (src, dest, name) in teleporters)
+        {
+            var item = _world.CreateItem();
+            item.BaseId = 0x1BC3;
+            item.ItemType = ItemType.Telepad;
+            item.MoreP = dest;
+            item.Name = string.IsNullOrEmpty(name) ? "teleporter" : name;
+            item.SetAttr(ObjAttributes.Invis | ObjAttributes.Static | ObjAttributes.Move_Never);
+            _world.PlaceItem(item, src);
+            placed++;
+        }
+
+        _log.LogInformation("Placed {Count} teleporters from scripts ({Removed} old removed)",
+            placed, toRemove.Count);
     }
 
     private static void OnWorldObjectCreated(SphereNet.Game.Objects.ObjBase obj)
@@ -5277,6 +5367,14 @@ public static class Program
         _telemetryFlushUs = ToMicroseconds(Stopwatch.GetTimestamp() - p3);
 
         MaybeRunDeterminismGuardrail();
+    }
+
+    private static void WakeNpc(Character npc)
+    {
+        if (npc.IsPlayer || npc.IsDeleted || npc.IsDead) return;
+        npc.NextNpcActionTime = 0;
+        _npcTimerWheel?.Remove(npc);
+        _npcTimerWheel?.Schedule(npc, Environment.TickCount64 + 100);
     }
 
     private static void CleanupSummonedGuards(long now)

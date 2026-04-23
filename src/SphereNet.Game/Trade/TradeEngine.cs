@@ -158,13 +158,18 @@ public static class VendorEngine
 
         bool isStaff = player.PrivLevel >= Core.Enums.PrivLevel.GM;
         bool isBot = Diagnostics.BotClient.IsBotCharName(player.Name ?? "");
-        if (!isStaff && !isBot)
+        bool isOwner = vendor.HasOwner(player.Uid);
+        if (!isStaff && !isBot && !isOwner)
         {
             int playerGold = CountGold(player);
             if (playerGold < totalCost)
                 return -1;
 
             RemoveGold(player, totalCost);
+        }
+        else
+        {
+            totalCost = 0;
         }
 
         if (World != null)

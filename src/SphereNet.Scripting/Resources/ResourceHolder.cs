@@ -18,7 +18,10 @@ public sealed class ResourceHolder
     private readonly Dictionary<string, string> _defTexts = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ResourceScript> _scriptFiles = [];
     private readonly Dictionary<string, string> _defMessages = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<(Point3D Src, Point3D Dest, string Name)> _teleporters = [];
     private readonly ILogger _logger;
+
+    public IReadOnlyList<(Point3D Src, Point3D Dest, string Name)> Teleporters => _teleporters;
 
     public string ScpBaseDir { get; set; } = "";
 
@@ -138,6 +141,15 @@ public sealed class ResourceHolder
             if (resType == ResType.DefName)
             {
                 LoadDefNames(section);
+                count++;
+                continue;
+            }
+
+            if (resType == ResType.WorldScript)
+            {
+                string sectionUpper = section.Name.ToUpperInvariant();
+                if (sectionUpper == "TELEPORTERS")
+                    LoadTeleporters(section);
                 count++;
                 continue;
             }
@@ -633,5 +645,51 @@ public sealed class ResourceHolder
             if (!string.IsNullOrEmpty(link.DefName))
                 _defNames[link.DefName] = rid;
         }
+    }
+
+    private void LoadTeleporters(ScriptSection section)
+    {
+        foreach (var key in section.Keys)
+        {
+            // Format: srcX,srcY,srcZ,srcMap=destX,destY,destZ,destMap=name
+            // ScriptKey parses first '=' so Key = "srcX,srcY,srcZ,srcMap"
+            // Arg = "destX,destY,destZ,destMap=name"
+            var src = ParseTeleportPoint(key.Key);
+            if (src.X == 0 && src.Y == 0) continue;
+
+            string argPart = key.Arg;
+            string name = "";
+            int eqIdx = argPart.IndexOf('=');
+            string destStr;
+            if (eqIdx >= 0)
+            {
+                destStr = argPart[..eqIdx];
+                name = argPart[(eqIdx + 1)..].Trim();
+            }
+            else
+            {
+                destStr = argPart;
+            }
+
+            var dest = ParseTeleportPoint(destStr);
+            if (dest.X == 0 && dest.Y == 0) continue;
+
+            _teleporters.Add((src, dest, name));
+        }
+
+        _logger.LogInformation("Loaded {Count} teleporters", _teleporters.Count);
+    }
+
+    private static Point3D ParseTeleportPoint(string s)
+    {
+        var parts = s.Split(',');
+        if (parts.Length < 3) return default;
+        if (!short.TryParse(parts[0].Trim(), out short x)) return default;
+        if (!short.TryParse(parts[1].Trim(), out short y)) return default;
+        if (!sbyte.TryParse(parts[2].Trim(), out sbyte z)) return default;
+        byte map = 0;
+        if (parts.Length >= 4)
+            byte.TryParse(parts[3].Trim(), out map);
+        return new Point3D(x, y, z, map);
     }
 }

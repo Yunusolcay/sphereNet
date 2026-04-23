@@ -124,12 +124,21 @@ public static class CombatEngine
 
         if (weapon == null)
         {
-            dmgMin = 1;
-            dmgMax = Math.Max(1, attacker.Str / 4);
+            // NPC natural damage from CHARDEF DAM= property
+            if (!attacker.IsPlayer && attacker.NpcDamMax > 0)
+            {
+                dmgMin = attacker.NpcDamMin;
+                dmgMax = attacker.NpcDamMax;
+            }
+            else
+            {
+                // Player bare fists — Source-X: Wrestling damage = 1 to STR/4
+                dmgMin = 1;
+                dmgMax = Math.Max(2, attacker.Str / 4);
+            }
         }
         else
         {
-            // Try to look up actual weapon damage from ItemDef
             var defDamage = WeaponDefLookup?.Invoke(weapon.BaseId);
             if (defDamage.HasValue && defDamage.Value.Max > 0)
             {
@@ -143,39 +152,18 @@ public static class CombatEngine
             }
         }
 
-        // Stat bonus
-        int strBonus;
-        switch (era)
-        {
-            case 1: // pre-AOS: STR * 20%
-                strBonus = attacker.Str * 20 / 100;
-                break;
-            case 2: // AOS: STR * 30%
-                strBonus = attacker.Str * 30 / 100;
-                break;
-            default: // Sphere: STR * 10%
-                strBonus = attacker.Str * 10 / 100;
-                break;
-        }
+        // Source-X: damage += STR/10 (flat additive, not percentage)
+        int strBonus = attacker.Str / 10;
 
-        // Tactics bonus
-        int tacticsBonus = era switch
-        {
-            1 => (attacker.GetSkill(SkillType.Tactics) - 500) / 10,
-            2 => attacker.GetSkill(SkillType.Tactics) / 16,
-            _ => attacker.GetSkill(SkillType.Tactics) / 20,
-        };
+        // Tactics: (skill / 10) * 0.3 ≈ skill / 33
+        int tacticsBonus = attacker.GetSkill(SkillType.Tactics) / 33;
 
-        // Anatomy bonus
-        int anatomyBonus = era switch
-        {
-            2 => attacker.GetSkill(SkillType.Anatomy) / 20,
-            _ => attacker.GetSkill(SkillType.Anatomy) / 50,
-        };
+        // Anatomy: skill / 50
+        int anatomyBonus = attacker.GetSkill(SkillType.Anatomy) / 50;
 
         int totalBonus = strBonus + tacticsBonus + anatomyBonus;
-        dmgMin += dmgMin * totalBonus / 100;
-        dmgMax += dmgMax * totalBonus / 100;
+        dmgMin += totalBonus;
+        dmgMax += totalBonus;
 
         return (Math.Max(1, dmgMin), Math.Max(1, dmgMax));
     }

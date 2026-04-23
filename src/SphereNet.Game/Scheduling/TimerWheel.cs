@@ -4,13 +4,13 @@ namespace SphereNet.Game.Scheduling;
 
 /// <summary>
 /// Hashed timer wheel for scheduling NPC AI ticks.
-/// 256 slots × 125ms = 32 second cycle.
+/// 256 slots × 100ms = 25.6 second cycle.
 /// Schedule is O(1), Advance is O(slot size).
 /// </summary>
 public sealed class TimerWheel
 {
     private const int SlotCount = 256;
-    private const long SlotDurationMs = 125;
+    private const long SlotDurationMs = 100;
 
     private readonly List<Character>[] _slots;
     private readonly HashSet<uint> _scheduled = [];
@@ -41,6 +41,11 @@ public sealed class TimerWheel
             fireTimeMs = _currentTime + SlotDurationMs;
 
         int slot = TimeToSlot(fireTimeMs);
+        // If fire time lands in the current (already-processed) slot,
+        // bump to the next slot — otherwise the NPC waits a full wheel
+        // revolution (~25.6s) before firing again.
+        if (slot == _currentSlot)
+            slot = (_currentSlot + 1) & (SlotCount - 1);
         _slots[slot].Add(npc);
     }
 

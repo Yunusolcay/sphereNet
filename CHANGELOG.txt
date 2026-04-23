@@ -4,6 +4,86 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-23] - NPC AI, combat formulu, teleporter sistemi, engine iyilestirmeleri
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - NPC AI adaptif tick hizi: savas/aktif NPC'ler 250ms, pasif NPC'ler 750ms
+    aralikla karar alir. Broadcast hacmi azaltildi.
+    NPC AI adaptive tick cadence: combat/active NPCs tick at 250ms, passive
+    NPCs idle at 750ms. Reduces broadcast volume.
+  - NPC retaliation: saldiriya ugrayan NPC saldirana karsilik verir ve aninda
+    uyanir (WakeNpc). Breath/throw hedefleri de karsilik verir.
+    NPC retaliation: attacked NPCs acquire attacker as fight target and wake
+    immediately. Breath/throw targets also retaliate.
+  - NPC dogal hasar: CHARDEF DAM= ozelligi destegi (NpcDamMin/NpcDamMax).
+    Save/load ve script property olarak da calisir.
+    NPC natural damage: CHARDEF DAM= property support. Persisted in save
+    files and accessible as script property.
+  - Combat hasar formulu Source-X paritesi: STR/10 flat bonus, tactics/33,
+    anatomy/50, additif (yuzdesel degil).
+    Combat damage formula Source-X parity: STR/10 flat bonus, tactics/33,
+    anatomy/50, additive (not percentage).
+  - [TELEPORTERS] script section destegi: teleporter'lar script dosyalarindan
+    yuklenip gorunmez telepad item'lari olarak yerlestirilir (MoreP tabanli).
+    [TELEPORTERS] script section support: teleporters loaded from scripts and
+    placed as invisible telepad items (MoreP-based).
+  - Telepad/moongate step-on: client resync (DrawPlayer + ses efekti) eklendi.
+    Telepad/moongate step-on: client resync (DrawPlayer + sound) added.
+  - NPC stam regen: DEX'e gore olceklenir (NPC 1.5s, MaxStam/20 miktar).
+    NPC stam regen: scales with DEX (NPC 1.5s interval, MaxStam/20 amount).
+  - INVUL komutu: ON/OFF mesaji ve gorsel guncelleme broadcast'i.
+    INVUL command: ON/OFF feedback message and visual update broadcast.
+  - xedit: Memory item'lar link hedef adini ve memory turlerini gosterir.
+    xedit: Memory items display link target name and memory types.
+
+HATA DUZELTMELERI / BUG FIXES:
+  - Pet cursor tipi duzeltmesi: "go" komutu yer secme cursor'u kullaniyor
+    (onceden ters idi).
+    Pet cursor type fix: "go" command uses ground target cursor (was inverted).
+  - NPC speech: tum yakin client'lara broadcast ediliyor (onceden sadece komut
+    veren client'a gidiyordu).
+    NPC speech: broadcast to all nearby clients (was only sent to commanding
+    client).
+  - Vendor buy: sahip kendi vendor'indan ucretsiz alir. Buy/sell sonrasi
+    backpack icerigi yenilenir.
+    Vendor buy: owner buys from own vendor for free. Backpack contents
+    refreshed after buy/sell.
+  - Guard/Attack pet modlari: ActFight kullanilarak duzgun savas dongusu,
+    mevcut hedefe devam etme.
+    Guard/Attack pet modes: proper combat loop via ActFight, continue
+    fighting current target.
+  - Monster/Dragon notoriety: her zaman kirmizi (onceden karma'ya bagliydi).
+    Monster/Dragon notoriety: always red (was karma-dependent).
+  - GM pet kontrol: GM her zaman pet komutlarini verebilir.
+    GM pet control: GMs can always issue pet commands regardless of ownership.
+  - TimerWheel ayni-slot zamanlama: NPC ayni slot'a zamanlanirsa bir sonraki
+    slot'a kaydirilir (25.6s bekleme onlenir).
+    TimerWheel same-slot scheduling: NPCs scheduled into current slot are
+    bumped to next slot (prevents 25.6s wait for full revolution).
+  - Dragon breath/throw stam esigi %100'den %50'ye dusuruldu, breath min
+    mesafe 2'den 1'e.
+    Dragon breath/throw stam threshold lowered from 100% to 50%, breath
+    min range from 2 to 1.
+  - Ridden (binek) NPC'ler AI karar almaz.
+    Ridden (mounted) NPCs skip AI decisions.
+  - WorldSaver: Static flag'li item'lar kaydedilmez (teleporter'lar vb.).
+    WorldSaver: items with Static flag are not persisted (teleporters etc.).
+  - Debug log temizligi: mount/dismount/dclick pozisyon loglari kaldirildi.
+    Debug log cleanup: mount/dismount/dclick position logs removed.
+
+TEKNIK / TECHNICAL:
+  - TimerWheel slot suresi 125ms → 100ms.
+    TimerWheel slot duration 125ms → 100ms.
+  - NPC timer wheel baslangic dagitimi NPC sayisina gore dinamik (sabit 60s
+    yerine count*2ms, 1-30s arasi).
+    NPC timer wheel initial stagger is dynamic based on NPC count (count*2ms,
+    clamped 1-30s, instead of fixed 60s).
+  - NPC MoveToward: kosu flagi eklendi (Direction.Running).
+    NPC MoveToward: running flag added.
+  - Aggro notice sesi: NPC hedef edindiginde notice sesi calar.
+    Aggro notice sound: NPC plays notice sound on target acquisition.
+
 [2026-04-23] - Crafting tool'lari varsayilan crafting menusune baglandi
 ----------------------------------------
 

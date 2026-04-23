@@ -313,6 +313,8 @@ public sealed class CommandHandler
 
     /// <summary>Fired when a command wants to send a system message to a character.</summary>
     public event Action<Character, string>? OnSysMessage;
+    /// <summary>Fired when a command changes a character's visual state (invul, incognito, etc.).</summary>
+    public event Action<Character>? OnCharVisualUpdate;
     public Func<Character, string, bool>? ScriptFallbackExecutor { get; set; }
     public event Action<Character, string, string>? OnScriptParityWarning;
     public TriggerDispatcher? TriggerDispatcher { get; set; }
@@ -840,9 +842,16 @@ public sealed class CommandHandler
         Register("INVUL", PrivLevel.GM, (gm, _) =>
         {
             if (gm.IsStatFlag(StatFlag.Invul))
+            {
                 gm.ClearStatFlag(StatFlag.Invul);
+                OnSysMessage?.Invoke(gm, "Invulnerability OFF.");
+            }
             else
+            {
                 gm.SetStatFlag(StatFlag.Invul);
+                OnSysMessage?.Invoke(gm, "Invulnerability ON.");
+            }
+            OnCharVisualUpdate?.Invoke(gm);
         });
 
         Register("SET", PrivLevel.GM, (gm, args) =>

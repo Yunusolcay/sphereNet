@@ -48,6 +48,7 @@ public sealed class GameClient : ITextConsole
     /// Set by Program.cs startup. If zero, HandleGameLogin falls back to a
     /// hardcoded mapping derived from client version.</summary>
     public static uint ServerFeatureFlags { get; set; }
+    public static Func<string, Point3D?>? BotSpawnLocationProvider;
 
     private readonly NetState _netState;
     private readonly GameWorld _world;
@@ -68,6 +69,7 @@ public sealed class GameClient : ITextConsole
     private Mounts.MountEngine? _mountEngine;
     private TriggerDispatcher? _triggerDispatcher;
     private ScriptSystemHooks? _systemHooks;
+    public static Action<Character>? OnWakeNpc;
     private ScriptDbAdapter? _scriptDb;
     private ScriptDbAdapter? _scriptLdb;
     private ScriptFileHandle? _scriptFile;
@@ -187,6 +189,7 @@ public sealed class GameClient : ITextConsole
     private string _pendingMenuDefname = "";
     private const ushort EditMenuId = 0xFFED;
     private uint[]? _pendingEditMenuUids;
+    private Item?[]? _pendingEditMenuMemories;
     private short _lastHits, _lastMana, _lastStam;
     private long _lastVitalsPacketTick;
     private const int VitalsPacketIntervalMs = 250;
@@ -402,12 +405,19 @@ public sealed class GameClient : ITextConsole
             _character.MaxHits = 50; _character.MaxMana = 50; _character.MaxStam = 50;
             _character.Hits = 50; _character.Mana = 50; _character.Stam = 50;
 
-            var startPos = new Point3D(1495, 1629, 10, 0);
+            var startPos = BotSpawnLocationProvider?.Invoke(_account.Name)
+                ?? new Point3D(1495, 1629, 10, 0);
             _world.PlaceCharacter(_character, startPos);
             int assignSlot = slot >= 0 ? slot : _account.FindFreeSlot();
             if (assignSlot >= 0)
                 _account.SetCharSlot(assignSlot, _character.Uid);
             _logger.LogInformation("Created char '{Name}' for account '{Acct}'", _character.Name, _account.Name);
+        }
+        else
+        {
+            var botPos = BotSpawnLocationProvider?.Invoke(_account.Name);
+            if (botPos.HasValue)
+                _world.MoveCharacter(_character, botPos.Value);
         }
 
         EnterWorld();
@@ -1203,6 +1213,13 @@ public sealed class GameClient : ITextConsole
             }
 
             _spellEngine?.TryInterruptFromDamage(target, damage);
+
+            if (!target.IsPlayer && !target.IsDead && !target.FightTarget.IsValid)
+            {
+                target.FightTarget = _character.Uid;
+                target.NextNpcActionTime = 0;
+                OnWakeNpc?.Invoke(target);
+            }
 
             _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.Hit,
                 new TriggerArgs { CharSrc = _character, O1 = target, N1 = damage });
@@ -2040,8 +2057,6 @@ public sealed class GameClient : ITextConsole
             // If mounted, dismount on self-dclick
             if (_character.IsMounted && _mountEngine != null)
             {
-                _logger.LogInformation("[DCLICK] '{Name}' pos at double-click: {X},{Y},{Z} map={Map}",
-                    _character.Name, _character.X, _character.Y, _character.Z, _character.Position.Map);
                 uint oldMountItemUid = _character.GetEquippedItem(Layer.Horse)?.Uid.Value ?? 0;
                 var npc = _mountEngine.Dismount(_character);
 
@@ -2058,8 +2073,6 @@ public sealed class GameClient : ITextConsole
                     }
                 }
 
-                _logger.LogInformation("[DISMOUNT] '{Name}' pos AFTER dismount: {X},{Y},{Z} map={Map}",
-                    _character.Name, _character.X, _character.Y, _character.Z, _character.Position.Map);
                 if (npc != null)
                 {
                     // Immediately remove the old horse-layer item from all clients to avoid ghost mount visuals.
@@ -2163,8 +2176,6 @@ public sealed class GameClient : ITextConsole
                 }
 
                 uint mountNpcUid = ch.Uid.Value;
-                _logger.LogInformation("[MOUNT] '{Name}' pos BEFORE mount: {X},{Y},{Z} map={Map}",
-                    _character.Name, _character.X, _character.Y, _character.Z, _character.Position.Map);
                 if (_mountEngine.TryMount(_character, ch))
                 {
                     // Correct Z to terrain after body type change (foot→mounted)
@@ -2175,13 +2186,10 @@ public sealed class GameClient : ITextConsole
                             _character.X, _character.Y, _character.Z);
                         if (correctedZ != _character.Z)
                         {
-                            _logger.LogInformation("[MOUNT] Z correction: {OldZ} -> {NewZ}", _character.Z, correctedZ);
                             _character.Position = new Point3D(_character.X, _character.Y, correctedZ, _character.MapIndex);
                         }
                     }
 
-                    _logger.LogInformation("[MOUNT] '{Name}' pos AFTER mount: {X},{Y},{Z} map={Map}",
-                        _character.Name, _character.X, _character.Y, _character.Z, _character.Position.Map);
                     // Immediately remove the old NPC mount from nearby clients to prevent temporary duplicates.
                     BroadcastDeleteObject(mountNpcUid);
 
@@ -3083,7 +3091,7 @@ public sealed class GameClient : ITextConsole
         SysMessage(ServerMessages.Get(promptKey));
         SetPendingTarget(
             (serial, x, y, z, gfx) => ApplyPetTarget(pet, verb, new Serial(serial), x, y, z),
-            cursorType: verb == "go" ? (byte)0 : (byte)1);
+            cursorType: verb == "go" ? (byte)1 : (byte)0);
     }
 
     private void EmitPetTargetPrompt(IReadOnlyList<Character> pets, string verb)
@@ -3120,7 +3128,7 @@ public sealed class GameClient : ITextConsole
                     ApplyPetTarget(pet, verb, new Serial(serial), x, y, z);
                 }
             },
-            cursorType: verb == "go" ? (byte)0 : (byte)1);
+            cursorType: verb == "go" ? (byte)1 : (byte)0);
     }
 
     /// <summary>Resolve a target picked after EmitPetTargetPrompt and apply the verb.</summary>
@@ -3648,9 +3656,12 @@ public sealed class GameClient : ITextConsole
         int result = VendorEngine.ProcessBuy(_character, vendor, entries);
         if (result < 0)
             NpcSpeech(vendor, ServerMessages.Get("npc_vendor_nomoney1"));
+        else if (result == 0)
+            NpcSpeech(vendor, ServerMessages.Get("npc_vendor_ty"));
         else
             NpcSpeech(vendor, ServerMessages.GetFormatted("npc_vendor_b1", result, result == 1 ? "" : "s"));
 
+        RefreshBackpackContents();
         SendCharacterStatus(_character);
     }
 
@@ -3692,6 +3703,7 @@ public sealed class GameClient : ITextConsole
 
         int result = VendorEngine.ProcessSell(_character, vendor, entries);
         NpcSpeech(vendor, ServerMessages.GetFormatted("npc_vendor_sell_ty", result, result == 1 ? "" : "s"));
+        RefreshBackpackContents();
         SendCharacterStatus(_character);
     }
 
@@ -6535,22 +6547,32 @@ public sealed class GameClient : ITextConsole
 
         var entries = new List<MenuItemEntry>();
         var uids = new List<uint>();
+        var mems = new List<Item?>();
         int max = Math.Min(childItems.Count, 254);
         for (int i = 0; i < max; i++)
         {
             var item = childItems[i];
             uids.Add(item.Uid.Value);
             ushort hue = 0;
-            if (item.ItemType != Core.Enums.ItemType.EqMemoryObj)
+            if (item.ItemType == Core.Enums.ItemType.EqMemoryObj)
+            {
+                var targetName = item.Link.IsValid ? (_world.FindObject(item.Link)?.Name ?? "?") : "?";
+                entries.Add(new MenuItemEntry(item.BaseId, hue,
+                    $"Memory: {targetName} [{item.GetMemoryTypes()}]"));
+                mems.Add(item);
+            }
+            else
             {
                 ushort rawHue = item.Hue;
                 if (rawHue != 0)
                     hue = rawHue == 1 ? (ushort)0x7FF : (ushort)(rawHue - 1);
+                entries.Add(new MenuItemEntry(item.BaseId, hue, item.Name));
+                mems.Add(null);
             }
-            entries.Add(new MenuItemEntry(item.BaseId, hue, item.Name));
         }
 
         _pendingEditMenuUids = uids.ToArray();
+        _pendingEditMenuMemories = mems.ToArray();
         _netState.Send(new PacketMenuDisplay(
             obj.Uid.Value, EditMenuId,
             $"Contents of {obj.Name}", entries));
@@ -6560,12 +6582,27 @@ public sealed class GameClient : ITextConsole
     {
         if (_character == null) return;
         var uids = _pendingEditMenuUids;
+        var mems = _pendingEditMenuMemories;
         _pendingEditMenuUids = null;
+        _pendingEditMenuMemories = null;
 
         if (uids == null || index == 0 || index > uids.Length)
             return;
 
         uint picked = uids[index - 1];
+
+        if (picked == 0 && mems != null && index - 1 < mems.Length)
+        {
+            var mem = mems[index - 1];
+            if (mem != null)
+            {
+                var targetName = mem.Link.IsValid ? (_world.FindObject(mem.Link)?.Name ?? "?") : "?";
+                SysMessage($"[Memory] Link=0x{mem.Link.Value:X8} ({targetName})");
+                SysMessage($"  Types={mem.GetMemoryTypes()} Pos={mem.MoreP}");
+                return;
+            }
+        }
+
         ShowInspectDialog(picked);
     }
 
@@ -6901,6 +6938,22 @@ public sealed class GameClient : ITextConsole
         _netState.Send(new PacketOpenPaperdoll(ch.Uid.Value, title, paperdollFlags));
 
         SendCharacterStatus(ch, includeExtendedStats: ch == _character);
+    }
+
+    private void RefreshBackpackContents()
+    {
+        if (_character == null) return;
+        var pack = _character.Backpack;
+        if (pack == null) return;
+
+        foreach (var child in _world.GetContainerContents(pack.Uid))
+        {
+            _netState.Send(new PacketContainerItem(
+                child.Uid.Value, child.DispIdFull, 0,
+                child.Amount, child.X, child.Y,
+                pack.Uid.Value, child.Hue,
+                _netState.IsClientPost6017));
+        }
     }
 
     private void SendCharacterStatus(Character ch, bool includeExtendedStats = true)
@@ -7395,6 +7448,12 @@ public sealed class GameClient : ITextConsole
 
             if (charDef.NpcBrain != NpcBrainType.None)
                 npc.NpcBrain = charDef.NpcBrain;
+
+            if (charDef.AttackMin > 0 || charDef.AttackMax > 0)
+            {
+                npc.NpcDamMin = (short)charDef.AttackMin;
+                npc.NpcDamMax = (short)Math.Max(charDef.AttackMin, charDef.AttackMax);
+            }
 
             string? colorText = charDef.TagDefs.Get("COLOR");
             if (TryParseHue(colorText, out ushort hue))
@@ -9528,9 +9587,8 @@ public sealed class GameClient : ITextConsole
         {
             case NpcBrainType.Monster:
             case NpcBrainType.Dragon:
-                return ch.Karma < 0 ? (byte)6 : (byte)3;
             case NpcBrainType.Berserk:
-                return 6; // always evil
+                return 6; // always hostile / red
             case NpcBrainType.Healer:
             case NpcBrainType.Banker:
                 return 7; // yellow — invul by role
@@ -9577,8 +9635,7 @@ public sealed class GameClient : ITextConsole
     {
         var packet = new PacketSpeechUnicodeOut(
             npc.Uid.Value, npc.BodyId, 0, 0x03B2, 3, "TRK", npc.GetName(), text);
-        _netState.Send(packet);
-        BroadcastNearby?.Invoke(npc.Position, 18, packet, npc.Uid.Value);
+        BroadcastNearby?.Invoke(npc.Position, 18, packet, 0);
     }
 
     public string GetName() => _account?.Name ?? "?";

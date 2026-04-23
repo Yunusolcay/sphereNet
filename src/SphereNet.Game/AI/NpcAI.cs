@@ -124,13 +124,16 @@ public sealed class NpcAI
             return;
         }
 
-        // NPC decision/action cadence: avoid moving every server tick (250ms),
-        // which floods nearby clients with 0x20 movement updates.
-        npc.NextNpcActionTime = now + 700 + _rand.Next(0, 200);
-
-        // Note: npc.OnTick() is NOT called here — Sector.OnTick already handles
-        // character ticks (regen, poison, etc.) for all characters including NPCs.
-        // Calling it again would double-tick regeneration and other time-based effects.
+        // NPC decision/action cadence. Combat brains and active pets tick fast
+        // (250ms); passive brains idle slower (750ms) to reduce broadcast volume.
+        bool isActive = npc.FightTarget.IsValid ||
+            npc.NpcBrain is NpcBrainType.Monster or NpcBrainType.Dragon
+                or NpcBrainType.Berserk ||
+            (npc.NpcMaster.IsValid && npc.PetAIMode is PetAIMode.Attack
+                or PetAIMode.Follow or PetAIMode.Come or PetAIMode.Guard);
+        npc.NextNpcActionTime = isActive
+            ? now + 250 + _rand.Next(0, 100)
+            : now + 750 + _rand.Next(0, 250);
 
         // Pet behavior — owned NPCs follow pet AI mode
         if (npc.NpcMaster.IsValid)
@@ -176,7 +179,7 @@ public sealed class NpcAI
     /// </summary>
     public NpcDecision? BuildDecision(Character npc, long nowTick)
     {
-        if (npc.IsPlayer || npc.IsDead || npc.IsDeleted)
+        if (npc.IsPlayer || npc.IsDead || npc.IsDeleted || npc.IsStatFlag(StatFlag.Ridden))
             return null;
         if (nowTick < npc.NextNpcActionTime)
             return null;
@@ -360,6 +363,7 @@ public sealed class NpcAI
         {
             npc.FightTarget = bestTarget.Uid;
             npc.Memory_Fight_Start(bestTarget);
+            EmitSound(npc, CreatureSoundType.Notice);
             ActFight(npc, bestTarget, bestMotivation);
             return;
         }
@@ -442,9 +446,9 @@ public sealed class NpcAI
         if (npc.NpcBrain == NpcBrainType.Berserk || _rand.Next(6) == 0)
             EmitSound(npc, CreatureSoundType.Idle);
 
-        // Dragon breath (Source-X: NPCACT_BREATH, range 2-8, DEX gate)
-        if (npc.NpcBrain == NpcBrainType.Dragon && dist >= 2 && dist <= 8
-            && npc.Stam >= npc.MaxStam)
+        // Dragon breath (Source-X: NPCACT_BREATH, range 1-8, stam >= 50%)
+        if (npc.NpcBrain == NpcBrainType.Dragon && dist >= 1 && dist <= 8
+            && npc.Stam >= npc.MaxStam / 2)
         {
             int breathDmg = GetBreathDamage(npc);
             if (breathDmg > 0)
@@ -455,8 +459,8 @@ public sealed class NpcAI
             }
         }
 
-        // Object throwing (Source-X: NPCACT_THROWING, range 2-8)
-        if (dist >= 2 && dist <= 8 && npc.Stam >= npc.MaxStam
+        // Object throwing (Source-X: NPCACT_THROWING, range 2-8, stam >= 50%)
+        if (dist >= 2 && dist <= 8 && npc.Stam >= npc.MaxStam / 2
             && npc.TryGetTag("THROWOBJ", out _))
         {
             int throwDmg = Math.Max(1, npc.Dex / 4 + _rand.Next(npc.Dex / 4 + 1));
@@ -828,21 +832,27 @@ public sealed class NpcAI
             case PetAIMode.Guard:
             {
                 Character guardTarget = ResolvePetTargetCharacter(npc, "GUARD_TARGET") ?? master;
-                // Guard master — attack nearby aggressors
+                // Continue fighting current target if still valid
+                if (npc.FightTarget.IsValid)
+                {
+                    var current = _world.FindChar(npc.FightTarget);
+                    if (current != null && !current.IsDead && !current.IsDeleted)
+                    {
+                        ActFight(npc, current, 50);
+                        return;
+                    }
+                    npc.FightTarget = Serial.Invalid;
+                }
                 foreach (var ch in _world.GetCharsInRange(guardTarget.Position, 6))
                 {
                     if (ch == npc || ch == guardTarget || ch.IsDead) continue;
                     if (ch.FightTarget == guardTarget.Uid)
                     {
-                        int dist = npc.Position.GetDistanceTo(ch.Position);
-                        if (dist <= 1)
-                            TrySwingAttack(npc, ch);
-                        else
-                            MoveToward(npc, ch.Position);
+                        npc.FightTarget = ch.Uid;
+                        ActFight(npc, ch, 50);
                         return;
                     }
                 }
-                // No threats — follow master
                 int guardDist = npc.Position.GetDistanceTo(guardTarget.Position);
                 if (guardDist > 3)
                     MoveToward(npc, guardTarget.Position);
@@ -850,20 +860,19 @@ public sealed class NpcAI
             }
             case PetAIMode.Attack:
             {
-                // Attack explicit pet target first, fall back to master's fight target.
                 Character? target = ResolvePetTargetCharacter(npc, "ATTACK_TARGET");
                 if (target == null && master.FightTarget.IsValid)
                     target = _world.FindChar(master.FightTarget);
+                if (target == null && npc.FightTarget.IsValid)
+                    target = _world.FindChar(npc.FightTarget);
                 if (target != null && !target.IsDead)
                 {
-                    int dist = npc.Position.GetDistanceTo(target.Position);
-                    if (dist <= 1)
-                        TrySwingAttack(npc, target);
-                    else
-                        MoveToward(npc, target.Position);
+                    npc.FightTarget = target.Uid;
+                    int motivation = GetAttackMotivation(npc, target);
+                    ActFight(npc, target, Math.Max(motivation, 50));
                     return;
                 }
-                // No target — follow
+                npc.FightTarget = Serial.Invalid;
                 int d = npc.Position.GetDistanceTo(master.Position);
                 if (d > 2)
                     MoveToward(npc, master.Position);
@@ -901,6 +910,10 @@ public sealed class NpcAI
     /// <summary>Callback: creature sound. Parameters: npc, sound type.
     /// Program.cs resolves body-specific sound ID and broadcasts 0x54.</summary>
     public Action<Character, CreatureSoundType>? OnNpcSound { get; set; }
+
+    /// <summary>Callback: wake an NPC for immediate action (e.g. retaliation).
+    /// Program.cs reschedules the NPC in the timer wheel so it acts next tick.</summary>
+    public Action<Character>? OnWakeNpc { get; set; }
 
     /// <summary>
     /// Try to swing attack a target with swing timer throttle.
@@ -988,6 +1001,15 @@ public sealed class NpcAI
                 EmitSound(target, CreatureSoundType.GetHit);
             OnNpcAttack?.Invoke(npc, target, damage);
 
+            // Retaliation: NPC targets that aren't already fighting back
+            // acquire the attacker as their fight target (Source-X parity).
+            if (!target.IsPlayer && !target.IsDead && !target.FightTarget.IsValid)
+            {
+                target.FightTarget = npc.Uid;
+                target.NextNpcActionTime = 0;
+                OnWakeNpc?.Invoke(target);
+            }
+
             if (target.Hits <= 0 && !target.IsDead)
             {
                 if (!target.IsPlayer)
@@ -1047,9 +1069,9 @@ public sealed class NpcAI
 
     private void MoveToward(Character npc, Point3D target)
     {
-        // Try direct line-of-sight move first
         var dir = npc.Position.GetDirectionTo(target);
         GetDirectionDelta(dir, out short dx, out short dy);
+        dir |= Direction.Running;
 
         var directPos = new Point3D(
             (short)(npc.X + dx),

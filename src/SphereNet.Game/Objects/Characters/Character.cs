@@ -459,6 +459,9 @@ public class Character : ObjBase
     public short MaxMana { get => _maxMana; set { if (value != _maxMana) { _maxMana = value; if (_mana > _maxMana) _mana = _maxMana; MarkDirty(DirtyFlag.Stats); } } }
     public short MaxStam { get => _maxStam; set { if (value != _maxStam) { _maxStam = value; if (_stam > _maxStam) _stam = _maxStam; MarkDirty(DirtyFlag.Stats); } } }
 
+    public short NpcDamMin { get; set; }
+    public short NpcDamMax { get; set; }
+
     public ushort BodyId { get => _bodyId; set { _bodyId = value; MarkDirty(DirtyFlag.Body); } }
 
     /// <summary>
@@ -810,6 +813,8 @@ public class Character : ObjBase
     {
         if (issuer == null || issuer.IsDead)
             return false;
+        if (issuer.PrivLevel >= Core.Enums.PrivLevel.GM)
+            return true;
         if (HasController(issuer.Uid) || HasOwner(issuer.Uid))
             return true;
         if (allowFriends && IsFriendOf(issuer.Uid))
@@ -1593,6 +1598,7 @@ public class Character : ObjBase
             case "ISPLAYER": value = _isPlayer ? "1" : "0"; return true;
             case "ISNPC": value = (!_isPlayer && _npcBrain != NpcBrainType.None) ? "1" : "0"; return true;
             case "NPCBRAIN": value = ((int)_npcBrain).ToString(); return true;
+            case "DAM": value = $"{NpcDamMin},{NpcDamMax}"; return true;
             case "FOOD": value = _food.ToString(); return true;
             case "PRIVLEVEL": value = ((int)PrivLevel).ToString(); return true;
             case "ISMOUNTED": value = IsMounted ? "1" : "0"; return true;
@@ -2263,6 +2269,15 @@ public class Character : ObjBase
             case "NPCBRAIN":
                 if (TryParseNpcBrain(normalized, out var brain)) _npcBrain = brain;
                 return true;
+            case "DAM":
+            {
+                var parts = normalized.Split(',', 2, StringSplitOptions.TrimEntries);
+                if (parts.Length == 2 && short.TryParse(parts[0], out short dMin) && short.TryParse(parts[1], out short dMax))
+                { NpcDamMin = dMin; NpcDamMax = dMax; }
+                else if (short.TryParse(parts[0], out short dFlat))
+                { NpcDamMin = dFlat; NpcDamMax = dFlat; }
+                return true;
+            }
             case "NPCSPELL":
                 if (int.TryParse(normalized, out int spellId) && Enum.IsDefined(typeof(SpellType), spellId))
                     NpcSpellAdd((SpellType)spellId);
@@ -3644,11 +3659,13 @@ public class Character : ObjBase
             _nextManaRegen = now + 4000;
         }
 
-        // Stam regen: every 3s base
+        // Stam regen: Source-X scales with DEX — higher DEX = faster regen.
+        // NPC base interval 1.5s, player 3s. Regen amount scales with MaxStam.
         if (now >= _nextStamRegen && _stam < _maxStam)
         {
-            _stam = (short)Math.Min(_stam + 1, _maxStam);
-            _nextStamRegen = now + 3000;
+            int regenAmt = _isPlayer ? 1 : Math.Max(1, _maxStam / 20);
+            _stam = (short)Math.Min(_stam + regenAmt, _maxStam);
+            _nextStamRegen = now + (_isPlayer ? 3000 : 1500);
         }
 
         // Hunger decay: every 10 minutes
