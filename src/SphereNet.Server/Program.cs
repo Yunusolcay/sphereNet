@@ -48,8 +48,10 @@ using SphereNet.Game.World.Regions;
 using SphereNet.Server.Admin;
 #endif
 using Color = System.Drawing.Color;
+using System.Data.Common;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Data.Sqlite;
 
 namespace SphereNet.Server;
 
@@ -109,6 +111,7 @@ public static class Program
     private static TriggerRunner _triggerRunner = null!;
     private static ScriptSystemHooks _systemHooks = null!;
     private static ScriptDbAdapter _scriptDb = null!;
+    private static ScriptDbAdapter _scriptLdb = null!;
     private static ScriptFileHandle? _scriptFile;
     private static readonly ServerHookContext _serverHookContext = new();
     private static TelnetConsole? _telnet;
@@ -550,7 +553,9 @@ public static class Program
         var scriptInterpreter = new ScriptInterpreter(exprParser, _loggerFactory.CreateLogger<ScriptInterpreter>());
         _triggerRunner = new TriggerRunner(scriptInterpreter, _resources, _loggerFactory.CreateLogger<TriggerRunner>());
         _systemHooks = new ScriptSystemHooks(_triggerRunner);
+        RegisterDbProviders();
         _scriptDb = new ScriptDbAdapter(_loggerFactory.CreateLogger<ScriptDbAdapter>());
+        _scriptLdb = new ScriptDbAdapter(_loggerFactory.CreateLogger<ScriptDbAdapter>());
         InitDbConnections(_config, _scriptDb);
         if (_config.HasFileCommands)
         {
@@ -1946,6 +1951,7 @@ public static class Program
         _network.Dispose();
         _mapData?.Dispose();
         _scriptDb.Close();
+        _scriptLdb.Close();
         _scriptFile?.Dispose();
 
         _log.LogInformation("SphereNet stopped.");
@@ -3323,6 +3329,16 @@ public static class Program
         return _resources.TryGetDefMessage(key, out var message) ? message : null;
     }
 
+    private static void RegisterDbProviders()
+    {
+        // Register SQLite provider for ADO.NET DbProviderFactories
+        if (!DbProviderFactories.TryGetFactory("Microsoft.Data.Sqlite", out _))
+        {
+            DbProviderFactories.RegisterFactory("Microsoft.Data.Sqlite", SqliteFactory.Instance);
+            _log.LogDebug("Registered SQLite database provider");
+        }
+    }
+
     private static void InitDbConnections(SphereConfig config, ScriptDbAdapter db)
     {
         if (config.DbConnections.Count == 0)
@@ -3337,9 +3353,13 @@ public static class Program
 
             if (connCfg.AutoConnect)
             {
+                string displayInfo = connCfg.IsSqlite
+                    ? connCfg.Database
+                    : $"{connCfg.Host}/{connCfg.Database}";
+
                 if (db.Connect(connCfg.Name, out string err))
-                    _log.LogInformation("DB '{Name}' connected ({Host}/{Db})",
-                        connCfg.Name, connCfg.Host, connCfg.Database);
+                    _log.LogInformation("DB '{Name}' connected ({Info})",
+                        connCfg.Name, displayInfo);
                 else
                     _log.LogWarning("DB '{Name}' auto-connect failed: {Error}", connCfg.Name, err);
             }
@@ -3389,7 +3409,7 @@ public static class Program
                 _loggerFactory.CreateLogger<GameClient>());
             client.SetEngines(_movement, _speech, _commands, _spellEngine, _deathEngine, _partyManager, _tradeManager,
                 _skillHandlers, _craftingEngine, _housingEngine, _triggerDispatcher, _guildManager, _mountEngine);
-            client.SetScriptServices(_systemHooks, _scriptDb, ResolveDefMessage, _scriptFile);
+            client.SetScriptServices(_systemHooks, _scriptDb, ResolveDefMessage, _scriptFile, _scriptLdb);
             client.BroadcastNearby = BroadcastNearby;
             client.BroadcastMoveNearby = BroadcastMoveNearby;
             client.ForEachClientInRange = ForEachClientInRange;

@@ -69,6 +69,7 @@ public sealed class GameClient : ITextConsole
     private TriggerDispatcher? _triggerDispatcher;
     private ScriptSystemHooks? _systemHooks;
     private ScriptDbAdapter? _scriptDb;
+    private ScriptDbAdapter? _scriptLdb;
     private ScriptFileHandle? _scriptFile;
     private Func<string, string?>? _defMessageLookup;
 
@@ -304,10 +305,12 @@ public sealed class GameClient : ITextConsole
         ScriptSystemHooks? systemHooks = null,
         ScriptDbAdapter? scriptDb = null,
         Func<string, string?>? defMessageLookup = null,
-        ScriptFileHandle? scriptFile = null)
+        ScriptFileHandle? scriptFile = null,
+        ScriptDbAdapter? scriptLdb = null)
     {
         _systemHooks = systemHooks;
         _scriptDb = scriptDb;
+        _scriptLdb = scriptLdb;
         _defMessageLookup = defMessageLookup;
         _scriptFile = scriptFile;
     }
@@ -10108,6 +10111,56 @@ public sealed class GameClient : ITextConsole
             return true;
         }
 
+        if (upper.StartsWith("LDB.", StringComparison.Ordinal))
+        {
+            if (_scriptLdb == null)
+            {
+                _logger.LogWarning("SQLite (LDB) adapter is not configured for script runtime.");
+                return true;
+            }
+
+            string ldbVerb = upper.Length > 4 ? upper[4..] : "";
+            switch (ldbVerb)
+            {
+                case "CONNECT":
+                {
+                    string fileName = args.Trim();
+                    if (string.IsNullOrWhiteSpace(fileName))
+                    {
+                        SysMessage("LDB.CONNECT requires a filename.");
+                        return true;
+                    }
+                    if (!_scriptLdb.ConnectFile(fileName, out string err))
+                        SysMessage(ServerMessages.GetFormatted("db_connect_fail", err));
+                    return true;
+                }
+                case "CLOSE":
+                {
+                    _scriptLdb.Close();
+                    return true;
+                }
+                case "QUERY":
+                {
+                    bool ok = _scriptLdb.Query(args, out int rows, out string err);
+                    if (!ok)
+                        SysMessage(ServerMessages.GetFormatted("db_query_fail", err));
+                    else
+                        _logger.LogDebug("LDB.QUERY returned {Rows} rows", rows);
+                    return true;
+                }
+                case "EXECUTE":
+                {
+                    bool ok = _scriptLdb.Execute(args, out int affected, out string err);
+                    if (!ok)
+                        SysMessage(ServerMessages.GetFormatted("db_execute_fail", err));
+                    else
+                        _logger.LogDebug("LDB.EXECUTE affected {Rows} rows", affected);
+                    return true;
+                }
+            }
+            return true;
+        }
+
         return false;
     }
 
@@ -10283,10 +10336,30 @@ public sealed class GameClient : ITextConsole
             value = _scriptDb?.ActiveSessionName ?? "";
             return true;
         }
+        if (varName.StartsWith("DB.ESCAPEDATA.", StringComparison.OrdinalIgnoreCase) && _scriptDb != null)
+        {
+            string rawData = varName[14..];
+            value = _scriptDb.EscapeData(rawData);
+            return true;
+        }
         if (_scriptDb != null && _scriptDb.TryResolveRowValue(varName, out string dbVal))
         {
             value = dbVal;
             return true;
+        }
+        if (varName.Equals("LDB.CONNECTED", StringComparison.OrdinalIgnoreCase))
+        {
+            value = _scriptLdb?.IsConnected == true ? "1" : "0";
+            return true;
+        }
+        if (_scriptLdb != null && varName.StartsWith("LDB.ROW.", StringComparison.OrdinalIgnoreCase))
+        {
+            string ldbKey = "db.row." + varName[8..];
+            if (_scriptLdb.TryResolveRowValue(ldbKey, out string ldbVal))
+            {
+                value = ldbVal;
+                return true;
+            }
         }
         if (varName.StartsWith("ACCOUNT.", StringComparison.OrdinalIgnoreCase))
         {

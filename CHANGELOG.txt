@@ -4,6 +4,42 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-23] - SQLite desteği ve Source-X DB uyumlulugu
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - SQLite veritabani desteği: Microsoft.Data.Sqlite entegrasyonu, MySQL
+    olmadan bagimsiz calisabilir. DbProviderFactories uzerinden provider
+    kaydı ve connection string olusturma.
+    SQLite database support: Microsoft.Data.Sqlite integration, works
+    standalone without MySQL. Provider registration and connection string
+    building via DbProviderFactories.
+  - LDB.* script komutlari: Source-X uyumlu SQLite erisimi. LDB.CONNECT
+    <dosyaadi> ile scriptlerden dogrudan SQLite baglantisi, LDB.QUERY,
+    LDB.EXECUTE, LDB.CLOSE komutlari. LDB.CONNECTED ve LDB.ROW.* degisken
+    cozumlemesi.
+    LDB.* script commands: Source-X compatible SQLite access. LDB.CONNECT
+    <filename> for direct SQLite connection from scripts, LDB.QUERY,
+    LDB.EXECUTE, LDB.CLOSE commands. LDB.CONNECTED and LDB.ROW.* variable
+    resolution.
+  - DB.ESCAPEDATA: MySQL uyumlu string escape fonksiyonu (Source-X'teki
+    mysql_real_escape_string karsiligi).
+    DB.ESCAPEDATA: MySQL-compatible string escape function (equivalent to
+    mysql_real_escape_string in Source-X).
+
+DEGISIKLIKLER / CHANGES:
+  - DB/LDB ayirimi: Source-X mimarisine uygun olarak MySQL (DB.*) ve SQLite
+    (LDB.*) ayri adapter instance'lari uzerinden calisiyor. Coklu MySQL
+    baglanti destegi korunuyor.
+    DB/LDB separation: following Source-X architecture, MySQL (DB.*) and
+    SQLite (LDB.*) operate through separate adapter instances. Multiple MySQL
+    connection support preserved.
+  - INI konfigurasyonu: [SQLITE name] section'lari ile SQLite baglantilari
+    sphere.ini'den tanimlanabilir, veya scriptlerden LDB.CONNECT ile
+    runtime'da acilabilir.
+    INI configuration: SQLite connections can be defined via [SQLITE name]
+    sections in sphere.ini, or opened at runtime from scripts via LDB.CONNECT.
+
 [2026-04-23] - Engine iyilestirmeleri: spell persistence, container weight, combat refactor
 ----------------------------------------
 

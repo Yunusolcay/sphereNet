@@ -76,10 +76,40 @@ public sealed class ScriptDbAdapter : IDisposable
         return session.Connect(providerInvariantName, connectionString, out error);
     }
 
+    /// <summary>Connect a SQLite file directly (LDB.CONNECT &lt;filename&gt; style).</summary>
+    public bool ConnectFile(string fileName, out string error)
+    {
+        error = "";
+        var cfg = new DbConnectionConfig
+        {
+            Name = "default",
+            Provider = "Microsoft.Data.Sqlite",
+            Database = fileName
+        };
+        var session = GetOrCreateActiveSession();
+        session.UpdateConfig(cfg);
+        return session.Connect("Microsoft.Data.Sqlite", $"Data Source={fileName};", out error);
+    }
+
     /// <summary>Connect the default session (backward compat).</summary>
     public bool ConnectDefault(out string error)
     {
         return Connect("default", out error);
+    }
+
+    /// <summary>Escape a string for safe SQL use (MySQL-specific, returns input as-is for non-MySQL).</summary>
+    public string EscapeData(string input)
+    {
+        if (string.IsNullOrEmpty(input))
+            return "";
+        return input
+            .Replace("\\", "\\\\")
+            .Replace("'", "\\'")
+            .Replace("\"", "\\\"")
+            .Replace("\0", "\\0")
+            .Replace("\n", "\\n")
+            .Replace("\r", "\\r")
+            .Replace("\x1a", "\\Z");
     }
 
     /// <summary>Close the active session.</summary>
@@ -233,8 +263,10 @@ public sealed class ScriptDbAdapter : IDisposable
         private Thread? _workerThread;
         private readonly BlockingCollection<Action>? _workQueue;
 
-        public DbConnectionConfig? Config { get; }
+        public DbConnectionConfig? Config { get; private set; }
         public string? LegacyConnectionString { get; set; }
+
+        public void UpdateConfig(DbConnectionConfig config) => Config = config;
 
         public bool IsConnected
         {

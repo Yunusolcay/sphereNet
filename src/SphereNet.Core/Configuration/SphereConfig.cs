@@ -415,13 +415,15 @@ public sealed class SphereConfig
             });
         }
 
-        // Parse [MYSQL name] sections
+        // Parse [MYSQL name] and [SQLITE name] sections
         foreach (var kvp in ini.Sections)
         {
-            if (!kvp.Key.StartsWith("MYSQL ", StringComparison.OrdinalIgnoreCase))
+            bool isMySql = kvp.Key.StartsWith("MYSQL ", StringComparison.OrdinalIgnoreCase);
+            bool isSqlite = kvp.Key.StartsWith("SQLITE ", StringComparison.OrdinalIgnoreCase);
+            if (!isMySql && !isSqlite)
                 continue;
 
-            string connName = kvp.Key[6..].Trim();
+            string connName = kvp.Key[(isMySql ? 6 : 7)..].Trim();
             if (string.IsNullOrWhiteSpace(connName)) continue;
 
             // Skip if legacy default already added with same name
@@ -430,10 +432,14 @@ public sealed class SphereConfig
             {
                 // Override the legacy one with explicit section values
                 ApplyDbSectionValues(DbConnections[0], ini, kvp.Key);
+                if (isSqlite)
+                    DbConnections[0].Provider = "Microsoft.Data.Sqlite";
                 continue;
             }
 
             var cfg = new DbConnectionConfig { Name = connName };
+            if (isSqlite)
+                cfg.Provider = "Microsoft.Data.Sqlite";
             ApplyDbSectionValues(cfg, ini, kvp.Key);
             DbConnections.Add(cfg);
         }

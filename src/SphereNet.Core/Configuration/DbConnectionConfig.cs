@@ -32,7 +32,18 @@ public sealed class DbConnectionConfig
     /// <summary>Auto-connect on server startup.</summary>
     public bool AutoConnect { get; set; }
 
+    /// <summary>True if this is a SQLite provider.</summary>
+    public bool IsSqlite => Provider.Contains("Sqlite", System.StringComparison.OrdinalIgnoreCase);
+
     public string BuildConnectionString()
+    {
+        if (IsSqlite)
+            return BuildSqliteConnectionString();
+
+        return BuildMySqlConnectionString();
+    }
+
+    private string BuildMySqlConnectionString()
     {
         var parts = new System.Text.StringBuilder(256);
         parts.Append($"Server={Host};");
@@ -43,6 +54,15 @@ public sealed class DbConnectionConfig
         parts.Append($"Default Command Timeout={ReadTimeout};");
         if (KeepAlive)
             parts.Append("Keepalive=60;");
+        return parts.ToString();
+    }
+
+    private string BuildSqliteConnectionString()
+    {
+        var parts = new System.Text.StringBuilder(128);
+        parts.Append($"Data Source={Database};");
+        if (!string.IsNullOrWhiteSpace(Password))
+            parts.Append($"Password={Password};");
         return parts.ToString();
     }
 }
