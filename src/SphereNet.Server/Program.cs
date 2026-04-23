@@ -42,6 +42,8 @@ using TriggerArgs = SphereNet.Game.Scripting.TriggerArgs;
 using SphereNet.Scripting.Expressions;
 using SphereNet.Scripting.Definitions;
 using SphereNet.Scripting.Resources;
+using GameRegion = SphereNet.Game.World.Regions.Region;
+using SphereNet.Game.World.Regions;
 #if WINFORMS
 using SphereNet.Server.Admin;
 #endif
@@ -470,7 +472,8 @@ public static class Program
         _world = new GameWorld(_loggerFactory);
         _world.MaxContainerItems = _config.ContainerMaxItems;
         _world.MaxBankItems      = _config.BankMaxItems;
-        _world.MaxBankWeight     = _config.BankMaxWeight;
+        _world.MaxBankWeight        = _config.BankMaxWeight;
+        _world.MaxContainerWeight   = _config.ContainerMaxWeight;
         _world.ToolTipMode       = _config.ToolTipMode;
         PacketCharList.AosTooltipsEnabled = _config.ToolTipMode != 0;
         foreach (var mapDef in _config.Maps)
@@ -1167,6 +1170,22 @@ public static class Program
         {
             var animPkt = new PacketAnimation(caster.Uid.Value, animId);
             BroadcastNearby(caster.Position, 18, animPkt, 0);
+        };
+        GameRegion.ClientCountProvider = regionObj =>
+        {
+            int count = 0;
+            foreach (var c in _clients.Values)
+            {
+                if (c.Character == null || !c.IsPlaying) continue;
+                switch (regionObj)
+                {
+                    case GameRegion reg when reg.Contains(c.Character.Position):
+                    case Room room when room.Contains(c.Character.Position):
+                        count++;
+                        break;
+                }
+            }
+            return count;
         };
         _deathEngine = new DeathEngine(_world);
         // NOTE: DeathEngine.OnDeath fires from inside ProcessDeath, after the
@@ -2833,9 +2852,11 @@ public static class Program
             _housingEngine?.SerializeAllToTags();
             _shipEngine?.SerializeAllToTags();
             _guildManager?.SerializeAllToTags(_world);
+            _spellEngine.RevertAllForSave();
             string basePath = AppDomain.CurrentDomain.BaseDirectory;
             string sp = ResolvePath(basePath, _config.WorldSaveDir);
             _saver.Save(_world, sp);
+            _spellEngine.ReapplyAllAfterSave();
             string accDir = ResolvePath(basePath, _config.AccountDir);
             SphereNet.Persistence.Accounts.AccountPersistence.Save(
                 _accounts, accDir, _saver.Format,

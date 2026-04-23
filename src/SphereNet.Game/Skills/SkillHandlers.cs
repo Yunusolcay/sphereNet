@@ -254,7 +254,10 @@ public sealed class SkillHandlers
         if (!ch.IsStatFlag(StatFlag.Hidden)) return false;
         bool success = SkillEngine.UseQuick(ch, SkillType.Stealth, 60);
         if (success)
-            ch.SetTag("StealthSteps", "10");
+        {
+            int steps = Math.Max(1, ch.GetSkill(SkillType.Stealth) / 100);
+            ch.SetTag("StealthSteps", steps.ToString());
+        }
         return success;
     }
 

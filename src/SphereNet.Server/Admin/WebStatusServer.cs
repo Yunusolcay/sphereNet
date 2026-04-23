@@ -139,7 +139,9 @@ public sealed class WebStatusServer : IDisposable
     public void Dispose()
     {
         _running = false;
-        try { _listener?.Stop(); } catch { }
-        try { _listener?.Close(); } catch { }
+        try { _listener?.Stop(); }
+        catch (Exception ex) { _logger.LogDebug(ex, "WebStatus listener stop error"); }
+        try { _listener?.Close(); }
+        catch (Exception ex) { _logger.LogDebug(ex, "WebStatus listener close error"); }
     }
 }

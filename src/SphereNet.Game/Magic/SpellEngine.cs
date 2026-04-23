@@ -840,6 +840,33 @@ public sealed class SpellEngine
             OnPersonalLightChanged?.Invoke(t);
         }
     }
+
+    /// <summary>Revert all active buff deltas so character stats are saved
+    /// clean (base values only). Call before WorldSaver runs.</summary>
+    public void RevertAllForSave()
+    {
+        foreach (var eff in _activeEffects)
+            RevertDeltas(eff);
+    }
+
+    /// <summary>Re-apply all active buff deltas after a save completes.
+    /// Paired with <see cref="RevertAllForSave"/>.</summary>
+    public void ReapplyAllAfterSave()
+    {
+        foreach (var eff in _activeEffects)
+        {
+            var t = eff.Target;
+            if (eff.StrDelta != 0) t.Str += eff.StrDelta;
+            if (eff.DexDelta != 0) t.Dex += eff.DexDelta;
+            if (eff.IntDelta != 0) t.Int += eff.IntDelta;
+            if (eff.AppliedFlag != StatFlag.None) t.SetStatFlag(eff.AppliedFlag);
+            if (eff.LightChanged)
+            {
+                t.LightLevel = (byte)Math.Max(0, t.LightLevel - 6);
+                OnPersonalLightChanged?.Invoke(t);
+            }
+        }
+    }
 }
 
 /// <summary>

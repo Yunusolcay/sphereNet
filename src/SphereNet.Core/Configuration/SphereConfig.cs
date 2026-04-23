@@ -114,6 +114,7 @@ public sealed class SphereConfig
     public int ContainerMaxItems { get; set; } = 125;
     public int BankMaxItems { get; set; } = 125;
     public int BankMaxWeight { get; set; } = 1600;
+    public int ContainerMaxWeight { get; set; } = 400;
     public int ItemsMaxAmount { get; set; } = 60000;
 
     // Housing
@@ -322,6 +323,7 @@ public sealed class SphereConfig
         ContainerMaxItems = ini.GetInt(section, "ContainerMaxItems", ContainerMaxItems);
         BankMaxItems = ini.GetInt(section, "BankMaxItems", BankMaxItems);
         BankMaxWeight = ini.GetInt(section, "BankMaxWeight", BankMaxWeight);
+        ContainerMaxWeight = ini.GetInt(section, "ContainerMaxWeight", ContainerMaxWeight);
         ItemsMaxAmount = ini.GetInt(section, "ItemsMaxAmount", ItemsMaxAmount);
 
         MaxHousesPlayer = ini.GetInt(section, "MaxHousesPlayer", MaxHousesPlayer);

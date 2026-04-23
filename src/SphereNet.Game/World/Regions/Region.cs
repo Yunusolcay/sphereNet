@@ -25,6 +25,8 @@ public class Region : IScriptObj
     private string? _defName;
     private Point3D? _p;
 
+    public static Func<IScriptObj, int>? ClientCountProvider { get; set; }
+
     public Region()
     {
         _uid = _nextUid++;
@@ -119,7 +121,7 @@ public class Region : IScriptObj
             case "FLAGS": value = ((uint)_flags).ToString(); return true;
             case "GROUP": value = _group ?? ""; return true;
             case "RECT": value = _rects.Count.ToString(); return true;
-            case "CLIENTS": value = "0"; return true; // stub
+            case "CLIENTS": value = (ClientCountProvider?.Invoke(this) ?? 0).ToString(); return true;
             case "P":
                 if (_p.HasValue)
                     value = $"{_p.Value.X},{_p.Value.Y},{_p.Value.Z},{_p.Value.Map}";

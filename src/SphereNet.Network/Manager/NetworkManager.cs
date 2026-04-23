@@ -179,7 +179,10 @@ public sealed class NetworkManager : IDisposable
                 OnConnectionAccepted?.Invoke(slot);
             }
         }
-        catch (SocketException) { }
+        catch (SocketException ex)
+        {
+            _logger.LogDebug(ex, "Accept poll interrupted");
+        }
     }
 
     /// <summary>

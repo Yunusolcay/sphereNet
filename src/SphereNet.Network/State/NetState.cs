@@ -99,8 +99,10 @@ public sealed class NetState : IDisposable
 
     public void Clear()
     {
-        try { _socket?.Shutdown(SocketShutdown.Both); } catch { }
-        try { _socket?.Close(); } catch { }
+        try { _socket?.Shutdown(SocketShutdown.Both); }
+        catch (Exception ex) { _logger.LogDebug(ex, "Socket shutdown error (client #{Id})", Id); }
+        try { _socket?.Close(); }
+        catch (Exception ex) { _logger.LogDebug(ex, "Socket close error (client #{Id})", Id); }
         _socket = null;
         IsInUse = false;
         IsClosing = false;

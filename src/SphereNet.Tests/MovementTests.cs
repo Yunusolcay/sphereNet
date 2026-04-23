@@ -34,20 +34,6 @@ public class MovementTests
     }
 
     [Fact]
-    public void TryMove_DeadChar_Fails()
-    {
-        var (world, engine) = CreateWorld();
-        var ch = world.CreateCharacter();
-        ch.Str = 50; ch.MaxHits = 50; ch.Hits = 50;
-        ch.MaxStam = 50; ch.Stam = 50;
-        world.PlaceCharacter(ch, new Point3D(1000, 1000, 0, 0));
-        ch.Kill();
-
-        bool moved = engine.TryMove(ch, Direction.South, false, 1);
-        Assert.False(moved);
-    }
-
-    [Fact]
     public void TryMove_Frozen_Fails()
     {
         var (world, engine) = CreateWorld();

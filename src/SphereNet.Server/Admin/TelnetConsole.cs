@@ -67,7 +67,10 @@ public sealed class TelnetConsole : IDisposable
                 _logger.LogInformation("Admin telnet session from {EP}", socket.RemoteEndPoint);
             }
         }
-        catch (SocketException) { }
+        catch (SocketException ex)
+        {
+            _logger.LogDebug(ex, "Telnet accept poll interrupted");
+        }
 
         // Process existing sessions
         for (int i = _sessions.Count - 1; i >= 0; i--)

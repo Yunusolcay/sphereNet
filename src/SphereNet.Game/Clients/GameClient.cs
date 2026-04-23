@@ -4585,14 +4585,15 @@ public sealed class GameClient : ITextConsole
                         _netState.Send(new PacketDropAck());
                         return;
                     }
-                    if (isBank && _world.MaxBankWeight > 0)
+                    int weightLimit = isBank ? _world.MaxBankWeight : _world.MaxContainerWeight;
+                    if (weightLimit > 0)
                     {
                         int totalWeight = 0;
                         foreach (var b in _world.GetContainerContents(container.Uid))
                             totalWeight += Math.Max(1, (int)b.Amount);
-                        if (totalWeight + Math.Max(1, (int)item.Amount) > _world.MaxBankWeight)
+                        if (totalWeight + Math.Max(1, (int)item.Amount) > weightLimit)
                         {
-                            SysMessage(ServerMessages.Get(Msg.BvboxFullWeight));
+                            SysMessage(ServerMessages.Get(isBank ? Msg.BvboxFullWeight : Msg.ContFullWeight));
                             PlaceItemInPack(_character, item);
                             _netState.Send(new PacketDropAck());
                             return;
@@ -9142,50 +9143,8 @@ public sealed class GameClient : ITextConsole
             _netState.Id, _character.Uid.Value, oldState ? "war" : "peace", _character.IsInWarMode ? "war" : "peace");
     }
 
-    /// <summary>
-    /// Pre-AOS swing delay (Source-X <c>Calc_CombatAttackSpeed</c> formula 0).
-    /// Returns the full swing recoil in milliseconds. Steps:
-    ///   <list type="number">
-    ///     <item>Take <c>iBaseSpeed</c> from <c>weapon.Speed</c> (ITEMDEF SPEED)
-    ///       or 50 for bare-fist wrestling.</item>
-    ///     <item>Compute <c>iSwingSpeed = (DEX + 100) * iBaseSpeed</c>.</item>
-    ///     <item>Convert to deciseconds: <c>(SpeedScaleFactor * 10) / iSwingSpeed</c>
-    ///       with the same default <c>SpeedScaleFactor = 15000</c> Source-X uses.</item>
-    ///     <item>Floor at 5 ticks (0.5 s) so a fast weapon never goes instant.</item>
-    ///     <item>Apply 2-handed weight bonus and a small mounted bonus to match
-    ///       Source-X behaviour, then return as ms.</item>
-    ///   </list>
-    /// This makes ITEMDEF SPEED = 35 sword + DEX 100 swing in ~0.75 s + recoil,
-    /// instead of the earlier hard-coded ~2.3 s value.
-    /// </summary>
     public static int GetSwingDelayMs(Character attacker, Item? weapon)
-    {
-        const int speedScaleFactor = 15000;
-
-        int baseSpeed = weapon?.Speed > 0 ? weapon.Speed : 0;
-        if (baseSpeed <= 0)
-            baseSpeed = weapon == null ? 50 : 35;
-
-        int dex = Math.Max(0, (int)attacker.Dex);
-        long iSwingSpeed = (long)(dex + 100) * baseSpeed;
-        if (iSwingSpeed < 1) iSwingSpeed = 1;
-
-        long deciseconds = (speedScaleFactor * 10L) / iSwingSpeed;
-        if (deciseconds < 5) deciseconds = 5;
-
-        // 2-handed weapons: Source-X formula 0 weight branch adds half the
-        // swing speed for HAND2-equipped weapons. We approximate without
-        // recomputing the legacy weight branch.
-        if (weapon != null && weapon.IsTwoHanded)
-            deciseconds += deciseconds / 4;
-
-        int delayMs = (int)(deciseconds * 100);
-
-        if (attacker.IsMounted)
-            delayMs -= 200;
-
-        return Math.Clamp(delayMs, 500, 7000);
-    }
+        => CombatEngine.GetSwingDelayMs(attacker, weapon);
 
     /// <summary>Map a weapon (or bare fists) to the correct humanoid
     /// 0x6E animation action index. Ranged weapons trigger the nock/fire

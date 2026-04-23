@@ -86,7 +86,7 @@ public class Room : IScriptObj
             case "NAME": value = _name; return true;
             case "MAP": value = _mapIndex.ToString(); return true;
             case "RECT": value = _rects.Count.ToString(); return true;
-            case "CLIENTS": value = "0"; return true; // stub
+            case "CLIENTS": value = (Region.ClientCountProvider?.Invoke(this) ?? 0).ToString(); return true;
             case "TAGCOUNT": value = _tags.Count.ToString(); return true;
             case "EVENTS":
                 value = string.Join(",", _events.Select(e => e.ToString()));

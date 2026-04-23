@@ -67,6 +67,8 @@ public sealed class GameWorld
     public int MaxBankItems { get; set; } = 125;
     /// <summary>Max total weight (stones) allowed in a bank box. sphere.ini BANKMAXWEIGHT.</summary>
     public int MaxBankWeight { get; set; } = 1600;
+    /// <summary>Max total weight (stones) allowed in a regular container. sphere.ini CONTAINERMAXWEIGHT. 0=unlimited.</summary>
+    public int MaxContainerWeight { get; set; } = 400;
     /// <summary>AOS tooltip mode. 0=off, 1=enabled. sphere.ini TOOLTIPMODE.</summary>
     public int ToolTipMode { get; set; }
 

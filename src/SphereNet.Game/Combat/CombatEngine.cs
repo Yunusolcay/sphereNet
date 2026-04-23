@@ -370,4 +370,34 @@ public static class CombatEngine
         resist = Math.Clamp(resist, 0, 100);
         return damage - (damage * resist / 100);
     }
+
+    /// <summary>
+    /// Pre-AOS swing delay (Source-X <c>Calc_CombatAttackSpeed</c> formula 0).
+    /// Returns the full swing recoil in milliseconds.
+    /// </summary>
+    public static int GetSwingDelayMs(Character attacker, Item? weapon)
+    {
+        const int speedScaleFactor = 15000;
+
+        int baseSpeed = weapon?.Speed > 0 ? weapon.Speed : 0;
+        if (baseSpeed <= 0)
+            baseSpeed = weapon == null ? 50 : 35;
+
+        int dex = Math.Max(0, (int)attacker.Dex);
+        long iSwingSpeed = (long)(dex + 100) * baseSpeed;
+        if (iSwingSpeed < 1) iSwingSpeed = 1;
+
+        long deciseconds = (speedScaleFactor * 10L) / iSwingSpeed;
+        if (deciseconds < 5) deciseconds = 5;
+
+        if (weapon != null && weapon.IsTwoHanded)
+            deciseconds += deciseconds / 4;
+
+        int delayMs = (int)(deciseconds * 100);
+
+        if (attacker.IsMounted)
+            delayMs -= 200;
+
+        return Math.Clamp(delayMs, 500, 7000);
+    }
 }
