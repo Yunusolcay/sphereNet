@@ -4,6 +4,64 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-23] - Item use, spellbook, combat mesaj duzeltmeleri
+----------------------------------------
+
+HATA DUZELTMELERI / BUG FIXES:
+  - Saldiri mesaji spam duzeltildi: "attacking is you" mesaji artik sadece hedef
+    degistiginde gonderiliyor (her vuruста degil).
+    Attack message spam fixed: "attacking is you" now only sent once per target
+    change (not per-hit).
+  - Spellbook buyuleri gostermiyor duzeltildi: 0xBF sub 0x1B (New Spellbook
+    Content) paketi eklendi. Spellbook acildiginda More1/More2'den 64-bit
+    bitmask okunup client'a gonderiliyor. Tur bazli scrollOffset destegi
+    (magery=1, necro=101, paladin=201, bushido=401, ninjitsu=501, arcanist=601,
+    mystic=677, mastery=701).
+    Spellbook not showing spells fixed: added 0xBF sub 0x1B (New Spellbook
+    Content) packet. Reads 64-bit bitmask from More1/More2 on open. Type-based
+    scrollOffset support for all spellbook types.
+
+YENI OZELLIKLER / NEW FEATURES:
+  - 28+ eksik item tipi icin double-click handler eklendi:
+    28+ missing item type double-click handlers added:
+    * Isik kaynaklari (LightLit/LightOut): Toggle acma/kapama + ses efekti.
+      Light sources: toggle on/off with sound effect.
+    * Telepad/Moongate: MoreP hedefine teleport + ses/gorscel efekt.
+      Telepad/Moongate: teleport to MoreP destination with effects.
+    * Switch: Item trigger atesleme.
+      Switch: fires item trigger.
+    * Booze: Food +2, sarhosluk mesaji.
+      Booze: Food +2, drunkenness message.
+    * Musical: Musicianship skill tetikleme.
+      Musical instruments: triggers Musicianship skill.
+    * Figurine: Pet unshrink — More1'den serial ile pet spawn.
+      Figurine: pet unshrink — spawns pet from More1 serial.
+    * TrainDummy/TrainPickpocket/ArcheryButte: Ilgili skill tetikleme.
+      Training targets: triggers appropriate combat skill.
+    * Kindling/Bedroll/Campfire: Camping skill / mesaj.
+      Camping items: triggers Camping skill / info message.
+    * Loom/SpinWheel/Anvil/Fletching: Target secimi + skill tetikleme.
+      Crafting stations: target selection + skill trigger.
+    * BeeHive/Seed: Bilgi mesaji + target.
+      Resource items: info message + target.
+    * Pitcher/PitcherEmpty: Potion kullanimi / dolum target.
+      Liquid containers: potion use / fill target.
+    * Cotton/Wool/Feather/Fur/Thread/Yarn/Log/Board/Shaft/Bone/Rope:
+      Bilgilendirici mesaj.
+      Raw materials: informational messages.
+    * FoodRaw/MeatRaw: "Once pisirilmeli" mesaji.
+      Raw food: "must be cooked first" message.
+    * Portculis/PortLocked: ToggleDoor.
+      Portcullis: door toggle.
+    * CommCrystal: Bilgi mesaji.
+      Communication crystal: info message.
+
+TEKNIK / TECHNICAL:
+  - PacketSpellbookContent (0xBF sub 0x1B) paketi: ExtendedPackets.cs'e eklendi.
+    PacketSpellbookContent (0xBF sub 0x1B) packet: added to ExtendedPackets.cs.
+  - _lastCombatNotifyTarget field: Hedef bazli combat mesaj takibi.
+    _lastCombatNotifyTarget field: per-target combat message tracking.
+
 [2026-04-23] - Bot AI: akilli davranis motoru, restock, olum/dirilis, binek
 ----------------------------------------
 

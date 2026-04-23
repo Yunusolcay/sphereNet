@@ -1547,6 +1547,39 @@ public sealed class PacketClilocMessage : PacketWriter
     }
 }
 
+/// <summary>0xBF sub 0x1B — New Spellbook Content. Tells the client which
+/// spells exist in a spellbook using a 64-bit bitmask stored in More1/More2.</summary>
+public sealed class PacketSpellbookContent : PacketWriter
+{
+    private readonly uint _serial;
+    private readonly ushort _graphic;
+    private readonly ushort _scrollOffset;
+    private readonly ulong _spellBits;
+
+    public PacketSpellbookContent(uint serial, ushort graphic, ushort scrollOffset, ulong spellBits)
+        : base(0xBF)
+    {
+        _serial = serial;
+        _graphic = graphic;
+        _scrollOffset = scrollOffset;
+        _spellBits = spellBits;
+    }
+
+    public override PacketBuffer Build()
+    {
+        var buf = CreateVariable(23);
+        buf.WriteUInt16(0x001B);
+        buf.WriteUInt16(1);
+        buf.WriteUInt32(_serial);
+        buf.WriteUInt16(_graphic);
+        buf.WriteUInt16(_scrollOffset);
+        buf.WriteUInt32((uint)(_spellBits & 0xFFFFFFFF));
+        buf.WriteUInt32((uint)(_spellBits >> 32));
+        buf.WriteLengthAt(1);
+        return buf;
+    }
+}
+
 /// <summary>0xBA — Quest arrow. Active=1 draws an arrow on the client's
 /// screen pointing toward (x, y); active=0 clears it.</summary>
 public sealed class PacketArrowQuest : PacketWriter

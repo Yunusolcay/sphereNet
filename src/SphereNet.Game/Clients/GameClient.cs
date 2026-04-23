@@ -165,6 +165,7 @@ public sealed class GameClient : ITextConsole
     private bool _pendingMountTarget;
     private bool _pendingSummonCageTarget;
     private Point3D? _lastScriptTargetPoint;
+    private uint _lastCombatNotifyTarget;
     private Action<uint, short, short, sbyte, ushort>? _pendingTargetCallback;
     private Item? _pendingScriptNewItem;
     private bool _targetCursorActive;
@@ -1195,8 +1196,11 @@ public sealed class GameClient : ITextConsole
 
         if (damage > 0)
         {
-            // Source-X CCharFight Fight_Hit: per-strike attacker emote.
-            NpcSpeech(_character, ServerMessages.GetFormatted(Msg.CombatAttacks, target.Name));
+            if (_lastCombatNotifyTarget != target.Uid.Value)
+            {
+                _lastCombatNotifyTarget = target.Uid.Value;
+                NpcSpeech(_character, ServerMessages.GetFormatted(Msg.CombatAttacks, target.Name));
+            }
 
             _spellEngine?.TryInterruptFromDamage(target, damage);
 
@@ -2284,8 +2288,24 @@ public sealed class GameClient : ITextConsole
             case ItemType.SpellbookMystic:
             case ItemType.SpellbookMastery:
             case ItemType.SpellbookExtra:
+            {
+                ushort scrollOffset = item.ItemType switch
+                {
+                    ItemType.SpellbookNecro => 101,
+                    ItemType.SpellbookPala => 201,
+                    ItemType.SpellbookBushido => 401,
+                    ItemType.SpellbookNinjitsu => 501,
+                    ItemType.SpellbookArcanist => 601,
+                    ItemType.SpellbookMystic => 677,
+                    ItemType.SpellbookMastery => 701,
+                    _ => 1
+                };
+                ulong spellBits = ((ulong)item.More2 << 32) | item.More1;
+                _netState.Send(new PacketSpellbookContent(
+                    item.Uid.Value, item.BaseId, scrollOffset, spellBits));
                 _netState.Send(new PacketOpenContainer(item.Uid.Value, 0x003E, _netState.IsClientPost7090));
                 break;
+            }
 
             // ---- tools that target a follow-up object ----
             case ItemType.Bandage:
@@ -2502,6 +2522,211 @@ public sealed class GameClient : ITextConsole
                 break;
 
             // ---- BankBox / VendorBox: anti-cheat reject ----
+            // ---- light sources ----
+            case ItemType.LightLit:
+                item.ItemType = ItemType.LightOut;
+                _netState.Send(new PacketSound(0x0047, _character.X, _character.Y, _character.Z));
+                BroadcastNearby?.Invoke(item.Position, UpdateRange,
+                    new PacketWorldItem(item.Uid.Value, item.DispIdFull, item.Amount,
+                        item.X, item.Y, item.Z, item.Hue), 0);
+                break;
+            case ItemType.LightOut:
+                item.ItemType = ItemType.LightLit;
+                _netState.Send(new PacketSound(0x0047, _character.X, _character.Y, _character.Z));
+                BroadcastNearby?.Invoke(item.Position, UpdateRange,
+                    new PacketWorldItem(item.Uid.Value, item.DispIdFull, item.Amount,
+                        item.X, item.Y, item.Z, item.Hue), 0);
+                break;
+
+            // ---- telepad / switch ----
+            case ItemType.Telepad:
+            {
+                var dest = item.MoreP;
+                if (dest.X != 0 || dest.Y != 0)
+                {
+                    _character.MoveTo(dest);
+                    SendSelfRedraw();
+                    _netState.Send(new PacketSound(0x01FE, _character.X, _character.Y, _character.Z));
+                }
+                break;
+            }
+            case ItemType.Switch:
+                _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Step,
+                    new TriggerArgs { CharSrc = _character, ItemSrc = item });
+                break;
+
+            // ---- beverages ----
+            case ItemType.Booze:
+                _character.Food = (ushort)Math.Min(_character.Food + 2, 60);
+                SysMessage("*hic!*");
+                if (_triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Destroy,
+                        new TriggerArgs { CharSrc = _character, ItemSrc = item }) != TriggerResult.True)
+                {
+                    item.Delete();
+                }
+                break;
+
+            // ---- musical instruments ----
+            case ItemType.Musical:
+                RouteSkillTarget(SkillType.Musicianship, item.Uid);
+                break;
+
+            // ---- figurine (pet shrink/unshrink) ----
+            case ItemType.Figurine:
+            {
+                uint linkedSerial = item.More1;
+                if (linkedSerial != 0 && _world != null)
+                {
+                    var pet = _world.FindChar(new Serial(linkedSerial));
+                    if (pet != null)
+                    {
+                        pet.MoveTo(_character.Position);
+                        _world.PlaceCharacter(pet, _character.Position);
+                        item.Delete();
+                        SysMessage("Your pet materializes beside you.");
+                    }
+                    else
+                    {
+                        SysMessage("The creature is lost.");
+                    }
+                }
+                else
+                {
+                    SysMessage(ServerMessages.Get(Msg.MsgFigurineNotyours));
+                }
+                break;
+            }
+
+            // ---- moongate ----
+            case ItemType.Moongate:
+            {
+                var dest = item.MoreP;
+                if (dest.X != 0 || dest.Y != 0)
+                {
+                    _character.MoveTo(dest);
+                    SendSelfRedraw();
+                    _netState.Send(new PacketSound(0x01FE, _character.X, _character.Y, _character.Z));
+                    _netState.Send(new PacketEffect(2, 0, 0, 0x3728,
+                        _character.X, _character.Y, (short)_character.Z,
+                        _character.X, _character.Y, (short)_character.Z,
+                        10, 30, true, false));
+                }
+                else
+                {
+                    _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Step,
+                        new TriggerArgs { CharSrc = _character, ItemSrc = item });
+                }
+                break;
+            }
+
+            // ---- training dummies ----
+            case ItemType.TrainDummy:
+            {
+                ushort animId = (ushort)(item.BaseId == 0x1070 || item.BaseId == 0x1074 ? item.BaseId + 1 : item.BaseId);
+                _netState.Send(new PacketSound(0x03B5, item.X, item.Y, item.Z));
+                var skill = _character.GetEquippedItem(Layer.TwoHanded) != null
+                    ? SkillType.Swordsmanship
+                    : SkillType.Wrestling;
+                RouteSkillTarget(skill, item.Uid);
+                break;
+            }
+            case ItemType.TrainPickpocket:
+                RouteSkillTarget(SkillType.Stealing, item.Uid);
+                break;
+            case ItemType.ArcheryButte:
+                RouteSkillTarget(SkillType.Archery, item.Uid);
+                break;
+
+            // ---- kindling / bedroll / campfire ----
+            case ItemType.Kindling:
+                RouteSkillTarget(SkillType.Camping, item.Uid);
+                break;
+            case ItemType.Bedroll:
+                SysMessage("You lay out the bedroll.");
+                RouteSkillTarget(SkillType.Camping, item.Uid);
+                break;
+            case ItemType.Campfire:
+                SysMessage("The fire is warm.");
+                break;
+
+            // ---- crafting stations ----
+            case ItemType.Loom:
+                SysMessage("Select the thread to weave.");
+                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Tailoring, new Serial(serial)));
+                break;
+            case ItemType.SpinWheel:
+                SysMessage("Select the wool or cotton to spin.");
+                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Tailoring, new Serial(serial)));
+                break;
+            case ItemType.Anvil:
+                SysMessage("Select the ingot to smith.");
+                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Blacksmithing, new Serial(serial)));
+                break;
+
+            // ---- beehive / seed / pitcher ----
+            case ItemType.BeeHive:
+                SysMessage("You reach into the beehive.");
+                break;
+            case ItemType.Seed:
+                SysMessage("Select where to plant the seed.");
+                SetPendingTarget((serial, x, y, z, gfx) => { /* planting pending */ });
+                break;
+            case ItemType.Pitcher:
+                UsePotion(item);
+                break;
+            case ItemType.PitcherEmpty:
+                SysMessage("Select a water source to fill the pitcher.");
+                SetPendingTarget((serial, x, y, z, gfx) => { /* fill pending */ });
+                break;
+
+            // ---- raw materials ----
+            case ItemType.Cotton:
+            case ItemType.Wool:
+            case ItemType.Feather:
+            case ItemType.Fur:
+                SysMessage("Use a spinning wheel to process this material.");
+                break;
+            case ItemType.Thread:
+            case ItemType.Yarn:
+                SysMessage("Use a loom to weave this material.");
+                break;
+            case ItemType.Log:
+            case ItemType.Board:
+                SysMessage("Use a carpentry tool to craft with this.");
+                break;
+            case ItemType.Shaft:
+                SysMessage("Use fletching tools to craft with this.");
+                break;
+            case ItemType.Bone:
+                SysMessage("You examine the bone.");
+                break;
+            case ItemType.Rope:
+                SysMessage("You examine the rope.");
+                break;
+
+            // ---- food variants ----
+            case ItemType.FoodRaw:
+            case ItemType.MeatRaw:
+                SysMessage("This must be cooked first.");
+                break;
+
+            // ---- comm crystal ----
+            case ItemType.CommCrystal:
+                SysMessage("The crystal hums softly.");
+                break;
+
+            // ---- portcullis ----
+            case ItemType.Portculis:
+            case ItemType.PortLocked:
+                ToggleDoor(item);
+                break;
+
+            // ---- fletching tool ----
+            case ItemType.Fletching:
+                SysMessage("Select wood to create arrows or bolts.");
+                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Bowcraft, new Serial(serial)));
+                break;
+
             case ItemType.EqBankBox:
             case ItemType.EqVendorBox:
                 _logger.LogWarning("Suspicious dclick on bankbox/vendorbox uid={Uid}", item.Uid.Value);
