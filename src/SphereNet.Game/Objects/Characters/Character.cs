@@ -360,6 +360,7 @@ public class Character : ObjBase
     private string _title = ""; // Paperdoll title (Sphere: src.title)
     private bool _allShow; // Runtime-only GM flag, not saved
     private bool _allMove; // Runtime-only GM flag: bypass collision when walking. Not saved.
+    private bool _isReplaySpectator;
     private bool _privShow; // Runtime-only: show priv level tag above head
     private bool _isOnline; // Has active client connection
     private int _skillClass = 0;
@@ -378,6 +379,8 @@ public class Character : ObjBase
     /// <summary>GM AllMove mode — bypass walk collision (walls, statics, mobiles).
     /// Requires PrivLevel.GM+ to be honored. Runtime-only, not persisted.</summary>
     public bool AllMove { get => _allMove; set => _allMove = value; }
+
+    public bool IsReplaySpectator { get => _isReplaySpectator; set => _isReplaySpectator = value; }
 
     // --- Stats ---
     public short Str
@@ -2735,6 +2738,8 @@ public class Character : ObjBase
                     StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
                 if (aparts.Length == 0 || !TryParseScriptUShort(aparts[0], out ushort animAction))
                     return true;
+                if (IsMounted)
+                    animAction = MapAnimToMounted(animAction);
                 ushort animFrames = aparts.Length > 1 && TryParseScriptUShort(aparts[1], out ushort fc) ? fc : (ushort)7;
                 ushort animRepeats = aparts.Length > 2 && TryParseScriptUShort(aparts[2], out ushort rc) ? rc : (ushort)1;
                 bool animBackwards = aparts.Length > 3 && aparts[3] != "0";
@@ -4005,6 +4010,30 @@ public class Character : ObjBase
     // ScriptKey.TryParseNumber we don't apply the Source-X "leading
     // zero = hex" convention here because icon IDs are routinely
     // written with a zero pad (e.g. "0007") but meant as decimal.
+    private static ushort MapAnimToMounted(ushort action)
+    {
+        return action switch
+        {
+            (ushort)AnimationType.CastDirected or
+            (ushort)AnimationType.CastArea => (ushort)AnimationType.HorseSlap,
+            (ushort)AnimationType.AttackWeapon or
+            (ushort)AnimationType.Attack1HPierce or
+            (ushort)AnimationType.Attack1HBash or
+            (ushort)AnimationType.Attack2HBash or
+            (ushort)AnimationType.Attack2HSlash or
+            (ushort)AnimationType.Attack2HPierce or
+            (ushort)AnimationType.AttackWrestle => (ushort)AnimationType.HorseAttack,
+            (ushort)AnimationType.AttackBow => (ushort)AnimationType.HorseAttackBow,
+            (ushort)AnimationType.AttackXBow => (ushort)AnimationType.HorseAttackXBow,
+            (ushort)AnimationType.GetHit => (ushort)AnimationType.HorseSlap,
+            (ushort)AnimationType.Block => (ushort)AnimationType.HorseSlap,
+            (ushort)AnimationType.Bow or
+            (ushort)AnimationType.Salute or
+            (ushort)AnimationType.Eat => (ushort)AnimationType.HorseSlap,
+            _ => action
+        };
+    }
+
     private static bool TryParseScriptUShort(string text, out ushort value)
     {
         value = 0;

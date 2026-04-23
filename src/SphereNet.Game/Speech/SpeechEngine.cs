@@ -307,6 +307,9 @@ public sealed class CommandHandler
     public event Action<Character>? OnInspectTargetRequested;
     public event Action<Character, int>? OnCastRequested;
 
+    /// <summary>Fired by .RECORD — opens recording manager dialog.</summary>
+    public event Action<Character>? OnRecordDialogRequested;
+
     /// <summary>Raised when ".dialog &lt;name&gt; [page]" is typed. The host
     /// opens the named script dialog on the character's client.</summary>
     public event Action<Character, string, int>? OnScriptDialogRequested;
@@ -1365,11 +1368,14 @@ public sealed class CommandHandler
             }
             string bodyArg = parts[0];
             string? hueArg = parts.Length > 1 ? parts[1] : null;
-            // Defer to TrySetProperty so hex/dec parsing matches BODY/COLOR
-            // setters used by the .info dialog.
             gm.TrySetProperty("BODY", bodyArg);
             if (hueArg != null) gm.TrySetProperty("HUE", hueArg);
             OnSysMessage?.Invoke(gm, ServerMessages.GetFormatted("gm_poly_done", gm.BodyId));
+        });
+
+        Register("RECORD", PrivLevel.Counsel, (gm, _) =>
+        {
+            OnRecordDialogRequested?.Invoke(gm);
         });
     }
 

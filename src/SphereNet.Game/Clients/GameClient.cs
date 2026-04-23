@@ -5965,6 +5965,7 @@ public sealed class GameClient : ITextConsole
     public ClientViewDelta? BuildViewDelta()
     {
         if (_character == null || !IsPlaying) return null;
+        if (_character.IsReplaySpectator) return null;
 
         int range = _netState.ViewRange;
         var center = _character.Position;

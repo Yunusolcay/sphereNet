@@ -4,6 +4,57 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-24] - PvP kayit/tekrar sistemi, mounted animasyon duzeltmesi
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - PvP kayit/tekrar sistemi: .RECORD komutuyla gump acilir. Yakinlardaki tum
+    paketler (hareket, savas, buyu, animasyon) binary .rec dosyasina kaydedilir.
+    Tekrar izlemede izleyici gorunmez olur, kamera kaydedilen karakteri takip eder,
+    serial'lar phantom serial'lara remap edilir.
+    PvP recording/replay system: .RECORD opens a gump dialog. All nearby packets
+    (movement, combat, spells, animations) are saved to binary .rec files.
+    During replay the viewer becomes invisible, camera follows the recorded
+    character, and serials are remapped to phantom serials.
+  - Kayit merkezi takibi: recorder hareket ettikce kayit merkezi guncellenir,
+    mesafe siniri olmadan tum seans yakalanir.
+    Recording center tracking: capture center follows the recorder as they move,
+    capturing the full session regardless of distance from start position.
+  - Tekrar kamera sistemi: izleyici phantom karakterin pozisyonuna ve yon'une
+    kilitlenir. 0x20 DrawPlayer ile kamera guncellenir.
+    Replay camera system: viewer locks to phantom character's position and
+    direction. Camera updated via 0x20 DrawPlayer packets.
+
+HATA DUZELTMELERI / BUG FIXES:
+  - Mounted animasyon: binek ustunde cast/anim yapildiginda karakter artik
+    binekten inmiyor. Animasyonlar otomatik olarak mounted karsiliklarina
+    donusturuluyor (CastDirected->HorseSlap, Attack->HorseAttack, vb.).
+    Mounted animation: characters no longer dismount when casting/animating
+    while mounted. Animations auto-mapped to mounted equivalents
+    (CastDirected->HorseSlap, Attack->HorseAttack, etc.).
+  - ANIM script komutu, spell cast, combat GetHit ve healer animasyonlarinda
+    mounted kontrolu eklendi.
+    Mounted check added to ANIM script command, spell cast, combat GetHit,
+    and healer animations.
+
+TEKNIK / TECHNICAL:
+  - RecordingEngine: binary .rec format (header + paket listesi), serial remap
+    (character 0x3FFF0001+, item 0x7FFE0001+), 0x78 DrawObject equipment parse.
+    RecordingEngine: binary .rec format (header + packet list), serial remap
+    (character 0x3FFF0001+, item 0x7FFE0001+), 0x78 DrawObject equipment parse.
+  - RecordingDialog: gump UI (kayit baslat/durdur, listele, oynat, sil).
+    Tekrar sirasinda Stop overlay gump'i gosterilir.
+    RecordingDialog: gump UI (start/stop recording, list, play, delete).
+    Stop overlay gump shown during replay.
+  - IsReplaySpectator flag: BuildViewDelta'da gercek dunya karakterlerinin
+    tekrar sirasinda spawn edilmesini engeller.
+    IsReplaySpectator flag: prevents real-world characters from spawning
+    during replay in BuildViewDelta.
+  - MapAnimToMounted: unmounted animasyonlari mounted karsiliklarina cevirir.
+    Character.cs ve Program.cs'te ayri implementasyonlar.
+    MapAnimToMounted: maps unmounted animations to mounted equivalents.
+    Separate implementations in Character.cs and Program.cs.
+
 [2026-04-24] - NPC AI tick dengeleme, target sistemi, corpse decay, ItemType fallback
 ----------------------------------------
 

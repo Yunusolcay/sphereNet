@@ -108,6 +108,7 @@ public static class Program
     private static long _lastBotRestockMs;
     private static SphereNet.Game.NPCs.StableEngine _stableEngine = new();
     private static SphereNet.Game.Scheduling.TimerWheel _npcTimerWheel = null!;
+    private static SphereNet.Game.Recording.RecordingEngine _recordingEngine = null!;
     private static TriggerDispatcher _triggerDispatcher = null!;
     private static TriggerRunner _triggerRunner = null!;
     private static ScriptSystemHooks _systemHooks = null!;
@@ -1212,7 +1213,8 @@ public static class Program
         };
         _spellEngine.OnCastAnimation = (caster, animId) =>
         {
-            var animPkt = new PacketAnimation(caster.Uid.Value, animId);
+            ushort anim = caster.IsMounted ? MapAnimToMounted(animId) : animId;
+            var animPkt = new PacketAnimation(caster.Uid.Value, anim);
             BroadcastNearby(caster.Position, 18, animPkt, 0);
         };
         GameRegion.ClientCountProvider = regionObj =>
@@ -1254,6 +1256,33 @@ public static class Program
         _tradeManager = new TradeManager();
         _npcAI = new NpcAI(_world, _config);
         _npcTimerWheel = new SphereNet.Game.Scheduling.TimerWheel(Environment.TickCount64);
+        _recordingEngine = new SphereNet.Game.Recording.RecordingEngine(
+            Path.Combine(ResolvePath(basePath, _config.WorldSaveDir), "recordings"));
+        _recordingEngine.SnapshotNearbyCharacters = (center, range) =>
+        {
+            var result = new List<byte[]>();
+            foreach (var ch in _world.GetCharsInRange(center, range))
+            {
+                if (ch.IsPlayer && !ch.IsOnline) continue;
+                if (ch.IsInvisible || ch.IsStatFlag(StatFlag.Hidden)) continue;
+                var equip = new List<(uint, ushort, byte, ushort)>();
+                for (int layer = 1; layer <= (int)Layer.Horse; layer++)
+                {
+                    var item = ch.GetEquippedItem((Layer)layer);
+                    if (item != null)
+                        equip.Add((item.Uid.Value, item.DispIdFull, (byte)layer, item.Hue));
+                }
+                byte flags = 0;
+                if (ch.IsInWarMode) flags |= 0x40;
+                if (ch.IsInvisible) flags |= 0x80;
+                var pkt = new PacketDrawObject(
+                    ch.Uid.Value, ch.BodyId, ch.X, ch.Y, ch.Z,
+                    (byte)ch.Direction, ch.Hue, flags, 0x01,
+                    equip.ToArray());
+                result.Add(pkt.Build().Span.ToArray());
+            }
+            return result;
+        };
         _npcAI.OnNpcSay = (npc, text) =>
         {
             NpcSpeak(npc, text);
@@ -1287,8 +1316,10 @@ public static class Program
             var animPkt = new PacketAnimation(attacker.Uid.Value, swingAnim);
             BroadcastNearby(attacker.Position, 18, animPkt, 0);
 
-            var getHitAnim = new PacketAnimation(target.Uid.Value,
-                (ushort)SphereNet.Core.Enums.AnimationType.GetHit);
+            ushort getHitAction = target.IsMounted
+                ? MapAnimToMounted((ushort)SphereNet.Core.Enums.AnimationType.GetHit)
+                : (ushort)SphereNet.Core.Enums.AnimationType.GetHit;
+            var getHitAnim = new PacketAnimation(target.Uid.Value, getHitAction);
             BroadcastNearby(target.Position, 18, getHitAnim, 0);
 
             var dmgPkt = new PacketDamage(target.Uid.Value, (ushort)Math.Min(damage, ushort.MaxValue));
@@ -1402,7 +1433,8 @@ public static class Program
         };
         _npcAI.OnHealerAction = (healer, target, isResurrect) =>
         {
-            var anim = new PacketAnimation(healer.Uid.Value, 16, 4, 1, false, false, 0);
+            ushort healAnim = healer.IsMounted ? MapAnimToMounted(16) : (ushort)16;
+            var anim = new PacketAnimation(healer.Uid.Value, healAnim, 4, 1, false, false, 0);
             BroadcastNearby(healer.Position, 18, anim, 0);
             var sound = new PacketSound(isResurrect ? (ushort)0x0214 : (ushort)0x01F2,
                 healer.X, healer.Y, healer.Z);
@@ -1855,6 +1887,7 @@ public static class Program
         _commands.OnBotCommandRequested += HandleBotCommand;
         _commands.OnBotMenuRequested += ShowBotManagerDialog;
 
+        _commands.OnRecordDialogRequested += ShowRecordingDialog;
         _commands.OnSaveFormatChangeRequested += HandleSaveFormatChange;
         _commands.OnScriptDebugToggleRequested += on =>
         {
@@ -3096,6 +3129,184 @@ public static class Program
         PerformSave();
     }
 
+    private static void ShowRecordingDialog(Character gm)
+    {
+        if (!_clientsByCharUid.TryGetValue(gm.Uid, out var client)) return;
+
+        bool isRecording = _recordingEngine.IsRecording(gm.Uid.Value);
+        var recordings = _recordingEngine.ListRecordings();
+
+        var gump = SphereNet.Game.Recording.RecordingDialog.Build(gm.Uid.Value, isRecording, recordings);
+        client.SendGump(gump, (buttonId, _, _) =>
+        {
+            var action = SphereNet.Game.Recording.RecordingDialog.ParseResponse(buttonId);
+            HandleRecordDialogAction(gm, action);
+        });
+    }
+
+    private static void HandleRecordDialogAction(Character gm, SphereNet.Game.Recording.RecordDialogAction action)
+    {
+        switch (action.Type)
+        {
+            case SphereNet.Game.Recording.RecordActionType.StartRecord:
+                _recordingEngine.StartRecording(gm);
+                SendSysMessage(gm, "Recording started.");
+                ShowRecordingDialog(gm);
+                break;
+
+            case SphereNet.Game.Recording.RecordActionType.StopRecord:
+                var session = _recordingEngine.StopRecording(gm.Uid.Value);
+                if (session != null)
+                    SendSysMessage(gm, $"Recording saved: {session.Packets.Count} packets, {session.DurationMs / 1000.0:F1}s");
+                ShowRecordingDialog(gm);
+                break;
+
+            case SphereNet.Game.Recording.RecordActionType.Play:
+                StartReplayForPlayer(gm, action.SelectedIndex);
+                break;
+
+            case SphereNet.Game.Recording.RecordActionType.Delete:
+                _recordingEngine.DeleteRecording(action.SelectedIndex);
+                SendSysMessage(gm, "Recording deleted.");
+                ShowRecordingDialog(gm);
+                break;
+
+            case SphereNet.Game.Recording.RecordActionType.Refresh:
+                ShowRecordingDialog(gm);
+                break;
+        }
+    }
+
+    private static void StartReplayForPlayer(Character gm, int index)
+    {
+        if (_recordingEngine.IsReplaying(gm.Uid.Value))
+        {
+            SendSysMessage(gm, "Already replaying.");
+            return;
+        }
+        var session = _recordingEngine.LoadRecording(index);
+        if (session == null)
+        {
+            SendSysMessage(gm, "Recording not found.");
+            return;
+        }
+        var state = _recordingEngine.StartReplay(gm, session);
+        if (state == null) return;
+
+        gm.SetStatFlag(StatFlag.Invisible);
+        gm.SetStatFlag(StatFlag.Freeze);
+        gm.IsReplaySpectator = true;
+        _world.MoveCharacter(gm, session.Center);
+        ResyncCharacterClient(gm);
+
+        if (_clientsByCharUid.TryGetValue(gm.Uid, out var client))
+        {
+            var overlay = SphereNet.Game.Recording.RecordingDialog.BuildReplayOverlay(
+                gm.Uid.Value, session.RecorderName, session.DurationMs);
+            client.SendGump(overlay, (btnId, _, _) =>
+            {
+                if (btnId == 1 || btnId == 0)
+                {
+                    FinishReplay(gm);
+                    SendSysMessage(gm, "Replay stopped.");
+                }
+            });
+        }
+    }
+
+    private static void FinishReplay(Character gm)
+    {
+        var phantoms = _recordingEngine.GetPhantomSerials(gm.Uid.Value);
+        var state = _recordingEngine.GetReplayState(gm.Uid.Value);
+        if (state != null)
+        {
+            _world.MoveCharacter(gm, state.OriginalPosition);
+            if (!state.WasInvisible)
+                gm.ClearStatFlag(StatFlag.Invisible);
+            gm.ClearStatFlag(StatFlag.Freeze);
+            gm.IsReplaySpectator = false;
+        }
+        _recordingEngine.StopReplay(gm.Uid.Value);
+
+        if (_clientsByCharUid.TryGetValue(gm.Uid, out var client))
+        {
+            foreach (uint phantom in phantoms)
+                client.NetState.Send(new PacketDeleteObject(phantom).Build());
+            client.Resync();
+        }
+    }
+
+    private static ushort MapAnimToMounted(ushort action)
+    {
+        return action switch
+        {
+            (ushort)AnimationType.CastDirected or
+            (ushort)AnimationType.CastArea => (ushort)AnimationType.HorseSlap,
+            (ushort)AnimationType.AttackWeapon or
+            (ushort)AnimationType.Attack1HPierce or
+            (ushort)AnimationType.Attack1HBash or
+            (ushort)AnimationType.Attack2HBash or
+            (ushort)AnimationType.Attack2HSlash or
+            (ushort)AnimationType.Attack2HPierce or
+            (ushort)AnimationType.AttackWrestle => (ushort)AnimationType.HorseAttack,
+            (ushort)AnimationType.AttackBow => (ushort)AnimationType.HorseAttackBow,
+            (ushort)AnimationType.AttackXBow => (ushort)AnimationType.HorseAttackXBow,
+            (ushort)AnimationType.GetHit => (ushort)AnimationType.HorseSlap,
+            (ushort)AnimationType.Block => (ushort)AnimationType.HorseSlap,
+            (ushort)AnimationType.Bow or
+            (ushort)AnimationType.Salute or
+            (ushort)AnimationType.Eat => (ushort)AnimationType.HorseSlap,
+            _ => action
+        };
+    }
+
+    private static void TickRecordingReplays()
+    {
+        _recordingEngine.TickReplays(
+            (uid, data) =>
+            {
+                if (_clientsByCharUid.TryGetValue(new Serial(uid), out var c))
+                    c.NetState.Send(new PacketBuffer(data));
+            },
+            uid =>
+            {
+                var ch = _world.FindChar(new Serial(uid));
+                if (ch != null)
+                {
+                    FinishReplay(ch);
+                    SendSysMessage(ch, "Replay finished.");
+                }
+            },
+            (viewerUid, x, y, z, dir) =>
+            {
+                var ch = _world.FindChar(new Serial(viewerUid));
+                if (ch == null) return;
+                byte map = ch.Position.Map;
+                _world.MoveCharacter(ch, new Point3D(x, y, z, map));
+                if (_clientsByCharUid.TryGetValue(new Serial(viewerUid), out var c))
+                {
+                    byte flags = 0;
+                    if (ch.IsInvisible) flags |= 0x80;
+                    if (ch.IsStatFlag(StatFlag.Freeze)) flags |= 0x01;
+                    c.NetState.Send(new PacketDrawPlayer(
+                        ch.Uid.Value, ch.BodyId, ch.Hue, flags,
+                        x, y, z, dir).Build());
+                }
+            });
+    }
+
+    private static void ResyncCharacterClient(Character ch)
+    {
+        if (_clientsByCharUid.TryGetValue(ch.Uid, out var client))
+            client.Resync();
+    }
+
+    private static void SendSysMessage(Character ch, string text)
+    {
+        if (_clientsByCharUid.TryGetValue(ch.Uid, out var client))
+            client.SysMessage(text);
+    }
+
     private static void HandleBotCommand(int count, string behavior, bool isStop)
     {
         if (_botEngine == null) return;
@@ -3700,15 +3911,16 @@ public static class Program
 
     private static void BroadcastNearby(Point3D center, int range, PacketWriter packet, uint excludeUid)
     {
-        // Walk the sector window that covers `range` tiles around
-        // `center`. Range is almost always 18 (view range), sector
-        // size is 64, so a 1-sector radius (3x3 window) is enough —
-        // worst case a player on a sector boundary is still within
-        // one neighbour sector. This replaces a full _clients.Values
-        // iteration that scaled linearly with online count.
         int secRadius = (range / SphereNet.Game.World.Sectors.Sector.SectorSize) + 1;
         int cx = center.X / SphereNet.Game.World.Sectors.Sector.SectorSize;
         int cy = center.Y / SphereNet.Game.World.Sectors.Sector.SectorSize;
+
+        if (_recordingEngine.HasActiveRecordings)
+        {
+            var built = packet.Build();
+            _recordingEngine.CaptureFromBroadcast(center, range, built.Span.ToArray());
+        }
+
         for (int sx = cx - secRadius; sx <= cx + secRadius; sx++)
         for (int sy = cy - secRadius; sy <= cy + secRadius; sy++)
         {
@@ -3770,6 +3982,12 @@ public static class Program
     private static void BroadcastMoveNearby(Point3D center, int range, PacketWriter packet,
         uint excludeUid, Character movingChar)
     {
+        if (_recordingEngine.HasActiveRecordings)
+        {
+            var built = packet.Build();
+            _recordingEngine.CaptureFromBroadcast(center, range, built.Span.ToArray(), movingChar.Uid.Value);
+        }
+
         uint movingUid = movingChar.Uid.Value;
         int secRadius = (range / SphereNet.Game.World.Sectors.Sector.SectorSize) + 1;
         int cx = center.X / SphereNet.Game.World.Sectors.Sector.SectorSize;
@@ -3991,7 +4209,16 @@ public static class Program
     private static void OnWarMode(NetState state, bool warMode)
     {
         if (_clients.TryGetValue(state.Id, out var client))
+        {
+            var ch = client.Character;
+            if (ch != null && _recordingEngine.IsReplaying(ch.Uid.Value))
+            {
+                FinishReplay(ch);
+                SendSysMessage(ch, "Replay stopped.");
+                return;
+            }
             client.HandleWarMode(warMode);
+        }
     }
 
     private static void OnDoubleClick(NetState state, uint serial)
@@ -5239,6 +5466,12 @@ public static class Program
             client.UpdateClientView();
         }
 
+        // Replay engine: send recorded packets to spectating clients
+        if (_recordingEngine.HasActiveReplays)
+        {
+            TickRecordingReplays();
+        }
+
         // Reset dirty flags so objects can be re-notified on next change
         _world.ConsumeDirtyObjects();
 
@@ -5370,6 +5603,11 @@ public static class Program
                 client.ApplyViewDelta(delta);
         }
         _telemetryApplyUs = ToMicroseconds(Stopwatch.GetTimestamp() - p2);
+
+        if (_recordingEngine.HasActiveReplays)
+        {
+            TickRecordingReplays();
+        }
 
         // Reset dirty flags
         _world.ConsumeDirtyObjects();
