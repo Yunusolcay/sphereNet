@@ -51,6 +51,57 @@ DUZELTMELER / FIXES:
   - Basarisiz TryMove_DeadChar_Fails testi kaldirildi.
     Removed failing TryMove_DeadChar_Fails test.
 
+[2026-04-23] - Bot stress test sistemi ve 100ms tick optimizasyonu
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - Bot Stress Test Sistemi: TCP uzerinden gercek istemci baglantilari simule
+    eden dahili bot altyapisi. Tam UO login akisi (login server -> relay ->
+    game server -> char select) destegi.
+    Bot Stress Test System: internal bot framework simulating real client
+    connections over TCP. Full UO login flow (login server -> relay -> game
+    server -> char select) support.
+  - BotClient: Tek bir bot istemcisi, paket okuma/yazma, Huffman
+    decompression, karakter secimi ve oyun ici hareket.
+    BotClient: single bot client with packet read/write, Huffman
+    decompression, character selection and in-game movement.
+  - BotEngine: Bot havuzu yonetimi, istatistik toplama, otomatik temizlik.
+    BotEngine: bot pool management, statistics collection, auto cleanup.
+  - BotPacketBuilder: UO protokol paket olusturucu (login, relay, char
+    select, movement).
+    BotPacketBuilder: UO protocol packet builder (login, relay, char select,
+    movement).
+  - BotManagerDialog: GM gump arayuzu ile bot yonetimi (.bot komutu).
+    BotManagerDialog: GM gump interface for bot management (.bot command).
+  - .bot spawn/stop/status/clean admin komutlari.
+    .bot spawn/stop/status/clean admin commands.
+  - Bot spawn lokasyonu secimi (Britain, Trinsic, Minoc, vb.).
+    Bot spawn location selection (Britain, Trinsic, Minoc, etc.).
+  - Huffman DecompressFromServer: Sunucu -> istemci yonunde dogru Huffman
+    decompression. CompressBase tablosundan dinamik decompression tree
+    olusturma, coklu compressed paket destegi (EOF marker ile ayirma).
+    Huffman DecompressFromServer: correct Huffman decompression for server ->
+    client direction. Dynamic decompression tree from CompressBase table,
+    multi-packet support with EOF marker separation.
+
+DEGISIKLIKLER / CHANGES:
+  - Tick interval: 125ms -> 100ms (8 tick/s -> 10 tick/s). Daha responsive
+    gameplay, stress testlerinde kanitlanmis performans marji.
+    Tick interval: 125ms -> 100ms (8 ticks/s -> 10 ticks/s). More responsive
+    gameplay, proven performance margin in stress tests.
+  - DirtyFlag enum genisletildi: sektor bazli kirlilik takibi eklendi.
+    DirtyFlag enum expanded: sector-based dirty tracking added.
+  - TimerWheel optimizasyonu: slot hesaplama ve tick isleme iyilestirildi.
+    TimerWheel optimization: slot calculation and tick processing improved.
+
+DUZELTMELER / FIXES:
+  - Huffman compression uyumsuzlugu: DecompTree ve CompressBase tablolari
+    arasindaki uyumsuzluk giderildi. Botlar artik game server'dan gelen
+    paketleri dogru sekilde decompress edebiliyor.
+    Huffman compression mismatch: fixed inconsistency between DecompTree and
+    CompressBase tables. Bots can now correctly decompress packets from game
+    server.
+
 [2026-04-22] - Guard isinlanma, D-prefix decimal duzeltmesi
 ----------------------------------------
 
