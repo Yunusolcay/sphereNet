@@ -124,16 +124,21 @@ public sealed class NpcAI
             return;
         }
 
-        // NPC decision/action cadence. Combat brains and active pets tick fast
-        // (250ms); passive brains idle slower (750ms) to reduce broadcast volume.
+        // NPC tick cadence by role:
+        //   Combat/active pets: 250ms (responsive fighting)
+        //   Monsters/animals: 750ms (idle wander)
+        //   Service NPCs (vendor/banker/healer/stable): 3-5s (minimal movement)
         bool isActive = npc.FightTarget.IsValid ||
-            npc.NpcBrain is NpcBrainType.Monster or NpcBrainType.Dragon
-                or NpcBrainType.Berserk ||
             (npc.NpcMaster.IsValid && npc.PetAIMode is PetAIMode.Attack
                 or PetAIMode.Follow or PetAIMode.Come or PetAIMode.Guard);
-        npc.NextNpcActionTime = isActive
-            ? now + 250 + _rand.Next(0, 100)
-            : now + 750 + _rand.Next(0, 250);
+        bool isService = npc.NpcBrain is NpcBrainType.Vendor or NpcBrainType.Banker
+            or NpcBrainType.Stable or NpcBrainType.Healer;
+        if (isActive)
+            npc.NextNpcActionTime = now + 250 + _rand.Next(0, 100);
+        else if (isService)
+            npc.NextNpcActionTime = now + 3000 + _rand.Next(0, 2000);
+        else
+            npc.NextNpcActionTime = now + 750 + _rand.Next(0, 250);
 
         // Pet behavior — owned NPCs follow pet AI mode
         if (npc.NpcMaster.IsValid)
@@ -446,16 +451,24 @@ public sealed class NpcAI
         if (npc.NpcBrain == NpcBrainType.Berserk || _rand.Next(6) == 0)
             EmitSound(npc, CreatureSoundType.Idle);
 
-        // Dragon breath (Source-X: NPCACT_BREATH, range 1-8, stam >= 50%)
-        if (npc.NpcBrain == NpcBrainType.Dragon && dist >= 1 && dist <= 8
+        // Dragon breath (Source-X: NPCACT_BREATH, range 0-8, stam >= 50%, 3s cooldown)
+        if (npc.NpcBrain == NpcBrainType.Dragon && dist <= 8
             && npc.Stam >= npc.MaxStam / 2)
         {
-            int breathDmg = GetBreathDamage(npc);
-            if (breathDmg > 0)
+            long now = Environment.TickCount64;
+            long nextBreath = 0;
+            if (npc.TryGetTag("BREATH_CD", out string? cdStr))
+                long.TryParse(cdStr, out nextBreath);
+            if (now >= nextBreath)
             {
-                npc.Stam = (short)Math.Max(0, npc.Stam - 10);
-                OnNpcBreath?.Invoke(npc, target, breathDmg);
-                return;
+                int breathDmg = GetBreathDamage(npc);
+                if (breathDmg > 0)
+                {
+                    npc.Stam = (short)Math.Max(0, npc.Stam - 10);
+                    npc.SetTag("BREATH_CD", (now + 3000).ToString());
+                    OnNpcBreath?.Invoke(npc, target, breathDmg);
+                    return;
+                }
             }
         }
 
@@ -729,30 +742,27 @@ public sealed class NpcAI
     /// Used by Program.cs to broadcast cast animation and sound.</summary>
     public Action<Character, Character, bool>? OnHealerAction { get; set; }
 
-    /// <summary>Vendor/Banker/Stable: stay near home, respond to speech.</summary>
+    /// <summary>Vendor/Banker/Stable: stay near home, barely move.</summary>
     private void ActVendor(Character npc)
     {
-        // Return to home position if too far
-        if (npc.TryGetTag("HOME_X", out string? hx) && npc.TryGetTag("HOME_Y", out string? hy))
-        {
-            if (short.TryParse(hx, out short homeX) && short.TryParse(hy, out short homeY))
-            {
-                sbyte homeZ = npc.Z;
-                if (npc.TryGetTag("HOME_Z", out string? hz))
-                    sbyte.TryParse(hz, out homeZ);
+        if (!npc.TryGetTag("HOME_X", out string? hx) || !npc.TryGetTag("HOME_Y", out string? hy))
+            return;
+        if (!short.TryParse(hx, out short homeX) || !short.TryParse(hy, out short homeY))
+            return;
 
-                var home = new Point3D(homeX, homeY, homeZ, npc.MapIndex);
-                int dist = npc.Position.GetDistanceTo(home);
-                if (dist > 5)
-                {
-                    MoveToward(npc, home);
-                    return;
-                }
-            }
+        sbyte homeZ = npc.Z;
+        if (npc.TryGetTag("HOME_Z", out string? hz))
+            sbyte.TryParse(hz, out homeZ);
+
+        var home = new Point3D(homeX, homeY, homeZ, npc.MapIndex);
+        int dist = npc.Position.GetDistanceTo(home);
+        if (dist > 3)
+        {
+            MoveToward(npc, home);
+            return;
         }
 
-        // Occasionally look around (idle behavior)
-        if (_rand.Next(100) < 5)
+        if (_rand.Next(100) < 3)
             Wander(npc);
     }
 
@@ -832,20 +842,30 @@ public sealed class NpcAI
             case PetAIMode.Guard:
             {
                 Character guardTarget = ResolvePetTargetCharacter(npc, "GUARD_TARGET") ?? master;
-                // Continue fighting current target if still valid
                 if (npc.FightTarget.IsValid)
                 {
                     var current = _world.FindChar(npc.FightTarget);
-                    if (current != null && !current.IsDead && !current.IsDeleted)
+                    if (current != null && !current.IsDead && !current.IsDeleted && IsAttackable(current))
                     {
                         ActFight(npc, current, 50);
                         return;
                     }
                     npc.FightTarget = Serial.Invalid;
                 }
+                // Master'ın saldırdığı hedefe otomatik katıl
+                if (master.FightTarget.IsValid)
+                {
+                    var masterTarget = _world.FindChar(master.FightTarget);
+                    if (masterTarget != null && !masterTarget.IsDead && IsAttackable(masterTarget) && masterTarget != npc)
+                    {
+                        npc.FightTarget = masterTarget.Uid;
+                        ActFight(npc, masterTarget, 50);
+                        return;
+                    }
+                }
                 foreach (var ch in _world.GetCharsInRange(guardTarget.Position, 6))
                 {
-                    if (ch == npc || ch == guardTarget || ch.IsDead) continue;
+                    if (ch == npc || ch == guardTarget || ch.IsDead || !IsAttackable(ch)) continue;
                     if (ch.FightTarget == guardTarget.Uid)
                     {
                         npc.FightTarget = ch.Uid;
@@ -865,7 +885,7 @@ public sealed class NpcAI
                     target = _world.FindChar(master.FightTarget);
                 if (target == null && npc.FightTarget.IsValid)
                     target = _world.FindChar(npc.FightTarget);
-                if (target != null && !target.IsDead)
+                if (target != null && !target.IsDead && IsAttackable(target))
                 {
                     npc.FightTarget = target.Uid;
                     int motivation = GetAttackMotivation(npc, target);
@@ -1073,29 +1093,27 @@ public sealed class NpcAI
         GetDirectionDelta(dir, out short dx, out short dy);
         dir |= Direction.Running;
 
-        var directPos = new Point3D(
-            (short)(npc.X + dx),
-            (short)(npc.Y + dy),
-            npc.Z,
-            npc.MapIndex
-        );
+        short nx = (short)(npc.X + dx);
+        short ny = (short)(npc.Y + dy);
+        var mapData = _world.MapData;
+        sbyte nz = mapData?.GetEffectiveZ(npc.MapIndex, nx, ny, npc.Z) ?? npc.Z;
+        if (Math.Abs(nz - npc.Z) > 12)
+            return;
+        var directPos = new Point3D(nx, ny, nz, npc.MapIndex);
 
-        // Check if direct path is walkable
         bool directBlocked = false;
-        foreach (var item in _world.GetItemsInRange(directPos, 0))
-        {
-            if (item.IsStaticBlock) { directBlocked = true; break; }
-        }
+        if (mapData != null && !mapData.IsPassable(directPos.Map, directPos.X, directPos.Y, directPos.Z))
+            directBlocked = true;
         if (!directBlocked)
         {
-            var mapData = _world.MapData;
-            if (mapData != null && !mapData.IsPassable(directPos.Map, directPos.X, directPos.Y, directPos.Z))
-                directBlocked = true;
+            foreach (var item in _world.GetItemsInRange(directPos, 0))
+            {
+                if (item.IsStaticBlock) { directBlocked = true; break; }
+            }
         }
 
         if (!directBlocked)
         {
-            // Direct move works — use it and clear any cached path
             npc.Direction = dir;
             _world.MoveCharacter(npc, directPos);
             _pathCache.Remove(npc.Uid.Value);
@@ -1190,15 +1208,17 @@ public sealed class NpcAI
     private void MoveAway(Character npc, Point3D threat)
     {
         var dir = npc.Position.GetDirectionTo(threat);
-        // Reverse direction
         GetDirectionDelta(dir, out short dx, out short dy);
 
-        var newPos = new Point3D(
-            (short)(npc.X - dx),
-            (short)(npc.Y - dy),
-            npc.Z,
-            npc.MapIndex
-        );
+        short nx = (short)(npc.X - dx);
+        short ny = (short)(npc.Y - dy);
+        var mapData = _world.MapData;
+        sbyte nz = mapData?.GetEffectiveZ(npc.MapIndex, nx, ny, npc.Z) ?? npc.Z;
+        if (Math.Abs(nz - npc.Z) > 12)
+            return;
+        var newPos = new Point3D(nx, ny, nz, npc.MapIndex);
+        if (mapData != null && !mapData.IsPassable(newPos.Map, newPos.X, newPos.Y, newPos.Z))
+            return;
 
         _world.MoveCharacter(npc, newPos);
     }

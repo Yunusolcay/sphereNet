@@ -1535,6 +1535,14 @@ public static class Program
             return damMax > 0 ? (damMin, damMax) : null;
         };
 
+        CombatEngine.NpcDamageDefLookup = (defIndex) =>
+        {
+            var charDef = DefinitionLoader.GetCharDef(defIndex);
+            if (charDef == null || (charDef.AttackMin == 0 && charDef.AttackMax == 0))
+                return null;
+            return (charDef.AttackMin, Math.Max(charDef.AttackMin, charDef.AttackMax));
+        };
+
         // Housing — load multi definitions from multi.mul
         var multiRegistry = new SphereNet.Game.Housing.MultiRegistry();
         if (_mapData != null)
@@ -1596,14 +1604,28 @@ public static class Program
         // full-world scan in DeathEngine.ProcessDecay.
         SphereNet.Game.Objects.Items.Item.OnCorpseDecay = corpse =>
         {
-            var pos = corpse.Position;
+            bool isPlayerCorpse = false;
+            if (corpse.TryGetTag("OWNER_UID", out string? ownerStr) &&
+                uint.TryParse(ownerStr, out uint ownerUid))
+            {
+                var owner = _world.FindChar(new Serial(ownerUid));
+                if (owner != null && owner.IsPlayer)
+                    isPlayerCorpse = true;
+            }
+
             foreach (var child in corpse.Contents.ToArray())
             {
                 corpse.RemoveItem(child);
-                _world.PlaceItem(child, pos);
-                // Loot spilled from a rotting corpse should not stay forever.
-                if (child.DecayTime <= 0)
-                    child.DecayTime = Environment.TickCount64 + GameWorld.DefaultDecayTimeMs;
+                if (isPlayerCorpse)
+                {
+                    _world.PlaceItem(child, corpse.Position);
+                    if (child.DecayTime <= 0)
+                        child.DecayTime = Environment.TickCount64 + GameWorld.DefaultDecayTimeMs;
+                }
+                else
+                {
+                    child.Delete();
+                }
             }
         };
         SphereNet.Game.Objects.Items.Item.OnTimerExpired = item =>

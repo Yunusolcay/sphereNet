@@ -3147,10 +3147,14 @@ public sealed class GameClient : ITextConsole
         {
             case "attack":
             case "kill":
-                if (obj is Character victim && victim != pet)
+                if (obj is Character victim && victim != pet &&
+                    !victim.IsDead && !victim.IsStatFlag(StatFlag.Invul) &&
+                    !victim.IsStatFlag(StatFlag.Ridden))
                 {
                     pet.SetTag("ATTACK_TARGET", victim.Uid.Value.ToString());
+                    pet.FightTarget = victim.Uid;
                     pet.PetAIMode = PetAIMode.Attack;
+                    OnWakeNpc?.Invoke(pet);
                     SysMessage(ServerMessages.Get(Msg.NpcPetSuccess));
                 }
                 else
@@ -7449,12 +7453,6 @@ public sealed class GameClient : ITextConsole
             if (charDef.NpcBrain != NpcBrainType.None)
                 npc.NpcBrain = charDef.NpcBrain;
 
-            if (charDef.AttackMin > 0 || charDef.AttackMax > 0)
-            {
-                npc.NpcDamMin = (short)charDef.AttackMin;
-                npc.NpcDamMax = (short)Math.Max(charDef.AttackMin, charDef.AttackMax);
-            }
-
             string? colorText = charDef.TagDefs.Get("COLOR");
             if (TryParseHue(colorText, out ushort hue))
                 npc.Hue = new Color(hue);
@@ -9893,7 +9891,8 @@ public sealed class GameClient : ITextConsole
             _pendingTargetAllowGround = upper == "TARGETFG";
             _pendingTargetItemUid = target is Item ti ? ti.Uid : Serial.Invalid;
             _targetCursorActive = true;
-            _netState.Send(new PacketTarget(1, (uint)Random.Shared.Next(1, int.MaxValue)));
+            byte tType = (byte)(upper == "TARGETFG" ? 1 : 0);
+            _netState.Send(new PacketTarget(tType, (uint)Random.Shared.Next(1, int.MaxValue)));
             return true;
         }
 
@@ -9902,8 +9901,10 @@ public sealed class GameClient : ITextConsole
             if (_targetCursorActive)
                 return true;
             ClearPendingTargetState();
+            _pendingTargetAllowGround = upper == "TARGETG";
             _targetCursorActive = true;
-            _netState.Send(new PacketTarget(1, (uint)Random.Shared.Next(1, int.MaxValue)));
+            byte tType = (byte)(upper == "TARGETG" ? 1 : 0);
+            _netState.Send(new PacketTarget(tType, (uint)Random.Shared.Next(1, int.MaxValue)));
             return true;
         }
 

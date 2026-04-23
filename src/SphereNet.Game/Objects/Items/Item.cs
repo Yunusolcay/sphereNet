@@ -76,7 +76,13 @@ public class Item : ObjBase
 
     public ItemType ItemType
     {
-        get => _type;
+        get
+        {
+            if (_type != ItemType.Normal)
+                return _type;
+            var def = DefinitionLoader.GetItemDef(BaseId);
+            return def?.Type ?? ItemType.Normal;
+        }
         set => _type = value;
     }
 

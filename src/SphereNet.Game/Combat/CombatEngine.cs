@@ -118,21 +118,23 @@ public static class CombatEngine
     /// <summary>Optional lookup for weapon definitions (BaseId → (damMin, damMax)).</summary>
     public static Func<ushort, (int Min, int Max)?>? WeaponDefLookup { get; set; }
 
+    /// <summary>Optional lookup for NPC natural damage from CHARDEF (CharDefIndex → (damMin, damMax)).</summary>
+    public static Func<int, (int Min, int Max)?>? NpcDamageDefLookup { get; set; }
+
     public static (int Min, int Max) CalcWeaponDamage(Character attacker, Item? weapon, int era = 0)
     {
         int dmgMin, dmgMax;
 
         if (weapon == null)
         {
-            // NPC natural damage from CHARDEF DAM= property
-            if (!attacker.IsPlayer && attacker.NpcDamMax > 0)
+            var npcDam = !attacker.IsPlayer ? NpcDamageDefLookup?.Invoke(attacker.CharDefIndex) : null;
+            if (npcDam.HasValue && npcDam.Value.Max > 0)
             {
-                dmgMin = attacker.NpcDamMin;
-                dmgMax = attacker.NpcDamMax;
+                dmgMin = npcDam.Value.Min;
+                dmgMax = npcDam.Value.Max;
             }
             else
             {
-                // Player bare fists — Source-X: Wrestling damage = 1 to STR/4
                 dmgMin = 1;
                 dmgMax = Math.Max(2, attacker.Str / 4);
             }

@@ -4,6 +4,59 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-24] - NPC AI tick dengeleme, target sistemi, corpse decay, ItemType fallback
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - ItemType ITEMDEF fallback: item'in TYPE'i Normal ise ITEMDEF'ten otomatik
+    resolve ediliyor. NEWITEM, save/load ve mevcut tum item'lar icin gecerli.
+    ItemType ITEMDEF fallback: items with Normal type auto-resolve from ITEMDEF.
+    Covers NEWITEM, save/load, and all existing items.
+  - NPC DAM runtime lookup: NPC hasar degerleri save yerine CHARDEF'ten runtime'da
+    okunuyor. Save dosyasi kuculur, CHARDEF degisiklikleri aninda yansir.
+    NPC DAM runtime lookup: NPC damage reads from CHARDEF at runtime instead of
+    save. Smaller save files, CHARDEF changes apply immediately.
+
+HATA DUZELTMELERI / BUG FIXES:
+  - Target sistemi: TARGETG/TARGETFG artik ground cursor (type=1) gonderiyor ve
+    allowGround=true set ediyor. Destard/deniz gibi alanlara target alinabilir.
+    Target system: TARGETG/TARGETFG now send ground cursor (type=1) and set
+    allowGround=true. Ground targeting works in dungeons/water areas.
+  - NPC hareket kontrolu: MoveToward ve MoveAway'e GetEffectiveZ + 12-tile climb
+    limiti + IsPassable kontrolu eklendi. NPC'ler daga tirmanamaz, denize dusemez.
+    NPC movement: MoveToward and MoveAway now use GetEffectiveZ + 12-tile climb
+    limit + IsPassable check. NPCs can no longer climb mountains or walk on water.
+  - Corpse decay: NPC ceseti silindiginde icindeki item'lar da siliniyor.
+    Player ceseti icindeki item'lar yere dusuyor (eski davranis).
+    Corpse decay: NPC corpse items are deleted on decay. Player corpse items
+    drop to ground (existing behavior).
+  - Dragon breath: dist >= 0 (ayni tile'da da ateslenir), 3s cooldown eklendi.
+    Dragon breath: fires at dist 0 (same tile), 3s cooldown added.
+  - Pet guard mode: master'in fight target'ina otomatik katiliyor. IsAttackable
+    kontrolu guard/attack modlarina eklendi (invul/hidden hedefe saldirilmaz).
+    Pet guard mode: auto-joins master's fight target. IsAttackable check added
+    to guard/attack modes (no attacking invul/hidden targets).
+  - Pet "all kill": Ridden/Invul hedefe saldiri engellendi. FightTarget ve
+    WakeNpc aninda ataniyor (pet hemen saldiriya geciyor).
+    Pet "all kill": blocked on Ridden/Invul targets. FightTarget and WakeNpc
+    assigned immediately (pet attacks without delay).
+
+TEKNIK / TECHNICAL:
+  - Vendor/Banker/Stable/Healer tick hizi: 750ms -> 3-5 saniye. Home tag'i
+    olmayan vendor'lar hareket etmiyor. Wander olasiligi %5 -> %3.
+    Service NPC tick rate: 750ms -> 3-5 seconds. Vendors without HOME tag
+    stay still. Wander probability 5% -> 3%.
+  - Monster/Dragon/Berserk idle tick'te kaliyor (750ms). Sadece aktif savas
+    ve aktif pet'ler hizli tick (250ms) aliyor.
+    Monster/Dragon/Berserk stay on idle tick (750ms). Only active combat
+    and active pets get fast tick (250ms).
+  - Bot spawn: sabit 8 nokta yerine sehir bounding box'lari icinde rastgele
+    koordinat uretimi. Sektorler daha dolu.
+    Bot spawn: random coordinates within city bounding boxes instead of
+    8 fixed points. Sectors are more populated.
+  - Vendor home mesafe limiti 5 -> 3 tile.
+    Vendor home distance limit 5 -> 3 tiles.
+
 [2026-04-23] - NPC AI, combat formulu, teleporter sistemi, engine iyilestirmeleri
 ----------------------------------------
 

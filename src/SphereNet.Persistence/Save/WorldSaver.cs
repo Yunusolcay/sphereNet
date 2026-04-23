@@ -363,8 +363,6 @@ public sealed class WorldSaver
         if (!string.IsNullOrEmpty(ch.Title)) w.WriteProperty("TITLE", ch.Title);
         w.WriteProperty("FLAGS", ((uint)ch.StatFlags).ToString());
         w.WriteProperty("NPCBRAIN", ((int)ch.NpcBrain).ToString());
-        if (ch.NpcDamMin > 0 || ch.NpcDamMax > 0)
-            w.WriteProperty("DAM", $"{ch.NpcDamMin},{ch.NpcDamMax}");
         if (ch.NpcSpells.Count > 0)
         {
             foreach (var spell in ch.NpcSpells)

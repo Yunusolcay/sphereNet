@@ -23,41 +23,17 @@ public sealed class BotEngine : IDisposable
     private int _lastPacketsSent;
     private int _lastPacketsReceived;
 
-    /// <summary>Spawn locations for bots by city.</summary>
-    public static readonly Dictionary<BotSpawnCity, (short X, short Y, sbyte Z)[]> SpawnLocations = new()
+    /// <summary>City bounding boxes for bot spawning (minX, minY, maxX, maxY, defaultZ).</summary>
+    public static readonly Dictionary<BotSpawnCity, (short MinX, short MinY, short MaxX, short MaxY, sbyte Z)> CityBounds = new()
     {
-        [BotSpawnCity.Britain] = [
-            (1495, 1629, 10), (1428, 1695, 0), (1475, 1645, 20), (1522, 1756, 5),
-            (1416, 1696, 0), (1467, 1528, 30), (1512, 1610, 20), (1438, 1550, 22)
-        ],
-        [BotSpawnCity.Trinsic] = [
-            (1823, 2821, 0), (1867, 2780, 0), (1914, 2725, 0), (1856, 2684, 0),
-            (1996, 2765, 0), (2050, 2855, 0), (1907, 2804, 0), (1838, 2745, 0)
-        ],
-        [BotSpawnCity.Moonglow] = [
-            (4408, 1168, 0), (4442, 1122, 0), (4471, 1062, 0), (4551, 1107, 0),
-            (4516, 1161, 0), (4487, 1212, 0), (4405, 1074, 0), (4536, 1045, 0)
-        ],
-        [BotSpawnCity.Yew] = [
-            (542, 985, 0), (612, 815, 0), (573, 880, 0), (471, 1002, 0),
-            (630, 865, 0), (553, 927, 0), (504, 974, 0), (582, 838, 0)
-        ],
-        [BotSpawnCity.Minoc] = [
-            (2498, 392, 15), (2525, 509, 0), (2576, 469, 15), (2467, 439, 15),
-            (2503, 565, 0), (2529, 422, 15), (2559, 525, 0), (2485, 490, 15)
-        ],
-        [BotSpawnCity.Vesper] = [
-            (2899, 676, 0), (2950, 816, 0), (3002, 743, 6), (2871, 732, 0),
-            (2925, 854, 0), (2978, 689, 0), (2848, 792, 0), (2964, 776, 6)
-        ],
-        [BotSpawnCity.Skara] = [
-            (596, 2138, 0), (640, 2067, 0), (620, 2200, 0), (567, 2105, 0),
-            (662, 2135, 0), (604, 2172, 0), (575, 2078, 0), (648, 2188, 0)
-        ],
-        [BotSpawnCity.Jhelom] = [
-            (1417, 3821, 0), (1324, 3773, 0), (1380, 3850, 0), (1462, 3779, 0),
-            (1350, 3815, 0), (1404, 3755, 0), (1441, 3842, 0), (1298, 3802, 0)
-        ]
+        [BotSpawnCity.Britain]  = (1400, 1520, 1540, 1760, 10),
+        [BotSpawnCity.Trinsic]  = (1820, 2680, 2050, 2870,  0),
+        [BotSpawnCity.Moonglow] = (4400, 1040, 4560, 1220,  0),
+        [BotSpawnCity.Yew]      = ( 470,  810,  650, 1010,  0),
+        [BotSpawnCity.Minoc]    = (2460,  380, 2580,  570, 15),
+        [BotSpawnCity.Vesper]   = (2840,  670, 3010,  860,  0),
+        [BotSpawnCity.Skara]    = ( 560, 2060,  670, 2210,  0),
+        [BotSpawnCity.Jhelom]   = (1290, 3750, 1470, 3860,  0),
     };
 
     public int TotalBots => _bots.Count;
@@ -81,16 +57,18 @@ public sealed class BotEngine : IDisposable
         _logger.LogInformation("[BOT] Spawn city set to: {City}", city);
     }
 
-    /// <summary>Get a random spawn location based on current city setting.</summary>
+    /// <summary>Get a random spawn location within a city bounding box.</summary>
     public (short X, short Y, sbyte Z) GetRandomSpawnLocation(Random rng)
     {
         var cities = _spawnCity == BotSpawnCity.All
-            ? SpawnLocations.Keys.ToArray()
+            ? CityBounds.Keys.ToArray()
             : [_spawnCity];
 
         var city = cities[rng.Next(cities.Length)];
-        var locs = SpawnLocations[city];
-        return locs[rng.Next(locs.Length)];
+        var b = CityBounds[city];
+        short x = (short)rng.Next(b.MinX, b.MaxX + 1);
+        short y = (short)rng.Next(b.MinY, b.MaxY + 1);
+        return (x, y, b.Z);
     }
 
     /// <summary>Get all bot account names for cleanup.</summary>

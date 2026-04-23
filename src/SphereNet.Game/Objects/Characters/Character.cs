@@ -459,9 +459,6 @@ public class Character : ObjBase
     public short MaxMana { get => _maxMana; set { if (value != _maxMana) { _maxMana = value; if (_mana > _maxMana) _mana = _maxMana; MarkDirty(DirtyFlag.Stats); } } }
     public short MaxStam { get => _maxStam; set { if (value != _maxStam) { _maxStam = value; if (_stam > _maxStam) _stam = _maxStam; MarkDirty(DirtyFlag.Stats); } } }
 
-    public short NpcDamMin { get; set; }
-    public short NpcDamMax { get; set; }
-
     public ushort BodyId { get => _bodyId; set { _bodyId = value; MarkDirty(DirtyFlag.Body); } }
 
     /// <summary>
@@ -1598,7 +1595,12 @@ public class Character : ObjBase
             case "ISPLAYER": value = _isPlayer ? "1" : "0"; return true;
             case "ISNPC": value = (!_isPlayer && _npcBrain != NpcBrainType.None) ? "1" : "0"; return true;
             case "NPCBRAIN": value = ((int)_npcBrain).ToString(); return true;
-            case "DAM": value = $"{NpcDamMin},{NpcDamMax}"; return true;
+            case "DAM":
+            {
+                var dam = Combat.CombatEngine.NpcDamageDefLookup?.Invoke(_charDefIndex);
+                value = dam.HasValue ? $"{dam.Value.Min},{dam.Value.Max}" : "0,0";
+                return true;
+            }
             case "FOOD": value = _food.ToString(); return true;
             case "PRIVLEVEL": value = ((int)PrivLevel).ToString(); return true;
             case "ISMOUNTED": value = IsMounted ? "1" : "0"; return true;
@@ -2270,14 +2272,7 @@ public class Character : ObjBase
                 if (TryParseNpcBrain(normalized, out var brain)) _npcBrain = brain;
                 return true;
             case "DAM":
-            {
-                var parts = normalized.Split(',', 2, StringSplitOptions.TrimEntries);
-                if (parts.Length == 2 && short.TryParse(parts[0], out short dMin) && short.TryParse(parts[1], out short dMax))
-                { NpcDamMin = dMin; NpcDamMax = dMax; }
-                else if (short.TryParse(parts[0], out short dFlat))
-                { NpcDamMin = dFlat; NpcDamMax = dFlat; }
                 return true;
-            }
             case "NPCSPELL":
                 if (int.TryParse(normalized, out int spellId) && Enum.IsDefined(typeof(SpellType), spellId))
                     NpcSpellAdd((SpellType)spellId);
