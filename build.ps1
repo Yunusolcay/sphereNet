@@ -24,7 +24,22 @@ function Write-Step($n, $total, $msg) {
 }
 
 # ── 1. Vue panel ─────────────────────────────────────────────────────────────
-Write-Step 1 2 "Vue panel derleniyor (npm run build)..."
+Write-Step 1 3 "Panel bagimliliklari kontrol ediliyor..."
+
+if (-not (Test-Path "$root\panel\node_modules")) {
+    Write-Host "  node_modules bulunamadi, npm install calisiyor..." -ForegroundColor Yellow
+    Push-Location "$root\panel"
+    try {
+        npm install
+        if ($LASTEXITCODE -ne 0) { throw "npm install basarisiz oldu." }
+    } finally {
+        Pop-Location
+    }
+} else {
+    Write-Host "  node_modules mevcut, atlanıyor." -ForegroundColor DarkGray
+}
+
+Write-Step 2 3 "Vue panel derleniyor (npm run build)..."
 
 Push-Location "$root\panel"
 try {
@@ -34,8 +49,8 @@ try {
     Pop-Location
 }
 
-# ── 2. C# cozumu ─────────────────────────────────────────────────────────────
-Write-Step 2 2 "C# cozumu derleniyor ($Configuration)..."
+# ── 3. C# cozumu ─────────────────────────────────────────────────────────────
+Write-Step 3 3 "C# cozumu derleniyor ($Configuration)..."
 
 dotnet build "$root\sphereNet.sln" `
     --configuration $Configuration `

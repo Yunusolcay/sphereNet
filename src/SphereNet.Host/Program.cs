@@ -91,7 +91,7 @@ proc.RunningChanged += running =>
 
 // ── Start panel web server ───────────────────────────────────────────────────
 
-using var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning));
+using var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Information));
 using var panelHost     = new PanelHost(panelCtx, panelPort, logSink, loggerFactory.CreateLogger("Panel"));
 panelHost.Start();
 

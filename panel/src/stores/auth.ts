@@ -18,14 +18,21 @@ export const useAuthStore = defineStore('auth', () => {
     await router.push('/dashboard')
   }
 
-  async function logout() {
-    try { await authApi.logout() } catch { /* ignore */ }
+  function clearSession() {
     token.value    = null
     loggedIn.value = false
     localStorage.removeItem('sn_token')
     localStorage.removeItem('sn_server')
-    await router.push('/login')
+    router.push('/login')
   }
 
-  return { token, serverName, loggedIn, login, logout }
+  async function logout() {
+    const hadToken = !!token.value
+    clearSession()
+    if (hadToken) {
+      try { await authApi.logout() } catch { /* ignore */ }
+    }
+  }
+
+  return { token, serverName, loggedIn, login, logout, clearSession }
 })

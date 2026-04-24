@@ -53,6 +53,7 @@ public sealed class PanelHost : IDisposable
             var builder = WebApplication.CreateBuilder();
             builder.WebHost.UseSetting("urls", $"http://localhost:{_port}");
             builder.Logging.ClearProviders();
+            builder.Logging.AddProvider(new ForwardingLoggerProvider(_logger));
 
             var tokens = new TokenStore();
             builder.Services.AddSingleton(_ctx);
@@ -73,6 +74,24 @@ public sealed class PanelHost : IDisposable
             _ = StatsLoop(_app.Services.GetRequiredService<IHubContext<ServerHub>>(), ct);
 
             _app.UseCors("DevCors");
+
+            _app.Use(async (httpCtx, next) =>
+            {
+                try
+                {
+                    await next();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Panel request error: {Method} {Path}",
+                        httpCtx.Request.Method, httpCtx.Request.Path);
+                    if (!httpCtx.Response.HasStarted)
+                    {
+                        httpCtx.Response.StatusCode = 500;
+                        await httpCtx.Response.WriteAsJsonAsync(new { error = "Internal server error" });
+                    }
+                }
+            });
 
             // Serve built Vue app
             var distPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "panel");
@@ -595,6 +614,29 @@ public sealed class PanelHost : IDisposable
         _cts?.Cancel();
         _app?.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(3));
         _cts?.Dispose();
+    }
+}
+
+// Forwards ASP.NET Core internal logs (Kestrel, routing, SignalR) to the Host console logger
+file sealed class ForwardingLoggerProvider(ILogger target) : ILoggerProvider
+{
+    public ILogger CreateLogger(string categoryName) => new Forwarder(target, categoryName);
+    public void Dispose() { }
+
+    private sealed class Forwarder(ILogger target, string category) : ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => target.IsEnabled(logLevel);
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state,
+            Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (!IsEnabled(logLevel)) return;
+            var msg = formatter(state, exception);
+            // Strip noisy Kestrel heartbeat / connection logs
+            if (logLevel < LogLevel.Warning && category.StartsWith("Microsoft.AspNetCore."))
+                return;
+            target.Log(logLevel, exception, "[Panel:{Category}] {Msg}", category, msg);
+        }
     }
 }
 
