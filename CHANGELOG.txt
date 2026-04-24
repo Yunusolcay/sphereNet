@@ -4,6 +4,36 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-24] - Dialog engine koordinat ve RESIZE duzeltmeleri
+----------------------------------------
+
+HATA DUZELTMELERI / BUG FIXES:
+  - Dialog PAGE komutu DORIGIN baseline'ini sifirliyordu: Source-X'te PAGE komutu
+    m_iOriginX/m_iOriginY degerlerini sifirlamaz — onceki DORIGIN sonraki sayfalarda
+    da gecerli kalir. Bu duzeltme sayesinde cok sayfalik dialoglarda (+N offset'li)
+    kontroller dogru pozisyonda render ediliyor.
+    Dialog PAGE command was resetting DORIGIN baseline: Source-X PAGE does not reset
+    m_iOriginX/m_iOriginY — previous DORIGIN persists across pages. This fix ensures
+    multi-page dialog controls with +N offsets render at the correct position.
+  - RESIZE komutu 4 parametreyle sessizce atlaniyordu: Sphere RESIZE shorthand'i
+    (x,y,width,height) desteklenmiyordu, sadece 5 parametreli RESIZEPIC isleniyordu.
+    Artik RESIZE 4 parametre ile default gump ID 9200 kullanilarak arkaplan olusturuyor.
+    RESIZE command with 4 params was silently skipped: Sphere RESIZE shorthand
+    (x,y,width,height) was unsupported — only 5-param RESIZEPIC was handled. RESIZE
+    now uses default gump ID 9200 for the background.
+  - Script dialog ekran pozisyonu ilk satirdan okunmuyordu: Sphere dialog sectioninin
+    ilk satiri (orn. "0,0") ekran pozisyonunu belirler. Sabit centering yerine artik
+    script'ten okunan pozisyon kullaniliyor.
+    Script dialog screen position was not parsed from first line: Sphere dialog
+    section's first line (e.g. "0,0") defines screen position. Now parsed and used
+    instead of hardcoded centering.
+
+TEKNIK / TECHNICAL:
+  - GumpBuilder: ExplicitX/ExplicitY nullable property'leri eklendi. SendGump,
+    bu degerler set edildiginde centering hesabi yerine dogrudan kullanir.
+    GumpBuilder: added ExplicitX/ExplicitY nullable properties. SendGump uses
+    them directly when set, bypassing the centering calculation.
+
 [2026-04-24] - Replay video kontrolleri, gorunmez kamera, ScriptDebug, trigger crash fix
 ----------------------------------------
 

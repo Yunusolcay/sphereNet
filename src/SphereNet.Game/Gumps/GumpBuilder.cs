@@ -55,6 +55,8 @@ public sealed class GumpBuilder
     public uint GumpId => _gumpId;
     public int Width { get; set; }
     public int Height { get; set; }
+    public int? ExplicitX { get; set; }
+    public int? ExplicitY { get; set; }
     public IReadOnlyList<string> Layout => _layout;
     public IReadOnlyList<string> Texts => _texts;
 

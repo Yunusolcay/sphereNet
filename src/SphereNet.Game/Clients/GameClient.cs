@@ -5573,11 +5573,10 @@ public sealed class GameClient : ITextConsole
             _gumpCallbacks[gump.GumpId] = callback;
 
         string layout = gump.BuildLayoutString();
+        int gx = gump.ExplicitX ?? (gump.Width > 0 ? (800 - gump.Width) / 2 : 50);
+        int gy = gump.ExplicitY ?? (gump.Height > 0 ? (600 - gump.Height) / 2 : 50);
         _netState.Send(new PacketGumpDialog(
-            gump.Serial, gump.GumpId,
-            (gump.Width > 0 ? (800 - gump.Width) / 2 : 50),
-            (gump.Height > 0 ? (600 - gump.Height) / 2 : 50),
-            layout, gump.Texts));
+            gump.Serial, gump.GumpId, gx, gy, layout, gump.Texts));
     }
 
     /// <summary>Set a callback-based target cursor. Used by housing, pets, etc.</summary>
@@ -7834,7 +7833,26 @@ public sealed class GameClient : ITextConsole
         if (_character == null) return false;
 
         int currentPage = Math.Max(0, requestedPage);
-        var gump = new GumpBuilder(_character.Uid.Value, (uint)Math.Abs(dialogId.GetHashCode()), 500, 400);
+
+        // Sphere dialog first line is the screen position "x,y".
+        // Source-X reads this via s.ReadKey() before processing controls.
+        int dialogX = 0, dialogY = 0;
+        if (layoutSection.Keys.Count > 0)
+        {
+            string firstLine = layoutSection.Keys[0].Key.Trim();
+            var posParts = firstLine.Split(',', StringSplitOptions.TrimEntries);
+            if (posParts.Length >= 2 && int.TryParse(posParts[0], out int px) && int.TryParse(posParts[1], out int py))
+            {
+                dialogX = px;
+                dialogY = py;
+            }
+        }
+
+        var gump = new GumpBuilder(_character.Uid.Value, (uint)Math.Abs(dialogId.GetHashCode()))
+        {
+            ExplicitX = dialogX,
+            ExplicitY = dialogY
+        };
         int originX = 0, originY = 0;
         int cursorX = 0, cursorY = 0;
         // Separate "row tracker" for the `*N` operator. Sphere treats *N as a
@@ -7902,16 +7920,14 @@ public sealed class GameClient : ITextConsole
                     // lives in the same gump packet, the client switches
                     // visibility when a page-nav button fires. Emit a
                     // `{ page N }` marker and let every subsequent
-                    // element render under that tag. Previously this
-                    // filtered out later pages server-side — the client
-                    // saw only page 1 so the STATS/SKILLS/FLAGS tabs had
-                    // nothing to switch to.
+                    // element render under that tag.
+                    // Source-X does NOT reset m_iOriginX/m_iOriginY on
+                    // PAGE — the DORIGIN baseline persists across pages
+                    // so that PAGE 1 content can use +N offsets relative
+                    // to the last DORIGIN set on PAGE 0.
                     int pageNo = ParseIntToken(args);
                     gump.SetPage(pageNo);
                     currentPageVisible = true;
-                    originX = 0; originY = 0;
-                    cursorX = 0; cursorY = 0;
-                    rowCursorX = 0; rowCursorY = 0;
                     break;
                 }
                 case "DORIGIN":
@@ -7945,6 +7961,14 @@ public sealed class GameClient : ITextConsole
                         int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
                         int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
                         gump.AddResizePic(x, y, ParseIntToken(parts[2]), ParseIntToken(parts[3]), ParseIntToken(parts[4]));
+                    }
+                    else if (cmd == "RESIZE" && parts.Length == 4)
+                    {
+                        // Sphere RESIZE shorthand: x,y,width,height (no gumpId)
+                        // Uses default background gump 9200.
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        gump.AddResizePic(x, y, 9200, ParseIntToken(parts[2]), ParseIntToken(parts[3]));
                     }
                     break;
                 }
