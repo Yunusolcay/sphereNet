@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>SphereNet.Host</AssemblyName>
+    <RootNamespace>SphereNet.Host</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SphereNet.Panel\SphereNet.Panel.csproj" />
+  </ItemGroup>
+
+  <!--
+    Vue panel build çıktısını (panel\dist\) bin çıktısına kopyalar.
+    Önce  `npm run build`  çalıştırılmış olmalı.
+  -->
+  <ItemGroup>
+    <Content Include="..\..\panel\dist\**\*" Condition="Exists('..\..\panel\dist\index.html')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>panel\%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
+    </Content>
+  </ItemGroup>
+
+</Project>

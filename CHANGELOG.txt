@@ -5293,3 +5293,99 @@ YENI OZELLIKLER:
 DOGRULAMA:
   - Save/Load sistemi kontrol edildi. WorldSaver.Save() zaten
     Directory.CreateDirectory() cagiriyor, ek duzeltme gerekmedi.
+
+[2026-04-24] - Panel bagimsizilaştirma, txAdmin mimarisi, unified bin ciktisi
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - txAdmin benzeri iki-exe mimarisi: SphereNet.Host.exe her zaman calisir,
+    panel'i barindirip tarayiciyi otomatik acar. SphereNet.Server.exe oyun
+    motorunu child process olarak baslatir/durdurur/yeniden baslatir.
+    txAdmin-style two-exe architecture: SphereNet.Host.exe always running,
+    hosts panel and auto-opens browser. SphereNet.Server.exe manages the
+    game engine as a child process (start/stop/restart).
+  - Named pipe IPC: Host ile Server JSON Lines protokoluyle iki yonlu
+    haberlesir. Stats push (2s), query/mutation request-response, exec.
+    Named pipe IPC: bidirectional JSON Lines protocol between Host and Server.
+    Stats push every 2s, query/mutation request-response with correlation id.
+  - SphereNet.Host konsol penceresi: yazilan komutlar IPC exec sorgusuyla
+    oyun sunucusuna iletilir, sonuclar konsola yazilir.
+    SphereNet.Host console window: typed commands forwarded to game server
+    via IPC exec query; results printed to console.
+  - 6 adimli kurulum sihirbazi (/setup): Server Identity -> Admin ->
+    Server Config (TickSleepMode + Advanced: DebugPackets/ScriptDebug) ->
+    Scripts (mevcut scripts uyarisi, OVERWRITE onaylamasi) -> Review -> Done.
+    Tamamlanma .panel-setup-done marker dosyasiyla izlenir.
+    6-step setup wizard (/setup): Server Identity -> Admin -> Server Config
+    (TickSleepMode + Advanced: DebugPackets/ScriptDebug) -> Scripts
+    (existing scripts warning, OVERWRITE confirmation) -> Review -> Done.
+    Completion tracked via .panel-setup-done marker file.
+  - Router guard: setup tamamlanmamissa ilk navigasyonda otomatik /setup
+    yonlendirmesi. Sonuc oturum boyunca onbelleklenir.
+    Router guard: auto-redirect to /setup on first navigation if setup is
+    not complete. Result cached for the session.
+  - TopBar sunucu durum rozeti (calistiriyor/durdu) + Start, Restart, Stop
+    butonlari, onay diyaloglari ile.
+    TopBar server status badge (running/stopped) + Start, Restart, Stop
+    buttons with confirmation dialogs.
+  - SettingsPage: Packet Debug / Script Debug canli toggle (ini'ye de yazilir),
+    Danger Zone (Restart/Shutdown), Setup sihirbazina link.
+    SettingsPage: live Packet Debug / Script Debug toggles (persisted to ini),
+    Danger Zone (Restart/Shutdown), link to Setup wizard.
+  - ScriptsPage: sol panel dosya listesi + arama, sag panel icerik goruntuleyici.
+    GitHub'dan ZIP indirme, mevcut scripts varsa overwrite onaylamasi.
+    ScriptsPage: left-panel file list with search, right-panel content viewer.
+    GitHub ZIP download, overwrite confirmation if scripts already exist.
+  - Unified bin cikti klasoru: tum projeler bin\Debug\ veya bin\Release\ altina
+    derlenir. SphereNet.Host.exe ve SphereNet.Server.exe yan yana, panel\ alt
+    klasorunde Vue uygulamas. build.ps1 ile tek adimda derleme.
+    Unified bin output: all projects build to bin\Debug\ or bin\Release\.
+    SphereNet.Host.exe and SphereNet.Server.exe side-by-side, Vue app under
+    panel\ subfolder. Single-step build via build.ps1.
+
+HATA DUZELTMELERI / BUG FIXES:
+  - /api/ koku HTTP 404 duzeltmesi: UseStaticFiles tek basina index.html
+    sunmuyordu. UseDefaultFiles() + paylasilan PhysicalFileProvider ile
+    duzeltildi.
+    Root /api/ HTTP 404 fix: UseStaticFiles alone did not serve index.html.
+    Fixed by adding UseDefaultFiles() with a shared PhysicalFileProvider.
+  - WinForms bagimliligi kaldirildi: net9.0-windows -> net9.0, ConsoleForm.cs
+    derleme disinда birakidi, Color parametresi ConsoleAppend'den kaldirildi.
+    WinForms dependency removed: net9.0-windows -> net9.0, ConsoleForm.cs
+    excluded from compilation, Color parameter removed from ConsoleAppend.
+
+TEKNIK / TECHNICAL:
+  - SphereNet.Host: ServerProcess (child proc yonetimi, stdout yakalama,
+    IPC baglanti retry), IpcBridge (named pipe client, LastStats cache,
+    TaskCompletionSource request correlation), HostPanelContext (delegate
+    binding factory).
+    SphereNet.Host: ServerProcess (child process management, stdout capture,
+    IPC connection retry), IpcBridge (named pipe client, LastStats cache,
+    TCS request correlation), HostPanelContext (delegate binding factory).
+  - SphereNet.Server/Ipc/IpcServer: named pipe sunucu, stats push dongusu,
+    qry/mut/cmd dispatch, tum PanelContext delegelerini karsilar.
+    SphereNet.Server/Ipc/IpcServer: named pipe server, stats push loop,
+    qry/mut/cmd dispatch, handles all PanelContext delegates.
+  - PanelContext: IsServerRunning, StartServer, OnRestart, GetDebugState,
+    SetPacketDebug, SetScriptDebug delegeleri eklendi. SetupConfig'e
+    TickSleepMode, DebugPackets, ScriptDebug alanlari eklendi.
+    PanelContext: added IsServerRunning, StartServer, OnRestart, GetDebugState,
+    SetPacketDebug, SetScriptDebug delegates. SetupConfig gains TickSleepMode,
+    DebugPackets, ScriptDebug fields.
+  - PanelHost: /api/setup/needed, /api/setup/config, /api/setup/apply,
+    /api/setup/status, /api/server/running, /api/server/start,
+    /api/server/restart, /api/settings/debug, /api/scripts,
+    /api/scripts/content, /api/scripts/download endpoint'leri eklendi.
+    PanelHost: added /api/setup/needed, /api/setup/config, /api/setup/apply,
+    /api/setup/status, /api/server/running, /api/server/start,
+    /api/server/restart, /api/settings/debug, /api/scripts,
+    /api/scripts/content, /api/scripts/download endpoints.
+  - api.ts: SetupConfig'e tickSleepMode/debugPackets/scriptDebug alanlari,
+    SetupStatus arayuzu, setupApi.status() eklendi.
+    api.ts: tickSleepMode/debugPackets/scriptDebug fields on SetupConfig,
+    SetupStatus interface, setupApi.status() added.
+  - Directory.Build.props (kok) + src zinciri: AppendTargetFrameworkToOutputPath
+    false, unified OutputPath. Vite outDir dist'e donusturuldu. build.ps1 eklendi.
+    Root Directory.Build.props + src chain: AppendTargetFrameworkToOutputPath
+    false, unified OutputPath. Vite outDir changed to dist. build.ps1 added.
+

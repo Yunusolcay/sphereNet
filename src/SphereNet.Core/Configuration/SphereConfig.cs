@@ -235,6 +235,10 @@ public sealed class SphereConfig
     // Web
     public bool UseHttp { get; set; }
 
+    // Admin Panel
+    public string AdminPassword { get; set; } = "";
+    public int AdminPanelPort { get; set; } = 0; // 0 = ServPort + 3
+
     public void LoadFromIni(IniParser ini)
     {
         string section = "SPHERE";
@@ -399,6 +403,9 @@ public sealed class SphereConfig
         DistanceYell = ini.GetInt(section, "DistanceYell", DistanceYell);
 
         UseHttp = ini.GetBool(section, "UseHttp", UseHttp);
+
+        AdminPassword = ini.GetValue(section, "AdminPassword") ?? AdminPassword;
+        AdminPanelPort = ini.GetInt(section, "AdminPanelPort", AdminPanelPort);
 
         SentryDsn = ini.GetValue(section, "SentryDsn") ?? SentryDsn;
 

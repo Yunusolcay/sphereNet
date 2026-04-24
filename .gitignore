@@ -19,12 +19,12 @@ wiki/
 /scripts/
 /oldSphere/
 
-# Claude Code
-.claude/
-
 # Source-X reference source (local only)
 tools/source-reference/
 
 # Other
 *.user
 system_rules.md
+
+node_modules
+panel

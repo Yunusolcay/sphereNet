@@ -44,10 +44,8 @@ using SphereNet.Scripting.Definitions;
 using SphereNet.Scripting.Resources;
 using GameRegion = SphereNet.Game.World.Regions.Region;
 using SphereNet.Game.World.Regions;
-#if WINFORMS
+using SphereNet.Panel;
 using SphereNet.Server.Admin;
-#endif
-using Color = System.Drawing.Color;
 using System.Data.Common;
 using System.Security.Cryptography;
 using System.Text;
@@ -66,6 +64,8 @@ public static class Program
         });
 
     private static SphereConfig _config = null!;
+    private static string _iniPath = "";
+    private static List<string> _scriptDirs = [];
     private static CryptConfig _cryptConfig = null!;
     private static ILoggerFactory _loggerFactory = null!;
     private static Microsoft.Extensions.Logging.ILogger _log = null!;
@@ -118,6 +118,7 @@ public static class Program
     private static readonly ServerHookContext _serverHookContext = new();
     private static TelnetConsole? _telnet;
     private static WebStatusServer? _webStatus;
+    // Panel is now served by SphereNet.Host (separate process)
 #if WINFORMS
     private static ConsoleForm? _consoleForm;
 #endif
@@ -148,64 +149,51 @@ public static class Program
     private static long _tickStatsMaxUs;
     private static int _tickStatsCount;
     private static bool _headless;
+    private static bool _managed;       // running as child of SphereNet.Host
+    private static string _pipeName = ""; // IPC pipe name when managed
 
-    [STAThread]
     public static void Main(string[] args)
     {
-        _headless = args.Any(a => a.Equals("--headless", StringComparison.OrdinalIgnoreCase) ||
-                                   a.Equals("--nogui", StringComparison.OrdinalIgnoreCase)) ||
-                    !IsWinFormsAvailable();
+        _managed = args.Any(a => a.Equals("--managed", StringComparison.OrdinalIgnoreCase));
+        _pipeName = args.SkipWhile(a => !a.Equals("--pipe", StringComparison.OrdinalIgnoreCase))
+                        .Skip(1).FirstOrDefault() ?? "";
 
-        if (_headless)
-        {
-            RunHeadless(args);
-        }
-        else
-        {
-            RunWithGui(args);
-        }
-    }
+        // Managed mode is always headless (panel lives in Host process)
+        _headless = _managed ||
+                    args.Any(a => a.Equals("--headless", StringComparison.OrdinalIgnoreCase) ||
+                                  a.Equals("--nogui",    StringComparison.OrdinalIgnoreCase));
 
-    private static bool IsWinFormsAvailable()
-    {
-#if WINFORMS
-        return true;
-#else
-        return false;
-#endif
+        RunHeadless(args);
     }
 
     private static void RunHeadless(string[] args)
     {
-        Console.WriteLine("SphereNet starting in headless mode...");
-        // Console input thread — reads stdin and queues commands
-        var inputThread = new Thread(() =>
-        {
-            while (_running)
-            {
-                try
-                {
-                    string? line = Console.ReadLine();
-                    if (line == null) break; // stdin closed (e.g. nohup / systemd)
-                    _headlessCommandQueue.Enqueue(line);
-                }
-                catch { break; }
-            }
-        })
-        {
-            IsBackground = true,
-            Name = "ConsoleInput"
-        };
+        Console.WriteLine(_managed
+            ? $"SphereNet starting in managed mode (pipe: {_pipeName})…"
+            : "SphereNet starting in headless mode…");
 
-        // Handle Ctrl+C gracefully
-        Console.CancelKeyPress += (_, e) =>
+        // In managed mode the Host sends commands via IPC, not stdin
+        if (!_managed)
         {
-            e.Cancel = true;
-            _running = false;
-        };
+            var inputThread = new Thread(() =>
+            {
+                while (_running)
+                {
+                    try
+                    {
+                        string? line = Console.ReadLine();
+                        if (line == null) break;
+                        _headlessCommandQueue.Enqueue(line);
+                    }
+                    catch { break; }
+                }
+            }) { IsBackground = true, Name = "ConsoleInput" };
+
+            Console.CancelKeyPress += (_, e) => { e.Cancel = true; _running = false; };
+            inputThread.Start();
+        }
 
         _running = true;
-        inputThread.Start();
         ServerMain(args);
     }
 
@@ -254,7 +242,7 @@ public static class Program
             if (_log != null)
                 _log.LogCritical(ex, "ServerMain crashed");
             else
-                ConsoleAppend(msg, Color.Red);
+                ConsoleAppend(msg);
 
             // Keep form open so user can read the error
         }
@@ -264,14 +252,15 @@ public static class Program
     {
         // --- 1. Configuration ---
         string basePath = AppDomain.CurrentDomain.BaseDirectory;
-        string iniPath = FindConfigFile(basePath, "sphere.ini");
+        _iniPath = FindConfigFile(basePath, "sphere.ini");
+        string iniPath = _iniPath;
         if (iniPath == "")
         {
-            ConsoleAppend("ERROR: sphere.ini not found.", Color.Red);
+            ConsoleAppend("ERROR: sphere.ini not found.");
             return;
         }
 
-        ConsoleAppend($"Loading config: {iniPath}", Color.LightGray);
+        ConsoleAppend($"Loading config: {iniPath}");
         var iniParser = new IniParser();
         iniParser.Load(iniPath);
         _config = new SphereConfig();
@@ -356,11 +345,11 @@ public static class Program
         _log = _loggerFactory.CreateLogger("SphereNet");
 
         // Banner
-        ConsoleAppend("===========================================", Color.Cyan);
-        ConsoleAppend("  SphereNet — Ultima Online Server", Color.Cyan);
-        ConsoleAppend("  Source-X Architecture / .NET 9 Port", Color.Cyan);
-        ConsoleAppend("===========================================", Color.Cyan);
-        ConsoleAppend("", Color.LightGray);
+        ConsoleAppend("===========================================");
+        ConsoleAppend("  SphereNet — Ultima Online Server");
+        ConsoleAppend("  Source-X Architecture / .NET 9 Port");
+        ConsoleAppend("===========================================");
+        ConsoleAppend("");
 
         _log.LogInformation("Server: {Name}", _config.ServName);
         _log.LogInformation("Port: {Port}", _config.ServPort);
@@ -373,7 +362,8 @@ public static class Program
         // --- 3. Scripting Resources ---
         _resources = new ResourceHolder(_loggerFactory.CreateLogger<ResourceHolder>());
         RegisterBuiltinDefNames();
-        var scriptDirs = ResolveScriptDirectories(basePath, _config.ScpFilesDir);
+        _scriptDirs = ResolveScriptDirectories(basePath, _config.ScpFilesDir);
+        var scriptDirs = _scriptDirs;
         if (scriptDirs.Count == 0)
         {
             string fallbackScriptsDir = FindDir(basePath, "scripts");
@@ -554,7 +544,7 @@ public static class Program
                 // the GUI console so the user spots missing properties while a
                 // specific command/dialog is running.
                 _log?.LogWarning("{Msg}", msg);
-                ConsoleAppend(msg, Color.Orange);
+                ConsoleAppend(msg);
             }
         };
         var scriptInterpreter = new ScriptInterpreter(exprParser, _loggerFactory.CreateLogger<ScriptInterpreter>());
@@ -2025,6 +2015,118 @@ public static class Program
             () => _network.ActiveConnections,
             _loggerFactory.CreateLogger("WebStatus"));
         _webStatus.Start(webPort);
+
+        // --- 10. Admin Panel (SphereNet.Panel) ---
+        int panelPort = _config.AdminPanelPort > 0 ? _config.AdminPanelPort : _config.ServPort + 3;
+        var panelCtx = new PanelContext
+        {
+            ServerName  = _config.ServName,
+            StartTime   = _serverStartTime,
+            AdminPassword = _config.AdminPassword,
+
+            GetStats = () =>
+            {
+                var (chars, items, sectors) = _world.GetStats();
+                var uptime = DateTime.UtcNow - _serverStartTime;
+                return new ServerStats(
+                    _config.ServName,
+                    uptime.ToString(@"d\.hh\:mm\:ss"),
+                    (int)uptime.TotalSeconds,
+                    _clients.Values.Count(c => c.IsPlaying),
+                    chars,
+                    items,
+                    sectors,
+                    _world.TickCount,
+                    GC.GetTotalMemory(false) / 1024 / 1024,
+                    _accounts.Count);
+            },
+
+            GetOnlinePlayers = () => _clients.Values
+                .Where(c => c.IsPlaying && c.Character != null)
+                .Select(c => new PlayerInfo(
+                    c.Character!.Name,
+                    c.Account?.Name ?? "",
+                    c.Character.Position.Map,
+                    c.Character.Position.X,
+                    c.Character.Position.Y,
+                    c.NetState.RemoteEndPoint?.Address.ToString() ?? ""))
+                .ToList(),
+
+            GetAllAccounts = () => _accounts.GetAllAccounts()
+                .Select(a => new AccountInfo(
+                    a.Name, (int)a.PrivLevel, a.IsBanned,
+                    a.LastIp, a.LastLogin, a.CreateDate, a.CharCount))
+                .ToList(),
+
+            GetAccount = name =>
+            {
+                var a = _accounts.FindAccount(name);
+                return a is null ? null
+                    : new AccountInfo(a.Name, (int)a.PrivLevel, a.IsBanned,
+                        a.LastIp, a.LastLogin, a.CreateDate, a.CharCount);
+            },
+
+            CreateAccount  = (name, pass) => _accounts.CreateAccount(name, pass) is not null,
+            DeleteAccount  = name => _accounts.DeleteAccount(name),
+            SetAccountBanned   = (name, banned) => _accounts.SetAccountBlocked(name, banned),
+            SetAccountPassword = (name, pass)   => _accounts.SetAccountPassword(name, pass),
+            SetAccountPrivLevel = (name, level) =>
+            {
+                var a = _accounts.FindAccount(name);
+                if (a is not null) a.PrivLevel = (SphereNet.Core.Enums.PrivLevel)level;
+            },
+
+            // Reuse AdminCommandProcessor so panel and telnet share the same logic
+            OnSave     = PerformSave,
+            OnShutdown = () => _running = false,
+            OnResync   = PerformScriptResync,
+            OnGc       = () => { GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect(); },
+            OnRespawn  = () => _consoleProcessor?.ProcessCommand("RESPAWN",  _ => { }),
+            OnRestock  = () => _consoleProcessor?.ProcessCommand("RESTOCK",  _ => { }),
+            OnBroadcast = msg => _consoleProcessor?.ProcessCommand($"BROADCAST {msg}", _ => { }),
+
+            ExecuteCommand = cmd =>
+            {
+                var lines = new List<string>();
+                _consoleProcessor?.ProcessCommand(cmd, lines.Add);
+                return [.. lines];
+            },
+
+            // Paths
+            IniPath     = _iniPath,
+            ScriptsPath = _scriptDirs.Count > 0 ? _scriptDirs[0] : null,
+
+            // Server lifecycle
+            IsServerRunning = () => _running,
+            OnRestart = () =>
+            {
+                _log.LogInformation("Panel: restart requested — shutting down game engine…");
+                _running = false;
+            },
+
+            // Debug toggles
+            GetDebugState = () => new SphereNet.Panel.DebugState(_config.DebugPackets, _config.ScriptDebug),
+            SetPacketDebug = on =>
+            {
+                _config.DebugPackets = on;
+                _log.LogInformation("Panel: DebugPackets={Value}", on);
+            },
+            SetScriptDebug = on =>
+            {
+                _config.ScriptDebug = on;
+                _log.LogInformation("Panel: ScriptDebug={Value}", on);
+            },
+        };
+
+        // In managed mode: start IPC server so Host can communicate with us.
+        // Panel web server lives in SphereNet.Host, not here.
+        if (_managed && !string.IsNullOrEmpty(_pipeName))
+        {
+            var ipc = new SphereNet.Server.Ipc.IpcServer(_pipeName);
+            ipc.SetContext(panelCtx);
+            _ = ipc.RunAsync(CancellationToken.None);
+        }
+
         _log.LogInformation("Type 'help' for commands. Enter commands directly (e.g. save, status, quit).");
 
         // Schedule all existing NPCs into the timer wheel. Spread
@@ -2172,17 +2274,8 @@ public static class Program
     /// <summary>
     /// Write a line to the console form (GUI) or stdout (headless).
     /// </summary>
-    private static void ConsoleAppend(string text, Color color)
+    private static void ConsoleAppend(string text)
     {
-#if WINFORMS
-        if (_consoleForm != null)
-        {
-            _consoleForm.AppendLine(text, color);
-            return;
-        }
-#endif
-        // Headless mode uses Serilog console sink — no extra stdout needed
-        // unless logging isn't initialized yet.
         if (_log == null)
             Console.WriteLine(text);
     }
@@ -2190,8 +2283,7 @@ public static class Program
     private static void HandleConsoleCommand(string input)
     {
         if (_consoleProcessor == null) return;
-        _consoleProcessor.ProcessCommand(input, line =>
-            ConsoleAppend(line, Color.LightGray));
+        _consoleProcessor.ProcessCommand(input, ConsoleAppend);
     }
 
     private static void ToggleDebugPackets(Action<string> output)

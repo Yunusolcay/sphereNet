@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "PowerShell(*)",
+      "WebSearch",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:www.servuo.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:thisdotrob.github.io)",
+      "WebFetch(domain:wiki.spherecommunity.net)",
+      "WebFetch(domain:web.archive.org)",
+      "WebFetch(domain:prerelease.sphere.torfo.org)",
+      "WebFetch(domain:docs.polserver.com)",
+      "WebFetch(domain:docs.fivem.net)"
+    ]
+  },
+  "model": "claude-opus-4-6"
+}

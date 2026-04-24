@@ -1,5 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\SphereNet.Core\SphereNet.Core.csproj" />
     <ProjectReference Include="..\SphereNet.Scripting\SphereNet.Scripting.csproj" />
@@ -7,6 +14,7 @@
     <ProjectReference Include="..\SphereNet.Network\SphereNet.Network.csproj" />
     <ProjectReference Include="..\SphereNet.Game\SphereNet.Game.csproj" />
     <ProjectReference Include="..\SphereNet.Persistence\SphereNet.Persistence.csproj" />
+    <ProjectReference Include="..\SphereNet.Panel\SphereNet.Panel.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -19,42 +27,10 @@
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
   </ItemGroup>
 
-  <!-- Windows: WinForms GUI available, WinExe to hide console window -->
-  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
-    <OutputType>WinExe</OutputType>
-    <TargetFramework>net9.0-windows</TargetFramework>
-    <UseWindowsForms>true</UseWindowsForms>
-    <DefineConstants>$(DefineConstants);WINFORMS</DefineConstants>
-  </PropertyGroup>
-
-  <!-- Linux / macOS: console-only (headless) -->
-  <PropertyGroup Condition="!$([MSBuild]::IsOSPlatform('Windows'))">
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
-  </PropertyGroup>
-
-  <!-- Exclude WinForms files on non-Windows -->
-  <ItemGroup Condition="!$([MSBuild]::IsOSPlatform('Windows'))">
+  <!-- Exclude WinForms files (no longer used) -->
+  <ItemGroup>
     <Compile Remove="Admin\ConsoleForm.cs" />
     <None Remove="Admin\ConsoleForm.resx" />
   </ItemGroup>
-
-  <PropertyGroup>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
-
-  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
-    <DebugType>none</DebugType>
-    <DebugSymbols>false</DebugSymbols>
-    <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
-  </PropertyGroup>
-
-  <!-- Single-file publish settings — only active during 'dotnet publish' -->
-  <PropertyGroup Condition="'$(PublishSingleFile)' == 'true'">
-    <SelfContained>true</SelfContained>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
-  </PropertyGroup>
 
 </Project>

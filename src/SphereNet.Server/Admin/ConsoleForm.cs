@@ -3,6 +3,7 @@ using System.Diagnostics;
 using Serilog.Core;
 using Serilog.Events;
 using Serilog.Formatting.Display;
+using WFPanel = System.Windows.Forms.Panel;
 
 namespace SphereNet.Server.Admin;
 
@@ -95,7 +96,7 @@ public sealed class ConsoleForm : Form, ILogEventSink
         };
 
         // ── Header ──
-        var headerPanel = new Panel
+        var headerPanel = new WFPanel
         {
             Dock = DockStyle.Top,
             Height = 52,
@@ -128,7 +129,7 @@ public sealed class ConsoleForm : Form, ILogEventSink
         headerPanel.Controls.Add(_titleLabel);
 
         // ── Body ──
-        var bodyPanel = new Panel
+        var bodyPanel = new WFPanel
         {
             Dock = DockStyle.Fill,
             Padding = new Padding(16, 12, 16, 12),
@@ -136,7 +137,7 @@ public sealed class ConsoleForm : Form, ILogEventSink
         };
 
         // ── Side Panel ──
-        var sidePanel = new Panel
+        var sidePanel = new WFPanel
         {
             Dock = DockStyle.Right,
             Width = 280,
@@ -145,7 +146,7 @@ public sealed class ConsoleForm : Form, ILogEventSink
         };
 
         // ── Output Frame ──
-        var outputFrame = new Panel
+        var outputFrame = new WFPanel
         {
             Dock = DockStyle.Fill,
             Padding = new Padding(10),
@@ -168,7 +169,7 @@ public sealed class ConsoleForm : Form, ILogEventSink
         // visual layout in reverse.
         // Plain card, no title strip: 8 rows (2×40 metric + 6×38 stat) +
         // 3 separators(3) + padding(20) ≈ 345px.
-        var statsCard = new Panel
+        var statsCard = new WFPanel
         {
             Dock = DockStyle.Top,
             Height = 345,
@@ -210,7 +211,7 @@ public sealed class ConsoleForm : Form, ILogEventSink
         // the 3 buttons + their top margins + card padding; the SAVE button
         // was previously clipped at the bottom because the old 180px panel
         // didn't fit title(26)+sep(1)+spacer(8)+3×(36+6)+padding(20)=181px.
-        var quickActionsPanel = new Panel
+        var quickActionsPanel = new WFPanel
         {
             Dock = DockStyle.Bottom,
             Height = 156,
@@ -248,7 +249,7 @@ public sealed class ConsoleForm : Form, ILogEventSink
         bodyPanel.Controls.Add(sidePanel);
 
         // ── Bottom Input Bar ──
-        var bottomPanel = new Panel
+        var bottomPanel = new WFPanel
         {
             Dock = DockStyle.Bottom,
             Height = 56,
@@ -257,7 +258,7 @@ public sealed class ConsoleForm : Form, ILogEventSink
         };
         bottomPanel.Paint += PaintTopBorder;
 
-        var inputContainer = new Panel
+        var inputContainer = new WFPanel
         {
             Dock = DockStyle.Fill,
             BackColor = BgInput,
@@ -357,9 +358,9 @@ public sealed class ConsoleForm : Form, ILogEventSink
         e.Graphics.DrawLine(p, 0, 0, c.Width, 0);
     }
 
-    private static Panel CreateSeparator()
+    private static WFPanel CreateSeparator()
     {
-        var sep = new Panel
+        var sep = new WFPanel
         {
             Dock = DockStyle.Top,
             Height = 1,
@@ -369,9 +370,9 @@ public sealed class ConsoleForm : Form, ILogEventSink
         return sep;
     }
 
-    private static Panel CreateCard(string title)
+    private static WFPanel CreateCard(string title)
     {
-        var card = new Panel
+        var card = new WFPanel
         {
             Dock = DockStyle.Top,
             Height = 190,
@@ -398,14 +399,14 @@ public sealed class ConsoleForm : Form, ILogEventSink
             TextAlign = ContentAlignment.MiddleLeft,
             Padding = new Padding(0, 0, 0, 4),
         };
-        var titleSep = new Panel
+        var titleSep = new WFPanel
         {
             Dock = DockStyle.Top,
             Height = 1,
             BackColor = BorderAccent,
         };
         // Breathing room between header divider and content rows.
-        var titleSpacer = new Panel
+        var titleSpacer = new WFPanel
         {
             Dock = DockStyle.Top,
             Height = 8,
@@ -428,9 +429,9 @@ public sealed class ConsoleForm : Form, ILogEventSink
         };
     }
 
-    private static Panel CreateMetricRow(string label, Label bar, Color barColor)
+    private static WFPanel CreateMetricRow(string label, Label bar, Color barColor)
     {
-        var row = new Panel
+        var row = new WFPanel
         {
             Dock = DockStyle.Top,
             Height = 40,
