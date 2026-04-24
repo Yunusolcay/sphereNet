@@ -148,7 +148,11 @@ public sealed class PanelHost : IDisposable
             {
                 if (_ctx.GetStats != null)
                 {
-                    var stats = _ctx.GetStats() with { CpuPercent = GetCpuPercent() };
+                    var stats = _ctx.GetStats() with
+                    {
+                        CpuPercent = GetCpuPercent(),
+                        ThreadCount = Process.GetCurrentProcess().Threads.Count
+                    };
                     await hub.Clients.All.SendAsync("StatsUpdate", stats, ct);
                 }
             }

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.AspNetCore.SignalR;
 using Serilog.Core;
 using Serilog.Events;
@@ -5,20 +6,20 @@ using SphereNet.Panel.Hubs;
 
 namespace SphereNet.Panel.Logging;
 
-/// <summary>
-/// Serilog sink that forwards log events to all connected SignalR clients.
-/// The HubContext is injected after app.Build() via SetHubContext().
-/// </summary>
-public sealed class PanelLogSink : ILogEventSink
+public sealed class PanelLogSink : ILogEventSink, IDisposable
 {
     private IHubContext<ServerHub>? _hub;
+    private readonly ConcurrentQueue<LogEntry> _buffer = new();
+    private Timer? _flushTimer;
 
-    public void SetHubContext(IHubContext<ServerHub> hub) => _hub = hub;
+    public void SetHubContext(IHubContext<ServerHub> hub)
+    {
+        _hub = hub;
+        _flushTimer = new Timer(FlushBuffer, null, 150, 150);
+    }
 
     public void Emit(LogEvent logEvent)
     {
-        if (_hub == null) return;
-
         var entry = new LogEntry(
             logEvent.Timestamp.UtcDateTime,
             logEvent.Level.ToString(),
@@ -30,9 +31,18 @@ public sealed class PanelLogSink : ILogEventSink
         AddEntry(entry);
     }
 
-    /// <summary>Called by the Host when it captures a log line from the server process stdout.</summary>
-    public void AddEntry(LogEntry entry)
+    public void AddEntry(LogEntry entry) => _buffer.Enqueue(entry);
+
+    private void FlushBuffer(object? state)
     {
-        _ = _hub?.Clients.All.SendAsync("ReceiveLog", entry);
+        if (_hub == null || _buffer.IsEmpty) return;
+
+        var batch = new List<LogEntry>();
+        while (_buffer.TryDequeue(out var e)) batch.Add(e);
+
+        if (batch.Count > 0)
+            _ = _hub.Clients.All.SendAsync("ReceiveLogBatch", batch);
     }
+
+    public void Dispose() => _flushTimer?.Dispose();
 }

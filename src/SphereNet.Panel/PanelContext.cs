@@ -68,7 +68,8 @@ public record ServerStats(
     long TickCount,
     long MemoryMB,
     int Accounts,
-    double CpuPercent = 0
+    double CpuPercent = 0,
+    int ThreadCount = 0
 );
 
 public record PlayerInfo(

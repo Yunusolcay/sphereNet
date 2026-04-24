@@ -2104,16 +2104,30 @@ public static class Program
                 _running = false;
             },
 
-            // Debug toggles
+            // Debug toggles — same logic as ToggleDebugPackets / ToggleScriptDebug
             GetDebugState = () => new SphereNet.Panel.DebugState(_config.DebugPackets, _config.ScriptDebug),
             SetPacketDebug = on =>
             {
                 _config.DebugPackets = on;
+                if (_network != null)
+                {
+                    _network.DebugPackets = on;
+                    foreach (var ns in _network.GetActiveStates())
+                        ns.DebugPackets = on;
+                }
+                _logLevelSwitch.MinimumLevel = on
+                    ? Serilog.Events.LogEventLevel.Debug
+                    : Serilog.Events.LogEventLevel.Information;
                 _log.LogInformation("Panel: DebugPackets={Value}", on);
             },
             SetScriptDebug = on =>
             {
                 _config.ScriptDebug = on;
+                _triggerDispatcher.ScriptDebug = on;
+                if (_triggerRunner != null)
+                    _triggerRunner.ScriptDebug = on;
+                if (on)
+                    _logLevelSwitch.MinimumLevel = Serilog.Events.LogEventLevel.Debug;
                 _log.LogInformation("Panel: ScriptDebug={Value}", on);
             },
         };

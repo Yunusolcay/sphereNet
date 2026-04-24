@@ -5421,3 +5421,45 @@ YENI OZELLIKLER / NEW FEATURES:
     Thread-safe console writes: lock(_consoleLock) prevents interleaved
     output during color changes.
 
+
+[2026-04-24] - IPC JsonElement fix, log batching, debug toggle runtime, thread count
+----------------------------------------
+
+HATA DUZELTMELERI / BUG FIXES:
+  - IpcBridge JsonElement use-after-dispose duzeltildi: ProcessMessage'da
+    JsonDocument using ile dispose ediliyor, ama TCS ile baska thread'e
+    verilen JsonElement gecersiz belleğe isaret ediyordu. d.Clone() ile
+    bagimsiz kopya alınarak duzeltildi. Bu hata GetDebugState, account
+    sorgulari ve diger IPC query'lerinin null/default donmesine neden
+    oluyordu (debug toggle'larin hep OFF gorunmesi dahil).
+    IpcBridge JsonElement use-after-dispose fixed: JsonDocument was
+    disposed at end of ProcessMessage via using, but the JsonElement
+    passed to TCS on another thread pointed to freed memory. Fixed by
+    calling d.Clone() to create an independent copy. This bug caused
+    GetDebugState, account queries and other IPC queries to return
+    null/default (including debug toggles always showing OFF).
+  - Panel debug toggle'lari (DebugPackets/ScriptDebug) artik runtime'i
+    da guncelliyor: _network.DebugPackets, tum aktif baglanti state'leri,
+    _triggerDispatcher.ScriptDebug, _triggerRunner.ScriptDebug ve
+    _logLevelSwitch guncelleniyor. Onceki kod sadece _config'e yaziyordu.
+    Panel debug toggles (DebugPackets/ScriptDebug) now update runtime
+    state too: _network.DebugPackets, all active connection states,
+    _triggerDispatcher.ScriptDebug, _triggerRunner.ScriptDebug and
+    _logLevelSwitch. Previous code only wrote to _config.
+
+YENI OZELLIKLER / NEW FEATURES:
+  - SignalR log batching: PanelLogSink artik gelen loglari buffer'a
+    ekliyor ve 150ms arayla toplu gonderiyor (ReceiveLogBatch). Bu
+    sunucu baslangicinda yuzlerce log satirinin teker teker gonderilmesi
+    yerine tek mesajda gonderilmesini saglar. Frontend logs store'a
+    addBatch metodu eklendi.
+    SignalR log batching: PanelLogSink now buffers incoming logs and
+    flushes every 150ms as a batch (ReceiveLogBatch). This sends hundreds
+    of startup log lines in a single message instead of one-by-one.
+    Frontend logs store gains addBatch method.
+  - Dashboard'a Threads karti eklendi: ServerStats record'una ThreadCount
+    alani eklendi. PanelHost StatsLoop'ta Process.Threads.Count ile
+    doldurulur.
+    Dashboard Threads card added: ThreadCount field added to ServerStats
+    record. Populated via Process.Threads.Count in PanelHost StatsLoop.
+

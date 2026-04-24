@@ -27,4 +27,6 @@ tools/source-reference/
 system_rules.md
 
 node_modules
-panel
+panel/dist
+panel/node_modules
+src/SphereNet.Server/panel

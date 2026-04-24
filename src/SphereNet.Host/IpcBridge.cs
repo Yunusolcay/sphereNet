@@ -130,7 +130,7 @@ public sealed class IpcBridge : IDisposable
                     var id = root.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
                     if (id != null && _pending.TryRemove(id, out var tcs))
                     {
-                        var data = root.TryGetProperty("data", out var d) ? d : default;
+                        var data = root.TryGetProperty("data", out var d) ? d.Clone() : default;
                         tcs.TrySetResult(data);
                     }
                     break;
