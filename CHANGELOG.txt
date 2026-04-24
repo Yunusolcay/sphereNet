@@ -5389,3 +5389,35 @@ TEKNIK / TECHNICAL:
     Root Directory.Build.props + src chain: AppendTargetFrameworkToOutputPath
     false, unified OutputPath. Vite outDir changed to dist. build.ps1 added.
 
+
+[2026-04-24] - Panel log renkleri ve Host konsol mirroring
+----------------------------------------
+
+HATA DUZELTMELERI / BUG FIXES:
+  - Panel log renkleri duzeltildi: ServerProcess.ParseLine Serilog kisa
+    kodlarini (DBG/INF/WRN/ERR/FTL) tam Serilog adi ile eslestirmiyordu.
+    levelClass fonksiyonu 'Debug'/'Information' bekliyordu, ParseLine 'DBG'/'INF'
+    gonderiyordu. Switch ifadesiyle normalizasyon eklendi.
+    Panel log colors fixed: ServerProcess.ParseLine was not mapping Serilog
+    short codes (DBG/INF/WRN/ERR/FTL) to full Serilog level names.
+    levelClass expected 'Debug'/'Information', ParseLine sent 'DBG'/'INF'.
+    Added normalization via switch expression.
+  - Host tarafindan sabit kodlanan 'ERR'/'WRN' level degerleri (IPC baglanti
+    hatasi ve beklenmedik cikis mesajlari) 'Error'/'Warning' olarak duzeltildi.
+    Hardcoded 'ERR'/'WRN' level values in Host (IPC connect failure and
+    unexpected exit messages) corrected to 'Error'/'Warning'.
+
+YENI OZELLIKLER / NEW FEATURES:
+  - Host konsol mirroring: Server'in stdout/stderr ciktisi artik web panel'e
+    iletilmesinin yani sira SphereNet.Host.exe konsol penceresine de yazilir.
+    Level'e gore renk kodlamasi: Fatal=kirmizi, Error=koyu kirmizi,
+    Warning=sari, Information=gri, Debug/Verbose=koyu gri.
+    Host console mirroring: Server stdout/stderr is now written to the
+    SphereNet.Host.exe console window in addition to forwarding to the web
+    panel. Color-coded by level: Fatal=red, Error=dark red, Warning=yellow,
+    Information=gray, Debug/Verbose=dark gray.
+  - Thread-safe konsol yazimi: lock(_consoleLock) ile renk degisimi sirasinda
+    ciktilarin karismasinin onune gecildi.
+    Thread-safe console writes: lock(_consoleLock) prevents interleaved
+    output during color changes.
+

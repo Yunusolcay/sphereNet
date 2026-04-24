@@ -79,7 +79,7 @@ public sealed class ServerProcess : IDisposable
                 await Task.Delay(500);
             }
         }
-        _logSink.AddEntry(new LogEntry(DateTime.UtcNow, "ERR", "IPC: could not connect to server pipe.", "Host"));
+        _logSink.AddEntry(new LogEntry(DateTime.UtcNow, "Error", "IPC: could not connect to server pipe.", "Host"));
     }
 
     public void Stop()
@@ -111,7 +111,32 @@ public sealed class ServerProcess : IDisposable
     private void OnOutput(object _, DataReceivedEventArgs e)
     {
         if (e.Data is null) return;
-        _logSink.AddEntry(ParseLine(e.Data));
+        var entry = ParseLine(e.Data);
+        _logSink.AddEntry(entry);
+        WriteToConsole(e.Data, entry.Level);
+    }
+
+    private static readonly object _consoleLock = new();
+
+    private static void WriteToConsole(string raw, string level)
+    {
+        var color = level switch
+        {
+            "Fatal"       => ConsoleColor.Red,
+            "Error"       => ConsoleColor.DarkRed,
+            "Warning"     => ConsoleColor.Yellow,
+            "Information" => ConsoleColor.Gray,
+            "Debug"       => ConsoleColor.DarkGray,
+            _             => ConsoleColor.DarkGray,
+        };
+
+        lock (_consoleLock)
+        {
+            var prev = Console.ForegroundColor;
+            Console.ForegroundColor = color;
+            Console.WriteLine(raw);
+            Console.ForegroundColor = prev;
+        }
     }
 
     private void OnExited(object? _, EventArgs e)
@@ -120,7 +145,7 @@ public sealed class ServerProcess : IDisposable
         if (!_intentionalStop)
         {
             RunningChanged?.Invoke(false);
-            _logSink.AddEntry(new LogEntry(DateTime.UtcNow, "WRN",
+            _logSink.AddEntry(new LogEntry(DateTime.UtcNow, "Warning",
                 $"Server process exited unexpectedly (code {_process?.ExitCode}).", "Host"));
         }
     }
@@ -128,7 +153,7 @@ public sealed class ServerProcess : IDisposable
     private static LogEntry ParseLine(string line)
     {
         // Serilog console format: "[HH:mm:ss LVL] Message"
-        var level = "INF";
+        var level = "Information";
         var message = line;
         if (line.Length > 14 && line[0] == '[')
         {
@@ -137,7 +162,20 @@ public sealed class ServerProcess : IDisposable
             {
                 var header = line[1..close];
                 var sp = header.LastIndexOf(' ');
-                if (sp > 0) level = header[(sp + 1)..];
+                if (sp > 0)
+                {
+                    var code = header[(sp + 1)..];
+                    level = code switch
+                    {
+                        "VRB" => "Verbose",
+                        "DBG" => "Debug",
+                        "INF" => "Information",
+                        "WRN" => "Warning",
+                        "ERR" => "Error",
+                        "FTL" => "Fatal",
+                        _     => "Information",
+                    };
+                }
                 message = close + 2 < line.Length ? line[(close + 2)..] : "";
             }
         }
