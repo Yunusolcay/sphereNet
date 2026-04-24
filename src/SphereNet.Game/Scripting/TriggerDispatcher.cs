@@ -63,6 +63,9 @@ public sealed class TriggerDispatcher
     /// <summary>Optional trigger runner for executing script blocks.</summary>
     public TriggerRunner? Runner { get; set; }
 
+    public bool ScriptDebug { get; set; }
+    public Action<string>? DebugLog { get; set; }
+
     /// <summary>
     /// Fire a character trigger. Maps to CChar::OnTrigger.
     /// </summary>
@@ -70,19 +73,30 @@ public sealed class TriggerDispatcher
     {
         string trigName = GetCharTriggerName(trigger);
 
+        if (ScriptDebug)
+            DebugLog?.Invoke($"[script_debug] CTRIG @{trigName} on char 0x{ch.Uid.Value:X8} '{ch.Name}' src={args.CharSrc?.Name ?? "-"}");
+
         // 1. @Char* on source character (cross-target triggers)
         if (args.CharSrc != null && args.CharSrc != ch)
         {
             string crossTrigName = "char" + trigName;
             var result = RunObjectHandlers(args.CharSrc, crossTrigName, args);
             if (result == TriggerResult.True)
+            {
+                if (ScriptDebug)
+                    DebugLog?.Invoke($"[script_debug]   @{crossTrigName} returned TRUE (blocked)");
                 return TriggerResult.True;
+            }
         }
 
         // 2. Dynamic EVENTS on this character
         var evResult = RunObjectHandlers(ch, trigName, args);
         if (evResult == TriggerResult.True)
+        {
+            if (ScriptDebug)
+                DebugLog?.Invoke($"[script_debug]   EVENTS @{trigName} returned TRUE (blocked)");
             return TriggerResult.True;
+        }
 
         // 3. TEVENTS from CHARDEF definition (type-level event scripts)
         if (Resources != null && Runner != null)
@@ -133,19 +147,30 @@ public sealed class TriggerDispatcher
     {
         string trigName = GetItemTriggerName(trigger);
 
+        if (ScriptDebug)
+            DebugLog?.Invoke($"[script_debug] ITRIG @{trigName} on item 0x{item.Uid.Value:X8} id=0x{item.BaseId:X4} src={args.CharSrc?.Name ?? "-"}");
+
         // 1. @Item* on source character
         if (args.CharSrc != null)
         {
             string charTrigName = "item" + trigName;
             var result = RunObjectHandlers(args.CharSrc, charTrigName, args);
             if (result == TriggerResult.True)
+            {
+                if (ScriptDebug)
+                    DebugLog?.Invoke($"[script_debug]   @{charTrigName} returned TRUE (blocked)");
                 return TriggerResult.True;
+            }
         }
 
         // 2. Dynamic EVENTS on this item
         var evResult = RunObjectHandlers(item, trigName, args);
         if (evResult == TriggerResult.True)
+        {
+            if (ScriptDebug)
+                DebugLog?.Invoke($"[script_debug]   EVENTS @{trigName} returned TRUE (blocked)");
             return TriggerResult.True;
+        }
 
         // 3. TEVENTS from ITEMDEF definition
         if (Resources != null && Runner != null)
@@ -362,7 +387,8 @@ public sealed class TriggerDispatcher
 
             if (events != null)
             {
-                foreach (var eventRid in events)
+                var snapshot = events.ToArray();
+                foreach (var eventRid in snapshot)
                 {
                     var eventLink = Resources.GetResource(eventRid);
                     if (eventLink == null) continue;

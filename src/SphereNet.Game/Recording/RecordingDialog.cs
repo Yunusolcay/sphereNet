@@ -21,6 +21,14 @@ public static class RecordingDialog
     private const int BtnPlayBase = 100;
     private const int BtnDeleteBase = 200;
 
+    public const int OverlayBtnStop = 1;
+    public const int OverlayBtnPlayPause = 2;
+    public const int OverlayBtnRewind = 3;
+    public const int OverlayBtnForward = 4;
+    public const int OverlayBtnSpeed1x = 5;
+    public const int OverlayBtnSpeed2x = 6;
+    public const int OverlayBtnSpeed4x = 7;
+
     private const int BackgroundId = 9200;
     private const int ButtonOk = 4005;
     private const int ButtonOkPressed = 4007;
@@ -91,16 +99,68 @@ public static class RecordingDialog
         return gump;
     }
 
-    public static GumpBuilder BuildReplayOverlay(uint charSerial, string recorderName, int durationMs)
+    public static GumpBuilder BuildReplayOverlay(uint charSerial, string recorderName,
+        int totalMs, int currentMs, bool isPaused, float speed)
     {
-        var gump = new GumpBuilder(charSerial, ReplayOverlayGumpId, 200, 60);
+        var gump = new GumpBuilder(charSerial, ReplayOverlayGumpId, 360, 95);
         gump.SetNoMove();
-        gump.AddResizePic(0, 0, 9200, 200, 60);
-        gump.AddText(10, 5, 37, $"REPLAY: {recorderName}");
-        gump.AddText(10, 25, 0, $"{durationMs / 1000.0:F1}s");
-        gump.AddButton(120, 25, ButtonCancel, ButtonCancelPressed, 1);
-        gump.AddText(155, 27, 0, "Stop");
+        gump.SetNoDispose();
+
+        gump.AddResizePic(0, 0, BackgroundId, 360, 95);
+
+        string status = isPaused ? "PAUSED" : "PLAYING";
+        gump.AddText(10, 5, isPaused ? 37 : 67, status);
+        string nameDisplay = recorderName.Length > 15 ? recorderName[..15] : recorderName;
+        gump.AddText(85, 5, 0, nameDisplay);
+        gump.AddText(280, 5, 946, $"x{speed:G}");
+
+        gump.AddButton(330, 5, ButtonCancel, ButtonCancelPressed, OverlayBtnStop);
+
+        gump.AddText(10, 28, 0, $"{FormatTime(currentMs)} / {FormatTime(totalMs)}");
+
+        int barX = 120;
+        int barWidth = 220;
+        int filledBars = totalMs > 0 ? (int)((long)currentMs * barWidth / totalMs) : 0;
+        filledBars = Math.Clamp(filledBars, 0, barWidth);
+        gump.AddGumpPicTiled(barX, 34, barWidth, 2, 2620);
+        if (filledBars > 0)
+            gump.AddGumpPicTiled(barX, 33, filledBars, 4, 2621);
+
+        int btnY = 58;
+
+        gump.AddButton(10, btnY, ButtonSmall, ButtonSmallPressed, OverlayBtnRewind);
+        gump.AddText(28, btnY, 0, "-10s");
+
+        if (isPaused)
+        {
+            gump.AddButton(80, btnY, ButtonOk, ButtonOkPressed, OverlayBtnPlayPause);
+            gump.AddText(115, btnY + 2, 0, "Play");
+        }
+        else
+        {
+            gump.AddButton(80, btnY, ButtonCancel, ButtonCancelPressed, OverlayBtnPlayPause);
+            gump.AddText(115, btnY + 2, 0, "Pause");
+        }
+
+        gump.AddButton(165, btnY, ButtonSmall, ButtonSmallPressed, OverlayBtnForward);
+        gump.AddText(183, btnY, 0, "+10s");
+
+        gump.AddButton(235, btnY, ButtonSmall, ButtonSmallPressed, OverlayBtnSpeed1x);
+        gump.AddText(253, btnY, speed == 1f ? 67 : 0, "1x");
+        gump.AddButton(278, btnY, ButtonSmall, ButtonSmallPressed, OverlayBtnSpeed2x);
+        gump.AddText(296, btnY, speed == 2f ? 67 : 0, "2x");
+        gump.AddButton(318, btnY, ButtonSmall, ButtonSmallPressed, OverlayBtnSpeed4x);
+        gump.AddText(336, btnY, speed == 4f ? 67 : 0, "4x");
+
         return gump;
+    }
+
+    private static string FormatTime(int ms)
+    {
+        int totalSeconds = ms / 1000;
+        int minutes = totalSeconds / 60;
+        int seconds = totalSeconds % 60;
+        return $"{minutes}:{seconds:D2}";
     }
 
     public static RecordDialogAction ParseResponse(uint buttonId)

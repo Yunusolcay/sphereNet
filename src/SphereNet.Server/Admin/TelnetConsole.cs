@@ -145,6 +145,12 @@ public sealed class TelnetConsole : IDisposable
         remove => _processor.OnDebugToggleRequested -= value;
     }
 
+    public event Action<Action<string>>? OnScriptDebugToggleRequested
+    {
+        add => _processor.OnScriptDebugToggleRequested += value;
+        remove => _processor.OnScriptDebugToggleRequested -= value;
+    }
+
     public void Dispose()
     {
         _running = false;

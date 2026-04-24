@@ -4,6 +4,61 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-24] - Replay video kontrolleri, gorunmez kamera, ScriptDebug, trigger crash fix
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - Replay video player kontrolleri: pause/resume, ileri/geri sarma (-10s/+10s),
+    hiz degistirme (1x/2x/4x), canli zaman gostergesi ve progress bar.
+    Overlay gump her saniye otomatik guncellenir.
+    Replay video player controls: pause/resume, seek backward/forward (-10s/+10s),
+    playback speed (1x/2x/4x), live time display and progress bar.
+    Overlay gump auto-refreshes every second.
+  - Gorunmez kamera modu: replay sirasinda izleyici karakterin body, equipment
+    ve binegi DrawObject(body=0, empty equip) ile gizlenir. Ekranda sadece
+    kaydedilen sahne gorunur. Replay bitince normal gorunum geri yuklenir.
+    Invisible camera mode: viewer's body, equipment and mount hidden via
+    DrawObject(body=0, empty equip) during replay. Only the recorded scene
+    is visible. Normal appearance restored when replay ends.
+  - ScriptDebug config sistemi: sphere.ini'de ScriptDebug=1 ile veya runtime'da
+    SCRIPTDEBUG konsol komutuyla acilip kapatilabilir. Trigger ateslemeleri,
+    obje bilgileri ve sonuclari (TRUE=blocked) loglanir. TriggerRunner verbose
+    modu da ScriptDebug flag'ine baglanir.
+    ScriptDebug config system: enable via ScriptDebug=1 in sphere.ini or toggle
+    at runtime with SCRIPTDEBUG console command. Logs trigger dispatches, object
+    info and results (TRUE=blocked). TriggerRunner verbose mode also tied to
+    ScriptDebug flag.
+
+HATA DUZELTMELERI / BUG FIXES:
+  - Login crash duzeltmesi: trigger handler calistirirken EVENTS listesi
+    degistirildiginde Collection was modified exception olusuyordu.
+    Liste iterasyondan once snapshot'a kopyalanarak duzeltildi.
+    Login crash fix: Collection was modified exception when EVENTS list was
+    mutated during trigger handler execution. Fixed by snapshotting the list
+    before iteration.
+
+TEKNIK / TECHNICAL:
+  - RecordingEngine: ReplayState'e IsPaused, PausedAtOffsetMs, PlaybackSpeed,
+    LastOverlayTick alanlari eklendi. PauseReplay/ResumeReplay/SetPlaybackSpeed/
+    SeekReplay/GetElapsedMs metotlari. TickReplays hiz carpani ve pause destegi.
+    RecordingEngine: ReplayState gains IsPaused, PausedAtOffsetMs, PlaybackSpeed,
+    LastOverlayTick fields. PauseReplay/ResumeReplay/SetPlaybackSpeed/SeekReplay/
+    GetElapsedMs methods. TickReplays now supports speed multiplier and pause.
+  - SeekReplay: phantom serial'lari temizler, tum paketleri bastan hedef zamana
+    kadar tekrar gonderir, kamera pozisyonunu gunceller.
+    SeekReplay: clears phantom serials, replays all packets from start to target
+    time, updates camera position.
+  - RecordingDialog: overlay gump video player tasarimina donusturuldu. Butonlar
+    callback ile HandleReplayControl'e yonlendirilir. ReplaySendPacket ve
+    ReplayCameraUpdate paylasilan static metotlar.
+    RecordingDialog: overlay gump redesigned as video player. Buttons route to
+    HandleReplayControl via callback. ReplaySendPacket and ReplayCameraUpdate
+    as shared static methods.
+  - TriggerDispatcher: RunObjectHandlers'da events.ToArray() snapshot korunmasi.
+    ScriptDebug flag'i ve DebugLog callback'i ile trigger loglama.
+    TriggerDispatcher: events.ToArray() snapshot protection in RunObjectHandlers.
+    ScriptDebug flag and DebugLog callback for trigger logging.
+
 [2026-04-24] - PvP kayit/tekrar sistemi, mounted animasyon duzeltmesi
 ----------------------------------------
 

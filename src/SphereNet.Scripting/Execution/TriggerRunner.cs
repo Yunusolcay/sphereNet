@@ -33,6 +33,8 @@ public sealed class TriggerRunner
     /// per-invocation resolvers on its ExpressionParser.</summary>
     public ScriptInterpreter Interpreter => _interpreter;
 
+    public bool ScriptDebug { get; set; }
+
     /// <summary>
     /// Execute a trigger on a ResourceLink, reading its script on demand.
     /// </summary>
@@ -83,10 +85,7 @@ public sealed class TriggerRunner
         ITextConsole? source,
         ITriggerArgs? args)
     {
-        // Verbose body tracing was needed during vendor-restock parser
-        // bring-up; now disabled to keep the log readable. Flip to true
-        // temporarily when investigating new trigger plumbing issues.
-        bool verbose = false;
+        bool verbose = ScriptDebug;
 
         using var scriptFile = link.OpenAtStoredPosition();
         if (scriptFile == null)

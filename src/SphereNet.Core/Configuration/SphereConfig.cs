@@ -191,6 +191,7 @@ public sealed class SphereConfig
     // Logging
     public int LogMask { get; set; } = 0x03F00;
     public bool DebugPackets { get; set; }
+    public bool ScriptDebug { get; set; }
     /// <summary>
     /// Severity filter for the rolling file sink (logs/spherenet-*.log).
     /// The console sink keeps following <c>DebugPackets</c> (Information
@@ -383,6 +384,7 @@ public sealed class SphereConfig
 
         LogMask = ini.GetInt(section, "LogMask", LogMask);
         DebugPackets = ini.GetBool(section, "DebugPackets", DebugPackets);
+        ScriptDebug = ini.GetBool(section, "ScriptDebug", ScriptDebug);
         LogFileLevel = ini.GetValue(section, "LogFileLevel") ?? LogFileLevel;
         DebugPacketOpcodes = ini.GetValue(section, "DebugPacketOpcodes") ?? DebugPacketOpcodes;
         CommandPrefix = ini.GetValue(section, "CommandPrefix") ?? CommandPrefix;

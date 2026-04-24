@@ -367,6 +367,8 @@ public static class Program
         _log.LogInformation("Client Version: {Ver}", _config.ClientVersion);
         if (_config.DebugPackets)
             _log.LogWarning("DebugPackets=1 — all packets will be logged. This generates a LOT of output!");
+        if (_config.ScriptDebug)
+            _log.LogWarning("ScriptDebug=1 — all trigger dispatches will be logged.");
 
         // --- 3. Scripting Resources ---
         _resources = new ResourceHolder(_loggerFactory.CreateLogger<ResourceHolder>());
@@ -557,6 +559,9 @@ public static class Program
         };
         var scriptInterpreter = new ScriptInterpreter(exprParser, _loggerFactory.CreateLogger<ScriptInterpreter>());
         _triggerRunner = new TriggerRunner(scriptInterpreter, _resources, _loggerFactory.CreateLogger<TriggerRunner>());
+        _triggerRunner.ScriptDebug = _config.ScriptDebug;
+        _triggerDispatcher.ScriptDebug = _config.ScriptDebug;
+        _triggerDispatcher.DebugLog = msg => _log?.LogDebug("{Msg}", msg);
         _systemHooks = new ScriptSystemHooks(_triggerRunner);
         RegisterDbProviders();
         _scriptDb = new ScriptDbAdapter(_loggerFactory.CreateLogger<ScriptDbAdapter>());
@@ -2003,6 +2008,7 @@ public static class Program
         _telnet.OnResyncRequested += PerformScriptResync;
         _telnet.OnAccountPrivLevelChanged += SyncOnlineAccountPrivLevel;
         _telnet.OnDebugToggleRequested += ToggleDebugPackets;
+        _telnet.OnScriptDebugToggleRequested += ToggleScriptDebug;
 
         // Console command processor (shares logic with telnet)
         _consoleProcessor = new AdminCommandProcessor(_world, _accounts, _config,
@@ -2012,6 +2018,7 @@ public static class Program
         _consoleProcessor.OnResyncRequested += PerformScriptResync;
         _consoleProcessor.OnAccountPrivLevelChanged += SyncOnlineAccountPrivLevel;
         _consoleProcessor.OnDebugToggleRequested += ToggleDebugPackets;
+        _consoleProcessor.OnScriptDebugToggleRequested += ToggleScriptDebug;
 
         int webPort = _config.ServPort + 2;
         _webStatus = new WebStatusServer(_world, _accounts,
@@ -2210,6 +2217,23 @@ public static class Program
 #if WINFORMS
         _consoleForm?.SetDebugState(newState);
 #endif
+    }
+
+    private static void ToggleScriptDebug(Action<string> output)
+    {
+        if (_config == null) return;
+        bool newState = !_config.ScriptDebug;
+        _config.ScriptDebug = newState;
+        _triggerDispatcher.ScriptDebug = newState;
+        if (_triggerRunner != null)
+            _triggerRunner.ScriptDebug = newState;
+
+        if (newState)
+            _logLevelSwitch.MinimumLevel = Serilog.Events.LogEventLevel.Debug;
+
+        string state = newState ? "ON" : "OFF";
+        output($"ScriptDebug toggled: {state}");
+        _log?.LogInformation("ScriptDebug toggled: {State}", state);
     }
 
     /// <summary>
@@ -3197,20 +3221,108 @@ public static class Program
         gm.SetStatFlag(StatFlag.Freeze);
         gm.IsReplaySpectator = true;
         _world.MoveCharacter(gm, session.Center);
-        ResyncCharacterClient(gm);
 
         if (_clientsByCharUid.TryGetValue(gm.Uid, out var client))
         {
-            var overlay = SphereNet.Game.Recording.RecordingDialog.BuildReplayOverlay(
-                gm.Uid.Value, session.RecorderName, session.DurationMs);
-            client.SendGump(overlay, (btnId, _, _) =>
+            var center = session.Center;
+            client.NetState.Send(new PacketDrawObject(
+                gm.Uid.Value, 0, center.X, center.Y, center.Z,
+                0, 0, 0, 0, []).Build());
+        }
+
+        SendReplayOverlay(gm);
+    }
+
+    private static void SendReplayOverlay(Character viewer)
+    {
+        uint uid = viewer.Uid.Value;
+        var state = _recordingEngine.GetReplayState(uid);
+        if (state == null) return;
+        if (!_clientsByCharUid.TryGetValue(viewer.Uid, out var client)) return;
+
+        int currentMs = _recordingEngine.GetElapsedMs(uid);
+        var overlay = SphereNet.Game.Recording.RecordingDialog.BuildReplayOverlay(
+            uid, state.Session.RecorderName, state.Session.DurationMs,
+            currentMs, state.IsPaused, state.PlaybackSpeed);
+
+        client.SendGump(overlay, (btnId, _, _) => HandleReplayControl(viewer, btnId));
+    }
+
+    private static void HandleReplayControl(Character viewer, uint btnId)
+    {
+        uint uid = viewer.Uid.Value;
+
+        switch (btnId)
+        {
+            case 0:
+            case SphereNet.Game.Recording.RecordingDialog.OverlayBtnStop:
+                FinishReplay(viewer);
+                SendSysMessage(viewer, "Replay stopped.");
+                return;
+
+            case SphereNet.Game.Recording.RecordingDialog.OverlayBtnPlayPause:
             {
-                if (btnId == 1 || btnId == 0)
-                {
-                    FinishReplay(gm);
-                    SendSysMessage(gm, "Replay stopped.");
-                }
-            });
+                var st = _recordingEngine.GetReplayState(uid);
+                if (st == null) return;
+                if (st.IsPaused)
+                    _recordingEngine.ResumeReplay(uid);
+                else
+                    _recordingEngine.PauseReplay(uid);
+                break;
+            }
+
+            case SphereNet.Game.Recording.RecordingDialog.OverlayBtnRewind:
+            {
+                int current = _recordingEngine.GetElapsedMs(uid);
+                _recordingEngine.SeekReplay(uid, Math.Max(0, current - 10_000),
+                    ReplaySendPacket, ReplayCameraUpdate);
+                break;
+            }
+
+            case SphereNet.Game.Recording.RecordingDialog.OverlayBtnForward:
+            {
+                int current = _recordingEngine.GetElapsedMs(uid);
+                var st = _recordingEngine.GetReplayState(uid);
+                if (st == null) return;
+                _recordingEngine.SeekReplay(uid, Math.Min(st.Session.DurationMs, current + 10_000),
+                    ReplaySendPacket, ReplayCameraUpdate);
+                break;
+            }
+
+            case SphereNet.Game.Recording.RecordingDialog.OverlayBtnSpeed1x:
+                _recordingEngine.SetPlaybackSpeed(uid, 1f);
+                break;
+            case SphereNet.Game.Recording.RecordingDialog.OverlayBtnSpeed2x:
+                _recordingEngine.SetPlaybackSpeed(uid, 2f);
+                break;
+            case SphereNet.Game.Recording.RecordingDialog.OverlayBtnSpeed4x:
+                _recordingEngine.SetPlaybackSpeed(uid, 4f);
+                break;
+
+            default:
+                return;
+        }
+
+        SendReplayOverlay(viewer);
+    }
+
+    private static void ReplaySendPacket(uint uid, byte[] data)
+    {
+        if (_clientsByCharUid.TryGetValue(new Serial(uid), out var c))
+            c.NetState.Send(new PacketBuffer(data));
+    }
+
+    private static void ReplayCameraUpdate(uint viewerUid, short x, short y, sbyte z, byte dir)
+    {
+        var ch = _world.FindChar(new Serial(viewerUid));
+        if (ch == null) return;
+        byte map = ch.Position.Map;
+        _world.MoveCharacter(ch, new Point3D(x, y, z, map));
+        if (_clientsByCharUid.TryGetValue(new Serial(viewerUid), out var c))
+        {
+            c.NetState.Send(new PacketDrawPlayer(
+                ch.Uid.Value, 0, 0, 0,
+                x, y, z, dir).Build());
         }
     }
 
@@ -3262,12 +3374,7 @@ public static class Program
 
     private static void TickRecordingReplays()
     {
-        _recordingEngine.TickReplays(
-            (uid, data) =>
-            {
-                if (_clientsByCharUid.TryGetValue(new Serial(uid), out var c))
-                    c.NetState.Send(new PacketBuffer(data));
-            },
+        _recordingEngine.TickReplays(ReplaySendPacket,
             uid =>
             {
                 var ch = _world.FindChar(new Serial(uid));
@@ -3277,22 +3384,20 @@ public static class Program
                     SendSysMessage(ch, "Replay finished.");
                 }
             },
-            (viewerUid, x, y, z, dir) =>
-            {
-                var ch = _world.FindChar(new Serial(viewerUid));
-                if (ch == null) return;
-                byte map = ch.Position.Map;
-                _world.MoveCharacter(ch, new Point3D(x, y, z, map));
-                if (_clientsByCharUid.TryGetValue(new Serial(viewerUid), out var c))
-                {
-                    byte flags = 0;
-                    if (ch.IsInvisible) flags |= 0x80;
-                    if (ch.IsStatFlag(StatFlag.Freeze)) flags |= 0x01;
-                    c.NetState.Send(new PacketDrawPlayer(
-                        ch.Uid.Value, ch.BodyId, ch.Hue, flags,
-                        x, y, z, dir).Build());
-                }
-            });
+            ReplayCameraUpdate);
+
+        long now = Environment.TickCount64;
+        foreach (var uid in _recordingEngine.GetActiveReplayUids())
+        {
+            var state = _recordingEngine.GetReplayState(uid);
+            if (state == null) continue;
+            if (now - state.LastOverlayTick < 1000) continue;
+            state.LastOverlayTick = now;
+
+            var ch = _world.FindChar(new Serial(uid));
+            if (ch != null)
+                SendReplayOverlay(ch);
+        }
     }
 
     private static void ResyncCharacterClient(Character ch)

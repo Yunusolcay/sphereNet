@@ -32,6 +32,10 @@ public sealed class ReplayState
     public Dictionary<uint, uint> SerialMap { get; } = [];
     public uint NextPhantomSerial { get; set; } = 0x3FFF0001;
     public uint NextPhantomItemSerial { get; set; } = 0x7FFE0001;
+    public bool IsPaused { get; set; }
+    public int PausedAtOffsetMs { get; set; }
+    public float PlaybackSpeed { get; set; } = 1.0f;
+    public long LastOverlayTick { get; set; }
 }
 
 public sealed class RecordingEngine
@@ -154,6 +158,127 @@ public sealed class RecordingEngine
     }
 
     public bool HasActiveReplays => _activeReplays.Count > 0;
+    public IEnumerable<uint> GetActiveReplayUids() => _activeReplays.Keys;
+
+    public int GetElapsedMs(uint charUid)
+    {
+        if (!_activeReplays.TryGetValue(charUid, out var state))
+            return 0;
+        return GetElapsedMs(state);
+    }
+
+    private static int GetElapsedMs(ReplayState state)
+    {
+        if (state.IsPaused)
+            return state.PausedAtOffsetMs;
+        int elapsed = (int)((Environment.TickCount64 - state.StartTick) * state.PlaybackSpeed);
+        return Math.Clamp(elapsed, 0, state.Session.DurationMs);
+    }
+
+    public void PauseReplay(uint charUid)
+    {
+        if (!_activeReplays.TryGetValue(charUid, out var state) || state.IsPaused)
+            return;
+        state.PausedAtOffsetMs = GetElapsedMs(state);
+        state.IsPaused = true;
+        state.LastOverlayTick = 0;
+    }
+
+    public void ResumeReplay(uint charUid)
+    {
+        if (!_activeReplays.TryGetValue(charUid, out var state) || !state.IsPaused)
+            return;
+        long now = Environment.TickCount64;
+        state.StartTick = now - (long)(state.PausedAtOffsetMs / (double)state.PlaybackSpeed);
+        state.IsPaused = false;
+        state.LastOverlayTick = 0;
+    }
+
+    public void SetPlaybackSpeed(uint charUid, float speed)
+    {
+        if (!_activeReplays.TryGetValue(charUid, out var state))
+            return;
+        if (!state.IsPaused)
+        {
+            int currentMs = GetElapsedMs(state);
+            state.PlaybackSpeed = speed;
+            long now = Environment.TickCount64;
+            state.StartTick = now - (long)(currentMs / (double)speed);
+        }
+        else
+        {
+            state.PlaybackSpeed = speed;
+        }
+        state.LastOverlayTick = 0;
+    }
+
+    public void SeekReplay(uint charUid, int targetMs,
+        Action<uint, byte[]> sendRawPacket,
+        Action<uint, short, short, sbyte, byte>? onCameraUpdate = null)
+    {
+        if (!_activeReplays.TryGetValue(charUid, out var state))
+            return;
+
+        targetMs = Math.Clamp(targetMs, 0, state.Session.DurationMs);
+
+        foreach (uint phantom in state.SerialMap.Values)
+        {
+            var del = new byte[5];
+            del[0] = 0x1D;
+            WriteUInt32(del, 1, phantom);
+            sendRawPacket(charUid, del);
+        }
+
+        state.SerialMap.Clear();
+        state.NextPhantomSerial = 0x3FFF0001;
+        state.NextPhantomItemSerial = 0x7FFE0001;
+
+        var packets = state.Session.Packets;
+        short lastX = 0, lastY = 0;
+        sbyte lastZ = 0;
+        byte lastDir = 0;
+        bool hasCam = false;
+        state.PacketIndex = packets.Count;
+
+        for (int i = 0; i < packets.Count; i++)
+        {
+            if (packets[i].TickOffset > targetMs)
+            {
+                state.PacketIndex = i;
+                break;
+            }
+
+            var data = RemapSerials(packets[i].Data, charUid, state);
+            if (data != null)
+            {
+                sendRawPacket(charUid, data);
+
+                if (packets[i].Data.Length >= 12 && packets[i].Data[0] == 0x77)
+                {
+                    uint origSerial = ReadUInt32(packets[i].Data, 1);
+                    if (origSerial == state.Session.RecorderUid)
+                    {
+                        lastX = (short)(data[7] << 8 | data[8]);
+                        lastY = (short)(data[9] << 8 | data[10]);
+                        lastZ = (sbyte)data[11];
+                        lastDir = (byte)(data[12] & 0x07);
+                        hasCam = true;
+                    }
+                }
+            }
+        }
+
+        long now = Environment.TickCount64;
+        if (state.IsPaused)
+            state.PausedAtOffsetMs = targetMs;
+        else
+            state.StartTick = now - (long)(targetMs / (double)state.PlaybackSpeed);
+
+        state.LastOverlayTick = 0;
+
+        if (hasCam)
+            onCameraUpdate?.Invoke(charUid, lastX, lastY, lastZ, lastDir);
+    }
 
     public void TickReplays(Action<uint, byte[]> sendRawPacket, Action<uint>? onReplayFinished,
         Action<uint, short, short, sbyte, byte>? onCameraUpdate = null)
@@ -163,7 +288,10 @@ public sealed class RecordingEngine
 
         foreach (var (uid, state) in _activeReplays)
         {
-            int elapsed = (int)(now - state.StartTick);
+            if (state.IsPaused)
+                continue;
+
+            int elapsed = (int)((now - state.StartTick) * state.PlaybackSpeed);
             var packets = state.Session.Packets;
 
             while (state.PacketIndex < packets.Count)

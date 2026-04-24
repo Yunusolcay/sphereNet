@@ -30,6 +30,7 @@ public sealed class AdminCommandProcessor
     public event Action? OnRespawnRequested;
     public event Action? OnRestockRequested;
     public event Action<Action<string>>? OnDebugToggleRequested;
+    public event Action<Action<string>>? OnScriptDebugToggleRequested;
 
     public AdminCommandProcessor(GameWorld world, AccountManager accounts,
         SphereConfig config, Func<int> getActiveConnections, ILoggerFactory loggerFactory)
@@ -69,6 +70,7 @@ public sealed class AdminCommandProcessor
                 output("  SAVE                       - Save world & accounts");
                 output("  RESYNC / RY                - Reload scripts");
                 output("  DEBUG                      - Toggle DebugPackets on/off");
+                output("  SCRIPTDEBUG                - Toggle ScriptDebug on/off");
                 output("  BROADCAST <msg>            - Message to all players");
                 output("  WHO                        - Online connections");
                 output("  INFORMATION                - Server information");
@@ -125,6 +127,10 @@ public sealed class AdminCommandProcessor
 
             case "DEBUG":
                 OnDebugToggleRequested?.Invoke(output);
+                break;
+
+            case "SCRIPTDEBUG":
+                OnScriptDebugToggleRequested?.Invoke(output);
                 break;
 
             case "INFORMATION":
