@@ -199,6 +199,7 @@ public sealed class GameClient : ITextConsole
     public Account? Account => _account;
     public Character? Character => _character;
     public bool IsPlaying => _character != null && !_character.IsDeleted;
+    public bool HasPendingTarget => _targetCursorActive;
 
     /// <summary>Called when the network connection is closed. Marks character as offline.</summary>
     public void OnDisconnect()

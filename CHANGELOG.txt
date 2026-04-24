@@ -4,6 +4,41 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-25c] - Oyuncu makro kayit/oynatma sistemi
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - Oyuncu makro sistemi: .MACRO komutu ile aksiyonlari kaydet, .MACRO PLAY ile
+    tek seferlik veya .MACRO LOOP ile surekli tekrarla. Tum aksiyonlar (double-click,
+    skill use, target) normal oyun motorundan gecer — skill check, timer, agirlik
+    limiti, basari/basarisizlik hepsi standart kurallarla isler.
+    Player macro system: record actions with .MACRO command, replay with .MACRO PLAY
+    for single run or .MACRO LOOP for continuous repeat. All actions (double-click,
+    skill use, target) go through normal game engine — skill checks, timers, weight
+    limits, success/failure all follow standard rules.
+  - Makro kayit adim turleri: UseObject (backpack/equip'ten item type'a gore bulur),
+    UseSkill (skill ID), TargetLocation (zemin hedefi), TargetObject (obje hedefi),
+    TargetSelf (kendine hedef). Adimlar arasi gecikme kayit sirasinda otomatik olarak
+    yakalanir.
+    Macro step types: UseObject (finds by item type in backpack/equipment), UseSkill
+    (skill ID), TargetLocation (ground target), TargetObject (object target),
+    TargetSelf. Delays between steps automatically captured during recording.
+  - Makro config ayarlari: MacroEnabled (acma/kapama), MacroMaxSteps (maks adim,
+    varsayilan 50), MacroMaxLoopMinutes (maks loop suresi, varsayilan 120 dk).
+    sphere.ini uzerinden yapilandirilabilir.
+    Macro config settings: MacroEnabled (toggle), MacroMaxSteps (max steps,
+    default 50), MacroMaxLoopMinutes (max loop duration, default 120 min).
+    Configurable via sphere.ini.
+  - Akilli item arama: Playback sirasinda UseObject adimi backpack icinde (2 seviye
+    derinlikte) ve kuşanılmış ekipmanda item tipine göre arar. Item bulunamazsa
+    makro otomatik durur.
+    Smart item lookup: during playback UseObject step searches backpack (2 levels deep)
+    and equipped items by type. Macro auto-stops if item not found.
+  - Target bekleme mekanizmasi: Playback sirasinda target cursor henuz acilmamissa
+    5 saniyeye kadar bekler, timeout olursa adimi atlar.
+    Target wait mechanism: during playback if target cursor not yet open, waits up to
+    5 seconds, skips step on timeout.
+
 [2026-04-25b] - State recording config toggle ve karakter arama
 ----------------------------------------
 

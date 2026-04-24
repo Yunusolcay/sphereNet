@@ -110,6 +110,7 @@ public static class Program
     private static SphereNet.Game.Scheduling.TimerWheel _npcTimerWheel = null!;
     private static SphereNet.Game.Recording.RecordingEngine _recordingEngine = null!;
     private static SphereNet.Server.Recording.StateRecorder? _stateRecorder;
+    private static SphereNet.Server.Macro.MacroEngine? _macroEngine;
     private static TriggerDispatcher _triggerDispatcher = null!;
     private static TriggerRunner _triggerRunner = null!;
     private static ScriptSystemHooks _systemHooks = null!;
@@ -1294,6 +1295,9 @@ public static class Program
             }
         }
 
+        if (_config.MacroEnabled)
+            _macroEngine = new SphereNet.Server.Macro.MacroEngine(_config.MacroMaxSteps, _config.MacroMaxLoopMinutes);
+
         _npcAI.OnNpcSay = (npc, text) =>
         {
             NpcSpeak(npc, text);
@@ -1632,7 +1636,7 @@ public static class Program
         SphereNet.Game.Clients.GameClient.OnCharacterOnline =
             (ch, client) => _clientsByCharUid[ch.Uid] = client;
         SphereNet.Game.Clients.GameClient.OnCharacterOffline =
-            ch => _clientsByCharUid.Remove(ch.Uid);
+            ch => { _clientsByCharUid.Remove(ch.Uid); _macroEngine?.OnCharDisconnect(ch.Uid.Value); };
         SphereNet.Game.Clients.GameClient.OnWakeNpc = WakeNpc;
         SphereNet.Game.Clients.GameClient.BotSpawnLocationProvider = acctName =>
         {
@@ -1900,6 +1904,7 @@ public static class Program
 
         _commands.OnRecordDialogRequested += ShowRecordingDialog;
         _commands.OnStateRecordRequested += HandleStateRecordCommand;
+        _commands.OnMacroRequested += HandleMacroCommand;
         _commands.OnSaveFormatChangeRequested += HandleSaveFormatChange;
         _commands.OnScriptDebugToggleRequested += on =>
         {
@@ -3421,6 +3426,113 @@ public static class Program
     }
 
     // ----------------------------------------------------------------
+    //  Player macro system (.MACRO)
+    // ----------------------------------------------------------------
+
+    private static SphereNet.Game.Objects.Items.Item? FindItemInBackpack(
+        SphereNet.Game.Objects.Characters.Character ch, ushort dispId)
+    {
+        var pack = ch.Backpack;
+        if (pack == null) return null;
+        foreach (var item in pack.Contents)
+        {
+            if (item.DispIdFull == dispId) return item;
+            if (item.Contents.Count > 0)
+            {
+                foreach (var sub in item.Contents)
+                    if (sub.DispIdFull == dispId) return sub;
+            }
+        }
+        return null;
+    }
+
+    private static void HandleMacroCommand(Character ch, string args)
+    {
+        if (_macroEngine == null)
+        {
+            SendSysMessage(ch, "Macro system is disabled.");
+            return;
+        }
+
+        uint uid = ch.Uid.Value;
+        string sub = args.Trim().ToUpperInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault() ?? "";
+
+        switch (sub)
+        {
+            case "":
+            case "REC":
+            case "RECORD":
+                if (_macroEngine.IsRecording(uid))
+                {
+                    var session = _macroEngine.StopRecording(uid);
+                    if (session != null)
+                        SendSysMessage(ch, $"Recording stopped: {session.Describe()}");
+                    else
+                        SendSysMessage(ch, "Recording stopped (empty, discarded).");
+                }
+                else
+                {
+                    if (_macroEngine.IsPlaying(uid))
+                        _macroEngine.StopPlayback(uid);
+                    _macroEngine.StartRecording(uid);
+                    SendSysMessage(ch, "Macro recording started. Do your actions, then .MACRO STOP");
+                }
+                break;
+
+            case "STOP":
+                if (_macroEngine.IsRecording(uid))
+                {
+                    var session = _macroEngine.StopRecording(uid);
+                    if (session != null)
+                        SendSysMessage(ch, $"Recording saved: {session.Describe()}");
+                    else
+                        SendSysMessage(ch, "No actions recorded.");
+                }
+                else if (_macroEngine.IsPlaying(uid))
+                {
+                    _macroEngine.StopPlayback(uid);
+                    SendSysMessage(ch, "Macro playback stopped.");
+                }
+                else
+                    SendSysMessage(ch, "Nothing to stop.");
+                break;
+
+            case "PLAY":
+                if (_macroEngine.StartPlayback(uid, loop: false))
+                    SendSysMessage(ch, "Playing macro (single run)...");
+                else
+                    SendSysMessage(ch, "No recorded macro. Use .MACRO to record first.");
+                break;
+
+            case "LOOP":
+                if (_macroEngine.StartPlayback(uid, loop: true))
+                    SendSysMessage(ch, $"Looping macro (max {_config.MacroMaxLoopMinutes} min)...");
+                else
+                    SendSysMessage(ch, "No recorded macro. Use .MACRO to record first.");
+                break;
+
+            case "INFO":
+                var rec = _macroEngine.GetRecording(uid);
+                if (rec != null)
+                {
+                    SendSysMessage(ch, $"Recorded: {rec.Describe()}");
+                    if (_macroEngine.IsPlaying(uid))
+                        SendSysMessage(ch, "Status: playing");
+                    else if (_macroEngine.IsRecording(uid))
+                        SendSysMessage(ch, "Status: recording");
+                }
+                else
+                    SendSysMessage(ch, "No macro recorded.");
+                break;
+
+            default:
+                SendSysMessage(ch, "Usage: .MACRO [rec|stop|play|loop|info]");
+                break;
+        }
+    }
+
+    // ----------------------------------------------------------------
     //  State recording system (.SREC)
     // ----------------------------------------------------------------
 
@@ -4805,8 +4917,15 @@ public static class Program
 
     private static void OnDoubleClick(NetState state, uint serial)
     {
-        if (_clients.TryGetValue(state.Id, out var client))
-            client.HandleDoubleClick(serial);
+        if (!_clients.TryGetValue(state.Id, out var client)) return;
+        if (_macroEngine != null && client.Character != null &&
+            _macroEngine.IsRecording(client.Character.Uid.Value))
+        {
+            var item = _world.FindItem(new Serial(serial));
+            if (item != null)
+                _macroEngine.CaptureUseObject(client.Character.Uid.Value, item.DispIdFull);
+        }
+        client.HandleDoubleClick(serial);
     }
 
     private static void OnSingleClick(NetState state, uint serial)
@@ -4848,8 +4967,14 @@ public static class Program
     private static void OnTargetResponse(NetState state, byte type, uint targetId, uint serial,
         short x, short y, sbyte z, ushort graphic)
     {
-        if (_clients.TryGetValue(state.Id, out var client))
-            client.HandleTargetResponse(type, targetId, serial, x, y, z, graphic);
+        if (!_clients.TryGetValue(state.Id, out var client)) return;
+        if (_macroEngine != null && client.Character != null &&
+            _macroEngine.IsRecording(client.Character.Uid.Value))
+        {
+            _macroEngine.CaptureTarget(client.Character.Uid.Value, serial, x, y, z, graphic,
+                client.Character.Uid.Value);
+        }
+        client.HandleTargetResponse(type, targetId, serial, x, y, z, graphic);
     }
 
     private static void OnGumpResponse(NetState state, uint serial, uint gumpId, uint buttonId,
@@ -4879,7 +5004,12 @@ public static class Program
         {
             case 0x24: // UseSkill
                 if (int.TryParse(command.Split(' ')[0], out int skillId))
+                {
+                    if (_macroEngine != null && client.Character != null &&
+                        _macroEngine.IsRecording(client.Character.Uid.Value))
+                        _macroEngine.CaptureUseSkill(client.Character.Uid.Value, skillId);
                     client.HandleUseSkill(skillId);
+                }
                 break;
             case 0x56: // CastSpell
                 break;
@@ -6217,6 +6347,11 @@ public static class Program
             TickReplayOverlays();
 
         _stateRecorder?.Tick(Environment.TickCount64, _world.GetAllObjects().OfType<Character>());
+
+        _macroEngine?.Tick(Environment.TickCount64,
+            uid => _clientsByCharUid.GetValueOrDefault(new Serial(uid)),
+            FindItemInBackpack,
+            (uid, msg) => { if (_world.FindChar(new Serial(uid)) is { } c) SendSysMessage(c, msg); });
 
         // Reset dirty flags
         _world.ConsumeDirtyObjects();

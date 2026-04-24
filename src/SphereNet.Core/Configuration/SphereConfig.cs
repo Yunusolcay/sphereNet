@@ -144,6 +144,11 @@ public sealed class SphereConfig
     // State Recording
     public bool StateRecordingEnabled { get; set; } = true;
 
+    // Player Macro
+    public bool MacroEnabled { get; set; } = true;
+    public int MacroMaxSteps { get; set; } = 50;
+    public int MacroMaxLoopMinutes { get; set; } = 120;
+
     // Features
     public int FeatureT2A { get; set; } = 0x01;
     public int FeatureLBR { get; set; }
@@ -363,6 +368,9 @@ public sealed class SphereConfig
 
         DecayTimer = ini.GetInt(section, "DecayTimer", DecayTimer);
         StateRecordingEnabled = ini.GetBool(section, "StateRecordingEnabled", StateRecordingEnabled);
+        MacroEnabled = ini.GetBool(section, "MacroEnabled", MacroEnabled);
+        MacroMaxSteps = Math.Clamp(ini.GetInt(section, "MacroMaxSteps", MacroMaxSteps), 5, 200);
+        MacroMaxLoopMinutes = Math.Clamp(ini.GetInt(section, "MacroMaxLoopMinutes", MacroMaxLoopMinutes), 1, 1440);
 
         FeatureT2A = ini.GetInt(section, "FeatureT2A", FeatureT2A);
         FeatureLBR = ini.GetInt(section, "FeatureLBR", FeatureLBR);

@@ -313,6 +313,9 @@ public sealed class CommandHandler
     /// <summary>Fired by .SREC — opens state recording browser.</summary>
     public event Action<Character, string>? OnStateRecordRequested;
 
+    /// <summary>Fired by .MACRO — player macro recording/playback.</summary>
+    public event Action<Character, string>? OnMacroRequested;
+
     /// <summary>Raised when ".dialog &lt;name&gt; [page]" is typed. The host
     /// opens the named script dialog on the character's client.</summary>
     public event Action<Character, string, int>? OnScriptDialogRequested;
@@ -1384,6 +1387,11 @@ public sealed class CommandHandler
         Register("SREC", PrivLevel.Player, (ch, args) =>
         {
             OnStateRecordRequested?.Invoke(ch, args);
+        });
+
+        Register("MACRO", PrivLevel.Player, (ch, args) =>
+        {
+            OnMacroRequested?.Invoke(ch, args);
         });
     }
 
