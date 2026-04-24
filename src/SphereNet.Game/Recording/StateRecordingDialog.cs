@@ -16,6 +16,7 @@ public enum StateRecAction
     PageNext,
     PagePrev,
     BackToList,
+    SearchChar,
     Close
 }
 
@@ -36,6 +37,8 @@ public static class StateRecordingDialog
     private const int BtnPagePrev = 9990;
     private const int BtnPageNext = 9991;
     private const int BtnBackToList = 9992;
+    private const int BtnSearch = 9993;
+    public const int SearchEntryId = 1;
 
     // ----------------------------------------------------------------
     //  Admin character browser
@@ -44,27 +47,32 @@ public static class StateRecordingDialog
     public static GumpBuilder BuildCharacterList(
         uint charSerial,
         List<(uint Uid, string Name, bool IsPlayer, string LastSeen, int Records)> characters,
-        int page, long dbSizeMb)
+        int page, long dbSizeMb, string searchText = "")
     {
         int totalPages = Math.Max(1, (characters.Count + ItemsPerPage - 1) / ItemsPerPage);
         page = Math.Clamp(page, 0, totalPages - 1);
         int startIdx = page * ItemsPerPage;
         int endIdx = Math.Min(startIdx + ItemsPerPage, characters.Count);
 
-        var g = new GumpBuilder(charSerial, GumpId, 520, 380)
+        var g = new GumpBuilder(charSerial, GumpId, 520, 410)
             { ExplicitX = 80, ExplicitY = 60 };
         g.SetNoDispose();
-        g.AddResizePic(0, 0, BgGump, 520, 380);
+        g.AddResizePic(0, 0, BgGump, 520, 410);
 
         g.AddText(15, 10, 67, "State Recording Browser");
         g.AddText(350, 10, 946, $"DB: {dbSizeMb} MB");
 
-        g.AddText(15, 35, 0, "Character");
-        g.AddText(200, 35, 0, "Type");
-        g.AddText(260, 35, 0, "Last Seen");
-        g.AddText(420, 35, 0, "Records");
+        g.AddText(15, 36, 0, "Search:");
+        g.AddResizePic(75, 33, 9350, 200, 24);
+        g.AddTextEntry(80, 35, 190, 20, 0, SearchEntryId, searchText);
+        g.AddButton(285, 35, BtnOk, BtnOkP, BtnSearch);
 
-        int y = 58;
+        g.AddText(15, 62, 0, "Character");
+        g.AddText(200, 62, 0, "Type");
+        g.AddText(260, 62, 0, "Last Seen");
+        g.AddText(420, 62, 0, "Records");
+
+        int y = 85;
         for (int i = startIdx; i < endIdx; i++)
         {
             var (uid, name, isPlayer, lastSeen, records) = characters[i];
@@ -76,7 +84,7 @@ public static class StateRecordingDialog
             y += 22;
         }
 
-        y = 345;
+        y = 375;
         if (page > 0)
             g.AddButton(180, y, BtnSmall, BtnSmallP, BtnPagePrev);
         g.AddText(200, y, 0, $"Page {page + 1}/{totalPages}");
@@ -207,6 +215,7 @@ public static class StateRecordingDialog
         if (buttonId == BtnPagePrev) return new(StateRecAction.PagePrev);
         if (buttonId == BtnPageNext) return new(StateRecAction.PageNext);
         if (buttonId == BtnBackToList) return new(StateRecAction.BackToList);
+        if (buttonId == BtnSearch) return new(StateRecAction.SearchChar);
         if (buttonId == 50) return new(StateRecAction.PlayLast30);
 
         if (buttonId >= 500) return new(StateRecAction.WatchShared, (int)(buttonId - 500));

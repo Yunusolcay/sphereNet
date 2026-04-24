@@ -141,6 +141,9 @@ public sealed class SphereConfig
     // Misc
     public int DecayTimer { get; set; } = 30;
 
+    // State Recording
+    public bool StateRecordingEnabled { get; set; } = true;
+
     // Features
     public int FeatureT2A { get; set; } = 0x01;
     public int FeatureLBR { get; set; }
@@ -359,6 +362,7 @@ public sealed class SphereConfig
             ini.GetInt(section, "SeasonChangeIntervalMinutes", SeasonChangeIntervalMinutes));
 
         DecayTimer = ini.GetInt(section, "DecayTimer", DecayTimer);
+        StateRecordingEnabled = ini.GetBool(section, "StateRecordingEnabled", StateRecordingEnabled);
 
         FeatureT2A = ini.GetInt(section, "FeatureT2A", FeatureT2A);
         FeatureLBR = ini.GetInt(section, "FeatureLBR", FeatureLBR);

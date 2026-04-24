@@ -4,6 +4,23 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-25b] - State recording config toggle ve karakter arama
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - StateRecordingEnabled config ayari: sphere.ini uzerinden state recording
+    sistemi acilip kapatilabilir. Varsayilan acik (1), kapatildiginda SQLite DB
+    olusturulmaz ve tick maliyeti sifir olur.
+    StateRecordingEnabled config toggle: state recording system can be
+    enabled/disabled via sphere.ini. Default on (1), when disabled no SQLite DB
+    is created and tick cost is zero.
+  - State recording dialoguna karakter arama alani eklendi: Admin karakter
+    listesinde isim ile arama yapilabilir. LIKE %search% COLLATE NOCASE ile
+    buyuk/kucuk harf duyarsiz filtreleme. Arama metni sayfa gecislerinde korunur.
+    Character search field added to state recording dialog: name-based search
+    in admin character browser. Case-insensitive LIKE %search% filtering.
+    Search text preserved across page navigation.
+
 [2026-04-25] - Replay engine iyilestirmeleri ve state recording sistemi
 ----------------------------------------
 

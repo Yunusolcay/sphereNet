@@ -428,17 +428,23 @@ public sealed class StateRecorder : IDisposable
     //  Query helpers
     // ----------------------------------------------------------------
 
-    public List<(uint Uid, string Name, bool IsPlayer, long LastTs, int Records)> GetRecordedCharacters(int limit = 30)
+    public List<(uint Uid, string Name, bool IsPlayer, long LastTs, int Records)> GetRecordedCharacters(
+        string? nameFilter = null, int limit = 30)
     {
         var result = new List<(uint, string, bool, long, int)>();
         using var cmd = _db!.CreateCommand();
-        cmd.CommandText = """
+
+        bool hasFilter = !string.IsNullOrWhiteSpace(nameFilter);
+        cmd.CommandText = $"""
             SELECT char_uid, name, is_player, MAX(ts) as last_ts, COUNT(*) as cnt
             FROM char_snapshots
+            {(hasFilter ? "WHERE name LIKE @search COLLATE NOCASE" : "")}
             GROUP BY char_uid
             ORDER BY last_ts DESC
             LIMIT @lim
             """;
+        if (hasFilter)
+            cmd.Parameters.AddWithValue("@search", $"%{nameFilter}%");
         cmd.Parameters.AddWithValue("@lim", limit);
         using var r = cmd.ExecuteReader();
         while (r.Read())

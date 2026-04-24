@@ -1279,16 +1279,19 @@ public static class Program
             }
             return result;
         };
-        try
+        if (_config.StateRecordingEnabled)
         {
-            var stateDbPath = Path.Combine(ResolvePath(basePath, _config.WorldSaveDir), "state_recording.db");
-            _stateRecorder = new SphereNet.Server.Recording.StateRecorder(stateDbPath, _loggerFactory.CreateLogger("StateRecorder"));
-            _stateRecorder.Initialize();
-        }
-        catch (Exception ex)
-        {
-            _log.LogError(ex, "StateRecorder init failed — state recording disabled");
-            _stateRecorder = null;
+            try
+            {
+                var stateDbPath = Path.Combine(ResolvePath(basePath, _config.WorldSaveDir), "state_recording.db");
+                _stateRecorder = new SphereNet.Server.Recording.StateRecorder(stateDbPath, _loggerFactory.CreateLogger("StateRecorder"));
+                _stateRecorder.Initialize();
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, "StateRecorder init failed — state recording disabled");
+                _stateRecorder = null;
+            }
         }
 
         _npcAI.OnNpcSay = (npc, text) =>
@@ -3508,13 +3511,13 @@ public static class Program
         }
     }
 
-    private static void ShowStateRecBrowser(Character ch, int page)
+    private static void ShowStateRecBrowser(Character ch, int page, string? searchFilter = null)
     {
         if (_stateRecorder == null || !_clientsByCharUid.TryGetValue(ch.Uid, out var client)) return;
 
         if (ch.PrivLevel >= PrivLevel.Admin)
         {
-            var chars = _stateRecorder.GetRecordedCharacters();
+            var chars = _stateRecorder.GetRecordedCharacters(searchFilter);
             long dbMb = _stateRecorder.GetDbSizeBytes() / (1024 * 1024);
             var displayList = new List<(uint Uid, string Name, bool IsPlayer, string LastSeen, int Records)>();
             foreach (var (uid, name, isPlayer, lastTs, records) in chars)
@@ -3524,9 +3527,18 @@ public static class Program
             }
 
             var gump = SphereNet.Game.Recording.StateRecordingDialog.BuildCharacterList(
-                ch.Uid.Value, displayList, page, dbMb);
+                ch.Uid.Value, displayList, page, dbMb, searchFilter ?? "");
             _stateRecBrowseState[ch.Uid.Value] = (0, page);
-            client.SendGump(gump, (btnId, _, _) => HandleStateRecGumpResponse(ch, btnId, displayList, null));
+            client.SendGump(gump, (btnId, _, textEntries) =>
+            {
+                string? searchText = null;
+                foreach (var (id, text) in textEntries)
+                {
+                    if (id == SphereNet.Game.Recording.StateRecordingDialog.SearchEntryId)
+                    { searchText = text; break; }
+                }
+                HandleStateRecGumpResponse(ch, btnId, displayList, null, searchText);
+            });
         }
         else
         {
@@ -3577,25 +3589,31 @@ public static class Program
 
     private static void HandleStateRecGumpResponse(Character ch, uint btnId,
         List<(uint Uid, string Name, bool IsPlayer, string LastSeen, int Records)> chars,
-        List<(int Id, uint CharUid, string Label, long StartTs, long EndTs, string SharedBy)>? shared)
+        List<(int Id, uint CharUid, string Label, long StartTs, long EndTs, string SharedBy)>? shared,
+        string? searchText = null)
     {
         var resp = SphereNet.Game.Recording.StateRecordingDialog.ParseResponse(btnId);
+        string? filter = string.IsNullOrWhiteSpace(searchText) ? null : searchText.Trim();
         switch (resp.Action)
         {
             case SphereNet.Game.Recording.StateRecAction.Close:
                 break;
 
+            case SphereNet.Game.Recording.StateRecAction.SearchChar:
+                ShowStateRecBrowser(ch, 0, filter);
+                break;
+
             case SphereNet.Game.Recording.StateRecAction.PageNext:
             {
                 _stateRecBrowseState.TryGetValue(ch.Uid.Value, out var st);
-                ShowStateRecBrowser(ch, st.Page + 1);
+                ShowStateRecBrowser(ch, st.Page + 1, filter);
                 break;
             }
 
             case SphereNet.Game.Recording.StateRecAction.PagePrev:
             {
                 _stateRecBrowseState.TryGetValue(ch.Uid.Value, out var st);
-                ShowStateRecBrowser(ch, Math.Max(0, st.Page - 1));
+                ShowStateRecBrowser(ch, Math.Max(0, st.Page - 1), filter);
                 break;
             }
 
