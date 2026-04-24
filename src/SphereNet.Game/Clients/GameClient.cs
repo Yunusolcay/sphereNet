@@ -7935,6 +7935,7 @@ public sealed class GameClient : ITextConsole
                     }
                     break;
                 }
+                case "RESIZE":
                 case "RESIZEPIC":
                 {
                     if (!currentPageVisible) break;
@@ -8164,6 +8165,41 @@ public sealed class GameClient : ITextConsole
                 {
                     int g = ParseIntToken(args);
                     gump.AddGroup(g);
+                    break;
+                }
+                case "XMFHTMLGUMP":
+                {
+                    if (!currentPageVisible) break;
+                    var parts = SplitTokens(args, 7);
+                    if (parts.Length >= 7)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        gump.AddXmfHtmlGump(x, y,
+                            ParseIntToken(parts[2]),
+                            ParseIntToken(parts[3]),
+                            (uint)ParseIntToken(parts[4]),
+                            ParseIntToken(parts[5]) != 0,
+                            ParseIntToken(parts[6]) != 0);
+                    }
+                    break;
+                }
+                case "XMFHTMLGUMPCOLOR":
+                {
+                    if (!currentPageVisible) break;
+                    var parts = SplitTokens(args, 8);
+                    if (parts.Length >= 8)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        gump.AddXmfHtmlGumpColor(x, y,
+                            ParseIntToken(parts[2]),
+                            ParseIntToken(parts[3]),
+                            (uint)ParseIntToken(parts[4]),
+                            ParseIntToken(parts[5]) != 0,
+                            ParseIntToken(parts[6]) != 0,
+                            ParseIntToken(parts[7]));
+                    }
                     break;
                 }
             }
@@ -9100,21 +9136,21 @@ public sealed class GameClient : ITextConsole
     private static string[] SplitTokens(string input, int minLeadingTokens, bool keepRemainder = false)
     {
         if (!keepRemainder)
-            return input.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            return input.Split([' ', '\t', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         var parts = new List<string>();
         string text = input.Trim();
         int i = 0;
         while (i < text.Length && parts.Count < minLeadingTokens)
         {
-            while (i < text.Length && char.IsWhiteSpace(text[i])) i++;
+            while (i < text.Length && (char.IsWhiteSpace(text[i]) || text[i] == ',')) i++;
             if (i >= text.Length) break;
             int start = i;
-            while (i < text.Length && !char.IsWhiteSpace(text[i])) i++;
+            while (i < text.Length && !char.IsWhiteSpace(text[i]) && text[i] != ',') i++;
             parts.Add(text[start..i]);
         }
 
-        while (i < text.Length && char.IsWhiteSpace(text[i])) i++;
+        while (i < text.Length && (char.IsWhiteSpace(text[i]) || text[i] == ',')) i++;
         parts.Add(i < text.Length ? text[i..] : "");
         return parts.ToArray();
     }
