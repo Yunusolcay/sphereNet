@@ -310,6 +310,9 @@ public sealed class CommandHandler
     /// <summary>Fired by .RECORD — opens recording manager dialog.</summary>
     public event Action<Character>? OnRecordDialogRequested;
 
+    /// <summary>Fired by .SREC — opens state recording browser.</summary>
+    public event Action<Character, string>? OnStateRecordRequested;
+
     /// <summary>Raised when ".dialog &lt;name&gt; [page]" is typed. The host
     /// opens the named script dialog on the character's client.</summary>
     public event Action<Character, string, int>? OnScriptDialogRequested;
@@ -1376,6 +1379,11 @@ public sealed class CommandHandler
         Register("RECORD", PrivLevel.Counsel, (gm, _) =>
         {
             OnRecordDialogRequested?.Invoke(gm);
+        });
+
+        Register("SREC", PrivLevel.Player, (ch, args) =>
+        {
+            OnStateRecordRequested?.Invoke(ch, args);
         });
     }
 

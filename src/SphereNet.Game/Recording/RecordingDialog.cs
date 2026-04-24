@@ -103,7 +103,6 @@ public static class RecordingDialog
         int totalMs, int currentMs, bool isPaused, float speed)
     {
         var gump = new GumpBuilder(charSerial, ReplayOverlayGumpId, 360, 95);
-        gump.SetNoMove();
         gump.SetNoDispose();
 
         gump.AddResizePic(0, 0, BackgroundId, 360, 95);

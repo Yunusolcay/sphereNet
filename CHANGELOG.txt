@@ -4,6 +4,54 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-25] - Replay engine iyilestirmeleri ve state recording sistemi
+----------------------------------------
+
+YENI OZELLIKLER / NEW FEATURES:
+  - SQLite tabanli surekli karakter durum kayit sistemi (state recording):
+    Tum karakterlerin (player + NPC) pozisyon ve durum bilgileri otomatik olarak
+    SQLite veritabanina kaydedilir. Hareket taramasi 500ms, full state snapshot
+    10s aralikla yapilir. 3 gunluk retention, pin/share destegi.
+    SQLite-based continuous character state recording system: all characters'
+    position and state are automatically recorded to SQLite. Movement scan every
+    500ms, full state snapshots every 10s. 3-day retention with pin/share support.
+  - State recording gump arayuzu (.SREC komutu): Admin+ karakter listesi ve
+    saat bazli gecmis gorunumu, player'lar icin paylasilan kayitlar listesi.
+    Play/Pin/Share butonlari ile tam yonetim.
+    State recording gump UI (.SREC command): Admin+ character browser with hourly
+    history view, shared recordings list for players. Full management via
+    Play/Pin/Share buttons.
+  - State kayitlarindan replay olusturma: Kaydedilen verilerden sentetik paket
+    akisi (0x78 DrawObject + 0x77 MobileMoving) uretilir, mevcut replay
+    altyapisi ile sorunsuz calisir (kamera takibi, overlay, serial remapping).
+    Replay generation from state records: synthetic packet stream (0x78 DrawObject
+    + 0x77 MobileMoving) generated from recorded data, works seamlessly with
+    existing replay infrastructure (camera follow, overlay, serial remapping).
+  - Replay izleyici yuruyus senkronizasyonu: Izleyici kamerasi artik PacketWalkForce
+    (0x97) ile tek-tile mesafelerde smooth yuruyus animasyonu yapar, sadece coklu
+    tile atlamalarinda teleport eder.
+    Replay viewer walk synchronization: viewer camera now uses PacketWalkForce
+    (0x97) for smooth walk animation on single-tile moves, teleports only for
+    multi-tile jumps.
+
+HATA DUZELTMELERI / BUG FIXES:
+  - Replay sirasinda phantom karakter ve izleyicinin ikisi de gorunmezdi: bodyId=0
+    yerine gercek bodyId + Hidden flag (0x80) kullanilarak duzeltildi.
+    Both phantom character and viewer were invisible during replay: fixed by using
+    real bodyId + Hidden flag (0x80) instead of bodyId=0.
+  - Replay hareketi 100ms server tick'e bagliymis, kesik kesik gorunuyordu: Paket
+    teslimati ana donguye (1-15ms) tasindi.
+    Replay movement was batched to 100ms server tick, appeared jerky: packet
+    delivery moved to main loop (1-15ms).
+  - Replay sirasinda recorder'in gorus alanina giren yeni karakterlerin ekipman
+    bilgisi kaydedilmiyordu, replay'de ciplak gorunuyorlardi: View-delta 0x78
+    paketleri artik recording'e yakalaniyor.
+    Equipment data for new characters entering recorder's view was not captured
+    during recording, appearing naked in replay: view-delta 0x78 packets are now
+    captured into recordings.
+  - Replay overlay dialog'u sabitdi, suruklenemiyordu: NoMove flag'i kaldirildi.
+    Replay overlay dialog was fixed in place: NoMove flag removed.
+
 [2026-04-24] - Dialog engine koordinat ve RESIZE duzeltmeleri
 ----------------------------------------
 

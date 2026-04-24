@@ -261,7 +261,7 @@ public sealed class RecordingEngine
                         lastX = (short)(data[7] << 8 | data[8]);
                         lastY = (short)(data[9] << 8 | data[10]);
                         lastZ = (sbyte)data[11];
-                        lastDir = (byte)(data[12] & 0x07);
+                        lastDir = (byte)(data[12] & 0x87);
                         hasCam = true;
                     }
                 }
@@ -313,7 +313,7 @@ public sealed class RecordingEngine
                             short x = (short)(data[7] << 8 | data[8]);
                             short y = (short)(data[9] << 8 | data[10]);
                             sbyte z = (sbyte)data[11];
-                            byte dir = (byte)(data[12] & 0x07);
+                            byte dir = (byte)(data[12] & 0x87);
                             onCameraUpdate(uid, x, y, z, dir);
                         }
                     }

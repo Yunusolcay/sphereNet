@@ -433,6 +433,24 @@ public sealed class PacketDrawPlayer : PacketWriter
     }
 }
 
+/// <summary>0x97 — Server-initiated walk (force client to walk in a direction).</summary>
+public sealed class PacketWalkForce : PacketWriter
+{
+    private readonly byte _direction;
+
+    public PacketWalkForce(byte direction) : base(0x97)
+    {
+        _direction = direction;
+    }
+
+    public override PacketBuffer Build()
+    {
+        var buf = CreateFixed(2);
+        buf.WriteByte(_direction);
+        return buf;
+    }
+}
+
 /// <summary>0x85 — Character delete result.</summary>
 public sealed class PacketCharDeleteResult : PacketWriter
 {

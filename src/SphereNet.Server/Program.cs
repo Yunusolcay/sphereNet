@@ -109,6 +109,7 @@ public static class Program
     private static SphereNet.Game.NPCs.StableEngine _stableEngine = new();
     private static SphereNet.Game.Scheduling.TimerWheel _npcTimerWheel = null!;
     private static SphereNet.Game.Recording.RecordingEngine _recordingEngine = null!;
+    private static SphereNet.Server.Recording.StateRecorder? _stateRecorder;
     private static TriggerDispatcher _triggerDispatcher = null!;
     private static TriggerRunner _triggerRunner = null!;
     private static ScriptSystemHooks _systemHooks = null!;
@@ -1278,6 +1279,18 @@ public static class Program
             }
             return result;
         };
+        try
+        {
+            var stateDbPath = Path.Combine(ResolvePath(basePath, _config.WorldSaveDir), "state_recording.db");
+            _stateRecorder = new SphereNet.Server.Recording.StateRecorder(stateDbPath, _loggerFactory.CreateLogger("StateRecorder"));
+            _stateRecorder.Initialize();
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "StateRecorder init failed — state recording disabled");
+            _stateRecorder = null;
+        }
+
         _npcAI.OnNpcSay = (npc, text) =>
         {
             NpcSpeak(npc, text);
@@ -1883,6 +1896,7 @@ public static class Program
         _commands.OnBotMenuRequested += ShowBotManagerDialog;
 
         _commands.OnRecordDialogRequested += ShowRecordingDialog;
+        _commands.OnStateRecordRequested += HandleStateRecordCommand;
         _commands.OnSaveFormatChangeRequested += HandleSaveFormatChange;
         _commands.OnScriptDebugToggleRequested += on =>
         {
@@ -2230,6 +2244,12 @@ public static class Program
                 RestockBotCharacters();
             }
 
+            // Replay packet delivery runs every main-loop iteration
+            // (~1-15ms) for smooth character movement instead of being
+            // batched into the 100ms server tick.
+            if (_recordingEngine.HasActiveReplays)
+                TickReplayPackets();
+
             _network.ProcessAllOutput();
             _network.Tick();
 
@@ -2263,6 +2283,7 @@ public static class Program
 
         _log.LogInformation("Auto-save on shutdown is disabled. Use 'save' command before quitting to persist world state.");
 
+        _stateRecorder?.Dispose();
         _telnet?.Dispose();
         _webStatus?.Dispose();
         _network.Dispose();
@@ -3320,23 +3341,7 @@ public static class Program
             SendSysMessage(gm, "Recording not found.");
             return;
         }
-        var state = _recordingEngine.StartReplay(gm, session);
-        if (state == null) return;
-
-        gm.SetStatFlag(StatFlag.Invisible);
-        gm.SetStatFlag(StatFlag.Freeze);
-        gm.IsReplaySpectator = true;
-        _world.MoveCharacter(gm, session.Center);
-
-        if (_clientsByCharUid.TryGetValue(gm.Uid, out var client))
-        {
-            var center = session.Center;
-            client.NetState.Send(new PacketDrawObject(
-                gm.Uid.Value, 0, center.X, center.Y, center.Z,
-                0, 0, 0, 0, []).Build());
-        }
-
-        SendReplayOverlay(gm);
+        StartReplayForPlayer(gm, session);
     }
 
     private static void SendReplayOverlay(Character viewer)
@@ -3412,6 +3417,323 @@ public static class Program
         SendReplayOverlay(viewer);
     }
 
+    // ----------------------------------------------------------------
+    //  State recording system (.SREC)
+    // ----------------------------------------------------------------
+
+    private static readonly Dictionary<uint, (uint TargetUid, int Page)> _stateRecBrowseState = [];
+    private static readonly Dictionary<uint, List<(int Id, uint CharUid, string Label, long StartTs, long EndTs, string SharedBy)>> _stateRecSharedCache = [];
+
+    private static void HandleStateRecordCommand(Character ch, string args)
+    {
+        if (_stateRecorder == null)
+        {
+            SendSysMessage(ch, "State recording is not available.");
+            return;
+        }
+
+        args = args.Trim();
+
+        if (args.Length == 0)
+        {
+            ShowStateRecBrowser(ch, 0);
+            return;
+        }
+
+        var parts = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        string sub = parts[0].ToUpperInvariant();
+
+        switch (sub)
+        {
+            case "PLAY" when parts.Length >= 2 && ch.PrivLevel >= PrivLevel.Admin:
+            {
+                string name = parts[1];
+                int minutes = parts.Length >= 3 && int.TryParse(parts[2], out int m) ? m : 30;
+                var uid = _stateRecorder.FindCharUidByName(name);
+                if (uid == null) { SendSysMessage(ch, $"No state records for '{name}'."); return; }
+                PlayStateRecording(ch, uid.Value, minutes);
+                break;
+            }
+
+            case "PIN" when ch.PrivLevel >= PrivLevel.Admin:
+            {
+                int hoursAgo = parts.Length >= 2 && int.TryParse(parts[1], out int h) ? h : 0;
+                int duration = parts.Length >= 3 && int.TryParse(parts[2], out int d) ? d : 1;
+                string label = parts.Length >= 4 ? string.Join(' ', parts[3..]) : $"Pin {DateTime.UtcNow:MM-dd HH:mm}";
+                long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                long startTs = now - (long)hoursAgo * 3_600_000;
+                long endTs = startTs + (long)duration * 3_600_000;
+                _stateRecorder.PinPeriod(startTs, endTs, label, ch.Name ?? "Admin");
+                SendSysMessage(ch, $"Period pinned: {label}");
+                break;
+            }
+
+            case "SHARE" when parts.Length >= 2 && ch.PrivLevel >= PrivLevel.Admin:
+            {
+                string name = parts[1];
+                int hoursAgo = parts.Length >= 3 && int.TryParse(parts[2], out int h) ? h : 0;
+                int duration = parts.Length >= 4 && int.TryParse(parts[3], out int d) ? d : 1;
+                string label = parts.Length >= 5 ? string.Join(' ', parts[4..]) : $"Shared {name}";
+                var uid = _stateRecorder.FindCharUidByName(name);
+                if (uid == null) { SendSysMessage(ch, $"No records for '{name}'."); return; }
+                long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                long startTs = now - (long)hoursAgo * 3_600_000;
+                long endTs = startTs + (long)duration * 3_600_000;
+                _stateRecorder.ShareView(uid.Value, startTs, endTs, label, ch.Name ?? "Admin");
+                SendSysMessage(ch, $"Recording shared: {label}");
+                break;
+            }
+
+            case "UNPIN" when parts.Length >= 2 && ch.PrivLevel >= PrivLevel.Admin:
+            {
+                if (int.TryParse(parts[1], out int pinId) && _stateRecorder.UnpinPeriod(pinId))
+                    SendSysMessage(ch, $"Pin #{pinId} removed.");
+                else
+                    SendSysMessage(ch, "Invalid pin ID.");
+                break;
+            }
+
+            case "UNSHARE" when parts.Length >= 2 && ch.PrivLevel >= PrivLevel.Admin:
+            {
+                if (int.TryParse(parts[1], out int shareId) && _stateRecorder.UnshareView(shareId))
+                    SendSysMessage(ch, $"Share #{shareId} removed.");
+                else
+                    SendSysMessage(ch, "Invalid share ID.");
+                break;
+            }
+
+            default:
+                SendSysMessage(ch, "Usage: .srec | .srec play <name> [min] | .srec pin [h_ago] [dur] [label] | .srec share <name> [h_ago] [dur] [label]");
+                break;
+        }
+    }
+
+    private static void ShowStateRecBrowser(Character ch, int page)
+    {
+        if (_stateRecorder == null || !_clientsByCharUid.TryGetValue(ch.Uid, out var client)) return;
+
+        if (ch.PrivLevel >= PrivLevel.Admin)
+        {
+            var chars = _stateRecorder.GetRecordedCharacters();
+            long dbMb = _stateRecorder.GetDbSizeBytes() / (1024 * 1024);
+            var displayList = new List<(uint Uid, string Name, bool IsPlayer, string LastSeen, int Records)>();
+            foreach (var (uid, name, isPlayer, lastTs, records) in chars)
+            {
+                string lastSeen = DateTimeOffset.FromUnixTimeMilliseconds(lastTs).LocalDateTime.ToString("MM-dd HH:mm");
+                displayList.Add((uid, name, isPlayer, lastSeen, records));
+            }
+
+            var gump = SphereNet.Game.Recording.StateRecordingDialog.BuildCharacterList(
+                ch.Uid.Value, displayList, page, dbMb);
+            _stateRecBrowseState[ch.Uid.Value] = (0, page);
+            client.SendGump(gump, (btnId, _, _) => HandleStateRecGumpResponse(ch, btnId, displayList, null));
+        }
+        else
+        {
+            ShowSharedRecordings(ch, page);
+        }
+    }
+
+    private static void ShowSharedRecordings(Character ch, int page)
+    {
+        if (_stateRecorder == null || !_clientsByCharUid.TryGetValue(ch.Uid, out var client)) return;
+
+        var shared = _stateRecorder.GetSharedViews();
+        _stateRecSharedCache[ch.Uid.Value] = shared;
+
+        var displayItems = new List<(int Id, string Label, string CharName, string TimeRange, string SharedBy)>();
+        foreach (var (id, charUid, label, startTs, endTs, sharedBy) in shared)
+        {
+            string charName = "UID:" + charUid.ToString("X");
+            var charObj = _world.FindChar(new Serial(charUid));
+            if (charObj != null) charName = charObj.Name ?? charName;
+
+            string timeRange = DateTimeOffset.FromUnixTimeMilliseconds(startTs).LocalDateTime.ToString("MM-dd HH:mm");
+            displayItems.Add((id, label, charName, timeRange, sharedBy));
+        }
+
+        var gump = SphereNet.Game.Recording.StateRecordingDialog.BuildSharedList(
+            ch.Uid.Value, displayItems, page);
+        client.SendGump(gump, (btnId, _, _) => HandleSharedGumpResponse(ch, btnId, shared));
+    }
+
+    private static void ShowHourBuckets(Character ch, uint targetUid, string targetName, int page)
+    {
+        if (_stateRecorder == null || !_clientsByCharUid.TryGetValue(ch.Uid, out var client)) return;
+
+        var buckets = _stateRecorder.GetHourBuckets(targetUid);
+        var displayList = new List<(string HourKey, string Display, int Snapshots, int Moves)>();
+        foreach (var (hourKey, startTs, snapCount, moveCount) in buckets)
+        {
+            string display = DateTimeOffset.FromUnixTimeMilliseconds(startTs).LocalDateTime.ToString("MM-dd HH:mm");
+            displayList.Add((hourKey, display, snapCount, moveCount));
+        }
+
+        _stateRecBrowseState[ch.Uid.Value] = (targetUid, page);
+        var gump = SphereNet.Game.Recording.StateRecordingDialog.BuildHourBuckets(
+            ch.Uid.Value, targetUid, targetName, displayList, page);
+        client.SendGump(gump, (btnId, _, _) => HandleHourBucketResponse(ch, btnId, targetUid, targetName, displayList, buckets));
+    }
+
+    private static void HandleStateRecGumpResponse(Character ch, uint btnId,
+        List<(uint Uid, string Name, bool IsPlayer, string LastSeen, int Records)> chars,
+        List<(int Id, uint CharUid, string Label, long StartTs, long EndTs, string SharedBy)>? shared)
+    {
+        var resp = SphereNet.Game.Recording.StateRecordingDialog.ParseResponse(btnId);
+        switch (resp.Action)
+        {
+            case SphereNet.Game.Recording.StateRecAction.Close:
+                break;
+
+            case SphereNet.Game.Recording.StateRecAction.PageNext:
+            {
+                _stateRecBrowseState.TryGetValue(ch.Uid.Value, out var st);
+                ShowStateRecBrowser(ch, st.Page + 1);
+                break;
+            }
+
+            case SphereNet.Game.Recording.StateRecAction.PagePrev:
+            {
+                _stateRecBrowseState.TryGetValue(ch.Uid.Value, out var st);
+                ShowStateRecBrowser(ch, Math.Max(0, st.Page - 1));
+                break;
+            }
+
+            case SphereNet.Game.Recording.StateRecAction.SelectChar when resp.Index >= 0 && resp.Index < chars.Count:
+            {
+                var (uid, name, _, _, _) = chars[resp.Index];
+                ShowHourBuckets(ch, uid, name, 0);
+                break;
+            }
+        }
+    }
+
+    private static void HandleHourBucketResponse(Character ch, uint btnId,
+        uint targetUid, string targetName,
+        List<(string HourKey, string Display, int Snapshots, int Moves)> hours,
+        List<(string HourKey, long StartTs, int SnapshotCount, int MoveCount)>? rawBuckets = null)
+    {
+        var resp = SphereNet.Game.Recording.StateRecordingDialog.ParseResponse(btnId);
+        switch (resp.Action)
+        {
+            case SphereNet.Game.Recording.StateRecAction.Close:
+                break;
+
+            case SphereNet.Game.Recording.StateRecAction.BackToList:
+                ShowStateRecBrowser(ch, 0);
+                break;
+
+            case SphereNet.Game.Recording.StateRecAction.PageNext:
+            {
+                _stateRecBrowseState.TryGetValue(ch.Uid.Value, out var st);
+                ShowHourBuckets(ch, targetUid, targetName, st.Page + 1);
+                break;
+            }
+
+            case SphereNet.Game.Recording.StateRecAction.PagePrev:
+            {
+                _stateRecBrowseState.TryGetValue(ch.Uid.Value, out var st);
+                ShowHourBuckets(ch, targetUid, targetName, Math.Max(0, st.Page - 1));
+                break;
+            }
+
+            case SphereNet.Game.Recording.StateRecAction.PlayLast30:
+                PlayStateRecording(ch, targetUid, 30);
+                break;
+
+            case SphereNet.Game.Recording.StateRecAction.PlayHour when rawBuckets != null && resp.Index >= 0 && resp.Index < rawBuckets.Count:
+            {
+                var rb = rawBuckets[resp.Index];
+                PlayStateRecording(ch, targetUid, rb.StartTs, rb.StartTs + 3_600_000);
+                break;
+            }
+
+            case SphereNet.Game.Recording.StateRecAction.PinHour when rawBuckets != null && resp.Index >= 0 && resp.Index < rawBuckets.Count:
+            {
+                var rb = rawBuckets[resp.Index];
+                var display = resp.Index < hours.Count ? hours[resp.Index].Display : rb.HourKey;
+                _stateRecorder!.PinPeriod(rb.StartTs, rb.StartTs + 3_600_000,
+                    $"{targetName} {display}", ch.Name ?? "Admin");
+                SendSysMessage(ch, $"Hour pinned: {display}");
+                ShowHourBuckets(ch, targetUid, targetName, 0);
+                break;
+            }
+
+            case SphereNet.Game.Recording.StateRecAction.ShareHour when rawBuckets != null && resp.Index >= 0 && resp.Index < rawBuckets.Count:
+            {
+                var rb = rawBuckets[resp.Index];
+                var display = resp.Index < hours.Count ? hours[resp.Index].Display : rb.HourKey;
+                _stateRecorder!.ShareView(targetUid, rb.StartTs, rb.StartTs + 3_600_000,
+                    $"{targetName} {display}", ch.Name ?? "Admin");
+                SendSysMessage(ch, $"Hour shared: {display}");
+                ShowHourBuckets(ch, targetUid, targetName, 0);
+                break;
+            }
+        }
+    }
+
+    private static void HandleSharedGumpResponse(Character ch, uint btnId,
+        List<(int Id, uint CharUid, string Label, long StartTs, long EndTs, string SharedBy)> shared)
+    {
+        var resp = SphereNet.Game.Recording.StateRecordingDialog.ParseResponse(btnId);
+        if (resp.Action == SphereNet.Game.Recording.StateRecAction.WatchShared &&
+            resp.Index >= 0 && resp.Index < shared.Count)
+        {
+            var (_, charUid, _, startTs, endTs, _) = shared[resp.Index];
+            if (_stateRecorder!.CanView(ch.PrivLevel, charUid, startTs, endTs))
+                PlayStateRecording(ch, charUid, startTs, endTs);
+            else
+                SendSysMessage(ch, "You don't have access to this recording.");
+        }
+    }
+
+    private static void PlayStateRecording(Character ch, uint targetUid, int lastMinutes)
+    {
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        PlayStateRecording(ch, targetUid, now - (long)lastMinutes * 60_000, now);
+    }
+
+    private static void PlayStateRecording(Character ch, uint targetUid, long startMs, long endMs)
+    {
+        if (_stateRecorder == null) return;
+        if (_recordingEngine.IsReplaying(ch.Uid.Value))
+        {
+            SendSysMessage(ch, "Already replaying. Stop current replay first.");
+            return;
+        }
+
+        var session = _stateRecorder.BuildReplaySession(targetUid, startMs, endMs);
+        if (session == null || session.Packets.Count == 0)
+        {
+            SendSysMessage(ch, "No state records found for this character/time range.");
+            return;
+        }
+
+        StartReplayForPlayer(ch, session);
+    }
+
+    private static void StartReplayForPlayer(Character gm, SphereNet.Game.Recording.RecordingSession session)
+    {
+        var state = _recordingEngine.StartReplay(gm, session);
+        if (state == null) return;
+
+        gm.SetStatFlag(StatFlag.Invisible);
+        gm.SetStatFlag(StatFlag.Freeze);
+        gm.IsReplaySpectator = true;
+        _world.MoveCharacter(gm, session.Center);
+
+        if (_clientsByCharUid.TryGetValue(gm.Uid, out var client))
+        {
+            var center = session.Center;
+            client.NetState.Send(new PacketDrawObject(
+                gm.Uid.Value, gm.BodyId, center.X, center.Y, center.Z,
+                (byte)gm.Direction, gm.Hue, 0x80, 0, []).Build());
+        }
+
+        SendSysMessage(gm, $"State replay: {session.RecorderName}, {session.DurationMs / 1000.0:F0}s, {session.Packets.Count} packets");
+        SendReplayOverlay(gm);
+    }
+
     private static void ReplaySendPacket(uint uid, byte[] data)
     {
         if (_clientsByCharUid.TryGetValue(new Serial(uid), out var c))
@@ -3422,13 +3744,41 @@ public static class Program
     {
         var ch = _world.FindChar(new Serial(viewerUid));
         if (ch == null) return;
+
+        int dx = x - ch.Position.X;
+        int dy = y - ch.Position.Y;
+        int dist = Math.Max(Math.Abs(dx), Math.Abs(dy));
+
         byte map = ch.Position.Map;
         _world.MoveCharacter(ch, new Point3D(x, y, z, map));
+
+        if (dist == 0) return;
+
         if (_clientsByCharUid.TryGetValue(new Serial(viewerUid), out var c))
         {
-            c.NetState.Send(new PacketDrawPlayer(
-                ch.Uid.Value, 0, 0, 0,
-                x, y, z, dir).Build());
+            if (dist == 1)
+            {
+                byte walkDir = (dx, dy) switch
+                {
+                    (0, -1) => 0,
+                    (1, -1) => 1,
+                    (1, 0) => 2,
+                    (1, 1) => 3,
+                    (0, 1) => 4,
+                    (-1, 1) => 5,
+                    (-1, 0) => 6,
+                    (-1, -1) => 7,
+                    _ => 0,
+                };
+                walkDir |= (byte)(dir & 0x80);
+                c.NetState.Send(new PacketWalkForce(walkDir).Build());
+            }
+            else
+            {
+                c.NetState.Send(new PacketDrawPlayer(
+                    ch.Uid.Value, ch.BodyId, ch.Hue, 0x80,
+                    x, y, z, (byte)(dir & 0x07)).Build());
+            }
         }
     }
 
@@ -3478,7 +3828,7 @@ public static class Program
         };
     }
 
-    private static void TickRecordingReplays()
+    private static void TickReplayPackets()
     {
         _recordingEngine.TickReplays(ReplaySendPacket,
             uid =>
@@ -3491,7 +3841,10 @@ public static class Program
                 }
             },
             ReplayCameraUpdate);
+    }
 
+    private static void TickReplayOverlays()
+    {
         long now = Environment.TickCount64;
         foreach (var uid in _recordingEngine.GetActiveReplayUids())
         {
@@ -5677,11 +6030,8 @@ public static class Program
             client.UpdateClientView();
         }
 
-        // Replay engine: send recorded packets to spectating clients
         if (_recordingEngine.HasActiveReplays)
-        {
-            TickRecordingReplays();
-        }
+            TickReplayOverlays();
 
         // Reset dirty flags so objects can be re-notified on next change
         _world.ConsumeDirtyObjects();
@@ -5808,17 +6158,47 @@ public static class Program
         _telemetryComputeUs = ToMicroseconds(Stopwatch.GetTimestamp() - p1);
 
         long p2 = Stopwatch.GetTimestamp();
+        bool hasRecordings = _recordingEngine.HasActiveRecordings;
         foreach (var client in clientSnapshot)
         {
-            if (clientDeltas.TryGetValue(client.NetState.Id, out var delta))
-                client.ApplyViewDelta(delta);
+            if (!clientDeltas.TryGetValue(client.NetState.Id, out var delta))
+                continue;
+
+            client.ApplyViewDelta(delta);
+
+            if (hasRecordings && delta.NewChars.Count > 0)
+            {
+                uint charUid = client.Character?.Uid.Value ?? 0;
+                if (charUid != 0 && _recordingEngine.IsRecording(charUid))
+                {
+                    foreach (var (ch, _) in delta.NewChars)
+                    {
+                        var equip = new List<(uint, ushort, byte, ushort)>();
+                        for (int layer = 1; layer <= (int)Layer.Horse; layer++)
+                        {
+                            var item = ch.GetEquippedItem((Layer)layer);
+                            if (item != null)
+                                equip.Add((item.Uid.Value, item.DispIdFull, (byte)layer, item.Hue));
+                        }
+                        byte flags = 0;
+                        if (ch.IsInWarMode) flags |= 0x40;
+                        if (ch.IsInvisible) flags |= 0x80;
+                        var pkt = new PacketDrawObject(
+                            ch.Uid.Value, ch.BodyId, ch.X, ch.Y, ch.Z,
+                            (byte)ch.Direction, ch.Hue, flags, 0x01,
+                            equip.ToArray());
+                        _recordingEngine.CapturePacket(charUid, ch.Position,
+                            pkt.Build().Span.ToArray());
+                    }
+                }
+            }
         }
         _telemetryApplyUs = ToMicroseconds(Stopwatch.GetTimestamp() - p2);
 
         if (_recordingEngine.HasActiveReplays)
-        {
-            TickRecordingReplays();
-        }
+            TickReplayOverlays();
+
+        _stateRecorder?.Tick(Environment.TickCount64, _world.GetAllObjects().OfType<Character>());
 
         // Reset dirty flags
         _world.ConsumeDirtyObjects();
