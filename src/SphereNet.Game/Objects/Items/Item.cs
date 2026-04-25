@@ -317,6 +317,13 @@ public class Item : ObjBase
             case "MEMORYTYPES": value = ((ushort)GetMemoryTypes()).ToString(); return true;
             case "PRICE": value = _price.ToString(); return true;
             case "QUALITY": value = _quality.ToString(); return true;
+            case "DECAY":
+            {
+                if (DecayTime <= 0) { value = "-1"; return true; }
+                long remaining = (DecayTime - Environment.TickCount64) / 1000;
+                value = remaining > 0 ? remaining.ToString() : "0";
+                return true;
+            }
 
             // TDATA instance
             case "TDATA1": value = _tdata1.ToString(); return true;
@@ -742,6 +749,10 @@ public class Item : ObjBase
                 return true;
             case "QUALITY":
                 if (ushort.TryParse(value, out ushort qv)) _quality = qv;
+                return true;
+            case "DECAY":
+                if (long.TryParse(value, out long decaySec) && decaySec > 0)
+                    DecayTime = Environment.TickCount64 + decaySec * 1000;
                 return true;
 
             // TDATA instance

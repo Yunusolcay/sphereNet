@@ -82,8 +82,11 @@ Source-X runs single-threaded. SphereNet splits tick processing into four parall
 
 ### Sektor Uyku / Sector Sleep
 
-Source-X her tick'te tum sektorleri tarar. SphereNet sadece online oyuncu iceren sektorleri tick'ler — bos bolgelerdeki NPC ve item'ler sifir maliyet. 300 oyuncu bir sehre toplaninca haritanin geri kalani uyur, islemci sadece aktif bolgelerle ilgilenir.
-Source-X iterates all sectors every tick. SphereNet only ticks sectors containing online players — NPCs and items in empty areas cost zero. When 300 players cluster in one city, the rest of the map sleeps.
+Source-X her tick'te tum sektorleri tarar. SphereNet sadece online oyuncu iceren sektorleri tick'ler (oyuncu etrafinda 5x5 sektor penceresi). Bos bolgelerdeki NPC ve item'ler sifir CPU maliyeti olusturur. 300 oyuncu bir sehre toplaninca haritanin geri kalani uyur, islemci sadece aktif bolgelerle ilgilenir.
+Source-X iterates all sectors every tick. SphereNet only ticks sectors containing online players (5x5 sector window around each player). NPCs and items in empty areas cost zero CPU. When 300 players cluster in one city, the rest of the map sleeps.
+
+**Timer Butunlugu / Timer Integrity:** Tum timerlar (item decay, spawn suresi, TIMER trigger) tick sayaci degil `Environment.TickCount64` bazli mutlak zaman damgasi kullanir. Uyuyan sektorlere 3 dakikada bir hafif bakim tick'i uygulanir — sadece item timerlari (decay, spawn, TIMER) islenir, NPC AI ve karakter tick'leri atlanir. Bu sayede oyuncusuz bolgelerde spawn noktalari uretmeye devam eder, suresi dolan itemler silinir ve TIMER trigger'lari zamaninda ateslanir. Aktif sektorlerle ayni absolute timestamp mekanizmasi kullanildigi icin hicbir timer kaybolmaz veya bozulmaz.
+**Timer Integrity:** All timers (item decay, spawn interval, TIMER triggers) use absolute timestamps (`Environment.TickCount64`), not tick counters. Sleeping sectors receive a lightweight maintenance tick every 3 minutes — only item timers (decay, spawn, TIMER) are processed, NPC AI and character ticks are skipped. This ensures spawn points keep producing in empty areas, expired items are cleaned up, and TIMER triggers fire on schedule. The same absolute timestamp mechanism used by active sectors guarantees no timer is lost or corrupted.
 
 ### Delta View (Alan Bazli Degisiklik Takibi / Field-Level Change Tracking)
 

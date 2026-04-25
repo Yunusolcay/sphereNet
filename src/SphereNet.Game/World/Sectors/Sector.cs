@@ -165,6 +165,21 @@ public sealed class Sector : IScriptObj
                 ch.OnTick();
         }
 
+        TickItems();
+    }
+
+    /// <summary>
+    /// Lightweight maintenance tick for sleeping sectors.
+    /// Only processes item timers (decay, spawn, TIMER) — no character AI.
+    /// Called periodically by GameWorld to keep timers alive in empty areas.
+    /// </summary>
+    public void OnMaintenanceTick()
+    {
+        TickItems();
+    }
+
+    private void TickItems()
+    {
         for (int i = _items.Count - 1; i >= 0; i--)
         {
             var item = _items[i];

@@ -321,6 +321,21 @@ public sealed class WorldSaver
         if (item.ContainedIn.IsValid) w.WriteProperty("CONT", $"0{item.ContainedIn.Value:X8}");
         if (item.EquipLayer != 0) w.WriteProperty("LAYER", ((byte)item.EquipLayer).ToString());
 
+        long timeout = item.Timeout;
+        if (timeout > 0)
+        {
+            long remainingSec = (timeout - Environment.TickCount64) / 1000;
+            if (remainingSec > 0)
+                w.WriteProperty("TIMER", remainingSec.ToString());
+        }
+
+        if (item.DecayTime > 0)
+        {
+            long remainingSec = (item.DecayTime - Environment.TickCount64) / 1000;
+            if (remainingSec > 0)
+                w.WriteProperty("DECAY", remainingSec.ToString());
+        }
+
         foreach (var (key, val) in item.Tags.GetAll())
             w.WriteProperty("TAG." + key, val);
 
@@ -397,6 +412,14 @@ public sealed class WorldSaver
         if (ch.SkillClass != 0) w.WriteProperty("SKILLCLASS", ch.SkillClass.ToString());
 
         if (ch.IsPlayer) w.WriteProperty("ISPLAYER", "1");
+
+        long chTimeout = ch.Timeout;
+        if (chTimeout > 0)
+        {
+            long chRemainingSec = (chTimeout - Environment.TickCount64) / 1000;
+            if (chRemainingSec > 0)
+                w.WriteProperty("TIMER", chRemainingSec.ToString());
+        }
 
         var accountTag = ch.Tags.Get("ACCOUNT");
         if (!string.IsNullOrEmpty(accountTag))

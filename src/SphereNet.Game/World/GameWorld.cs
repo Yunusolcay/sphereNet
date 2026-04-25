@@ -58,6 +58,11 @@ public sealed class GameWorld
     private long _worldClock;
     private long _lastClockUpdate;
 
+    /// <summary>Interval (ms) between maintenance ticks for sleeping sectors.
+    /// Keeps item timers (decay, spawn, TIMER) alive in empty areas.</summary>
+    private const long SleepingMaintenanceIntervalMs = 180_000; // 3 minutes
+    private long _lastMaintenanceTick;
+
     /// <summary>Maps to map definitions: mapId → (width, height) in tiles.</summary>
     private readonly Dictionary<int, (int Width, int Height)> _mapDefs = [];
 
@@ -594,6 +599,14 @@ public sealed class GameWorld
         // Without this, a 130K-sector map with 1M+ NPCs spends ~150ms per tick
         // iterating sectors no client can see — pings spike to 300-500ms.
         TickActiveSectors(currentTime);
+
+        // Periodically run item timers in sleeping sectors so spawn points,
+        // decay and TIMER triggers stay alive even when no player is nearby.
+        if (currentTime - _lastMaintenanceTick >= SleepingMaintenanceIntervalMs)
+        {
+            _lastMaintenanceTick = currentTime;
+            TickSleepingSectorItems();
+        }
     }
 
     private const int ActiveSectorRadius = 2; // 5x5 window
@@ -648,6 +661,28 @@ public sealed class GameWorld
         {
             if (player.IsDeleted) continue;
             player.TickNotorietyDecay(currentTime);
+        }
+    }
+
+    /// <summary>Run a lightweight item-only tick on every sleeping sector that
+    /// contains items. Keeps spawn points, decay timers and TIMER triggers
+    /// progressing even when no player is nearby. Called every 3 minutes.</summary>
+    private void TickSleepingSectorItems()
+    {
+        foreach (var (_, grid) in _sectors)
+        {
+            int cols = grid.GetLength(0);
+            int rows = grid.GetLength(1);
+            for (int x = 0; x < cols; x++)
+            {
+                for (int y = 0; y < rows; y++)
+                {
+                    var sector = grid[x, y];
+                    if (_activeSectors.Contains(sector)) continue;
+                    if (sector.ItemCount == 0) continue;
+                    sector.OnMaintenanceTick();
+                }
+            }
         }
     }
 
