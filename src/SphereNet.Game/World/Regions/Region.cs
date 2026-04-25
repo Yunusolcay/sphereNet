@@ -24,6 +24,7 @@ public class Region : IScriptObj
     private readonly uint _uid;
     private string? _defName;
     private Point3D? _p;
+    private long _cachedArea = -1;
 
     public static Func<IScriptObj, int>? ClientCountProvider { get; set; }
 
@@ -75,9 +76,25 @@ public class Region : IScriptObj
     public bool NoMagic => IsFlag(RegionFlag.NoMagic);
     public bool NoPvP => IsFlag(RegionFlag.NoPvP);
 
+    public long TotalArea
+    {
+        get
+        {
+            if (_cachedArea < 0)
+            {
+                long area = 0;
+                foreach (var r in _rects)
+                    area += (long)(r.X2 - r.X1 + 1) * (r.Y2 - r.Y1 + 1);
+                _cachedArea = Math.Max(0, area);
+            }
+            return _cachedArea;
+        }
+    }
+
     public void AddRect(short x1, short y1, short x2, short y2)
     {
         _rects.Add(new RegionRect(x1, y1, x2, y2));
+        _cachedArea = -1;
     }
 
     public bool Contains(Point3D pt)

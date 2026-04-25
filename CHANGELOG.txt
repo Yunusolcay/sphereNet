@@ -4,6 +4,60 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-26] - NEW.* property routing, ATTR hex parsing, container pozisyonlama
+              (NEW.* property routing, ATTR hex parsing, container positioning)
+----------------------------------------
+
+SCRIPT ENGINE — NEW.* PROPERTY ROUTING:
+  - SERV.NEWITEM sonrasi NEW.TYPE, NEW.ATTR, NEW.P, NEW.MORE, NEW.TIMER gibi
+    tum property'ler artik TrySetProperty uzerinden route ediliyor.
+    Onceden sadece NEW.EQUIP, NEW.CONT, NEW.AMOUNT taniniyor, diger
+    property'ler sessizce atiliyordu — spawn item'ler map'e yerlesmiyordu.
+    After SERV.NEWITEM, all NEW.* properties (TYPE, ATTR, P, MORE, TIMER, etc.)
+    now route through TrySetProperty. Previously only NEW.EQUIP, NEW.CONT,
+    NEW.AMOUNT were handled — other properties were silently dropped, so spawn
+    items never got placed on the map.
+  - NEW.CONT artik serial arguman ile belirli bir container'a da koyabiliyor.
+    NEW.CONT now accepts a serial argument to place into a specific container.
+  - Item TYPE setter artik "t_spawn_char" gibi type name'leri kabul ediyor.
+    Item TYPE setter now accepts type name strings like "t_spawn_char".
+
+ATTR HEX PARSING:
+  - ATTR=0B0 gibi Source-X hex degerler artik dogru parse ediliyor.
+    Eski kod sadece decimal (uint.TryParse) kullaniyordu, hex basarisiz oluyordu
+    — spawn item'ler ATTR_INVIS alamiyordu, GM AllShow ile gorunmuyordu.
+    Source-X hex values like ATTR=0B0 now parse correctly. Old code used
+    decimal-only uint.TryParse — hex values failed silently, so spawn items
+    never got ATTR_INVIS and were invisible even to GM AllShow.
+  - ParseHexOrDecUInt ObjBase'e tasindi, tum alt siniflar kullaniyor.
+    ParseHexOrDecUInt moved to ObjBase, shared by all subclasses.
+
+CONTAINER ITEM POZISYONLAMA / CONTAINER ITEM POSITIONING:
+  - AddItem artik container gump sinirlari icinde random X,Y pozisyonu atiyor.
+    Onceden tum item'ler X=0,Y=0 ile gump'in gorunur alaninin disinda kaliyordu.
+    AddItem now assigns random X,Y within container gump bounds. Previously all
+    items got X=0,Y=0 which falls outside the visible gump area.
+  - Source-X GetRandContainerLoc ile tam uyumlu: TDATA3/TDATA4 custom bounds
+    destegi, yoksa gump ID bazli hardcoded bounds tablosu (60+ gump).
+    Full parity with Source-X GetRandContainerLoc: TDATA3/TDATA4 custom bounds
+    support, with hardcoded gump bounds table fallback (60+ gumps).
+
+REGION CACHE PERFORMANS / REGION CACHE PERFORMANCE:
+  - FindRegion artik 8x8 tile grid bazli ConcurrentDictionary cache kullaniyor.
+    O(n) full scan eliminasyonu — her tick binlerce FindRegion cagrisi icin.
+    FindRegion now uses an 8x8 tile grid ConcurrentDictionary cache.
+    Eliminates O(n) full scan — critical for thousands of FindRegion calls/tick.
+  - Region.TotalArea cached property: alan hesabi tekrar tekrar yapilmiyor.
+    Region.TotalArea cached property: area calculation no longer repeated.
+
+EKSIK SCRIPT PROPERTY'LERI / MISSING SCRIPT PROPERTIES:
+  - Character: WEIGHT (recursive agirlik), RANGE (weapon ItemDef'ten),
+    CANSEELOS.uid, CANSEE.uid, FINDUID.uid
+  - Item: TOPOBJ (top-level container/character)
+  - ObjBase: ISTEVENT.defname / ISEVENT.defname
+  - REGION.* artik tum Region property'lerine delege ediyor (eski: sadece NAME/UID)
+    REGION.* now delegates to Region.TryGetProperty for all props (was: NAME/UID only)
+
 [2026-04-25n] - GC config, ArrayPool buffer pooling, network hot path optimizasyonu
                (GC config, ArrayPool buffer pooling, network hot path optimization)
 ----------------------------------------

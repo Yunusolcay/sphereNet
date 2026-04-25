@@ -26,6 +26,7 @@ public sealed class GameWorld
     private readonly Dictionary<int, Sector[,]> _sectors = [];
     private readonly List<Region> _regions = [];
     private readonly List<Room> _rooms = [];
+    private readonly ConcurrentDictionary<long, Region?> _regionCache = new();
     private readonly ILogger<GameWorld> _logger;
 
     private long _tickCount;
@@ -431,28 +432,42 @@ public sealed class GameWorld
 
     // --- Regions ---
 
-    public void AddRegion(Region region) => _regions.Add(region);
+    public void AddRegion(Region region)
+    {
+        _regions.Add(region);
+        _regionCache.Clear();
+    }
+
+    public void InvalidateRegionCache() => _regionCache.Clear();
 
     public Region? FindRegion(Point3D pt)
+    {
+        // 8x8 tile grid cache key — same cell ⇒ almost always same region.
+        long cacheKey = ((long)pt.Map << 40) | ((long)(pt.X >> 3) << 20) | (long)(pt.Y >> 3);
+
+        if (_regionCache.TryGetValue(cacheKey, out var cached))
+        {
+            if (cached == null || cached.Contains(pt))
+                return cached;
+        }
+
+        var result = FindRegionUncached(pt);
+        _regionCache[cacheKey] = result;
+        return result;
+    }
+
+    private Region? FindRegionUncached(Point3D pt)
     {
         // Source-X CSector::GetRegion parity: when AREADEFs overlap (a small
         // landmark inside a wider continent definition, e.g. "Britain Castle"
         // inside "Britain"), the most-specific = smallest-total-area region
-        // wins. Returning the first iteration match used to mask every nested
-        // landmark behind whichever big region happened to load first
-        // (observed: every coordinate on Trammel resolved to "Solen Hive"
-        // because that AREADEF preceded the city/dungeon defs).
+        // wins.
         Region? best = null;
         long bestArea = long.MaxValue;
         foreach (var region in _regions)
         {
             if (!region.Contains(pt)) continue;
-            long area = 0;
-            foreach (var r in region.Rects)
-                area += (long)(r.X2 - r.X1 + 1) * (r.Y2 - r.Y1 + 1);
-            // Skip rect-less regions: they would otherwise win with area = 0
-            // even though Region.Contains would never have returned true for
-            // them. Defensive: guards against future Region.Contains changes.
+            long area = region.TotalArea;
             if (area <= 0) continue;
             if (area < bestArea)
             {
@@ -474,10 +489,7 @@ public sealed class GameWorld
         foreach (var region in _regions)
         {
             if (!region.Contains(pt)) continue;
-            long area = 0;
-            foreach (var r in region.Rects)
-                area += (long)(r.X2 - r.X1 + 1) * (r.Y2 - r.Y1 + 1);
-            list.Add((region, area));
+            list.Add((region, region.TotalArea));
         }
         list.Sort((a, b) => a.Area.CompareTo(b.Area));
         return list;

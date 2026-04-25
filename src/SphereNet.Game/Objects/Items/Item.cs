@@ -217,6 +217,8 @@ public class Item : ObjBase
     {
         _contents.Add(item);
         item.ContainedIn = Uid;
+        if (item.X == 0 && item.Y == 0)
+            AssignRandomContainerPosition(this, item);
     }
 
     public bool CanStackWith(Item other)
@@ -327,6 +329,27 @@ public class Item : ObjBase
             case "ISCHAR": value = "0"; return true;
             case "BASEID": value = $"0{BaseId:X}"; return true;
             case "DISPIDDEC": value = BaseId.ToString(); return true;
+            case "TOPOBJ":
+            {
+                var world = ResolveWorld?.Invoke();
+                if (world != null)
+                {
+                    ObjBase cur = this;
+                    for (int depth = 0; depth < 64; depth++)
+                    {
+                        if (cur is not Item ci || !ci.ContainedIn.IsValid) break;
+                        var parent = world.FindObject(ci.ContainedIn);
+                        if (parent == null) break;
+                        cur = parent;
+                    }
+                    value = $"0{cur.Uid.Value:X}";
+                }
+                else
+                {
+                    value = $"0{Uid.Value:X}";
+                }
+                return true;
+            }
 
             // Faz 2: Container properties
             case "COUNT": value = _contents.Count.ToString(); return true;
@@ -659,8 +682,12 @@ public class Item : ObjBase
         switch (upper)
         {
             case "TYPE":
-                if (ushort.TryParse(value, out ushort tv)) _type = (ItemType)tv;
+            {
+                var parsed = ParseItemType(value);
+                if (parsed != ItemType.Invalid)
+                    _type = parsed;
                 return true;
+            }
             case "AMOUNT":
                 if (ushort.TryParse(value, out ushort av)) Amount = av;
                 return true;
@@ -674,10 +701,10 @@ public class Item : ObjBase
 
             // Faz 1: Core fields
             case "MORE1": case "MORE":
-                _more1 = ParseHexUInt(value);
+                _more1 = ParseHexOrDecUInt(value);
                 return true;
             case "MORE2":
-                _more2 = ParseHexUInt(value);
+                _more2 = ParseHexOrDecUInt(value);
                 return true;
             case "MORE1H":
                 if (ushort.TryParse(value, out ushort m1h))
@@ -708,7 +735,7 @@ public class Item : ObjBase
                 if (sbyte.TryParse(value, out sbyte mz)) _moreP = new Point3D(_moreP.X, _moreP.Y, mz, _moreP.Map);
                 return true;
             case "LINK":
-                _link = new Serial(ParseHexUInt(value));
+                _link = new Serial(ParseHexOrDecUInt(value));
                 return true;
             case "PRICE":
                 if (int.TryParse(value, out int pv)) _price = pv;
@@ -718,10 +745,10 @@ public class Item : ObjBase
                 return true;
 
             // TDATA instance
-            case "TDATA1": _tdata1 = ParseHexUInt(value); return true;
-            case "TDATA2": _tdata2 = ParseHexUInt(value); return true;
-            case "TDATA3": _tdata3 = ParseHexUInt(value); return true;
-            case "TDATA4": _tdata4 = ParseHexUInt(value); return true;
+            case "TDATA1": _tdata1 = ParseHexOrDecUInt(value); return true;
+            case "TDATA2": _tdata2 = ParseHexOrDecUInt(value); return true;
+            case "TDATA3": _tdata3 = ParseHexOrDecUInt(value); return true;
+            case "TDATA4": _tdata4 = ParseHexOrDecUInt(value); return true;
         }
 
         // Faz 3: Book/Message set
@@ -769,7 +796,7 @@ public class Item : ObjBase
                             ship.SpeedMode = (Core.Enums.ShipSpeedMode)Math.Clamp(sm, (byte)1, (byte)4);
                         return true;
                     case "PILOT":
-                        ship.Pilot = new Serial(ParseHexUInt(value));
+                        ship.Pilot = new Serial(ParseHexOrDecUInt(value));
                         return true;
                 }
 
@@ -1104,7 +1131,7 @@ public class Item : ObjBase
                 var guild = ResolveGuild?.Invoke(Uid);
                 if (guild != null)
                 {
-                    uint uid = ParseHexUInt(args.Trim());
+                    uint uid = ParseHexOrDecUInt(args.Trim());
                     if (uid != 0) guild.DeclareWar(new Serial(uid));
                 }
                 return true;
@@ -1114,7 +1141,7 @@ public class Item : ObjBase
                 var guild = ResolveGuild?.Invoke(Uid);
                 if (guild != null)
                 {
-                    uint uid = ParseHexUInt(args.Trim());
+                    uint uid = ParseHexOrDecUInt(args.Trim());
                     if (uid != 0) guild.DeclarePeace(new Serial(uid));
                 }
                 return true;
@@ -1128,7 +1155,7 @@ public class Item : ObjBase
                     var parts = args.Split(',', StringSplitOptions.TrimEntries);
                     if (parts.Length >= 2)
                     {
-                        uint uid = ParseHexUInt(parts[0]);
+                        uint uid = ParseHexOrDecUInt(parts[0]);
                         bool weDeclared = parts[1].Trim() == "1";
                         if (uid != 0)
                         {
@@ -1145,7 +1172,7 @@ public class Item : ObjBase
                 var guild = ResolveGuild?.Invoke(Uid);
                 if (guild != null)
                 {
-                    uint uid = ParseHexUInt(args.Trim());
+                    uint uid = ParseHexOrDecUInt(args.Trim());
                     if (uid != 0) guild.AddRecruit(new Serial(uid));
                 }
                 return true;
@@ -1155,7 +1182,7 @@ public class Item : ObjBase
                 var guild = ResolveGuild?.Invoke(Uid);
                 if (guild != null)
                 {
-                    uint uid = ParseHexUInt(args.Trim());
+                    uint uid = ParseHexOrDecUInt(args.Trim());
                     if (uid != 0) guild.JoinAsMember(new Serial(uid));
                 }
                 return true;
@@ -1177,7 +1204,7 @@ public class Item : ObjBase
                 var guild = ResolveGuild?.Invoke(Uid);
                 if (guild != null)
                 {
-                    uint uid = ParseHexUInt(args.Trim());
+                    uint uid = ParseHexOrDecUInt(args.Trim());
                     if (uid != 0) guild.RemoveMember(new Serial(uid));
                 }
                 return true;
@@ -1187,7 +1214,7 @@ public class Item : ObjBase
                 var guild = ResolveGuild?.Invoke(Uid);
                 if (guild != null)
                 {
-                    uint uid = ParseHexUInt(args.Trim());
+                    uint uid = ParseHexOrDecUInt(args.Trim());
                     if (uid != 0)
                     {
                         var member = guild.FindMember(new Serial(uid));
@@ -1323,21 +1350,6 @@ public class Item : ObjBase
         return 0;
     }
 
-    private static uint ParseHexUInt(string val)
-    {
-        var s = val.Trim();
-        if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-        {
-            if (uint.TryParse(s.AsSpan(2), NumberStyles.HexNumber, null, out uint h)) return h;
-        }
-        else if (s.Length > 1 && s[0] == '0' && !s.All(char.IsDigit))
-        {
-            if (uint.TryParse(s, NumberStyles.HexNumber, null, out uint h)) return h;
-        }
-        if (uint.TryParse(s, out uint d)) return d;
-        return 0;
-    }
-
     private static ItemType ParseItemType(string arg)
     {
         // Try "t_container" style name (strip t_ prefix, enum parse)
@@ -1420,7 +1432,7 @@ public class Item : ObjBase
         if (dot < 0) return false;
         propName = upper[..dot];
         string uidStr = upper[(dot + 1)..];
-        uint val = ParseHexUInt(uidStr);
+        uint val = ParseHexOrDecUInt(uidStr);
         if (val == 0) return false;
         otherUid = new Serial(val);
         return true;
@@ -1610,7 +1622,7 @@ public class Item : ObjBase
             {
                 var guild = ResolveGuild?.Invoke(Uid);
                 if (guild == null) return false;
-                uint uid = ParseHexUInt(value);
+                uint uid = ParseHexOrDecUInt(value);
                 if (uid != 0) guild.SetMaster(new Serial(uid));
                 return true;
             }
@@ -1663,7 +1675,7 @@ public class Item : ObjBase
         {
             var guild = ResolveGuild?.Invoke(Uid);
             if (guild == null) { value = "0"; return true; }
-            uint uid = ParseHexUInt(upper[14..]);
+            uint uid = ParseHexOrDecUInt(upper[14..]);
             if (uid != 0)
             {
                 var member = guild.FindMember(new Serial(uid));
@@ -1693,7 +1705,7 @@ public class Item : ObjBase
         {
             var guild = ResolveGuild?.Invoke(Uid);
             if (guild == null) { value = "0"; return true; }
-            uint uid = ParseHexUInt(upper[12..]);
+            uint uid = ParseHexOrDecUInt(upper[12..]);
             if (uid != 0)
             {
                 var rel = guild.GetRelation(new Serial(uid));
@@ -1738,4 +1750,97 @@ public class Item : ObjBase
         }
         return true;
     }
+
+    // --- Container position randomization (Source-X GetRandContainerLoc parity) ---
+
+    [ThreadStatic]
+    private static Random? _containerRng;
+
+    private static void AssignRandomContainerPosition(Item container, Item child)
+    {
+        var (minX, minY, maxX, maxY) = GetContainerBounds(container);
+        var rng = _containerRng ??= new();
+        child.Position = new Core.Types.Point3D(
+            (short)(minX + rng.Next(maxX - minX)),
+            (short)(minY + rng.Next(maxY - minY)));
+    }
+
+    private static (int minX, int minY, int maxX, int maxY) GetContainerBounds(Item container)
+    {
+        var idef = DefinitionLoader.GetItemDef(container.BaseId);
+
+        if (idef != null && idef.TData3 != 0 && idef.TData4 != 0)
+        {
+            int cMinX = (int)(idef.TData3 >> 16);
+            int cMinY = (int)(idef.TData3 & 0xFFFF);
+            int cMaxX = (int)(idef.TData4 >> 16);
+            int cMaxY = (int)(idef.TData4 & 0xFFFF);
+            if (cMaxX > cMinX && cMaxY > cMinY)
+                return (cMinX, cMinY, cMaxX, cMaxY);
+        }
+
+        ushort gumpId = 0x003C;
+        if (idef != null && idef.TData2 != 0)
+            gumpId = (ushort)(idef.TData2 & 0xFFFF);
+        else
+            gumpId = FallbackContainerGump(container.BaseId);
+
+        return GumpBounds(gumpId);
+    }
+
+    private static ushort FallbackContainerGump(ushort baseId) => baseId switch
+    {
+        0xE7C or 0x9AB => 0x4A,
+        0xE76 or 0x2256 or 0x2257 => 0x3D,
+        0xE77 or 0xE7F => 0x3E,
+        0xE7A or 0x24D5 or 0x24D6 or 0x24D9 or 0x24DA => 0x3F,
+        0xE40 or 0xE41 => 0x42,
+        0xE7D or 0x9AA => 0x43,
+        0xE7E or 0x9A9 or 0xE3C or 0xE3D or 0xE3E or 0xE3F => 0x44,
+        0xE42 or 0xE43 => 0x49,
+        0xE80 or 0x9A8 => 0x4B,
+        _ => 0x3C,
+    };
+
+    private static (int, int, int, int) GumpBounds(ushort gumpId) => gumpId switch
+    {
+        0x07 => (30, 30, 270, 170),
+        0x09 => (20, 85, 124, 196),
+        0x3C => (44, 65, 186, 159),
+        0x3D => (29, 34, 137, 128),
+        0x3E => (33, 36, 142, 148),
+        0x3F => (19, 47, 182, 123),
+        0x40 => (16, 38, 152, 125),
+        0x41 => (35, 38, 145, 116),
+        0x42 => (18, 105, 162, 178),
+        0x43 => (16, 51, 184, 124),
+        0x44 => (20, 10, 170, 100),
+        0x47 => (16, 10, 148, 138),
+        0x48 => (16, 10, 154, 94),
+        0x49 => (18, 105, 162, 178),
+        0x4A => (18, 105, 162, 178),
+        0x4B => (16, 51, 184, 124),
+        0x4C => (46, 74, 196, 184),
+        0x4D => (76, 12, 110, 68),
+        0x4E => (24, 96, 96, 152),
+        0x4F => (24, 96, 96, 152),
+        0x51 => (16, 10, 154, 94),
+        0x102 => (35, 10, 190, 95),
+        0x103 => (41, 21, 186, 111),
+        0x104 or 0x105 or 0x106 or 0x107 => (10, 10, 170, 115),
+        0x108 => (10, 30, 170, 145),
+        0x109 or 0x10A or 0x10B or 0x10C or 0x10D or 0x10E => (10, 10, 170, 115),
+        0x116 => (44, 29, 128, 103),
+        0x11A => (19, 61, 119, 155),
+        0x11B => (23, 51, 163, 151),
+        0x11C => (16, 51, 156, 166),
+        0x11D => (25, 51, 165, 166),
+        0x11E => (16, 51, 156, 151),
+        0x11F => (21, 51, 161, 151),
+        0x120 => (56, 30, 158, 104),
+        0x121 => (77, 44, 161, 105),
+        0x122 => (16, 51, 156, 166),
+        0x123 => (35, 13, 112, 165),
+        _ => (44, 65, 186, 159),
+    };
 }

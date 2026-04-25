@@ -10537,15 +10537,22 @@ public sealed class GameClient : ITextConsole
                     _pendingScriptNewItem = null;
                     return true;
                 case "CONT":
+                {
+                    var trimmed = args.Trim();
+                    if (trimmed.Length > 0 && trimmed != "-1")
+                    {
+                        uint cval = ObjBase.ParseHexOrDecUInt(trimmed);
+                        var cont = _world.FindObject(new Serial(cval)) as Item;
+                        if (cont != null) { cont.AddItem(_pendingScriptNewItem); return true; }
+                    }
                     _character.Backpack ??= _world.CreateItem();
                     _character.Backpack.AddItem(_pendingScriptNewItem);
                     return true;
-                case "AMOUNT":
-                    if (ushort.TryParse(args, out ushort amt))
-                        _pendingScriptNewItem.Amount = amt;
+                }
+                default:
+                    _pendingScriptNewItem.TrySetProperty(sub, args);
                     return true;
             }
-            return true;
         }
 
         if (upper == "SERV.ALLCLIENTS" || upper.StartsWith("SERV.ALLCLIENTS ", StringComparison.Ordinal))

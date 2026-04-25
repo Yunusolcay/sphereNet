@@ -1,3 +1,4 @@
+using System.Globalization;
 using SphereNet.Core.Enums;
 using SphereNet.Core.Interfaces;
 using SphereNet.Core.Types;
@@ -230,6 +231,20 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
             return true;
         }
 
+        // ISTEVENT.defname / ISEVENT.defname
+        if (key.StartsWith("ISTEVENT.", StringComparison.OrdinalIgnoreCase) ||
+            key.StartsWith("ISEVENT.", StringComparison.OrdinalIgnoreCase))
+        {
+            int dot = key.IndexOf('.');
+            string evName = key[(dot + 1)..];
+            var checkRid = ResourceId.FromString(evName, Core.Enums.ResType.Events);
+            List<ResourceId>? events = null;
+            if (this is Characters.Character evCh) events = evCh.Events;
+            else if (this is Items.Item evIt) events = evIt.Events;
+            value = events != null && events.Contains(checkRid) ? "1" : "0";
+            return true;
+        }
+
         return false;
     }
 
@@ -408,7 +423,7 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
                 }
                 return true;
             case "ATTR":
-                if (uint.TryParse(value, out uint av)) _attr = (ObjAttributes)av;
+                _attr = (ObjAttributes)ParseHexOrDecUInt(value);
                 return true;
             case "EVENTS":
                 if (this is Characters.Character ch)
@@ -509,10 +524,15 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
             value = world.FindRegion(pos)?.Name ?? "";
             return true;
         }
-        if (upper == "REGION.UID")
+        if (upper.StartsWith("REGION.", StringComparison.Ordinal))
         {
             var region = world.FindRegion(pos);
-            value = region != null ? $"0{region.Uid:X}" : "0";
+            if (region != null)
+            {
+                string sub = upper["REGION.".Length..];
+                return region.TryGetProperty(sub, out value);
+            }
+            value = "0";
             return true;
         }
 
@@ -769,5 +789,20 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
             return rid;
 
         return ResourceId.Invalid;
+    }
+
+    public static uint ParseHexOrDecUInt(string val)
+    {
+        var s = val.Trim();
+        if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
+            if (uint.TryParse(s.AsSpan(2), NumberStyles.HexNumber, null, out uint h)) return h;
+        }
+        else if (s.Length > 1 && s[0] == '0' && !s.All(char.IsDigit))
+        {
+            if (uint.TryParse(s, NumberStyles.HexNumber, null, out uint h)) return h;
+        }
+        if (uint.TryParse(s, out uint d)) return d;
+        return 0;
     }
 }

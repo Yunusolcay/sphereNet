@@ -1333,6 +1333,28 @@ public class Character : ObjBase
         set => _backpack = value;
     }
 
+    public int GetTotalWeight()
+    {
+        int total = 0;
+        for (int i = 0; i < _equipment.Length; i++)
+        {
+            var eq = _equipment[i];
+            if (eq != null)
+                total += GetItemTreeWeight(eq);
+        }
+        return total / 10;
+    }
+
+    private int GetItemTreeWeight(Item item)
+    {
+        int w = item.Weight * Math.Max(1, (int)item.Amount);
+        var world = ResolveWorld?.Invoke();
+        if (world == null) return w;
+        foreach (var child in world.GetContainerContents(item.Uid))
+            w += GetItemTreeWeight(child);
+        return w;
+    }
+
     // --- Movement ---
     public bool CanMove => !IsDead && _stam > 0;
 
@@ -1785,14 +1807,22 @@ public class Character : ObjBase
                 value = ac.ToString();
                 return true;
             }
-            case "WEIGHT": value = "0"; return true;
+            case "WEIGHT": value = GetTotalWeight().ToString(); return true;
             case "MAXWEIGHT":
                 value = ((_str * 7 / 2) + 40 + _modMaxWeight).ToString();
                 return true;
             case "RANGE":
             {
                 var weapon = GetEquippedItem(Layer.OneHanded) ?? GetEquippedItem(Layer.TwoHanded);
-                value = weapon != null ? "1" : "1"; // Range from weapon — stub, default 1
+                if (weapon != null)
+                {
+                    var wDef = Definitions.DefinitionLoader.GetItemDef(weapon.BaseId);
+                    value = wDef != null && wDef.RangeMax > 0 ? wDef.RangeMax.ToString() : "1";
+                }
+                else
+                {
+                    value = "1";
+                }
                 return true;
             }
             case "AGE":
@@ -1872,6 +1902,35 @@ public class Character : ObjBase
                 value = _attackers.Count.ToString();
                 return true;
             }
+        }
+
+        // CANSEELOS.uid / CANSEE.uid
+        if (upper.StartsWith("CANSEELOS.", StringComparison.Ordinal) ||
+            upper.StartsWith("CANSEE.", StringComparison.Ordinal))
+        {
+            int dot = upper.IndexOf('.');
+            string uidStr = key[(dot + 1)..];
+            var world = ResolveWorld?.Invoke();
+            if (world != null && ParseSerial(uidStr).IsValid)
+            {
+                var target = world.FindObject(ParseSerial(uidStr));
+                if (target != null)
+                {
+                    bool los = world.CanSeeLOS(Position, target.Position);
+                    if (upper.StartsWith("CANSEE.", StringComparison.Ordinal))
+                    {
+                        int dist = Position.GetDistanceTo(target.Position);
+                        value = (los && dist <= (_visualRange > 0 ? _visualRange : 18)) ? "1" : "0";
+                    }
+                    else
+                    {
+                        value = los ? "1" : "0";
+                    }
+                    return true;
+                }
+            }
+            value = "0";
+            return true;
         }
 
         // ATTACKER.LAST / ATTACKER.MAX / ATTACKER.n.{DAM|ELAPSED|UID}
@@ -2095,6 +2154,38 @@ public class Character : ObjBase
                             return true;
                         }
                         idx++;
+                    }
+                }
+            }
+            value = "0";
+            return true;
+        }
+
+        // FINDUID.uid — check if a specific UID is on this character
+        if (upper.StartsWith("FINDUID.", StringComparison.Ordinal))
+        {
+            string uidStr = key["FINDUID.".Length..].Trim();
+            Serial findUid = ParseSerial(uidStr);
+            if (findUid.IsValid)
+            {
+                for (int i = 0; i < _equipment.Length; i++)
+                {
+                    if (_equipment[i] != null && _equipment[i]!.Uid == findUid)
+                    {
+                        value = $"0{findUid.Value:X}";
+                        return true;
+                    }
+                }
+                var pack = Backpack;
+                if (pack != null)
+                {
+                    foreach (var item in pack.Contents)
+                    {
+                        if (item.Uid == findUid)
+                        {
+                            value = $"0{findUid.Value:X}";
+                            return true;
+                        }
                     }
                 }
             }
