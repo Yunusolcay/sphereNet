@@ -111,17 +111,18 @@ Built-in bot system simulates real client connections over TCP. Bots follow the 
 100ms tick intervali (10 tick/saniye) ile stress test sonuclari.
 Stress test results with 100ms tick interval (10 ticks/second).
 
-**Test Ortami / Environment:** 250,000 NPC + 10,000 item + degisken bot sayisi
-**Test Environment:** 250,000 NPCs + 10,000 items + variable bot count
+**Test Ortami / Environment:** 100,000 NPC + ~1,900 item + degisken bot sayisi
+**Test Environment:** 100,000 NPCs + ~1,900 items + variable bot count
 
 | Bot Sayisi | Avg Tick | Max Tick | pps_in | pps_out | Budget |
 |------------|----------|----------|--------|---------|--------|
 | 50 | 4.7ms | 13.2ms | 364/s | 94/s | 4.7% |
 | 100 | 6.6ms | 14.5ms | 2,245/s | 180/s | 6.6% |
 | 200 | 15.7ms | 44.9ms | 16,061/s | 360/s | 15.7% |
+| 300 | 53.6ms | 146.5ms | 5,320/s | 798/s | 53.6% |
 
-**Not / Note:** 200 bot testi worst-case senaryodur — tum botlar ayni lokasyonda (Britain) birbirini gorerek dovusmektedir. Gercek kullanim senaryolarinda oyuncular haritaya dagilacagindan tick sureleri cok daha dusuk olacaktir.
-The 200 bot test is a worst-case scenario — all bots fighting in the same location (Britain) with full visibility. Real-world scenarios with distributed players will have significantly lower tick times.
+**Not / Note:** 300 bot testi worst-case senaryodur — 100K NPC yuku altinda 300 es zamanli baglanti. Gercek kullanim senaryolarinda oyuncular haritaya dagilacagindan tick sureleri cok daha dusuk olacaktir.
+The 300 bot test is a worst-case scenario — 300 simultaneous connections under 100K NPC load. Real-world scenarios with distributed players will have significantly lower tick times.
 
 **Karsilastirma / Comparison (200 aggressive clients, same location):**
 

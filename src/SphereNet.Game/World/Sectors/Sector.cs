@@ -20,6 +20,7 @@ public sealed class Sector : IScriptObj
     private readonly int _x, _y;
     private readonly byte _mapIndex;
     private readonly List<Character> _characters = [];
+    private readonly List<Character> _onlinePlayers = [];
     private readonly List<Item> _items = [];
 
     // Weather/environment per-sector (Source-X CSector)
@@ -36,6 +37,7 @@ public sealed class Sector : IScriptObj
     public int Number => _y * 96 + _x; // sector index (assuming 96 cols)
 
     public IReadOnlyList<Character> Characters => _characters;
+    public IReadOnlyList<Character> OnlinePlayers => _onlinePlayers;
     public IReadOnlyList<Item> Items => _items;
 
     public int CharacterCount => _characters.Count;
@@ -67,6 +69,14 @@ public sealed class Sector : IScriptObj
     }
 
     public void RemoveCharacter(Character ch) => _characters.Remove(ch);
+
+    public void AddOnlinePlayer(Character ch)
+    {
+        if (!_onlinePlayers.Contains(ch))
+            _onlinePlayers.Add(ch);
+    }
+
+    public void RemoveOnlinePlayer(Character ch) => _onlinePlayers.Remove(ch);
 
     public void AddItem(Item item)
     {

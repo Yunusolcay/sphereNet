@@ -1,0 +1,63 @@
+Performans Analizi Özeti — 2025-04-25
+======================================
+
+Yapılan Ölçümler
+────────────────
+1. İlk ölçüm (compute fazı 4-parça):
+   npc_build=1ms, client_state=0ms, npc_apply=497ms, view_build=0.7ms
+   → Darboğaz: npc_apply (%99)
+
+2. İkinci ölçüm (npc_apply iç detay):
+   move=491ms×11.264, legacy=0×0, charMoved=73ms
+   → Darboğaz: MoveCharacter kendisi (FindRegion 2× linear scan) = ~418ms
+
+3. FindRegion fix sonrası (300 bot, 3× daha fazla):
+   npc_apply=62ms, move=61ms×3.230, charMoved=57ms
+   → avg=53.6ms, max=146ms (önceki: avg=547ms, max=639ms @ 100 bot)
+
+Bulunan ve Düzeltilen Sorunlar
+──────────────────────────────
+1. FindRegion — ASIL DARBOĞAZ
+   MoveCharacter her NPC hareketi için FindRegion(oldPos) + FindRegion(newPos)
+   çağırıyordu. FindRegion tüm AREADEF listesini linear scan yapıp her region
+   için rect area hesaplıyordu. 11.500 NPC × 2 çağrı = 23.000 linear scan/tick.
+   OnRegionChanged handler'ı zaten !IsPlayer ise return ediyordu — NPC'ler için
+   tamamen gereksiz.
+   FIX: FindRegion çağrıları ch.IsPlayer koşuluna alındı.
+   KAZANÇ: ~435ms eliminasyonu
+
+2. Allocation churn
+   - ConcurrentBag<NpcDecision> her tick new → lock+direct List.Add
+   - ConcurrentDictionary<int,ClientViewDelta> her tick new → reusable static
+   - refreshClients her tick new List → reusable static
+   KAZANÇ: GC baskısı azaldı, spike'lar düştü
+
+3. Decision sort
+   3.230 NPC decision'ın UID'ye göre sort'u gereksizdi (determinism build fazında
+   sağlanıyor, apply sırası oyun mantığını etkilemiyor).
+   KAZANÇ: ~0.2ms
+
+4. Boş sektör atla
+   OnCharacterMoved, BroadcastCharacterAppear, MarkNearbyClientsRefresh'te
+   sector.OnlinePlayers.Count == 0 kontrolü eklendi.
+   KAZANÇ: Boş sektörlerde foreach enumerator bile yaratılmıyor
+
+5. Telemetry overhead
+   Per-decision Stopwatch ve charMoved accumulator kaldırıldı. 3.230 NPC'de
+   her biri için Stopwatch.GetTimestamp() × 2 = 6.460 syscall eliminasyonu.
+
+Eklenen Araçlar
+───────────────
+- .SECTORLIST komutu: Online player'ların bulunduğu sektörleri, NPC/item
+  sayılarıyla birlikte scrollable HTML dialog olarak gösterir. NPC sayısına
+  göre renk kodlu (500+ kırmızı, 100+ turuncu). Counsel+ erişim.
+
+Sonuç
+─────
+İlk varsayım yanlıştı: BuildViewDelta değil, FindRegion asıl darboğazdı.
+Ölçüm olmadan optimize etseydik 16×16 grid'e haftalarca emek harcayıp
+neredeyse sıfır kazanç elde ederdik. Ölçüm-önce yaklaşımı doğru çıktı.
+
+Şu anki durum: 300 bot ile avg=53.6ms, max=146ms. Kalan darboğaz
+OnCharacterMoved fan-out (~57ms). Bir sonraki büyük kazanç reverse-known
+index (NPC→client[] ters indeks) ile sektör taramasını elimine etmek.

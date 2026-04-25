@@ -1,0 +1,153 @@
+Visibility & Tick Performance Plan — v2 (2025-04-25)
+=====================================================
+
+Mevcut Durum
+─────────────
+Senaryo: 300 online player (bot), 100.000 karakter, ~1.900 item
+Tick interval: 100ms
+Ölçümler (son test):
+  avg = 53.6ms    max = 146.5ms    players = 301
+
+Faz kırılımı (slow_tick > 25ms):
+  snapshot  =  2-3ms
+  compute   = 62-65ms
+    ├── npc_build      =  0.3-1ms   (BuildDecision, paralel)
+    ├── client_state   =  0.1ms     (TickClientState)
+    ├── npc_apply      = 61-63ms    ← DARBOĞAZ
+    │     └── ~3.230 NPC move/tick, her biri:
+    │           MoveCharacter (~3µs) + OnCharacterMoved fan-out (~17µs)
+    │           = 3.230 × 9 sektör × OnlinePlayers iteration
+    └── view_build     =  0.5-2ms   (BuildViewDelta, paralel)
+  apply     =  1-2ms
+  flush     =  2-6ms
+
+Tamamlanan Optimizasyonlar
+──────────────────────────
+✓ FindRegion eliminasyonu: NPC move'larında 2× FindRegion (tüm region linear scan)
+  kaldırıldı. Sadece IsPlayer ise yapılıyor. Kazanç: ~435ms → ~5ms (NPC move başına)
+✓ Allocation churn: ConcurrentBag → lock+List, ConcurrentDictionary → reusable,
+  refreshClients → reusable. Her tick'te sıfır GC allocation.
+✓ Decision sort kaldırıldı: 3.230 item sort (~0.2ms) eliminasyonu.
+✓ Boş sektör atla: OnCharacterMoved, BroadcastCharacterAppear, MarkNearbyClientsRefresh
+  içinde sector.OnlinePlayers.Count == 0 kontrolü ile boş sektörler atlanıyor.
+✓ Telemetry temizliği: Per-decision Stopwatch ve charMoved accumulator kaldırıldı.
+  4-faz breakdown (npc_build/client_state/npc_apply/view_build) korundu.
+
+Toplam kazanç: 100 bot ile 547ms avg → 300 bot ile 53.6ms avg (~10× iyileşme, 3× fazla yük)
+
+
+Kalan Darboğaz Analizi
+──────────────────────
+npc_apply = 61-63ms, bunun ~95%'i OnCharacterMoved fan-out.
+
+OnCharacterMoved her NPC move için:
+  1. 3×3 = 9 sektör tarar (64×64 tile, secRadius=1 for range=18)
+  2. Her sektörde OnlinePlayers listesini iterate eder
+  3. Her online player için NotifyCharMoved çağırır:
+     - 2× InRange check (wasInRange, nowInRange)
+     - _knownChars.Contains + _lastKnownPos.TryGetValue
+     - Değiştiyse SendUpdateMobile (0x77 packet build + queue)
+
+3.230 NPC move × ortalama ~3-5 yakın player = ~12.000 NotifyCharMoved çağrısı/tick
+Her çağrı ~5µs (InRange + dictionary + packet) = ~60ms
+
+Max tick spike'ları (146ms): Tüm NPC'ler aynı anda hareket ettiğinde (timer wheel
+burst), veya yoğun sektörlerde çok sayıda player+NPC kesiştiğinde oluşuyor.
+
+
+Önerilen Adımlar (öncelik sırasıyla)
+─────────────────────────────────────
+
+Adım 1 — NPC move throttle / stagger
+  Sorun: Timer wheel her 700-900ms'de NPC'leri ateşliyor. Tick intervali 100ms
+  olunca, belirli tick'lerde NPC'lerin büyük kısmı aynı anda düşüyor (burst).
+  max=146ms spike'larının sebebi bu.
+
+  Çözüm: BuildDecision'daki NextNpcActionTime jitter'ını tick interval'e göre
+  daha iyi dağıt. Örneğin 3.230 NPC'nin 700ms periyotta düzgün yayılması için
+  NPC UID hash'ine dayalı offset: baseDelay + (uid % spreadWindow). Bu, her
+  tick'te ~460 NPC hareket eder (3230/7 tick) ve max spike düşer.
+
+  Dosyalar: src/SphereNet.Game/AI/NpcAI.cs BuildDecision()
+  Risk: Düşük — sadece zamanlama, davranış değişmez
+  Beklenen kazanç: max spike 146ms → ~80ms
+
+Adım 2 — Reverse-known index ile targeted update
+  Sorun: NPC hareket ettiğinde OnCharacterMoved TÜM yakın sektörlerdeki
+  OnlinePlayers'ı tarıyor. Çoğu player zaten o NPC'yi biliyor ve sadece
+  position update (0x77) alması yeterli.
+
+  Çözüm: Her NPC/obje için "beni hangi client'lar biliyor" reverse index tut.
+  _knownChars zaten client→NPC yönünde var; NPC→client[] ters index ekle.
+  NPC hareket ettiğinde:
+    a) Reverse index'teki client'lara doğrudan SendUpdateMobile
+    b) Menzile yeni giren client'lara NotifyCharacterAppear (enter-range)
+    c) Menzilden çıkan client'lardan RemoveKnownChar (leave-range)
+  Sektör taraması sadece (b) ve (c) için gerekli, bu da çoğu tick'te boş.
+
+  Dosyalar:
+    src/SphereNet.Game/Clients/GameClient.cs — _knownChars Add/Remove'da
+      reverse index güncelle
+    src/SphereNet.Server/Program.cs — OnCharacterMoved yeni mantık
+    src/SphereNet.Game/World/GameWorld.cs — reverse index storage
+  Risk: Orta — known-set senkronizasyonu kritik, shadow mode ile doğrulanmalı
+  Beklenen kazanç: npc_apply 60ms → ~15-20ms (sektör scan eliminasyonu)
+
+Adım 3 — Player movement incremental view
+  Sorun: Player hareket ettiğinde ViewNeedsRefresh=true → sonraki tick'te
+  BuildViewDelta tüm range'i baştan tarıyor. Şu an view_build 0.5-2ms ama
+  player sayısı artarsa (500+) lineer büyür.
+
+  Çözüm: Player hareket ettiğinde sadece view sınırından giren/çıkan
+  1-tile şeridini tara. Eski yöndeki 1 sıra objeyi remove, yeni yöndeki
+  1 sıra objeyi appear. BuildViewDelta login/teleport/resync fallback olur.
+
+  Dosyalar:
+    src/SphereNet.Server/Program.cs — OnCharacterMoved player branch
+    src/SphereNet.Game/Clients/GameClient.cs — IncrementalViewUpdate()
+  Risk: Orta — kenar durumlar (teleport, map geçişi, mount) dikkatli
+  Beklenen kazanç: Player hareket maliyeti sabit O(view_width) yerine O(view_width²)
+
+Adım 4 — 16×16 visibility grid (gerekirse)
+  Sorun: GetObjectsInRange 64×64 sektörlerdeki TÜM NPC'leri iterate edip
+  GetDistanceTo filtreliyor. Bir sektörde 5.000 NPC varsa, hepsi taranıyor.
+  Şu an BuildViewDelta çok az çalışıyor (<2ms) ama Adım 2-3 sonrası
+  kalan darboğaz buraya kayabilir.
+
+  Çözüm: 64×64 tick sektörlerin yanına 16×16 visibility cell grid'i ekle.
+  MoveCharacter/PlaceCharacter bu grid'i de günceller. GetObjectsInRange
+  16×16 cell'lerden aday çeker (4× daha az aday).
+
+  Dosyalar:
+    src/SphereNet.Game/World/GameWorld.cs — VisibilityGrid class + PlaceCharacter/
+      MoveCharacter güncelleme
+    src/SphereNet.Game/World/Sectors/Sector.cs — aynen kalır (tick/sleep)
+  Risk: Düşük-Orta — yeni yapı, mevcut sistemi bozmaz
+  Beklenen kazanç: GetObjectsInRange aday kümesi ~4× küçülür
+
+Adım 5 — Dirty object reverse-known update
+  Sorun: NPC body/hue/equip değişince MarkClientsNearDirtyObjects tüm yakın
+  sektörleri tarıyor ve client'ları full refresh'e zorluyor.
+
+  Çözüm: Adım 2'deki reverse index'i kullanarak, dirty objeyi zaten bilen
+  client'lara targeted update gönder. Full refresh'i sadece login/resync için tut.
+
+  Dosyalar: src/SphereNet.Server/Program.cs — MarkClientsNearDirtyObjects
+  Risk: Düşük (Adım 2'nin uzantısı)
+  Beklenen kazanç: Dirty spike'lar azalır
+
+
+Hedef Metrikler
+───────────────
+Adım 1 sonrası:  avg < 40ms,  max < 80ms   (300 player, 100K char)
+Adım 2 sonrası:  avg < 25ms,  max < 50ms
+Adım 3 sonrası:  avg < 20ms,  max < 40ms
+Adım 4-5:        500+ player senaryosuna hazır
+
+100ms tick bütçesi içinde %50+ boşluk hedefi: sunucu, script execution,
+combat hesabı, packet processing gibi diğer işlere yeterli headroom bırakır.
+
+
+Not: Her adım bağımsız test edilebilir. Adım 2 en büyük kazancı verecek ama
+en riskli olan da o (known-set senkronizasyonu). Shadow mode ile eski/yeni
+sonuçları karşılaştırarak güvenli geçiş yapılabilir.

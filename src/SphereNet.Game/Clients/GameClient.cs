@@ -91,6 +91,12 @@ public sealed class GameClient : ITextConsole
     /// <summary>Notify all nearby clients that a character appeared (login/teleport). Each client renders from its own perspective.</summary>
     public Action<Character>? BroadcastCharacterAppear { get; set; }
 
+    /// <summary>When true, the next tick will run BuildViewDelta+ApplyViewDelta.
+    /// Set by player movement or nearby object changes. Items-only char scan
+    /// (character enter/leave/move handled by events).</summary>
+    public bool ViewNeedsRefresh { get; set; }
+
+
     /// <summary>Fired when this client's character goes online (post-login
     /// complete, character placed). Program.cs uses it to populate the
     /// char-UID → client map that BroadcastNearby walks instead of a
@@ -719,10 +725,9 @@ public sealed class GameClient : ITextConsole
         // mount) is processed last.
         SendDrawObject(_character);
 
-        // 7. Force UpdateClientView on next tick to re-populate all nearby objects
-        // (knownChars/knownItems are empty, so everything will be "new")
+        // 7. Force full scan on next tick to re-populate all nearby objects
+        ViewNeedsRefresh = true;
 
-        // Notify nearby clients about this character's (possibly new) position
         BroadcastCharacterAppear?.Invoke(_character);
 
         _logger.LogDebug("Resync for client '{Name}'", _character.Name);
@@ -5961,6 +5966,7 @@ public sealed class GameClient : ITextConsole
 
     /// <summary>
     /// Build a readonly visibility delta. Safe for parallel build phase.
+    /// Only runs for clients with ViewNeedsRefresh — idle clients skip entirely.
     /// </summary>
     public ClientViewDelta? BuildViewDelta()
     {
@@ -5974,20 +5980,12 @@ public sealed class GameClient : ITextConsole
         foreach (var ch in _world.GetCharsInRange(center, range))
         {
             if (ch == _character || ch.IsDeleted) continue;
-            // Skip mounted NPCs (Ridden flag) — they are hidden while mounted
             if (ch.IsStatFlag(Core.Enums.StatFlag.Ridden)) continue;
 
-            // Offline player characters are never visible in normal play. Only
-            // AllShow (explicit GM debug override) reveals them — PrivLevel
-            // alone does NOT count, otherwise every Owner sees every logged-out
-            // character in the world as a ghost, which surprises users after a
-            // server restart.
             bool isOfflinePlayer = ch.IsPlayer && !ch.IsOnline;
             if (isOfflinePlayer && !_character.AllShow)
                 continue;
 
-            // Source-X visibility rule: Counsel+ staff sees hidden/invisible
-            // characters of equal-or-lower PrivLevel as "ghostly" (hue 0x4001).
             bool isHidden = ch.IsInvisible || ch.IsStatFlag(Core.Enums.StatFlag.Hidden);
             bool canSeeHidden = _character.AllShow ||
                 (_character.PrivLevel >= Core.Enums.PrivLevel.Counsel &&
@@ -5996,27 +5994,6 @@ public sealed class GameClient : ITextConsole
             if (isHidden && !canSeeHidden)
                 continue;
 
-            // === Source-X ghost visibility (CChar::CanSeeAsDead) ===
-            // A dead/ghost character is invisible to LIVING observers
-            // unless one of:
-            //   * the observer is also dead (ghost ↔ ghost see each other),
-            //   * the observer has Spirit Speak active,
-            //   * the observer is Counsel+ staff (already handled above
-            //     via canSeeHidden and the AllShow override),
-            //   * the observer is the dying player themselves (filtered
-            //     above with `ch == _character`),
-            //   * the ghost has "manifested" — entered war mode. A
-            //     manifested ghost renders translucent grey (hue 0x4001)
-            //     for plain observers but cannot be targeted/attacked
-            //     (combat path already short-circuits on target.IsDead;
-            //     see TrySwingAt). Returning to peace mode hides the
-            //     ghost again — handled imperatively in HandleWarMode
-            //     via per-observer 0x78/0x1D dispatch so the transition
-            //     is immediate and not delayed until the next tick.
-            //
-            // Without this filter, the ProcessViewDelta loop below would
-            // notice ch.BodyId changed from 0x190 to 0x192 (ghost) and
-            // happily push a 0x78 PacketDrawObject to the killer.
             bool ghostManifested = ch.IsDead && ch.IsInWarMode;
             if (ch.IsDead && !_character.IsDead && !ghostManifested)
             {
@@ -6030,12 +6007,6 @@ public sealed class GameClient : ITextConsole
             uint uid = ch.Uid.Value;
             delta.CurrentChars.Add(uid);
 
-            // Special render when the viewer is seeing an otherwise-hidden target
-            // (offline shown via AllShow, or invis/hidden via staff privilege).
-            // This should look like hidden/invisible, not like a ghostly
-            // translucent mobile.
-            bool isPlainObserver = !_character.AllShow &&
-                _character.PrivLevel < Core.Enums.PrivLevel.Counsel;
             bool hiddenAsAllShow = isOfflinePlayer || (isHidden && canSeeHidden);
             if (!_knownChars.Contains(uid))
                 delta.NewChars.Add((ch, hiddenAsAllShow));
@@ -6267,6 +6238,66 @@ public sealed class GameClient : ITextConsole
 
         _knownChars.Add(uid);
         _lastKnownPos[uid] = (ch.X, ch.Y, ch.Z, (byte)ch.Direction, ch.BodyId, ch.Hue);
+    }
+
+    /// <summary>
+    /// Object-centric move notification for NPC movement. Handles enter-range (0x78),
+    /// leave-range (0x1D), and position-update (0x77).
+    /// </summary>
+    public void NotifyCharMoved(Character ch, Point3D oldPos)
+    {
+        if (_character == null || !IsPlaying) return;
+        if (ch == _character) return;
+        if (ch.IsDeleted) return;
+        if (ch.IsStatFlag(Core.Enums.StatFlag.Ridden)) return;
+
+        int range = _netState.ViewRange;
+        bool wasInRange = InRange(_character.Position, oldPos, range) && oldPos.Map == _character.Position.Map;
+        bool nowInRange = InRange(_character.Position, ch.Position, range);
+
+        uint uid = ch.Uid.Value;
+
+        if (!wasInRange && nowInRange)
+        {
+            NotifyCharacterAppear(ch);
+        }
+        else if (wasInRange && !nowInRange)
+        {
+            RemoveKnownChar(uid, sendDelete: true);
+        }
+        else if (wasInRange && nowInRange && _knownChars.Contains(uid))
+        {
+            if (_lastKnownPos.TryGetValue(uid, out var last))
+            {
+                bool posChanged = last.X != ch.X || last.Y != ch.Y || last.Z != ch.Z || last.Dir != (byte)ch.Direction;
+                if (!posChanged) return;
+            }
+            SendUpdateMobile(ch);
+            _lastKnownPos[uid] = (ch.X, ch.Y, ch.Z, (byte)ch.Direction, ch.BodyId, ch.Hue);
+        }
+    }
+
+    /// <summary>
+    /// Player enter/leave range notification. Only handles enter-range (0x78) and
+    /// leave-range (0x1D). Still-in-range 0x77 is handled by BroadcastMoveNearby.
+    /// </summary>
+    public void NotifyCharEnterLeave(Character ch, Point3D oldPos)
+    {
+        if (_character == null || !IsPlaying) return;
+        if (ch == _character) return;
+        if (ch.IsDeleted) return;
+        if (ch.IsStatFlag(Core.Enums.StatFlag.Ridden)) return;
+
+        int range = _netState.ViewRange;
+        bool wasInRange = InRange(_character.Position, oldPos, range) && oldPos.Map == _character.Position.Map;
+        bool nowInRange = InRange(_character.Position, ch.Position, range);
+
+        uint uid = ch.Uid.Value;
+
+        if (!wasInRange && nowInRange)
+            NotifyCharacterAppear(ch);
+        else if (wasInRange && !nowInRange)
+            RemoveKnownChar(uid, sendDelete: true);
     }
 
     private static bool InRange(Point3D a, Point3D b, int range)

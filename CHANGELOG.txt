@@ -4,6 +4,192 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-25h] - Tick pipeline performans optimizasyonu (tick pipeline performance tuning)
+----------------------------------------
+
+PERFORMANS / PERFORMANCE:
+  - FindRegion eliminasyonu: NPC hareket (MoveCharacter) her cagriyi 2x FindRegion
+    (tum AREADEF linear scan) yapiyordu. NPC'ler icin tamamen kaldirildi, sadece
+    IsPlayer ise calisir. 11.500 NPC move/tick icin ~435ms kazanc.
+    FindRegion elimination: MoveCharacter called FindRegion twice per move (full
+    AREADEF linear scan). Skipped entirely for NPCs, runs only for IsPlayer.
+    ~435ms savings for 11,500 NPC moves/tick.
+  - Allocation churn eliminasyonu: ConcurrentBag → lock+List.Add,
+    ConcurrentDictionary → reusable static, refreshClients → reusable static.
+    Her tick'te sifir GC allokasyonu.
+    Allocation churn elimination: ConcurrentBag → lock+List.Add,
+    ConcurrentDictionary → reusable static, refreshClients → reusable static.
+    Zero GC allocation per tick.
+  - Bos sektor atlama: OnCharacterMoved, BroadcastCharacterAppear,
+    MarkNearbyClientsRefresh icinde OnlinePlayers.Count==0 kontrolu ile bos
+    sektorler hicbir islem yapilmadan atlaniyor.
+    Empty sector skip: OnCharacterMoved, BroadcastCharacterAppear,
+    MarkNearbyClientsRefresh skip sectors with OnlinePlayers.Count==0 —
+    no enumerator created for empty sectors.
+  - NPC karar siralama kaldirildi: Apply fazinda UID sirasina gore sort
+    gereksizdi, ~0.2ms kazanc.
+    NPC decision sort removed: UID-ordered sort in apply phase was unnecessary,
+    ~0.2ms savings.
+  - NPC hareket zamanlama yayilimi: Timer wheel burst'u azaltmak icin
+    sabit 200ms jitter yerine UID-tabanli 400ms faz ofseti. Ayni ortalama
+    periyot (~800ms), tick basina ~2x daha az NPC patlamasi.
+    NPC move timing spread: UID-based 400ms phase offset instead of fixed
+    200ms jitter to reduce timer wheel bursts. Same average period (~800ms),
+    ~2x fewer NPCs per tick burst.
+
+  Sonuc / Result:
+    Once (100 bot):  avg=547ms  max=639ms
+    Sonra (300 bot): avg=53.6ms max=146ms  (~10x iyilesme, 3x fazla yuk)
+    Before (100 bots): avg=547ms  max=639ms
+    After (300 bots):  avg=53.6ms max=146ms (~10x improvement, 3x more load)
+
+TANI / DIAGNOSTICS:
+  - Compute fazini 4 alt olcume bolme: slow_tick logu artik npc_build,
+    client_state, npc_apply, view_build ayrimini gosteriyor.
+    Compute phase 4-way breakdown: slow_tick log now shows npc_build,
+    client_state, npc_apply, view_build split.
+  - .SECTORLIST komutu: Online player'larin bulundugu sektorleri, NPC/item/player
+    sayilariyla scrollable HTML dialog olarak gosterir. NPC yogunluguna gore
+    renk kodlu. Counsel+ erisim.
+    .SECTORLIST command: shows sectors with online players in a scrollable HTML
+    dialog with NPC/item/player counts. Color-coded by NPC density. Counsel+ access.
+
+[2026-04-25g] - State recording: konfigurable tarama araliklari (configurable scan intervals)
+----------------------------------------
+
+KONFIGÜRASYON / CONFIGURATION:
+  - STATERECORDPLAYERSONLY: NPC'leri kayit disinda birakma secenegi (varsayilan: 1).
+    100K+ NPC'li dunyelarda CPU yukunu onler.
+    STATERECORDPLAYERSONLY: option to exclude NPCs from recording (default: 1).
+    Prevents CPU overhead in worlds with 100K+ NPCs.
+  - STATERECORDMOVESCANMS: Hareket tarama araligi (varsayilan: 2000ms, min: 500ms).
+    STATERECORDMOVESCANMS: movement scan interval (default: 2000ms, min: 500ms).
+  - STATERECORDSNAPSHOTMS: Durum snapshot araligi (varsayilan: 15000ms, min: 5000ms).
+    STATERECORDSNAPSHOTMS: state snapshot interval (default: 15000ms, min: 5000ms).
+  - StateRecorder character arama: browser dialog'da isme gore arama destegi.
+    StateRecorder character search: name-based search support in browser dialog.
+
+[2026-04-25f] - Nesne merkezli gorunum yayini (object-centric view broadcasting)
+----------------------------------------
+
+PERFORMANS / PERFORMANCE:
+  - Client-centric BuildViewDelta her tick'te TUM client'lar icin calismak yerine
+    sadece ViewNeedsRefresh isaretli client'lar icin calisiyor. 1000 oyuncu
+    senaryosunda cogu client idle oldugundan %90+ BuildViewDelta cagrisini atliyor.
+    Client-centric BuildViewDelta now runs only for ViewNeedsRefresh-flagged clients
+    instead of ALL clients every tick. With 1000 players, most clients are idle,
+    skipping 90%+ of BuildViewDelta calls.
+  - NPC hareketi artik CharacterMoved event uzerinden aninda yakinlardaki client'lara
+    bildiriliyor (enter-range 0x78, leave-range 0x1D, position-update 0x77).
+    BuildViewDelta'ya gerek kalmadan O(hareket_eden_NPC × yakin_client) maliyetle.
+    NPC movement now broadcasts instantly to nearby clients via CharacterMoved event
+    (enter-range 0x78, leave-range 0x1D, position-update 0x77) at O(moved_NPCs ×
+    nearby_clients) cost, bypassing BuildViewDelta entirely.
+  - Oyuncu hareketi: kendi client'i ViewNeedsRefresh isaretleniyor (viewport item
+    guncellemeleri icin), diger client'lar icin enter/leave-range aninda isleniyor.
+    BroadcastMoveNearby mevcut 0x77 yayinini yapmayi surduruyor.
+    Player movement: own client flagged ViewNeedsRefresh (for viewport item updates),
+    other clients get instant enter/leave-range handling. BroadcastMoveNearby
+    continues handling the existing 0x77 broadcast for known characters.
+  - Dirty objeler (body/hue/equip degisiklikleri) yakinlardaki client'lari
+    ViewNeedsRefresh ile isaretliyor — tum client'lar yerine sadece etkilenenler
+    guncelleniyor.
+    Dirty objects (body/hue/equip changes) mark nearby clients via ViewNeedsRefresh —
+    only affected clients run view updates instead of all.
+  - Item olusturma/silinme olaylari yakinlardaki client'lari otomatik isaretliyor.
+    Item creation/deletion events automatically flag nearby clients for refresh.
+  - Fast-path (tick arasi dirty guncelleme) de ayni ViewNeedsRefresh mekanizmasini
+    kullaniyor — idle client'lar hicbir sekilde isleme alinmiyor.
+    Fast-path (between-tick dirty updates) also uses ViewNeedsRefresh mechanism —
+    idle clients are never processed.
+  - Sektor bazli OnlinePlayers takibi: tum broadcast/notify donguleri artik
+    sector.Characters (NPC dahil) yerine sector.OnlinePlayers iterate ediyor.
+    100K NPC'li sektorlerde oyuncu aramak icin yuzlerce karakter yerine sadece
+    0-2 online oyuncu taraniyor.
+    Sector-based OnlinePlayers tracking: all broadcast/notify loops now iterate
+    sector.OnlinePlayers instead of sector.Characters (which includes NPCs).
+    Finding players in sectors with 100K NPCs scans only 0-2 online players
+    instead of hundreds of characters.
+  - NPC olusturma/silinme artik BroadcastCharacterAppear ile aninda yakinlardaki
+    client'lara bildiriliyor (stress/spawn ile NPC olusan ama gorunmeyen bug fix).
+    NPC creation/deletion now instantly notifies nearby clients via
+    BroadcastCharacterAppear (fixes invisible NPCs from stress/spawn).
+
+MIMARI / ARCHITECTURE:
+  - GameWorld.CharacterMoved event: MoveCharacter artik eski pozisyonu yakalayip
+    event atesledigi icin dinleyiciler enter/leave-range hesabi yapabiliyor.
+    GameWorld.CharacterMoved event: MoveCharacter now captures old position and fires
+    event, enabling listeners to compute enter/leave-range.
+  - GameClient.ViewNeedsRefresh: client bazinda flag, hareket veya yakin obje
+    degisikliginde set ediliyor. Sadece isaretli client'lar BuildViewDelta + Apply
+    dongusu calistiriyor.
+    GameClient.ViewNeedsRefresh: per-client flag set on movement or nearby object
+    changes. Only flagged clients run BuildViewDelta + Apply cycle.
+  - GameClient.NotifyCharMoved: NPC hareketi icin aninda enter/leave/update islemi.
+    GameClient.NotifyCharEnterLeave: oyuncu hareketi icin sadece enter/leave
+    (still-in-range BroadcastMoveNearby tarafindan isleniyor).
+    GameClient.NotifyCharMoved: instant enter/leave/update for NPC movement.
+    GameClient.NotifyCharEnterLeave: enter/leave only for player movement
+    (still-in-range handled by BroadcastMoveNearby).
+  - Resync() artik ViewNeedsRefresh=true set ediyor — login/teleport sonrasi tam
+    gorunum yenilemesi garantileniyor.
+    Resync() now sets ViewNeedsRefresh=true — guarantees full view refresh after
+    login/teleport.
+
+[2026-04-25e] - NPC sektor uyku ve AI throttle optimizasyonu
+----------------------------------------
+
+PERFORMANS / PERFORMANCE:
+  - Sektor bazli O(1) aktif alan kontrolu: IsInActiveArea artik her NPC icin
+    tum online oyunculari iterate etmiyor (O(players)), bunun yerine NPC'nin
+    sektorunun aktif sette olup olmadigini HashSet lookup ile kontrol ediyor (O(1)).
+    100K NPC + 100 oyuncu senaryosunda ~333K mesafe hesabi → ~3K HashSet lookup.
+    Sector-based O(1) active area check: IsInActiveArea no longer iterates all
+    online players per NPC (O(players)), instead checks sector membership via
+    HashSet lookup (O(1)). 100K NPCs + 100 players: ~333K distance checks → ~3K
+    HashSet lookups.
+  - Uyuyan NPC park suresi 5-10s'den 30-60s'e cikarildi: Timer wheel churn'u ~6x
+    azalir — her tick'te pop edilen NPC sayisi dramatik olarak duser.
+    Sleeping NPC park time increased from 5-10s to 30-60s: timer wheel churn
+    reduced ~6x — dramatically fewer NPCs popped per tick.
+  - Sektor uyanma mekanizmasi: Oyuncu yeni bir bolgee girdiginde o sektorun
+    NPC'leri aninda uyandirilir (timer wheel'e 100ms ile yeniden zamanlanir).
+    30-60s park suresi NPC tepkisini geciktirmez.
+    Sector wake mechanism: when a player enters a new area, that sector's NPCs
+    are immediately woken (rescheduled to 100ms in timer wheel). The 30-60s park
+    time does not delay NPC responsiveness.
+  - Aktif sektor seti tek noktadan yonetiliyor: Hem single-thread hem multicore
+    tick yolu ayni RefreshActiveSectors() metodunu cagiriyor. Yeni uyanan sektorler
+    (NewlyActiveSectors) her iki yolda da tespit ediliyor.
+    Active sector set managed from single point: both single-thread and multicore
+    tick paths call the same RefreshActiveSectors(). Newly woken sectors detected
+    in both paths.
+
+[2026-04-25d] - State recording performans optimizasyonu
+----------------------------------------
+
+PERFORMANS / PERFORMANCE:
+  - StateRecorder async flush: Hareket ve snapshot verileri ConcurrentQueue ile
+    toplanir, ayri bir arka plan thread'inde SQLite'a toplu yazilir. Oyun thread'i
+    artik disk I/O beklemez.
+    StateRecorder async flush: movement and snapshot data collected via ConcurrentQueue,
+    batch-written to SQLite on a dedicated background thread. Game thread no longer
+    blocks on disk I/O.
+  - Players-only filtre: StateRecordPlayersOnly=1 (varsayilan) ile sadece oyuncu
+    karakterleri taranir — 100K NPC'li dunya icin gereksiz iterasyon ortadan kalkar.
+    Players-only filter: StateRecordPlayersOnly=1 (default) scans only player
+    characters — eliminates unnecessary iteration for worlds with 100K+ NPCs.
+  - Yapilandirilabilir tarama araliklari: StateRecordMoveScanMs (varsayilan 2000ms)
+    ve StateRecordSnapshotMs (varsayilan 15000ms) ayarlari sphere.ini uzerinden
+    degistirilebilir. Eski sabit degerler (500ms/10s) yerine daha az CPU yuku.
+    Configurable scan intervals: StateRecordMoveScanMs (default 2000ms) and
+    StateRecordSnapshotMs (default 15000ms) adjustable via sphere.ini. Less CPU
+    overhead compared to old hardcoded values (500ms/10s).
+  - ThreadPool-dispatched cleanup: Eski kayitlarin temizlenmesi ThreadPool'a
+    devredilir, oyun thread'ini bloklamaz.
+    ThreadPool-dispatched cleanup: old record purging dispatched to ThreadPool,
+    does not block game thread.
+
 [2026-04-25c] - Oyuncu makro kayit/oynatma sistemi
 ----------------------------------------
 

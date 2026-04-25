@@ -114,13 +114,13 @@ public sealed class NpcAI
         if (now < npc.NextNpcActionTime)
             return;
 
-        // Active-area gate: no player in view-range → park the NPC for ~5s.
-        // Pets bypass (they live next to their owner by definition). Without
-        // this, million-entity worlds fire 750K+ brain ticks per second even
-        // when the player is alone in the wilderness.
+        // Active-area gate: no player in view-range → park the NPC for 30-60s.
+        // Pets bypass (they live next to their owner by definition). The long
+        // park keeps timer wheel churn low on 100K+ NPC worlds; sector wake
+        // in Program.cs reschedules NPCs immediately when a player enters.
         if (!npc.NpcMaster.IsValid && !_world.IsInActiveArea(npc.MapIndex, npc.X, npc.Y))
         {
-            npc.NextNpcActionTime = now + 5000 + _rand.Next(0, 5000);
+            npc.NextNpcActionTime = now + 30_000 + _rand.Next(0, 30_000);
             return;
         }
 
@@ -190,14 +190,16 @@ public sealed class NpcAI
             return null;
 
         // Active-area gate (see OnTickAction). Deterministic jitter keeps the
-        // multicore path reproducible.
+        // multicore path reproducible. 30-60s park — sector wake reschedules
+        // these NPCs instantly when a player enters the area.
         if (!npc.NpcMaster.IsValid && !_world.IsInActiveArea(npc.MapIndex, npc.X, npc.Y))
         {
-            npc.NextNpcActionTime = nowTick + 5000 + DeterministicJitter(npc.Uid.Value, nowTick, 5000);
+            npc.NextNpcActionTime = nowTick + 30_000 + DeterministicJitter(npc.Uid.Value, nowTick, 30_000);
             return null;
         }
 
-        long nextAction = nowTick + 700 + DeterministicJitter(npc.Uid.Value, nowTick, 200);
+        int spread = (int)((npc.Uid.Value * 2654435761u) % 400);
+        long nextAction = nowTick + 600 + spread;
 
         // Pets and combat brains need the full OnTickAction path (ActPet,
         // ActGuard, ActMonster etc.) — route them through Legacy.

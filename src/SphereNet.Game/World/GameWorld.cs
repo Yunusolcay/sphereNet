@@ -33,6 +33,8 @@ public sealed class GameWorld
     private int _totalItems;
     public event Action<ObjBase>? ObjectCreated;
     public event Action<ObjBase>? ObjectDeleting;
+    public event Action<Character, Point3D>? CharacterMoved;
+    public event Action<Character>? CharacterPlaced;
 
     // --- Global script variables (VAR/VAR0 system) ---
     private readonly Dictionary<string, string> _globalVars = new(StringComparer.OrdinalIgnoreCase);
@@ -43,9 +45,13 @@ public sealed class GameWorld
     // --- Delta-based update: dirty object tracking ---
     private readonly ConcurrentDictionary<uint, ObjBase> _dirtyObjects = new();
 
-    // Reusable collections for OnTickParallel to avoid per-tick allocation
+    // Active sector tracking — shared by single-thread and multicore tick paths.
+    // _activeSectors is the authoritative set for the current tick; NpcAI uses it
+    // for O(1) "is this NPC near a player?" checks instead of iterating all players.
     private readonly List<Sector> _tickSectors = new(256);
-    private readonly HashSet<Sector> _tickSectorsSeen = new(256);
+    private readonly HashSet<Sector> _activeSectors = new(256);
+    private readonly HashSet<Sector> _prevActiveSectors = new(256);
+    private readonly List<Sector> _newlyActiveSectors = new(64);
 
     /// <summary>World clock: in-game minutes since epoch. 1 real second = configurable game minutes.</summary>
     private long _worldClock;
@@ -79,8 +85,16 @@ public sealed class GameWorld
     private readonly HashSet<Objects.Characters.Character> _onlinePlayers = [];
 
     /// <summary>Called by GameClient.EnterWorld / OnDisconnect.</summary>
-    public void AddOnlinePlayer(Objects.Characters.Character ch) => _onlinePlayers.Add(ch);
-    public void RemoveOnlinePlayer(Objects.Characters.Character ch) => _onlinePlayers.Remove(ch);
+    public void AddOnlinePlayer(Objects.Characters.Character ch)
+    {
+        _onlinePlayers.Add(ch);
+        GetSector(ch.Position)?.AddOnlinePlayer(ch);
+    }
+    public void RemoveOnlinePlayer(Objects.Characters.Character ch)
+    {
+        _onlinePlayers.Remove(ch);
+        GetSector(ch.Position)?.RemoveOnlinePlayer(ch);
+    }
     /// <summary>Read-only view of currently online players. Backing set
     /// is modified only on login/logout paths, so enumeration here is
     /// safe from a single tick-thread context.</summary>
@@ -149,6 +163,9 @@ public sealed class GameWorld
 
     /// <summary>O(1) check — true if any object has pending delta updates.</summary>
     public bool HasDirty => !_dirtyObjects.IsEmpty;
+
+    /// <summary>Iterate dirty objects without consuming them. Use before ConsumeDirtyObjects.</summary>
+    public IEnumerable<ObjBase> DirtyObjects => _dirtyObjects.Values;
 
     /// <summary>Consume all dirty objects and clear the set. Call once per tick after mutations.</summary>
     public void ConsumeDirtyObjects()
@@ -341,39 +358,39 @@ public sealed class GameWorld
         var newSector = GetSector(newPos);
         if (newSector == null)
         {
-            // Off-map target (negative coord, past map bounds, unknown
-            // map id). Silently dropping the move would strand the
-            // character in its old sector with a bad Position — refuse
-            // the move and log instead.
             _logger.LogWarning(
                 "MoveCharacter: refusing move of 0x{Uid:X} to out-of-bounds {X},{Y},{Z} map={Map} — staying at {OldX},{OldY},{OldZ} map={OldMap}",
                 ch.Uid.Value, newPos.X, newPos.Y, newPos.Z, newPos.Map,
                 ch.Position.X, ch.Position.Y, ch.Position.Z, ch.Position.Map);
             return;
         }
-        var oldRegion = FindRegion(ch.Position);
-        var oldSector = GetSector(ch.Position);
+        var oldPos = ch.Position;
+        var oldSector = GetSector(oldPos);
         if (oldSector != newSector)
         {
             oldSector?.RemoveCharacter(ch);
             newSector.AddCharacter(ch);
+            if (ch.IsPlayer)
+            {
+                oldSector?.RemoveOnlinePlayer(ch);
+                if (ch.IsOnline)
+                    newSector.AddOnlinePlayer(ch);
+            }
         }
         ch.Position = newPos;
-        var newRegion = FindRegion(newPos);
-        if (oldRegion != newRegion)
+
+        CharacterMoved?.Invoke(ch, oldPos);
+
+        if (ch.IsPlayer)
         {
-            // Source-X CChar::Region_Update parity: keep the character's
-            // CURRENT_REGION / CURRENT_REGION_UID tags in sync regardless of
-            // how the move was triggered (walk via MovementEngine, .go
-            // teleport, recall, gate, NPC drift). MovementEngine also writes
-            // these tags on the walk path because it needs the previous value
-            // for trigger comparisons; the assignments here keep the tags
-            // truthful when MovementEngine is bypassed (otherwise the admin
-            // menu / <REGION.NAME> macro shows stale data such as "Solen Hive"
-            // after teleporting into Britain).
-            ch.SetTag("CURRENT_REGION", newRegion?.Name ?? "");
-            ch.SetTag("CURRENT_REGION_UID", newRegion?.Uid.ToString() ?? "");
-            OnRegionChanged?.Invoke(ch, oldRegion, newRegion);
+            var oldRegion = FindRegion(oldPos);
+            var newRegion = FindRegion(newPos);
+            if (oldRegion != newRegion)
+            {
+                ch.SetTag("CURRENT_REGION", newRegion?.Name ?? "");
+                ch.SetTag("CURRENT_REGION_UID", newRegion?.Uid.ToString() ?? "");
+                OnRegionChanged?.Invoke(ch, oldRegion, newRegion);
+            }
         }
     }
 
@@ -394,6 +411,10 @@ public sealed class GameWorld
         RemoveFromSector(ch);
         ch.Position = pos;
         sector.AddCharacter(ch);
+        if (ch.IsPlayer && ch.IsOnline)
+            sector.AddOnlinePlayer(ch);
+        else if (!ch.IsPlayer && _onlinePlayers.Count > 0)
+            CharacterPlaced?.Invoke(ch);
     }
 
     /// <summary>
@@ -406,7 +427,12 @@ public sealed class GameWorld
     {
         var sector = GetSector(obj.Position);
         if (sector == null) return;
-        if (obj is Character ch) sector.RemoveCharacter(ch);
+        if (obj is Character ch)
+        {
+            sector.RemoveCharacter(ch);
+            if (ch.IsPlayer)
+                sector.RemoveOnlinePlayer(ch);
+        }
         else if (obj is Item item) sector.RemoveItem(item);
     }
 
@@ -565,39 +591,54 @@ public sealed class GameWorld
         TickActiveSectors(currentTime);
     }
 
-    /// <summary>Tick the 5x5 sector window centered on every online player.
-    /// 5x5 (vs 3x3) covers the worst case of a client with max view range (24
-    /// tiles) standing on a sector boundary — the target tile can legally be
-    /// two sectors away. Each sector ticks at most once per call via a dedup
-    /// set so overlapping player windows do not double-tick.</summary>
-    private readonly HashSet<Sectors.Sector> _activeSectorsScratch = [];
     private const int ActiveSectorRadius = 2; // 5x5 window
-    private void TickActiveSectors(long currentTime)
+
+    /// <summary>Rebuild the active-sector set from online player positions.
+    /// Detects sectors that just woke up (weren't active last tick) so the
+    /// caller can bulk-wake their NPCs in the timer wheel.</summary>
+    public IReadOnlyList<Sector> NewlyActiveSectors => _newlyActiveSectors;
+
+    private void RefreshActiveSectors()
     {
-        _activeSectorsScratch.Clear();
+        _prevActiveSectors.Clear();
+        foreach (var s in _activeSectors) _prevActiveSectors.Add(s);
+        _activeSectors.Clear();
+        _tickSectors.Clear();
+        _newlyActiveSectors.Clear();
 
         foreach (var player in _onlinePlayers)
         {
             if (player.IsDeleted || !player.IsOnline) continue;
-            int sx = player.X / Sectors.Sector.SectorSize;
-            int sy = player.Y / Sectors.Sector.SectorSize;
+            int sx = player.X / Sector.SectorSize;
+            int sy = player.Y / Sector.SectorSize;
             for (int dx = -ActiveSectorRadius; dx <= ActiveSectorRadius; dx++)
             {
                 for (int dy = -ActiveSectorRadius; dy <= ActiveSectorRadius; dy++)
                 {
                     var s = GetSector(player.MapIndex, sx + dx, sy + dy);
-                    if (s != null) _activeSectorsScratch.Add(s);
+                    if (s != null && _activeSectors.Add(s))
+                    {
+                        _tickSectors.Add(s);
+                        if (!_prevActiveSectors.Contains(s))
+                            _newlyActiveSectors.Add(s);
+                    }
                 }
             }
         }
+    }
 
-        foreach (var sector in _activeSectorsScratch)
+    /// <summary>Tick the 5x5 sector window centered on every online player.
+    /// Each sector ticks at most once per call via a dedup set so overlapping
+    /// player windows do not double-tick.</summary>
+    private void TickActiveSectors(long currentTime)
+    {
+        RefreshActiveSectors();
+
+        foreach (var sector in _activeSectors)
             sector.OnTick(currentTime);
 
         // Notoriety decay — only the online players. NPCs and offline chars
-        // get their decay via the NPC tick / login path. A full _objects scan
-        // here burned 150-300ms per tick on million-entity worlds even with an
-        // early filter: the dictionary enumeration + type dispatch dominated.
+        // get their decay via the NPC tick / login path.
         foreach (var player in _onlinePlayers)
         {
             if (player.IsDeleted) continue;
@@ -605,23 +646,13 @@ public sealed class GameWorld
         }
     }
 
-    /// <summary>Coarse gate used by NPC AI to skip expensive brain work when
-    /// no online player is in view-range. Matches the 5x5 sector window used
-    /// by sector sleep, converted to tile distance (128 tiles).</summary>
+    /// <summary>O(1) gate used by NPC AI to skip expensive brain work when
+    /// no online player is in view-range. Checks whether the NPC's sector
+    /// is in the active set (5x5 window around each player).</summary>
     public bool IsInActiveArea(int mapIdx, int x, int y)
     {
-        const int TileRadius = ActiveSectorRadius * Sectors.Sector.SectorSize;
-        foreach (var p in _onlinePlayers)
-        {
-            if (p.IsDeleted || !p.IsOnline) continue;
-            if (p.MapIndex != mapIdx) continue;
-            int dx = p.X - x; if (dx < 0) dx = -dx;
-            if (dx > TileRadius) continue;
-            int dy = p.Y - y; if (dy < 0) dy = -dy;
-            if (dy > TileRadius) continue;
-            return true;
-        }
-        return false;
+        var s = GetSector(mapIdx, x / Sector.SectorSize, y / Sector.SectorSize);
+        return s != null && _activeSectors.Contains(s);
     }
 
     /// <summary>
@@ -650,24 +681,7 @@ public sealed class GameWorld
             _lastClockUpdate = currentTime;
         }
 
-        // Sector sleep (parallel variant): only include active sectors.
-        // 5x5 window — see TickActiveSectors comment for rationale.
-        _tickSectors.Clear();
-        _tickSectorsSeen.Clear();
-        foreach (var player in _onlinePlayers)
-        {
-            if (player.IsDeleted || !player.IsOnline) continue;
-            int sx = player.X / Sector.SectorSize;
-            int sy = player.Y / Sector.SectorSize;
-            for (int dx = -ActiveSectorRadius; dx <= ActiveSectorRadius; dx++)
-            {
-                for (int dy = -ActiveSectorRadius; dy <= ActiveSectorRadius; dy++)
-                {
-                    var s = GetSector(player.MapIndex, sx + dx, sy + dy);
-                    if (s != null && _tickSectorsSeen.Add(s)) _tickSectors.Add(s);
-                }
-            }
-        }
+        RefreshActiveSectors();
         var sectors = _tickSectors;
 
         // Below ~50 sectors the thread-pool overhead (context switches,

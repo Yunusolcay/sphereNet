@@ -232,6 +232,8 @@ public sealed class CommandHandler
     public event Action<int, string, bool>? OnBotCommandRequested;
     /// <summary>Fired by .BOTMENU to open the bot manager dialog. Args: (gm character).</summary>
     public event Action<Character>? OnBotMenuRequested;
+    /// <summary>Fired by .SECTORLIST to show active sector diagnostics dialog.</summary>
+    public event Action<Character>? OnSectorListRequested;
     /// <summary>Fired by .SAVEFORMAT — switches save format (and optional shard
     /// count) then forces a full save in the new format. Argument string is
     /// already parsed: (format, shards). shards=-1 means "keep current".</summary>
@@ -808,6 +810,11 @@ public sealed class CommandHandler
         Register("BOTMENU", PrivLevel.Owner, (gm, _) =>
         {
             OnBotMenuRequested?.Invoke(gm);
+        });
+
+        Register("SECTORLIST", PrivLevel.Counsel, (gm, _) =>
+        {
+            OnSectorListRequested?.Invoke(gm);
         });
 
         Register("SCRIPTDEBUG", PrivLevel.Owner, (gm, args) =>

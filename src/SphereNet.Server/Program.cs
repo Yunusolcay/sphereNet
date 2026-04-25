@@ -138,6 +138,8 @@ public static class Program
     // VDS hosts (~30–100 ms slow-tick spikes when GC kicked in).
     private static readonly List<NpcAI.NpcDecision> _reusableDecisionList = [];
     private static readonly Dictionary<int, GameClient.ClientViewDelta> _reusableClientDeltas = [];
+    private static readonly List<GameClient> _reusableRefreshClients = [];
+    private static readonly ConcurrentDictionary<int, GameClient.ClientViewDelta> _reusableViewDeltaConcurrent = new();
     private static readonly Dictionary<Serial, long> _summonedGuardExpiry = [];
     private static long _nextDecayCatchupTick;
     private static long _telemetrySnapshotUs;
@@ -145,6 +147,10 @@ public static class Program
     private static long _telemetryApplyUs;
     private static long _telemetryFlushUs;
     private static long _telemetryMaxTickUs;
+    private static long _telemetryNpcBuildUs;
+    private static long _telemetryClientStateUs;
+    private static long _telemetryNpcApplyUs;
+    private static long _telemetryViewBuildUs;
     private static long _lastSlowTickWarningMs;
     private static long _lastTickStatsLogMs;
     private static long _tickStatsTotalUs;
@@ -1285,7 +1291,11 @@ public static class Program
             try
             {
                 var stateDbPath = Path.Combine(ResolvePath(basePath, _config.WorldSaveDir), "state_recording.db");
-                _stateRecorder = new SphereNet.Server.Recording.StateRecorder(stateDbPath, _loggerFactory.CreateLogger("StateRecorder"));
+                _stateRecorder = new SphereNet.Server.Recording.StateRecorder(
+                    stateDbPath, _loggerFactory.CreateLogger("StateRecorder"),
+                    _config.StateRecordPlayersOnly,
+                    _config.StateRecordMoveScanMs,
+                    _config.StateRecordSnapshotMs);
                 _stateRecorder.Initialize();
             }
             catch (Exception ex)
@@ -1546,6 +1556,8 @@ public static class Program
         VendorEngine.World = _world;
         _world.ObjectCreated += OnWorldObjectCreated;
         _world.ObjectDeleting += OnWorldObjectDeleting;
+        _world.CharacterMoved += OnCharacterMoved;
+        _world.CharacterPlaced += BroadcastCharacterAppear;
         _accounts.AccountCreated += account => _systemHooks.DispatchAccount("create", account);
         _accounts.AccountLogin += account => _systemHooks.DispatchAccount("login", account);
         _accounts.AccountDeleted += account => _systemHooks.DispatchAccount("delete", account);
@@ -1901,6 +1913,7 @@ public static class Program
         _botEngine = new SphereNet.Game.Diagnostics.BotEngine(_loggerFactory.CreateLogger<SphereNet.Game.Diagnostics.BotEngine>());
         _commands.OnBotCommandRequested += HandleBotCommand;
         _commands.OnBotMenuRequested += ShowBotManagerDialog;
+        _commands.OnSectorListRequested += ShowSectorListDialog;
 
         _commands.OnRecordDialogRequested += ShowRecordingDialog;
         _commands.OnStateRecordRequested += HandleStateRecordCommand;
@@ -2165,10 +2178,10 @@ public static class Program
 
         _log.LogInformation("Type 'help' for commands. Enter commands directly (e.g. save, status, quit).");
 
-        // Schedule all existing NPCs into the timer wheel. Spread
-        // the initial fire proportional to NPC count: ~50 NPCs per tick
-        // (per 100ms) is comfortable, so stagger = count * 100ms / 50,
-        // clamped to 1-30 seconds.
+        // Schedule all existing NPCs with stagger. Each NPC's first tick
+        // checks IsInActiveArea; sleeping ones won't be rescheduled and
+        // exit the wheel. After the initial wave (~30s), only active-sector
+        // NPCs remain in the wheel.
         if (_npcTimerWheel != null)
         {
             long now = Environment.TickCount64;
@@ -2221,17 +2234,19 @@ public static class Program
             _network.CheckNewConnections();
             _network.ProcessAllInput();
 
-            // ServUO-style delta queue: when any object was mutated (dirty flag
-            // set), push view updates to clients immediately instead of waiting
-            // for the 250ms tick. Gated by HasDirty so idle iterations stay
-            // cheap. Flip the flag to false to disable during diagnostics.
+            // Fast-path dirty: mark nearby clients for refresh, then run
+            // UpdateClientView only for those clients. Gated by HasDirty.
             const bool FastPathViewDeltaEnabled = true;
             if (FastPathViewDeltaEnabled && _world.HasDirty)
             {
+                MarkClientsNearDirtyObjects();
                 foreach (var client in _clients.Values)
                 {
-                    if (client.IsPlaying)
+                    if (client.ViewNeedsRefresh && client.IsPlaying)
+                    {
                         client.UpdateClientView();
+                        client.ViewNeedsRefresh = false;
+                    }
                 }
                 _world.ConsumeDirtyObjects();
             }
@@ -4242,6 +4257,46 @@ public static class Program
             charsDeleted, itemsDeleted, accountsDeleted);
     }
 
+    private static void ShowSectorListDialog(SphereNet.Game.Objects.Characters.Character gm)
+    {
+        if (!_clientsByCharUid.TryGetValue(gm.Uid, out var client)) return;
+
+        var sectorSet = new HashSet<SphereNet.Game.World.Sectors.Sector>();
+        foreach (var player in _world.OnlinePlayers)
+        {
+            var sector = _world.GetSector(player.Position);
+            if (sector != null)
+                sectorSet.Add(sector);
+        }
+
+        var entries = new List<SphereNet.Game.Diagnostics.SectorListDialog.SectorEntry>();
+        int totalNpcs = 0;
+        foreach (var sector in sectorSet)
+        {
+            int npcs = 0;
+            foreach (var ch in sector.Characters)
+            {
+                if (!ch.IsPlayer && !ch.IsDeleted)
+                    npcs++;
+            }
+            totalNpcs += npcs;
+            entries.Add(new SphereNet.Game.Diagnostics.SectorListDialog.SectorEntry(
+                sector.SectorX, sector.SectorY, sector.MapIndex,
+                sector.OnlinePlayers.Count, npcs, sector.ItemCount, sector.IsSleeping));
+        }
+
+        entries.Sort((a, b) => b.NpcCount.CompareTo(a.NpcCount));
+
+        var gump = SphereNet.Game.Diagnostics.SectorListDialog.Build(
+            gm.Uid.Value, entries, totalNpcs, _world.OnlinePlayers.Count);
+
+        client.SendGump(gump, (buttonId, switches, textEntries) =>
+        {
+            if (buttonId == 1)
+                ShowSectorListDialog(gm);
+        });
+    }
+
     private static void ShowBotManagerDialog(SphereNet.Game.Objects.Characters.Character gm)
     {
         if (_botEngine == null) return;
@@ -4436,18 +4491,29 @@ public static class Program
     {
         _systemHooks.DispatchObject("create", obj);
         if (obj.IsItem)
+        {
             _systemHooks.DispatchItem("create", obj);
-
-        // Schedule new NPCs into the timer wheel
-        if (_npcTimerWheel != null && obj is Character npc && !npc.IsPlayer)
-            _npcTimerWheel.Schedule(npc, Environment.TickCount64 + 500);
+            MarkNearbyClientsRefresh(obj.Position);
+        }
+        else if (obj is Character npc && !npc.IsPlayer)
+        {
+            if (_npcTimerWheel != null)
+                _npcTimerWheel.Schedule(npc, Environment.TickCount64 + 500);
+        }
     }
 
     private static void OnWorldObjectDeleting(SphereNet.Game.Objects.ObjBase obj)
     {
         _systemHooks.DispatchObject("delete", obj);
         if (obj.IsItem)
+        {
             _systemHooks.DispatchItem("delete", obj);
+            MarkNearbyClientsRefresh(obj.Position);
+        }
+        else if (obj is Character ch && !ch.IsPlayer)
+        {
+            MarkNearbyClientsRefresh(ch.Position);
+        }
     }
 
     private static void OnUnknownPacket(NetState state, byte opcode, byte[] raw)
@@ -4620,9 +4686,8 @@ public static class Program
         {
             var sector = _world.GetSector(center.Map, sx, sy);
             if (sector == null) continue;
-            foreach (var ch in sector.Characters)
+            foreach (var ch in sector.OnlinePlayers)
             {
-                if (!ch.IsPlayer || !ch.IsOnline) continue;
                 if (ch.Uid.Value == excludeUid) continue;
                 if (center.GetDistanceTo(ch.Position) > range) continue;
                 if (_clientsByCharUid.TryGetValue(ch.Uid, out var c) && c.IsPlaying)
@@ -4655,9 +4720,8 @@ public static class Program
         {
             var sector = _world.GetSector(center.Map, sx, sy);
             if (sector == null) continue;
-            foreach (var ch in sector.Characters)
+            foreach (var ch in sector.OnlinePlayers)
             {
-                if (!ch.IsPlayer || !ch.IsOnline) continue;
                 if (ch.Uid.Value == excludeUid) continue;
                 if (center.GetDistanceTo(ch.Position) > range) continue;
                 if (_clientsByCharUid.TryGetValue(ch.Uid, out var c) && c.IsPlaying)
@@ -4691,13 +4755,12 @@ public static class Program
         {
             var sector = _world.GetSector(center.Map, sx, sy);
             if (sector == null) continue;
-            foreach (var ch in sector.Characters)
+            foreach (var ch in sector.OnlinePlayers)
             {
-                if (!ch.IsPlayer || !ch.IsOnline) continue;
                 if (ch.Uid.Value == excludeUid) continue;
                 if (center.GetDistanceTo(ch.Position) > range) continue;
                 if (!_clientsByCharUid.TryGetValue(ch.Uid, out var c) || !c.IsPlaying) continue;
-                if (!c.HasKnownChar(movingUid)) continue; // spawn via view-delta 0x78
+                if (!c.HasKnownChar(movingUid)) continue;
                 c.Send(packet);
                 c.UpdateKnownCharPosition(movingChar);
             }
@@ -4710,26 +4773,123 @@ public static class Program
     /// </summary>
     private static void BroadcastCharacterAppear(Character ch)
     {
-        // Login/teleport notification — limited to the view-range sector
-        // window around the character. Distant clients wouldn't render
-        // the mobile anyway and their view-delta pass would drop the
-        // entry on the next tick.
         const int Range = 18;
-        int secRadius = (Range / SphereNet.Game.World.Sectors.Sector.SectorSize) + 1;
-        int cx = ch.Position.X / SphereNet.Game.World.Sectors.Sector.SectorSize;
-        int cy = ch.Position.Y / SphereNet.Game.World.Sectors.Sector.SectorSize;
+        const int secSize = SphereNet.Game.World.Sectors.Sector.SectorSize;
+        const int secRadius = (Range / secSize) + 1;
+        int cx = ch.Position.X / secSize;
+        int cy = ch.Position.Y / secSize;
+        byte mapId = ch.Position.Map;
         for (int sx = cx - secRadius; sx <= cx + secRadius; sx++)
         for (int sy = cy - secRadius; sy <= cy + secRadius; sy++)
         {
-            var sector = _world.GetSector(ch.Position.Map, sx, sy);
-            if (sector == null) continue;
-            foreach (var other in sector.Characters)
+            var sector = _world.GetSector(mapId, sx, sy);
+            if (sector == null || sector.OnlinePlayers.Count == 0) continue;
+            foreach (var other in sector.OnlinePlayers)
             {
                 if (other == ch) continue;
-                if (!other.IsPlayer || !other.IsOnline) continue;
                 if (ch.Position.GetDistanceTo(other.Position) > Range) continue;
                 if (_clientsByCharUid.TryGetValue(other.Uid, out var c) && c.IsPlaying)
                     c.NotifyCharacterAppear(ch);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Object-centric movement handler: when any character moves, notify nearby clients
+    /// directly instead of waiting for per-tick BuildViewDelta. For player movement,
+    /// marks the player's own client for a full view refresh. For NPC movement, sends
+    /// enter/leave/update packets to each nearby client.
+    /// Player still-in-range 0x77 is handled by BroadcastMoveNearby (called after
+    /// MoveCharacter in the walk handler), so OnCharacterMoved only handles the
+    /// enter-range (0x78) and leave-range (0x1D) cases for players.
+    /// </summary>
+    private static void OnCharacterMoved(Character ch, Point3D oldPos)
+    {
+        bool isPlayer = ch.IsPlayer;
+
+        if (isPlayer && ch.IsOnline)
+        {
+            if (_clientsByCharUid.TryGetValue(ch.Uid, out var ownClient))
+                ownClient.ViewNeedsRefresh = true;
+        }
+
+        const int range = 18;
+        const int secSize = SphereNet.Game.World.Sectors.Sector.SectorSize;
+        const int secRadius = (range / secSize) + 1;
+
+        int newCx = ch.Position.X / secSize;
+        int newCy = ch.Position.Y / secSize;
+        int oldCx = oldPos.X / secSize;
+        int oldCy = oldPos.Y / secSize;
+
+        int minSx = Math.Min(newCx, oldCx) - secRadius;
+        int maxSx = Math.Max(newCx, oldCx) + secRadius;
+        int minSy = Math.Min(newCy, oldCy) - secRadius;
+        int maxSy = Math.Max(newCy, oldCy) + secRadius;
+
+        byte mapId = ch.Position.Map;
+        for (int sx = minSx; sx <= maxSx; sx++)
+        for (int sy = minSy; sy <= maxSy; sy++)
+        {
+            var sector = _world.GetSector(mapId, sx, sy);
+            if (sector == null || sector.OnlinePlayers.Count == 0) continue;
+            foreach (var other in sector.OnlinePlayers)
+            {
+                if (other == ch) continue;
+                if (!_clientsByCharUid.TryGetValue(other.Uid, out var c) || !c.IsPlaying) continue;
+                if (isPlayer)
+                    c.NotifyCharEnterLeave(ch, oldPos);
+                else
+                    c.NotifyCharMoved(ch, oldPos);
+            }
+        }
+    }
+
+    /// <summary>Mark nearby clients for a view refresh when an object at the given position changes.</summary>
+    private static void MarkNearbyClientsRefresh(Point3D pos)
+    {
+        const int Range = 18;
+        const int secSize = SphereNet.Game.World.Sectors.Sector.SectorSize;
+        const int secRadius = (Range / secSize) + 1;
+        int cx = pos.X / secSize;
+        int cy = pos.Y / secSize;
+        for (int sx = cx - secRadius; sx <= cx + secRadius; sx++)
+        for (int sy = cy - secRadius; sy <= cy + secRadius; sy++)
+        {
+            var sector = _world.GetSector(pos.Map, sx, sy);
+            if (sector == null || sector.OnlinePlayers.Count == 0) continue;
+            foreach (var ch in sector.OnlinePlayers)
+            {
+                if (pos.GetDistanceTo(ch.Position) > Range) continue;
+                if (_clientsByCharUid.TryGetValue(ch.Uid, out var c) && c.IsPlaying)
+                    c.ViewNeedsRefresh = true;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Mark clients near dirty (non-movement) objects for a view refresh.
+    /// </summary>
+    private static void MarkClientsNearDirtyObjects()
+    {
+        const int Range = 18;
+        int secRadius = (Range / SphereNet.Game.World.Sectors.Sector.SectorSize) + 1;
+        foreach (var obj in _world.DirtyObjects)
+        {
+            var pos = obj.Position;
+            int cx = pos.X / SphereNet.Game.World.Sectors.Sector.SectorSize;
+            int cy = pos.Y / SphereNet.Game.World.Sectors.Sector.SectorSize;
+            for (int sx = cx - secRadius; sx <= cx + secRadius; sx++)
+            for (int sy = cy - secRadius; sy <= cy + secRadius; sy++)
+            {
+                var sector = _world.GetSector(pos.Map, sx, sy);
+                if (sector == null) continue;
+                foreach (var ch in sector.OnlinePlayers)
+                {
+                    if (pos.GetDistanceTo(ch.Position) > Range) continue;
+                    if (_clientsByCharUid.TryGetValue(ch.Uid, out var c) && c.IsPlaying)
+                        c.ViewNeedsRefresh = true;
+                }
             }
         }
     }
@@ -6103,12 +6263,16 @@ public static class Program
             {
                 _lastSlowTickWarningMs = nowMs;
                 _log.LogWarning(
-                    "[slow_tick] mode={Mode} tick={Tick} total={TotalMs}ms snapshot={SnapshotMs}ms compute={ComputeMs}ms apply={ApplyMs}ms flush={FlushMs}ms",
+                    "[slow_tick] mode={Mode} tick={Tick} total={TotalMs}ms snapshot={SnapshotMs}ms compute={ComputeMs}ms (npc_build={NpcBuildMs}ms client_state={ClientStateMs}ms npc_apply={NpcApplyMs}ms view_build={ViewBuildMs}ms) apply={ApplyMs}ms flush={FlushMs}ms",
                     _multicoreRuntimeEnabled ? "multicore" : "single",
                     _tickCounter,
                     (totalUs / 1000.0).ToString("F1"),
                     (_telemetrySnapshotUs / 1000.0).ToString("F1"),
                     (_telemetryComputeUs / 1000.0).ToString("F1"),
+                    (_telemetryNpcBuildUs / 1000.0).ToString("F1"),
+                    (_telemetryClientStateUs / 1000.0).ToString("F1"),
+                    (_telemetryNpcApplyUs / 1000.0).ToString("F1"),
+                    (_telemetryViewBuildUs / 1000.0).ToString("F1"),
                     (_telemetryApplyUs / 1000.0).ToString("F1"),
                     (_telemetryFlushUs / 1000.0).ToString("F1"));
             }
@@ -6156,14 +6320,20 @@ public static class Program
         _world.OnTick();
         _spellEngine.ProcessExpirations(Environment.TickCount64);
 
-        // NPC AI via timer wheel
+        // Wake NPCs in sectors that just became active (player entered area)
+        WakeNewlyActiveSectorNpcs();
+
+        // NPC AI via timer wheel — only reschedule NPCs that remain in
+        // active sectors. Sleeping NPCs exit the wheel entirely and get
+        // bulk-woken by WakeNewlyActiveSectorNpcs when a player enters.
         {
             long now = Environment.TickCount64;
             var dueNpcs = _npcTimerWheel.Advance(now);
             foreach (var npc in dueNpcs)
             {
                 _npcAI.OnTickAction(npc);
-                _npcTimerWheel.Schedule(npc, npc.NextNpcActionTime);
+                if (npc.NpcMaster.IsValid || _world.IsInActiveArea(npc.MapIndex, npc.X, npc.Y))
+                    _npcTimerWheel.Schedule(npc, npc.NextNpcActionTime);
             }
         }
 
@@ -6172,10 +6342,17 @@ public static class Program
 
         long p1 = Stopwatch.GetTimestamp();
 
+        if (_world.HasDirty)
+            MarkClientsNearDirtyObjects();
+
         foreach (var client in _clients.Values)
         {
             client.TickClientState();
-            client.UpdateClientView();
+            if (client.ViewNeedsRefresh)
+            {
+                client.UpdateClientView();
+                client.ViewNeedsRefresh = false;
+            }
         }
 
         if (_recordingEngine.HasActiveReplays)
@@ -6211,6 +6388,9 @@ public static class Program
         _world.OnTickParallel(workerCount, cts.Token);
         _spellEngine.ProcessExpirations(Environment.TickCount64);
 
+        // Wake NPCs in sectors that just became active (player entered area)
+        WakeNewlyActiveSectorNpcs();
+
         // NPC AI via timer wheel
         var npcSnapshot = _npcTimerWheel.Advance(Environment.TickCount64);
 
@@ -6238,14 +6418,12 @@ public static class Program
                 MaxDegreeOfParallelism = workerCount,
                 CancellationToken = cts.Token
             };
-            var bag = new ConcurrentBag<NpcAI.NpcDecision>();
             Parallel.ForEach(npcSnapshot, po, npc =>
             {
                 var decision = _npcAI.BuildDecision(npc, nowTick);
                 if (decision.HasValue)
-                    bag.Add(decision.Value);
+                    lock (decisionList) decisionList.Add(decision.Value);
             });
-            decisionList.AddRange(bag);
         }
         else
         {
@@ -6256,36 +6434,48 @@ public static class Program
                     decisionList.Add(decision.Value);
             }
         }
+        _telemetryNpcBuildUs = ToMicroseconds(Stopwatch.GetTimestamp() - p1);
 
+        long p1b = Stopwatch.GetTimestamp();
         foreach (var client in clientSnapshot)
             client.TickClientState();
+        _telemetryClientStateUs = ToMicroseconds(Stopwatch.GetTimestamp() - p1b);
 
-        // Apply NPC decisions BEFORE building view deltas so that other
-        // players see up-to-date NPC positions in the same tick. Previously
-        // BuildViewDelta ran first, causing a one-tick position lag.
-        // Determinism: NPCs apply in UID order. Sort in-place — the
-        // List<T>.Sort overload with Comparison<T> uses introsort and
-        // doesn't allocate (the lambda is cached by the JIT here).
-        decisionList.Sort(static (a, b) => a.NpcUid.CompareTo(b.NpcUid));
+        long p1c = Stopwatch.GetTimestamp();
+        // Apply NPC decisions — fires CharacterMoved for each NPC move,
+        // which immediately notifies nearby clients via OnCharacterMoved.
         foreach (var decision in decisionList)
             _npcAI.ApplyDecision(decision);
         _npcAI.PurgeStalePaths();
 
-        // View delta build: parallel only when there's enough work to
-        // amortize the partitioner setup. Single-client steady state
-        // (~95% of real shards) hits the sequential fast path.
-        // Now runs AFTER ApplyDecision so NPC positions are current.
+        // Mark clients near dirty objects for refresh
+        if (_world.HasDirty)
+            MarkClientsNearDirtyObjects();
+        _telemetryNpcApplyUs = ToMicroseconds(Stopwatch.GetTimestamp() - p1c);
+
+        // View delta: only for clients flagged ViewNeedsRefresh (moved or
+        // had nearby objects change). Most clients are idle and skip entirely.
+        long p1d = Stopwatch.GetTimestamp();
+        var refreshClients = _reusableRefreshClients;
+        refreshClients.Clear();
+        foreach (var client in clientSnapshot)
+        {
+            if (client.ViewNeedsRefresh)
+                refreshClients.Add(client);
+        }
+
         var clientDeltas = _reusableClientDeltas;
         clientDeltas.Clear();
-        if (clientSnapshot.Count >= ParallelComputeMinBatch)
+        if (refreshClients.Count >= ParallelComputeMinBatch)
         {
             var po = new ParallelOptions
             {
                 MaxDegreeOfParallelism = workerCount,
                 CancellationToken = cts.Token
             };
-            var concurrent = new ConcurrentDictionary<int, GameClient.ClientViewDelta>();
-            Parallel.ForEach(clientSnapshot, po, client =>
+            var concurrent = _reusableViewDeltaConcurrent;
+            concurrent.Clear();
+            Parallel.ForEach(refreshClients, po, client =>
             {
                 var delta = client.BuildViewDelta();
                 if (delta != null)
@@ -6296,19 +6486,21 @@ public static class Program
         }
         else
         {
-            foreach (var client in clientSnapshot)
+            foreach (var client in refreshClients)
             {
                 var delta = client.BuildViewDelta();
                 if (delta != null)
                     clientDeltas[client.NetState.Id] = delta;
             }
         }
+        _telemetryViewBuildUs = ToMicroseconds(Stopwatch.GetTimestamp() - p1d);
         _telemetryComputeUs = ToMicroseconds(Stopwatch.GetTimestamp() - p1);
 
         long p2 = Stopwatch.GetTimestamp();
         bool hasRecordings = _recordingEngine.HasActiveRecordings;
-        foreach (var client in clientSnapshot)
+        foreach (var client in refreshClients)
         {
+            client.ViewNeedsRefresh = false;
             if (!clientDeltas.TryGetValue(client.NetState.Id, out var delta))
                 continue;
 
@@ -6356,12 +6548,14 @@ public static class Program
         // Reset dirty flags
         _world.ConsumeDirtyObjects();
 
-        // Re-schedule NPCs into timer wheel after decisions applied
+        // Re-schedule only active-sector NPCs (and pets). Sleeping NPCs
+        // exit the wheel — WakeNewlyActiveSectorNpcs handles sector transitions.
         if (_npcTimerWheel != null)
         {
             foreach (var npc in npcSnapshot)
             {
-                if (!npc.IsDeleted && !npc.IsPlayer)
+                if (!npc.IsDeleted && !npc.IsPlayer &&
+                    (npc.NpcMaster.IsValid || _world.IsInActiveArea(npc.MapIndex, npc.X, npc.Y)))
                     _npcTimerWheel.Schedule(npc, npc.NextNpcActionTime);
             }
         }
@@ -6379,6 +6573,21 @@ public static class Program
         npc.NextNpcActionTime = 0;
         _npcTimerWheel?.Remove(npc);
         _npcTimerWheel?.Schedule(npc, Environment.TickCount64 + 100);
+    }
+
+    private static void WakeNewlyActiveSectorNpcs()
+    {
+        if (_npcTimerWheel == null) return;
+        var sectors = _world.NewlyActiveSectors;
+        if (sectors.Count == 0) return;
+        foreach (var sector in sectors)
+        {
+            foreach (var ch in sector.Characters)
+            {
+                if (!ch.IsPlayer && !ch.IsDeleted && !ch.IsDead)
+                    WakeNpc(ch);
+            }
+        }
     }
 
     private static void CleanupSummonedGuards(long now)
