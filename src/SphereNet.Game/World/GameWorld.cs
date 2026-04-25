@@ -356,14 +356,7 @@ public sealed class GameWorld
     public void MoveCharacter(Character ch, Point3D newPos)
     {
         var newSector = GetSector(newPos);
-        if (newSector == null)
-        {
-            _logger.LogWarning(
-                "MoveCharacter: refusing move of 0x{Uid:X} to out-of-bounds {X},{Y},{Z} map={Map} — staying at {OldX},{OldY},{OldZ} map={OldMap}",
-                ch.Uid.Value, newPos.X, newPos.Y, newPos.Z, newPos.Map,
-                ch.Position.X, ch.Position.Y, ch.Position.Z, ch.Position.Map);
-            return;
-        }
+        if (newSector == null) return;
         var oldPos = ch.Position;
         var oldSector = GetSector(oldPos);
         if (oldSector != newSector)
