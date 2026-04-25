@@ -4,6 +4,60 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-25n] - GC config, ArrayPool buffer pooling, network hot path optimizasyonu
+               (GC config, ArrayPool buffer pooling, network hot path optimization)
+----------------------------------------
+
+GC YAPILANDIRMA / GC CONFIGURATION:
+  - ServerGC, ConcurrentGC ve TieredCompilation csproj'da explicit acildi.
+    ServerGC, ConcurrentGC, and TieredCompilation explicitly enabled in csproj.
+  - DATAS (GC.DynamicAdaptationMode=1) runtimeconfig.template.json ile aktif.
+    Degisken oyuncu yuklerinde memory'yi dinamik ayarliyor.
+    DATAS (GC.DynamicAdaptationMode=1) enabled via runtimeconfig.template.json.
+    Dynamically adjusts memory under varying player loads.
+
+ARRAYPOOL BUFFER POOLING:
+  - HuffmanCompression.Compress: gecici output buffer artik ArrayPool'dan
+    rent ediliyor. Her giden pakette allocation eliminasyonu.
+    HuffmanCompression.Compress: temporary output buffer now rented from
+    ArrayPool. Eliminates allocation per outgoing packet.
+  - HuffmanCompression.DecompressFromServer: List<byte> yerine ArrayPool
+    buffer + index tracking. Birden fazla .ToArray() allocation kaldirildi.
+    HuffmanCompression.DecompressFromServer: replaced List<byte> with
+    ArrayPool buffer + index tracking. Removed multiple .ToArray() allocs.
+  - NetworkManager decrypt path: decrypt buffer artik ArrayPool'dan.
+    Her encrypted pakette allocation eliminasyonu.
+    NetworkManager decrypt path: decrypt buffer now from ArrayPool.
+    Eliminates allocation per encrypted packet.
+  - NetState.ReplaceReceivedRange: length parametreli overload eklendi
+    (pool buffer'lar gercek boyuttan buyuk olabilir).
+    NetState.ReplaceReceivedRange: added length-parameterized overload
+    (pool buffers may be larger than actual size).
+
+NETWORK HOT PATH OPTIMIZASYONU / NETWORK HOT PATH OPTIMIZATION:
+  - Packet parsing: rawPacket allocation artik lazy — sadece PacketScriptHook
+    veya debug log aktifse allocate ediliyor. Normal akista 1 allocation
+    kaldirildi (paket basina).
+    Packet parsing: rawPacket allocation now lazy — only allocates when
+    PacketScriptHook or debug log is active. Removes 1 allocation per
+    packet in normal flow.
+
+NATIVEAOT UYUMLULUK TESTI / NATIVEAOT COMPATIBILITY TEST:
+  - PublishAot=true ile test edildi. Core engine (Server, Game, Network,
+    Scripting, Persistence) temiz. Sadece 3 trim warning:
+    ScriptDbAdapter DataTable.Load (IL2026), PanelHost WriteAsJsonAsync
+    (IL2026+IL3050). Panel ayri duzeltilir.
+    Tested with PublishAot=true. Core engine clean. Only 3 trim warnings:
+    ScriptDbAdapter DataTable.Load (IL2026), PanelHost WriteAsJsonAsync
+    (IL2026+IL3050). Panel to be fixed separately.
+
+DEGISTIRILEN DOSYALAR / FILES CHANGED:
+  - src/SphereNet.Network/Encryption/HuffmanCompression.cs
+  - src/SphereNet.Network/Manager/NetworkManager.cs
+  - src/SphereNet.Network/State/NetState.cs
+  - src/SphereNet.Server/SphereNet.Server.csproj
+  - src/SphereNet.Server/runtimeconfig.template.json (yeni/new)
+
 [2026-04-25m] - Mining/craft pipeline, item durability, sectorlist gump
                (mining/craft pipeline, item durability, sectorlist gump)
 ----------------------------------------

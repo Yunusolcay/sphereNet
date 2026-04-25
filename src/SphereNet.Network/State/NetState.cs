@@ -182,6 +182,11 @@ public sealed class NetState : IDisposable
         Buffer.BlockCopy(data, 0, _recvBuffer, offset, data.Length);
     }
 
+    public void ReplaceReceivedRange(int offset, byte[] data, int length)
+    {
+        Buffer.BlockCopy(data, 0, _recvBuffer, offset, length);
+    }
+
     /// <summary>Enqueue a packet for sending.</summary>
     public void Send(PacketBuffer packet)
     {

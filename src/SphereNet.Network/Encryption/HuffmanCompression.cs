@@ -1,3 +1,5 @@
+using System.Buffers;
+
 namespace SphereNet.Network.Encryption;
 
 /// <summary>
@@ -185,9 +187,8 @@ public static class HuffmanCompression
     /// </summary>
     public static byte[] DecompressFromServer(byte[] input, int offset, int length, out int bytesConsumed)
     {
-        bytesConsumed = length; // Default: assume all consumed
-        
-        // Lazy initialize the decompression tree
+        bytesConsumed = length;
+
         if (_serverDecompTree == null)
         {
             lock (_treeLock)
@@ -197,60 +198,74 @@ public static class HuffmanCompression
         }
 
         const int MaxDecompressedSize = 262_144;
-        var output = new List<byte>(length * 2);
-        int bitPos = 0;
-        int totalBits = length * 8;
+        var pool = ArrayPool<byte>.Shared;
+        int capacity = Math.Min(length * 2, MaxDecompressedSize);
+        var output = pool.Rent(capacity);
+        int outLen = 0;
 
-        while (bitPos < totalBits)
+        try
         {
-            int node = 0;
+            int bitPos = 0;
+            int totalBits = length * 8;
 
-            // Traverse tree until we hit a leaf (negative value)
-            while (node >= 0)
+            while (bitPos < totalBits)
             {
-                if (bitPos >= totalBits)
+                int node = 0;
+
+                while (node >= 0)
                 {
-                    bytesConsumed = length;
-                    return output.ToArray();
+                    if (bitPos >= totalBits)
+                    {
+                        bytesConsumed = length;
+                        return output.AsSpan(0, outLen).ToArray();
+                    }
+
+                    int byteIdx = offset + (bitPos >> 3);
+                    if (byteIdx >= offset + length)
+                    {
+                        bytesConsumed = length;
+                        return output.AsSpan(0, outLen).ToArray();
+                    }
+
+                    int bitIdx = 7 - (bitPos & 7);
+                    int bit = (input[byteIdx] >> bitIdx) & 1;
+                    bitPos++;
+
+                    int next = _serverDecompTree[node, bit];
+                    if (next == int.MinValue)
+                    {
+                        bytesConsumed = (bitPos + 7) >> 3;
+                        return output.AsSpan(0, outLen).ToArray();
+                    }
+                    node = next;
                 }
 
-                int byteIdx = offset + (bitPos >> 3);
-                if (byteIdx >= offset + length)
+                int value = -(node + 1);
+                if (value == 256)
                 {
-                    bytesConsumed = length;
-                    return output.ToArray();
+                    bytesConsumed = (bitPos + 7) >> 3;
+                    return output.AsSpan(0, outLen).ToArray();
                 }
-                
-                int bitIdx = 7 - (bitPos & 7);
-                int bit = (input[byteIdx] >> bitIdx) & 1;
-                bitPos++;
+                if (value < 0 || value > 255) break;
 
-                int next = _serverDecompTree[node, bit];
-                if (next == int.MinValue) 
+                if (outLen >= output.Length)
                 {
-                    // Uninitialized path - invalid compressed data
-                    bytesConsumed = (bitPos + 7) >> 3; // Round up to byte
-                    return output.ToArray();
+                    var bigger = pool.Rent(output.Length * 2);
+                    Array.Copy(output, bigger, outLen);
+                    pool.Return(output);
+                    output = bigger;
                 }
-                node = next;
+                output[outLen++] = (byte)value;
+                if (outLen >= MaxDecompressedSize) break;
             }
 
-            // Leaf node: node is negative, decode as -(byteVal + 1)
-            int value = -(node + 1);
-            if (value == 256) 
-            {
-                // EOF marker - calculate bytes consumed (round up to next byte boundary)
-                bytesConsumed = (bitPos + 7) >> 3;
-                return output.ToArray();
-            }
-            if (value < 0 || value > 255) break; // Invalid value
-            
-            output.Add((byte)value);
-            if (output.Count >= MaxDecompressedSize) break;
+            bytesConsumed = length;
+            return output.AsSpan(0, outLen).ToArray();
         }
-
-        bytesConsumed = length;
-        return output.ToArray();
+        finally
+        {
+            pool.Return(output);
+        }
     }
 
     /// <summary>
@@ -259,49 +274,56 @@ public static class HuffmanCompression
     /// </summary>
     public static byte[] Compress(byte[] input, int offset, int length)
     {
-        var output = new byte[length * 2 + 4];
-        uint iLen = 0;
-        byte bitIdx = 0;
-        byte xOutVal = 0;
-
-        // Process all input bytes + terminator (i == length triggers terminator)
-        for (int i = 0; i <= length; i++)
+        int initialSize = length * 2 + 4;
+        var pool = ArrayPool<byte>.Shared;
+        var output = pool.Rent(initialSize);
+        try
         {
-            ushort value = CompressBase[i == length ? 256 : input[offset + i]];
-            byte nBits = (byte)(value & 0xF);
-            value >>= 4;
+            uint iLen = 0;
+            byte bitIdx = 0;
+            byte xOutVal = 0;
 
-            while (nBits > 0)
+            for (int i = 0; i <= length; i++)
             {
-                if (iLen >= output.Length)
-                {
-                    // Output buffer too small — expand
-                    var bigger = new byte[output.Length * 2];
-                    Array.Copy(output, bigger, output.Length);
-                    output = bigger;
-                }
+                ushort value = CompressBase[i == length ? 256 : input[offset + i]];
+                byte nBits = (byte)(value & 0xF);
+                value >>= 4;
 
-                nBits--;
-                xOutVal = (byte)((uint)xOutVal << 1);
-                xOutVal |= (byte)(((uint)value >> nBits) & 0x1u);
-
-                if (++bitIdx == 8)
+                while (nBits > 0)
                 {
-                    bitIdx = 0;
-                    output[iLen++] = xOutVal;
+                    if (iLen >= (uint)output.Length)
+                    {
+                        var bigger = pool.Rent(output.Length * 2);
+                        Array.Copy(output, bigger, output.Length);
+                        pool.Return(output);
+                        output = bigger;
+                    }
+
+                    nBits--;
+                    xOutVal = (byte)((uint)xOutVal << 1);
+                    xOutVal |= (byte)(((uint)value >> nBits) & 0x1u);
+
+                    if (++bitIdx == 8)
+                    {
+                        bitIdx = 0;
+                        output[iLen++] = xOutVal;
+                    }
                 }
             }
-        }
 
-        // Flush remaining bits
-        if (bitIdx > 0)
+            if (bitIdx > 0)
+            {
+                if (iLen < (uint)output.Length)
+                    output[iLen++] = (byte)((uint)xOutVal << (8 - bitIdx));
+            }
+
+            var result = new byte[iLen];
+            Array.Copy(output, result, (int)iLen);
+            return result;
+        }
+        finally
         {
-            if (iLen < output.Length)
-                output[iLen++] = (byte)((uint)xOutVal << (8 - bitIdx));
+            pool.Return(output);
         }
-
-        var result = new byte[iLen];
-        Array.Copy(output, result, (int)iLen);
-        return result;
     }
 }

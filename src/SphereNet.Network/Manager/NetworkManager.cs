@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Net;
 using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
@@ -262,11 +263,20 @@ public sealed class NetworkManager : IDisposable
             int undecrypted = state.UndecryptedOffset;
             if (undecrypted < data.Length)
             {
-                byte[] toDecrypt = data[undecrypted..].ToArray();
-                state.Crypto.Decrypt(toDecrypt, 0, toDecrypt.Length);
-                state.ReplaceReceivedRange(undecrypted, toDecrypt);
-                state.UndecryptedOffset = data.Length;
-                data = state.ReceivedData;
+                int decLen = data.Length - undecrypted;
+                var toDecrypt = ArrayPool<byte>.Shared.Rent(decLen);
+                try
+                {
+                    data[undecrypted..].CopyTo(toDecrypt);
+                    state.Crypto.Decrypt(toDecrypt, 0, decLen);
+                    state.ReplaceReceivedRange(undecrypted, toDecrypt, decLen);
+                    state.UndecryptedOffset = data.Length;
+                    data = state.ReceivedData;
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(toDecrypt);
+                }
             }
         }
 
@@ -316,19 +326,21 @@ public sealed class NetworkManager : IDisposable
             var handler = _packetManager.GetHandler(opcode);
             if (handler != null)
             {
-                var rawPacket = data.Slice(consumed, packetLen).ToArray();
-                if (InvokePacketScriptHook(state, opcode, rawPacket))
+                if (PacketScriptHook != null || ShouldLogPacketDebug(opcode))
                 {
-                    packetsProcessed++;
-                    consumed += packetLen;
-                    continue;
-                }
-
-                if (ShouldLogPacketDebug(opcode))
-                {
-                    _logger.LogDebug("RECV #{Id} 0x{Op:X2} ({Name}) len={Len} data=[{Data}]",
-                        state.Id, opcode, handler.GetType().Name,
-                        packetLen, FormatHex(rawPacket, 32));
+                    var rawPacket = data.Slice(consumed, packetLen).ToArray();
+                    if (InvokePacketScriptHook(state, opcode, rawPacket))
+                    {
+                        packetsProcessed++;
+                        consumed += packetLen;
+                        continue;
+                    }
+                    if (ShouldLogPacketDebug(opcode))
+                    {
+                        _logger.LogDebug("RECV #{Id} 0x{Op:X2} ({Name}) len={Len} data=[{Data}]",
+                            state.Id, opcode, handler.GetType().Name,
+                            packetLen, FormatHex(rawPacket, 32));
+                    }
                 }
 
                 int payloadOffset = hasLengthField ? 3 : 1;
