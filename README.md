@@ -77,6 +77,9 @@ Source-X runs single-threaded. SphereNet splits tick processing into four parall
 | Apply | Seri | Kararlar UID sirasinda uygulanir / Decisions applied in UID order |
 | Flush | Seri | Decay, isik, telnet, web / Decay, light, telnet, web |
 
+**Region Cache:** `FindRegion` her tick'te binlerce kez cagrilir (guard zone, PvP, muzik, hava). Source-X her cagride tum region listesini tarar (O(n)). SphereNet 8x8 tile grid bazli `ConcurrentDictionary` cache kullanir — ayni bolge icin tekrar tarama yapmaz, region eklendiginde cache otomatik temizlenir.
+`FindRegion` is called thousands of times per tick (guard zone, PvP, music, weather). Source-X scans the full region list each time (O(n)). SphereNet uses an 8x8 tile grid `ConcurrentDictionary` cache — no rescan for the same area, cache auto-clears on region changes.
+
 ### MemoryMapped Harita / MemoryMapped Maps
 
 Source-X harita dosyalarini tamamen RAM'e yukler. SphereNet `MemoryMappedFile` ile yukler — isletim sistemi hangi sayfalarin RAM'de kalacagini yonetir, ~200MB tasarruf.
