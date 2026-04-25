@@ -549,6 +549,170 @@ public static class ActiveSkillEngine
         };
     }
 
+    // --------------------------------------------------------------- Mining
+
+    public static bool Mining(IActiveSkillSink sink, Point3D target, GatheringEngine? gatheringEngine, World.GameWorld world)
+    {
+        var ch = sink.Self;
+
+        BroadcastAnimation(ch, (ushort)AnimationType.Attack1HBash, 0x0125);
+
+        if (GetDistance(ch.Position, target) > 2)
+        {
+            sink.SysMessage(ServerMessages.Get(Msg.MiningReach));
+            return false;
+        }
+
+        if (gatheringEngine != null)
+        {
+            var result = gatheringEngine.TryGatherForSink(ch, SkillType.Mining, target);
+            if (result.Handled)
+            {
+                if (result.Depleted)
+                {
+                    sink.SysMessage(ServerMessages.Get(Msg.Mining1));
+                    return false;
+                }
+                if (result.Success && result.Item != null)
+                {
+                    sink.SysMessage("You dig some ore and put it in your backpack.");
+                    sink.DeliverItem(result.Item);
+                    return true;
+                }
+                sink.SysMessage(ServerMessages.Get(Msg.Mining3));
+                return false;
+            }
+        }
+
+        bool success = SkillEngine.UseQuick(ch, SkillType.Mining, 50);
+        if (success)
+        {
+            var ore = world.CreateItem();
+            ore.BaseId = 0x19B9;
+            ore.Name = "iron ore";
+            ore.Amount = (ushort)sink.Random.Next(1, 3);
+            sink.SysMessage("You dig some ore and put it in your backpack.");
+            sink.DeliverItem(ore);
+        }
+        else
+        {
+            sink.SysMessage(ServerMessages.Get(Msg.Mining3));
+        }
+        return success;
+    }
+
+    // -------------------------------------------------------------- Fishing
+
+    public static bool Fishing(IActiveSkillSink sink, Point3D target, GatheringEngine? gatheringEngine, World.GameWorld world)
+    {
+        var ch = sink.Self;
+
+        BroadcastAnimation(ch, (ushort)AnimationType.AttackWeapon, 0x0240);
+
+        if (GetDistance(ch.Position, target) > 6)
+        {
+            sink.SysMessage(ServerMessages.Get(Msg.FishingReach));
+            return false;
+        }
+
+        if (gatheringEngine != null)
+        {
+            var result = gatheringEngine.TryGatherForSink(ch, SkillType.Fishing, target);
+            if (result.Handled)
+            {
+                if (result.Depleted)
+                {
+                    sink.SysMessage(ServerMessages.Get(Msg.Fishing1));
+                    return false;
+                }
+                if (result.Success && result.Item != null)
+                {
+                    sink.SysMessage(ServerMessages.Get(Msg.FishingSuccess));
+                    sink.DeliverItem(result.Item);
+                    return true;
+                }
+                sink.SysMessage(ServerMessages.Get(Msg.Fishing3));
+                return false;
+            }
+        }
+
+        bool success = SkillEngine.UseQuick(ch, SkillType.Fishing, 40);
+        if (success)
+        {
+            var fish = world.CreateItem();
+            fish.BaseId = 0x09CC;
+            fish.Name = "fish";
+            fish.Amount = 1;
+            sink.SysMessage(ServerMessages.Get(Msg.FishingSuccess));
+            sink.DeliverItem(fish);
+        }
+        else
+        {
+            sink.SysMessage(ServerMessages.Get(Msg.Fishing3));
+        }
+        return success;
+    }
+
+    // --------------------------------------------------------- Lumberjacking
+
+    public static bool Lumberjacking(IActiveSkillSink sink, Point3D target, GatheringEngine? gatheringEngine, World.GameWorld world)
+    {
+        var ch = sink.Self;
+
+        BroadcastAnimation(ch, (ushort)AnimationType.Attack2HSlash, 0x013E);
+
+        if (GetDistance(ch.Position, target) > 2)
+        {
+            sink.SysMessage(ServerMessages.Get(Msg.LumberjackingReach));
+            return false;
+        }
+
+        if (gatheringEngine != null)
+        {
+            var result = gatheringEngine.TryGatherForSink(ch, SkillType.Lumberjacking, target);
+            if (result.Handled)
+            {
+                if (result.Depleted)
+                {
+                    sink.SysMessage(ServerMessages.Get(Msg.Lumberjacking1));
+                    return false;
+                }
+                if (result.Success && result.Item != null)
+                {
+                    sink.SysMessage("You put some logs in your backpack.");
+                    sink.DeliverItem(result.Item);
+                    return true;
+                }
+                sink.SysMessage(ServerMessages.Get(Msg.Lumberjacking2));
+                return false;
+            }
+        }
+
+        bool success = SkillEngine.UseQuick(ch, SkillType.Lumberjacking, 50);
+        if (success)
+        {
+            var logs = world.CreateItem();
+            logs.BaseId = 0x1BDD;
+            logs.Name = "logs";
+            logs.Amount = (ushort)sink.Random.Next(1, 5);
+            sink.SysMessage("You put some logs in your backpack.");
+            sink.DeliverItem(logs);
+        }
+        else
+        {
+            sink.SysMessage(ServerMessages.Get(Msg.Lumberjacking2));
+        }
+        return success;
+    }
+
+    private static void BroadcastAnimation(Character ch, ushort animId, ushort soundId)
+    {
+        var animPkt = new SphereNet.Network.Packets.Outgoing.PacketAnimation(ch.Uid.Value, animId);
+        Character.BroadcastNearby?.Invoke(ch.Position, 18, animPkt, 0);
+        var soundPkt = new SphereNet.Network.Packets.Outgoing.PacketSound(soundId, ch.X, ch.Y, ch.Z);
+        Character.BroadcastNearby?.Invoke(ch.Position, 18, soundPkt, 0);
+    }
+
     private static bool MatchesCategory(Character c, TrackingCategory cat) => cat switch
     {
         TrackingCategory.Animals  => c.NpcBrain == NpcBrainType.Animal,

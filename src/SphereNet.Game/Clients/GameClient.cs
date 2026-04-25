@@ -3657,8 +3657,28 @@ public sealed class GameClient : ITextConsole
 
                     if (result != null)
                     {
-                        _triggerDispatcher?.FireItemTrigger(result, ItemTrigger.Create,
-                            new TriggerArgs { CharSrc = _character, ItemSrc = result });
+                        var pack = _character.Backpack;
+                        if (pack != null)
+                        {
+                            var actual = pack.AddItemWithStack(result);
+                            if (actual != result)
+                                result.Delete();
+
+                            _netState.Send(new PacketContainerItem(
+                                actual.Uid.Value, actual.DispIdFull, 0,
+                                actual.Amount, actual.X, actual.Y,
+                                pack.Uid.Value, actual.Hue,
+                                _netState.IsClientPost6017));
+
+                            _triggerDispatcher?.FireItemTrigger(actual, ItemTrigger.Create,
+                                new TriggerArgs { CharSrc = _character, ItemSrc = actual });
+                        }
+                        else
+                        {
+                            _world.PlaceItemWithDecay(result, _character.Position);
+                            _triggerDispatcher?.FireItemTrigger(result, ItemTrigger.Create,
+                                new TriggerArgs { CharSrc = _character, ItemSrc = result });
+                        }
                         SysMessage(ServerMessages.GetFormatted("craft_success", result.GetName()));
                     }
                     else
@@ -6014,8 +6034,22 @@ public sealed class GameClient : ITextConsole
 
         public void DeliverItem(Item item)
         {
-            if (Self.Backpack != null) Self.Backpack.AddItem(item);
-            else _client._world.PlaceItemWithDecay(item, Self.Position);
+            var pack = Self.Backpack;
+            if (pack == null)
+            {
+                _client._world.PlaceItemWithDecay(item, Self.Position);
+                return;
+            }
+
+            var actual = pack.AddItemWithStack(item);
+            if (actual != item)
+                item.Delete();
+
+            _client._netState.Send(new PacketContainerItem(
+                actual.Uid.Value, actual.DispIdFull, 0,
+                actual.Amount, actual.X, actual.Y,
+                pack.Uid.Value, actual.Hue,
+                _client._netState.IsClientPost6017));
         }
     }
 

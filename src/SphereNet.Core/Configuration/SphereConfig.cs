@@ -138,6 +138,14 @@ public sealed class SphereConfig
     public byte SeasonDefault { get; set; } = 0;
     public int SeasonChangeIntervalMinutes { get; set; } = 30;
 
+    // Item Durability
+    public bool ItemDurabilityEnabled { get; set; } = true;
+    public int ItemDurabilityLossChance { get; set; } = 25;
+    public int ItemDurabilityLossMin { get; set; } = 1;
+    public int ItemDurabilityLossMax { get; set; } = 1;
+    public bool ItemBreakOnZeroHits { get; set; } = true;
+    public int ItemDefaultHits { get; set; } = 50;
+
     // Misc
     public int DecayTimer { get; set; } = 30;
 
@@ -370,6 +378,14 @@ public sealed class SphereConfig
             ini.GetInt(section, "SeasonChangeIntervalMinutes", SeasonChangeIntervalMinutes));
 
         DecayTimer = ini.GetInt(section, "DecayTimer", DecayTimer);
+
+        ItemDurabilityEnabled = ini.GetBool(section, "ItemDurabilityEnabled", ItemDurabilityEnabled);
+        ItemDurabilityLossChance = Math.Clamp(ini.GetInt(section, "ItemDurabilityLossChance", ItemDurabilityLossChance), 0, 100);
+        ItemDurabilityLossMin = Math.Max(0, ini.GetInt(section, "ItemDurabilityLossMin", ItemDurabilityLossMin));
+        ItemDurabilityLossMax = Math.Max(ItemDurabilityLossMin, ini.GetInt(section, "ItemDurabilityLossMax", ItemDurabilityLossMax));
+        ItemBreakOnZeroHits = ini.GetBool(section, "ItemBreakOnZeroHits", ItemBreakOnZeroHits);
+        ItemDefaultHits = Math.Max(1, ini.GetInt(section, "ItemDefaultHits", ItemDefaultHits));
+
         StateRecordingEnabled = ini.GetBool(section, "StateRecordingEnabled", StateRecordingEnabled);
         StateRecordPlayersOnly = ini.GetBool(section, "StateRecordPlayersOnly", StateRecordPlayersOnly);
         StateRecordMoveScanMs = Math.Max(500, ini.GetInt(section, "StateRecordMoveScanMs", StateRecordMoveScanMs));

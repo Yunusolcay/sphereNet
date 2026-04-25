@@ -74,6 +74,16 @@ public static class CombatEngine
 {
     private static readonly Random _rand = new();
 
+    public static bool DurabilityEnabled { get; set; }
+    public static int DurabilityLossChance { get; set; } = 25;
+    public static int DurabilityLossMin { get; set; } = 1;
+    public static int DurabilityLossMax { get; set; } = 1;
+    public static bool BreakOnZeroHits { get; set; } = true;
+    public static int DefaultHits { get; set; } = 50;
+
+    public static Action<Item>? OnItemBroken;
+    public static Func<Item, int, bool>? OnItemDamaged;
+
     /// <summary>
     /// Calculate hit chance. Maps to CServerConfig::Calc_CombatChanceToHit.
     /// Era 0 = Sphere custom, 1 = pre-AOS, 2 = AOS.
@@ -255,9 +265,59 @@ public static class CombatEngine
                 int reflect = Math.Max(1, damage / 4);
                 attacker.Hits -= (short)reflect;
             }
+
+            if (DurabilityEnabled)
+            {
+                if (weapon != null)
+                    ApplyDurabilityLoss(weapon);
+                ApplyArmorDurabilityLoss(target);
+            }
         }
 
         return damage;
+    }
+
+    private static readonly Layer[] _armorLayers =
+    [
+        Layer.Helm, Layer.Neck, Layer.Chest, Layer.Arms,
+        Layer.Gloves, Layer.Legs, Layer.Shoes, Layer.TwoHanded
+    ];
+
+    private static void ApplyArmorDurabilityLoss(Character target)
+    {
+        var layer = _armorLayers[_rand.Next(_armorLayers.Length)];
+        var armor = target.GetEquippedItem(layer);
+        if (armor != null)
+            ApplyDurabilityLoss(armor);
+    }
+
+    private static void ApplyDurabilityLoss(Item item)
+    {
+        if (_rand.Next(100) >= DurabilityLossChance)
+            return;
+
+        int maxHits = item.GetHitsMax();
+        if (maxHits <= 0)
+        {
+            maxHits = DefaultHits;
+            item.SetTag("HITSMAX", maxHits.ToString());
+            item.SetTag("HITS", maxHits.ToString());
+            return;
+        }
+
+        int curHits = item.GetHitsCur();
+        int loss = DurabilityLossMin == DurabilityLossMax
+            ? DurabilityLossMin
+            : _rand.Next(DurabilityLossMin, DurabilityLossMax + 1);
+
+        if (OnItemDamaged?.Invoke(item, loss) == true)
+            return;
+
+        curHits = Math.Max(0, curHits - loss);
+        item.SetTag("HITS", curHits.ToString());
+
+        if (curHits <= 0 && BreakOnZeroHits)
+            OnItemBroken?.Invoke(item);
     }
 
     /// <summary>

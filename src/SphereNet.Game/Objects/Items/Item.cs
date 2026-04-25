@@ -219,6 +219,39 @@ public class Item : ObjBase
         item.ContainedIn = Uid;
     }
 
+    public bool CanStackWith(Item other)
+    {
+        if (other == this || other.IsDeleted) return false;
+        if (BaseId != other.BaseId) return false;
+        if (Hue != other.Hue) return false;
+
+        if (_type is ItemType.Container or ItemType.ContainerLocked or
+            ItemType.Corpse or ItemType.EqMemoryObj or ItemType.SpawnChar or
+            ItemType.SpawnItem or ItemType.Multi or ItemType.MultiCustom)
+            return false;
+
+        var def = DefinitionLoader.GetItemDef(BaseId);
+        if (def != null && (def.Can & CanFlags.I_Pile) == 0)
+            return false;
+
+        if (_more1 != other._more1 || _more2 != other._more2) return false;
+        return true;
+    }
+
+    public Item AddItemWithStack(Item item)
+    {
+        foreach (var existing in _contents)
+        {
+            if (existing.CanStackWith(item) && (existing.Amount + item.Amount) <= ushort.MaxValue)
+            {
+                existing.Amount += item.Amount;
+                return existing;
+            }
+        }
+        AddItem(item);
+        return item;
+    }
+
     public bool RemoveItem(Item item)
     {
         if (_contents.Remove(item))
@@ -262,6 +295,9 @@ public class Item : ObjBase
             case "TYPE": value = ((ushort)_type).ToString(); return true;
             case "AMOUNT": value = _amount.ToString(); return true;
             case "CONT": value = _containedIn.IsValid ? $"0{_containedIn.Value:X}" : ""; return true;
+            case "HITS": value = (TryGetTag("HITS", out string? hv) ? hv : "0")!; return true;
+            case "MAXHITS":
+            case "HITSMAX": value = (TryGetTag("HITSMAX", out string? hmv) ? hmv : "0")!; return true;
             case "LAYER": value = ((byte)EquipLayer).ToString(); return true;
 
             // Faz 1: Core fields
@@ -627,6 +663,13 @@ public class Item : ObjBase
                 return true;
             case "AMOUNT":
                 if (ushort.TryParse(value, out ushort av)) Amount = av;
+                return true;
+            case "HITS":
+                SetTag("HITS", value);
+                return true;
+            case "MAXHITS":
+            case "HITSMAX":
+                SetTag("HITSMAX", value);
                 return true;
 
             // Faz 1: Core fields

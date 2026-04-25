@@ -113,12 +113,7 @@ public sealed class CraftingEngine
             if (quality >= 150)
                 item.Name = "exceptional " + item.Name;
 
-            var pack = crafter.Backpack;
-            if (pack != null)
-                pack.AddItem(item);
-            else
-                _world.PlaceItemWithDecay(item, crafter.Position);
-
+            // Caller (GameClient.OpenCraftingGump) handles placement + notification
             return item;
         }
         else

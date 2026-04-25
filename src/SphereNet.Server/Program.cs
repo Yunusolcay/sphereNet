@@ -1561,9 +1561,8 @@ public static class Program
         var gatheringEngine = new GatheringEngine(_world, _triggerDispatcher);
         _skillHandlers = new SkillHandlers(_world, gatheringEngine);
         _craftingEngine = new CraftingEngine(_world);
-        int recipeCount = _craftingEngine.LoadRecipesFromDefs(_resources);
-        if (recipeCount > 0)
-            _log.LogInformation("Loaded {Count} craft recipes from SKILLMAKE definitions", recipeCount);
+        // NOTE: LoadRecipesFromDefs is called AFTER defLoader.LoadAll() populates
+        // DefinitionLoader.AllItemDefs — see post-definition-load block below.
         _weatherEngine = new WeatherEngine(_world);
         _weatherEngine.Configure(
             _config.SeasonMode,
@@ -1627,6 +1626,44 @@ public static class Program
             if (charDef == null || (charDef.AttackMin == 0 && charDef.AttackMax == 0))
                 return null;
             return (charDef.AttackMin, Math.Max(charDef.AttackMin, charDef.AttackMax));
+        };
+
+        // Item durability from config
+        CombatEngine.DurabilityEnabled = _config.ItemDurabilityEnabled;
+        CombatEngine.DurabilityLossChance = _config.ItemDurabilityLossChance;
+        CombatEngine.DurabilityLossMin = _config.ItemDurabilityLossMin;
+        CombatEngine.DurabilityLossMax = _config.ItemDurabilityLossMax;
+        CombatEngine.BreakOnZeroHits = _config.ItemBreakOnZeroHits;
+        CombatEngine.DefaultHits = _config.ItemDefaultHits;
+
+        CombatEngine.OnItemDamaged = (item, loss) =>
+        {
+            if (_triggerDispatcher == null) return false;
+            var args = new TriggerArgs { ItemSrc = item, N1 = loss };
+            var result = _triggerDispatcher.FireItemTrigger(item, ItemTrigger.Damage, args);
+            return result == TriggerResult.True;
+        };
+
+        CombatEngine.OnItemBroken = (item) =>
+        {
+            var owner = item.ContainedIn.IsValid ? _world.FindChar(item.ContainedIn) : null;
+            if (owner == null)
+            {
+                var equipOwner = _world.GetAllObjects()
+                    .OfType<SphereNet.Game.Objects.Characters.Character>()
+                    .FirstOrDefault(c => c.GetEquippedItem(item.EquipLayer) == item);
+                owner = equipOwner;
+            }
+
+            if (owner != null && _clientsByCharUid.TryGetValue(owner.Uid, out var ownerClient))
+                ownerClient.SysMessage($"Your {item.GetName()} has been destroyed!");
+
+            if (item.EquipLayer != SphereNet.Core.Enums.Layer.None)
+                owner?.Unequip(item.EquipLayer);
+            var parent = item.ContainedIn.IsValid ? _world.FindObject(item.ContainedIn) as SphereNet.Game.Objects.Items.Item : null;
+            parent?.RemoveItem(item);
+            _world.RemoveItem(item);
+            item.Delete();
         };
 
         // Housing — load multi definitions from multi.mul
@@ -1962,6 +1999,11 @@ public static class Program
 
         // Load ROOMDEF definitions from scripts
         LoadRoomDefs();
+
+        // Load craft recipes — must come AFTER defLoader.LoadAll() so AllItemDefs is populated
+        int recipeCount = _craftingEngine.LoadRecipesFromDefs(_resources);
+        if (recipeCount > 0)
+            _log.LogInformation("Loaded {Count} craft recipes from SKILLMAKE definitions", recipeCount);
 
         // --- 8. Network ---
         _log.LogInformation("Starting network...");
@@ -4314,8 +4356,23 @@ public static class Program
 
         client.SendGump(gump, (buttonId, switches, textEntries) =>
         {
-            if (buttonId == 1)
+            if (buttonId == SphereNet.Game.Diagnostics.SectorListDialog.BtnRefresh)
+            {
                 ShowSectorListDialog(gm);
+            }
+            else if (buttonId >= SphereNet.Game.Diagnostics.SectorListDialog.BtnGoBase)
+            {
+                int idx = (int)(buttonId - SphereNet.Game.Diagnostics.SectorListDialog.BtnGoBase);
+                if (idx < entries.Count)
+                {
+                    var s = entries[idx];
+                    int x = s.SectorX * SphereNet.Game.World.Sectors.Sector.SectorSize + SphereNet.Game.World.Sectors.Sector.SectorSize / 2;
+                    int y = s.SectorY * SphereNet.Game.World.Sectors.Sector.SectorSize + SphereNet.Game.World.Sectors.Sector.SectorSize / 2;
+                    var dest = new SphereNet.Core.Types.Point3D((short)x, (short)y, 0, s.MapIndex);
+                    _world.MoveCharacter(gm, dest);
+                    client.Resync();
+                }
+            }
         });
     }
 

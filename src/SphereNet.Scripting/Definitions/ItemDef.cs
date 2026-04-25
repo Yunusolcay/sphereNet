@@ -24,6 +24,8 @@ public sealed class ItemDef : BaseDef
     public bool Dye { get; set; }
     public bool Flip { get; set; }
     public bool Repair { get; set; }
+    public int HitsMin { get; set; }
+    public int HitsMax { get; set; }
     public bool Replicate { get; set; }
     public bool TwoHands { get; set; }
     public uint TData1 { get; set; }
@@ -84,6 +86,13 @@ public sealed class ItemDef : BaseDef
             case "DYE": Dye = value != "0"; break;
             case "FLIP": Flip = value != "0"; break;
             case "REPAIR": Repair = value != "0"; break;
+            case "HITS":
+            case "MAXHITS":
+            case "HITSMAX":
+                var (hmin, hmax) = ParseRange(value);
+                HitsMin = hmin;
+                HitsMax = hmax > 0 ? hmax : hmin;
+                break;
             case "REPLICATE": Replicate = value != "0"; break;
             case "TWOHANDS": TwoHands = value != "0"; break;
             case "TDATA1": ParseHexOrDecUInt(value, out uint td1); TData1 = td1; break;

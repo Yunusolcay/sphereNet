@@ -2,11 +2,20 @@ using SphereNet.Core.Enums;
 using SphereNet.Core.Types;
 using SphereNet.Game.Definitions;
 using SphereNet.Game.Objects.Characters;
+using SphereNet.Game.Objects.Items;
 using SphereNet.Game.Scripting;
 using SphereNet.Game.World;
 using SphereNet.Scripting.Definitions;
 
 namespace SphereNet.Game.Skills;
+
+public readonly struct GatherResult
+{
+    public bool Handled { get; init; }
+    public bool Success { get; init; }
+    public bool Depleted { get; init; }
+    public Item? Item { get; init; }
+}
 
 /// <summary>
 /// Region-based resource gathering engine.
@@ -34,32 +43,25 @@ public sealed class GatheringEngine
     }
 
     /// <summary>
-    /// Try to gather a resource from the region at the target location.
-    /// Returns true if a region resource was found and processed (success or fail).
-    /// Returns false if no matching region resource exists (caller should use hardcoded fallback).
+    /// Sink-aware gather: creates the item but does NOT add to backpack.
+    /// Caller uses sink.DeliverItem for stacking + client notification.
+    /// Includes sector-based resource depletion tracking.
     /// </summary>
-    public bool TryGather(Character ch, SkillType skill, Point3D target, out bool success, out ushort itemId, out int amount)
+    public GatherResult TryGatherForSink(Character ch, SkillType skill, Point3D target)
     {
-        success = false;
-        itemId = 0;
-        amount = 0;
-
         if (!_skillTypeFilters.TryGetValue(skill, out var typeFilter))
-            return false;
+            return new GatherResult { Handled = false };
 
-        // 1. Find the region at target
         var region = _world.FindRegion(target);
         if (region == null || region.RegionTypes.Count == 0)
-            return false;
+            return new GatherResult { Handled = false };
 
-        // 2-3. Find matching REGIONTYPE for this skill's type filter
         RegionTypeDef? matchedType = null;
         foreach (var rtRid in region.RegionTypes)
         {
             var rtDef = DefinitionLoader.GetRegionTypeDef(rtRid.Index);
             if (rtDef == null) continue;
 
-            // Filter by item type (t_rock for Mining, etc.)
             if (rtDef.ItemTypeFilter != null &&
                 rtDef.ItemTypeFilter.Equals(typeFilter, StringComparison.OrdinalIgnoreCase))
             {
@@ -67,26 +69,30 @@ public sealed class GatheringEngine
                 break;
             }
 
-            // If no filter set, accept it as a match for any skill
             if (rtDef.ItemTypeFilter == null && matchedType == null)
                 matchedType = rtDef;
         }
 
         if (matchedType == null || matchedType.Resources.Count == 0)
-            return false;
+            return new GatherResult { Handled = false };
 
-        // 4. Select a random REGIONRESOURCE from the REGIONTYPE
         var resRid = matchedType.SelectRandomResource(_rng);
         var resDef = DefinitionLoader.GetRegionResourceDef(resRid.Index);
         if (resDef == null)
-            return false;
+            return new GatherResult { Handled = false };
 
-        // 5. Skill check against REGIONRESOURCE difficulty
+        // Resource depletion check
+        var sector = _world.GetSector(target);
+        if (sector != null && resDef.AmountMax > 0)
+        {
+            int available = sector.GetResourceAmount(resRid.Index, resDef.AmountMax, resDef.Regen);
+            if (available <= 0)
+                return new GatherResult { Handled = true, Depleted = true };
+        }
+
         int difficulty = (resDef.SkillMin + resDef.SkillMax) / 2;
-        // Convert from tenths (0-1000) to percentage (0-100)
         int diffPct = difficulty / 10;
 
-        // 6. Fire @ResourceTest trigger
         if (_triggerDispatcher != null)
         {
             var args = new TriggerArgs
@@ -96,14 +102,12 @@ public sealed class GatheringEngine
                 N2 = resDef.SkillMax,
             };
             _triggerDispatcher.FireResourceTrigger(resDef, "ResourceTest", ch, args);
-            // If trigger returned True (via TAG.EVENT_RESOURCETEST), cancel
         }
 
-        success = SkillEngine.UseQuick(ch, skill, diffPct);
+        bool success = SkillEngine.UseQuick(ch, skill, diffPct);
 
         if (success)
         {
-            // 7. Fire @ResourceGather trigger
             if (_triggerDispatcher != null)
             {
                 var args = new TriggerArgs
@@ -114,22 +118,48 @@ public sealed class GatheringEngine
                 _triggerDispatcher.FireResourceTrigger(resDef, "ResourceGather", ch, args);
             }
 
-            // 8. Create the gathered item
-            itemId = resDef.Reap;
-            amount = _rng.Next(resDef.ReapAmountMin, resDef.ReapAmountMax + 1);
+            ushort itemId = resDef.Reap;
+            int amount = _rng.Next(resDef.ReapAmountMin, resDef.ReapAmountMax + 1);
 
             if (itemId > 0 && amount > 0)
             {
+                sector?.ConsumeResource(resRid.Index, amount);
+
                 var item = _world.CreateItem();
                 item.BaseId = itemId;
                 item.Amount = (ushort)amount;
-                if (ch.Backpack != null)
-                    ch.Backpack.AddItem(item);
-                else
-                    _world.PlaceItemWithDecay(item, ch.Position);
+                return new GatherResult { Handled = true, Success = true, Item = item };
             }
         }
 
-        return true; // Region resource was found and processed
+        return new GatherResult { Handled = true, Success = false };
+    }
+
+    /// <summary>
+    /// Legacy gather path. Returns true if a region resource was found and processed.
+    /// Kept for backward compatibility with non-sink callers.
+    /// </summary>
+    public bool TryGather(Character ch, SkillType skill, Point3D target, out bool success, out ushort itemId, out int amount)
+    {
+        var result = TryGatherForSink(ch, skill, target);
+        success = result.Success;
+        itemId = 0;
+        amount = 0;
+
+        if (!result.Handled)
+            return false;
+
+        if (result.Item != null)
+        {
+            itemId = result.Item.BaseId;
+            amount = result.Item.Amount;
+
+            if (ch.Backpack != null)
+                ch.Backpack.AddItem(result.Item);
+            else
+                _world.PlaceItemWithDecay(result.Item, ch.Position);
+        }
+
+        return true;
     }
 }

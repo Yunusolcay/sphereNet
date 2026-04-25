@@ -176,6 +176,9 @@ public sealed class SkillHandlers
                     return UseSkill(ch, SkillType.Veterinary, vetAnimal.Position);
                 return false;
             case SkillType.Tracking:         return ActiveSkillEngine.Tracking(sink, ActiveSkillEngine.TrackingCategory.Animals);
+            case SkillType.Mining:           return ActiveSkillEngine.Mining(sink, point ?? ch.Position, _gatheringEngine, _world);
+            case SkillType.Fishing:          return ActiveSkillEngine.Fishing(sink, point ?? ch.Position, _gatheringEngine, _world);
+            case SkillType.Lumberjacking:    return ActiveSkillEngine.Lumberjacking(sink, point ?? ch.Position, _gatheringEngine, _world);
             default:                         return UseSkill(ch, skill, point);
         }
     }

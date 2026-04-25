@@ -4,6 +4,101 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-25m] - Mining/craft pipeline, item durability, sectorlist gump
+               (mining/craft pipeline, item durability, sectorlist gump)
+----------------------------------------
+
+MINING / FISHING / LUMBERJACKING PIPELINE:
+  - ActiveSkillEngine'e Mining(), Fishing(), Lumberjacking() metodlari eklendi.
+    IActiveSkillSink uzerinden SysMessage, animasyon, ses ve container
+    bildirimi saglanir. Eski sink'siz yoldan tamamen bagimsiz.
+    Added Mining(), Fishing(), Lumberjacking() to ActiveSkillEngine.
+    Uses IActiveSkillSink for SysMessage, animation, sound, and container
+    notification. Fully independent of the old sink-less path.
+  - GatheringEngine: GatherResult struct ve TryGatherForSink metodu eklendi.
+    Item olusturulur ama cantaya eklenmez — caller sink.DeliverItem ile ekler.
+    GatheringEngine: added GatherResult struct and TryGatherForSink method.
+    Item created but not added to backpack — caller uses sink.DeliverItem.
+  - SkillHandlers: Mining/Fishing/Lumberjacking case'leri UseActiveSkill
+    switch'ine eklendi.
+    SkillHandlers: Mining/Fishing/Lumberjacking cases added to UseActiveSkill.
+
+ITEM STACKING:
+  - Item.CanStackWith() ve AddItemWithStack() eklendi. Ayni BaseId+Hue,
+    CanFlags.I_Pile, More1/More2 eslesmesi ile otomatik merge.
+    Added Item.CanStackWith() and AddItemWithStack(). Auto-merge on matching
+    BaseId+Hue, CanFlags.I_Pile, More1/More2.
+  - InfoSkillSink.DeliverItem: AddItemWithStack + PacketContainerItem (0x25)
+    gonderimiyle canta acikmadan item gorunur.
+    InfoSkillSink.DeliverItem: uses AddItemWithStack + PacketContainerItem
+    (0x25) so items appear without reopening backpack.
+
+SECTOR RESOURCE DEPLETION:
+  - Sector'e per-resource havuz sistemi eklendi (_resourcePools dictionary).
+    GetResourceAmount ile lazy init, zaman bazli regen, ConsumeResource ile
+    azaltma. AmountMin/AmountMax/Regen degerlerinden okunur.
+    Added per-resource pool system to Sector (_resourcePools dictionary).
+    Lazy init via GetResourceAmount, time-based regen, ConsumeResource for
+    decrement. Reads from AmountMin/AmountMax/Regen values.
+
+RECIPE YUKLEME SIRASI / RECIPE LOAD ORDER:
+  - LoadRecipesFromDefs cagrisi defLoader.LoadAll() sonrasina tasindi.
+    ItemDef'ler yuklenmeden recipe olusturulamiyordu → mortar craft dialog
+    acilmiyordu.
+    Moved LoadRecipesFromDefs call to after defLoader.LoadAll(). Recipes
+    couldn't be created before ItemDefs were loaded → mortar craft dialog
+    was not opening.
+
+CRAFTING CIKTI BILDIRIMI / CRAFTING OUTPUT NOTIFICATION:
+  - CraftingEngine.TryCraft artik cantaya ekleme yapmaz — caller
+    (OpenCraftingGump) AddItemWithStack + PacketContainerItem gonderiyor.
+    CraftingEngine.TryCraft no longer adds to backpack — caller
+    (OpenCraftingGump) uses AddItemWithStack + PacketContainerItem.
+
+ITEM DURABILITY SISTEMI / ITEM DURABILITY SYSTEM:
+  - SphereConfig: 6 yeni durability ayari eklendi (ItemDurabilityEnabled,
+    ItemDurabilityLossChance, LossMin/LossMax, BreakOnZeroHits, DefaultHits).
+    SphereConfig: 6 new durability settings added (ItemDurabilityEnabled,
+    ItemDurabilityLossChance, LossMin/LossMax, BreakOnZeroHits, DefaultHits).
+  - CombatEngine: ApplyDurabilityLoss + ApplyArmorDurabilityLoss. Saldiri
+    sonrasi silah ve rastgele zirh parcasi hasar alir. Sifira dusen item
+    kirilir ve silinir.
+    CombatEngine: ApplyDurabilityLoss + ApplyArmorDurabilityLoss. After
+    attack, weapon and random armor piece take damage. Item at zero HP
+    breaks and is deleted.
+  - OnItemDamaged callback: @Damage trigger'i atesler, script ile mudahale
+    imkani. OnItemBroken callback: sahibe mesaj + unequip + silme.
+    OnItemDamaged callback: fires @Damage trigger, allows script override.
+    OnItemBroken callback: notifies owner + unequip + delete.
+  - ItemDef: HitsMin/HitsMax alanlari ve HITS/MAXHITS/HITSMAX parse desteği.
+    Item: HITS/HITSMAX property get/set (tag bazli).
+    ItemDef: HitsMin/HitsMax fields and HITS/MAXHITS/HITSMAX parse support.
+    Item: HITS/HITSMAX property get/set (tag-based).
+
+SECTORLIST GUMP YENIDEN YAZIMI / SECTORLIST GUMP REWRITE:
+  - HTML TABLE yapisi kaldirildi, native gump layout (AddText/AddButton)
+    ile degistirildi. Renkli hue'lar: oyuncu (yesil), NPC (kirmizi/turuncu),
+    uyuyan sector (gri).
+    Removed HTML TABLE layout, replaced with native gump layout
+    (AddText/AddButton). Color-coded hues: players (green), NPCs
+    (red/orange), sleeping sectors (gray).
+  - Her sectore GO butonu eklendi — GM'i o sectorun merkezine teleport eder.
+    Added GO button per sector — teleports GM to center of that sector.
+
+DEGISTIRILEN DOSYALAR / FILES CHANGED:
+  - src/SphereNet.Core/Configuration/SphereConfig.cs
+  - src/SphereNet.Game/Clients/GameClient.cs
+  - src/SphereNet.Game/Combat/CombatEngine.cs
+  - src/SphereNet.Game/Crafting/CraftingEngine.cs
+  - src/SphereNet.Game/Diagnostics/SectorListDialog.cs
+  - src/SphereNet.Game/Objects/Items/Item.cs
+  - src/SphereNet.Game/Skills/GatheringEngine.cs
+  - src/SphereNet.Game/Skills/Information/ActiveSkillEngine.cs
+  - src/SphereNet.Game/Skills/SkillHandlers.cs
+  - src/SphereNet.Game/World/Sectors/Sector.cs
+  - src/SphereNet.Scripting/Definitions/ItemDef.cs
+  - src/SphereNet.Server/Program.cs
+
 [2026-04-25l] - Secure trade sistemi yeniden yazildi (secure trade system rewrite)
 ----------------------------------------
 

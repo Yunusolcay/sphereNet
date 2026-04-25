@@ -31,6 +31,8 @@ public sealed class Sector : IScriptObj
     private short _coldChance = 5;
     private bool _isSleeping;
 
+    private Dictionary<int, (int Remaining, long RegenTick)>? _resourcePools;
+
     public int SectorX => _x;
     public int SectorY => _y;
     public byte MapIndex => _mapIndex;
@@ -85,6 +87,39 @@ public sealed class Sector : IScriptObj
     }
 
     public void RemoveItem(Item item) => _items.Remove(item);
+
+    public int GetResourceAmount(int resDefIndex, int amountMax, int regenSeconds)
+    {
+        _resourcePools ??= [];
+        long now = Environment.TickCount64;
+
+        if (!_resourcePools.TryGetValue(resDefIndex, out var pool))
+        {
+            _resourcePools[resDefIndex] = (amountMax, now);
+            return amountMax;
+        }
+
+        if (regenSeconds > 0 && pool.Remaining <= 0)
+        {
+            long regenMs = regenSeconds * 1000L;
+            if (now - pool.RegenTick >= regenMs)
+            {
+                _resourcePools[resDefIndex] = (amountMax, now);
+                return amountMax;
+            }
+        }
+
+        return pool.Remaining;
+    }
+
+    public void ConsumeResource(int resDefIndex, int amount)
+    {
+        if (_resourcePools == null || !_resourcePools.TryGetValue(resDefIndex, out var pool))
+            return;
+        int newRemaining = Math.Max(0, pool.Remaining - amount);
+        long regenTick = newRemaining <= 0 ? Environment.TickCount64 : pool.RegenTick;
+        _resourcePools[resDefIndex] = (newRemaining, regenTick);
+    }
 
     /// <summary>Get all objects within a range from a point inside this sector.
     /// Safe for concurrent reads when no writes are in progress (multicore compute phase).</summary>
