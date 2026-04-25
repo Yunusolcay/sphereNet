@@ -19,18 +19,17 @@ public readonly struct TradeEntry
 
 /// <summary>
 /// A secure trade session between two players (trade window).
-/// Maps to CItemStone / trade container in Source-X.
+/// Each side has a virtual container — the client shows items in these containers
+/// inside the trade gump. The containers must exist as real Items so ClassicUO's
+/// world.Get(serial) can find them when processing the 0x6F packet.
 /// </summary>
 public sealed class SecureTrade
 {
     private readonly Serial _sessionId;
     private readonly Character _initiator;
     private readonly Character _partner;
-
-    private readonly List<Item> _initiatorItems = [];
-    private readonly List<Item> _partnerItems = [];
-    private int _initiatorGold;
-    private int _partnerGold;
+    private readonly Item _initiatorContainer;
+    private readonly Item _partnerContainer;
 
     private bool _initiatorAccepted;
     private bool _partnerAccepted;
@@ -39,98 +38,59 @@ public sealed class SecureTrade
     public Serial SessionId => _sessionId;
     public Character Initiator => _initiator;
     public Character Partner => _partner;
+    public Item InitiatorContainer => _initiatorContainer;
+    public Item PartnerContainer => _partnerContainer;
+    public bool InitiatorAccepted => _initiatorAccepted;
+    public bool PartnerAccepted => _partnerAccepted;
     public bool IsCompleted => _isCompleted;
-    public IReadOnlyList<Item> InitiatorItems => _initiatorItems;
-    public IReadOnlyList<Item> PartnerItems => _partnerItems;
 
-    public SecureTrade(Serial sessionId, Character initiator, Character partner)
+    public SecureTrade(Serial sessionId, Character initiator, Character partner,
+        Item initiatorContainer, Item partnerContainer)
     {
         _sessionId = sessionId;
         _initiator = initiator;
         _partner = partner;
+        _initiatorContainer = initiatorContainer;
+        _partnerContainer = partnerContainer;
     }
 
-    public void AddItem(Character from, Item item)
+    public bool IsParticipant(Character ch) => ch == _initiator || ch == _partner;
+
+    public Item GetOwnContainer(Character ch) =>
+        ch == _initiator ? _initiatorContainer : _partnerContainer;
+
+    public Item GetPartnerContainer(Character ch) =>
+        ch == _initiator ? _partnerContainer : _initiatorContainer;
+
+    public Character GetPartner(Character ch) =>
+        ch == _initiator ? _partner : _initiator;
+
+    public bool ToggleAccept(Character from)
     {
-        if (_isCompleted) return;
+        if (_isCompleted) return false;
 
-        if (from == _initiator) _initiatorItems.Add(item);
-        else if (from == _partner) _partnerItems.Add(item);
+        if (from == _initiator) _initiatorAccepted = !_initiatorAccepted;
+        else if (from == _partner) _partnerAccepted = !_partnerAccepted;
 
-        ResetAcceptance();
+        return _initiatorAccepted && _partnerAccepted;
     }
 
-    public void RemoveItem(Character from, Item item)
+    public void ResetAcceptance()
     {
-        if (_isCompleted) return;
-
-        if (from == _initiator) _initiatorItems.Remove(item);
-        else if (from == _partner) _partnerItems.Remove(item);
-
-        ResetAcceptance();
-    }
-
-    public void SetGold(Character from, int amount)
-    {
-        if (_isCompleted) return;
-
-        if (from == _initiator) _initiatorGold = amount;
-        else if (from == _partner) _partnerGold = amount;
-
-        ResetAcceptance();
-    }
-
-    public void Accept(Character from)
-    {
-        if (_isCompleted) return;
-
-        if (from == _initiator) _initiatorAccepted = true;
-        else if (from == _partner) _partnerAccepted = true;
-
-        if (_initiatorAccepted && _partnerAccepted)
-            CompleteTrade();
+        _initiatorAccepted = false;
+        _partnerAccepted = false;
     }
 
     public void Cancel()
     {
         if (_isCompleted) return;
         _isCompleted = true;
-
-        // Return all items to original owners (handled by caller)
     }
 
-    private void CompleteTrade()
+    public void Complete()
     {
+        if (_isCompleted) return;
         _isCompleted = true;
-
-        var partnerBackpack = _partner.Backpack;
-        var initiatorBackpack = _initiator.Backpack;
-
-        foreach (var item in _initiatorItems)
-        {
-            item.IsEquipped = false;
-            if (partnerBackpack != null)
-                partnerBackpack.AddItem(item);
-            else
-                item.ContainedIn = _partner.Uid;
-            item.Position = _partner.Position;
-        }
-
-        foreach (var item in _partnerItems)
-        {
-            item.IsEquipped = false;
-            if (initiatorBackpack != null)
-                initiatorBackpack.AddItem(item);
-            else
-                item.ContainedIn = _initiator.Uid;
-            item.Position = _initiator.Position;
-        }
-    }
-
-    private void ResetAcceptance()
-    {
-        _initiatorAccepted = false;
-        _partnerAccepted = false;
     }
 }
 
@@ -361,27 +321,34 @@ public static class VendorEngine
 public sealed class TradeManager
 {
     private readonly Dictionary<Serial, SecureTrade> _activeTrades = [];
+    private readonly Dictionary<uint, SecureTrade> _containerIndex = [];
     private uint _nextSessionId;
 
     public SecureTrade? GetTrade(Serial sessionId) =>
         _activeTrades.GetValueOrDefault(sessionId);
 
-    public SecureTrade StartTrade(Character initiator, Character partner)
+    public SecureTrade? FindByContainer(uint containerSerial) =>
+        _containerIndex.GetValueOrDefault(containerSerial);
+
+    public SecureTrade StartTrade(Character initiator, Character partner,
+        Item initiatorContainer, Item partnerContainer)
     {
         var sessionId = new Serial(++_nextSessionId | 0x80000000);
-        var trade = new SecureTrade(sessionId, initiator, partner);
+        var trade = new SecureTrade(sessionId, initiator, partner,
+            initiatorContainer, partnerContainer);
         _activeTrades[sessionId] = trade;
+        _containerIndex[initiatorContainer.Uid.Value] = trade;
+        _containerIndex[partnerContainer.Uid.Value] = trade;
         return trade;
     }
 
-    public void EndTrade(Serial sessionId)
+    public void EndTrade(SecureTrade trade)
     {
-        if (_activeTrades.TryGetValue(sessionId, out var trade))
-        {
-            if (!trade.IsCompleted)
-                trade.Cancel();
-            _activeTrades.Remove(sessionId);
-        }
+        if (!trade.IsCompleted)
+            trade.Cancel();
+        _activeTrades.Remove(trade.SessionId);
+        _containerIndex.Remove(trade.InitiatorContainer.Uid.Value);
+        _containerIndex.Remove(trade.PartnerContainer.Uid.Value);
     }
 
     public SecureTrade? FindTradeFor(Character ch) =>

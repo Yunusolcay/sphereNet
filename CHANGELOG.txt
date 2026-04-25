@@ -4,6 +4,46 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-25l] - Secure trade sistemi yeniden yazildi (secure trade system rewrite)
+----------------------------------------
+
+SECURE TRADE (0x6F):
+  - Outgoing paketler eklendi: PacketSecureTradeOpen (action 0),
+    PacketSecureTradeClose (action 1), PacketSecureTradeUpdate (action 2).
+    Added outgoing packets: PacketSecureTradeOpen (action 0),
+    PacketSecureTradeClose (action 1), PacketSecureTradeUpdate (action 2).
+  - Trade baslatma: item'i baska oyuncunun uzerine surukle → trade penceresi
+    acilir, item otomatik olarak trade container'a eklenir.
+    Trade initiation: drag item onto another player → trade window opens,
+    item automatically added to trade container.
+  - Sanal trade container'lar: her iki taraf icin gercek Item nesneleri
+    olusturuluyor, ClassicUO world.Get() ile bulabiliyor.
+    Virtual trade containers: real Item objects created for both sides,
+    ClassicUO can find them via world.Get().
+  - Trade container'a item drop: trade penceresine item suruklenebiliyor,
+    acceptance otomatik sifirlanir.
+    Trade container item drop: items can be dragged into trade window,
+    acceptance auto-resets.
+  - Accept toggle: iki taraf da kabul edince itemler karsilikli tasinir,
+    container'lar silinir. Cancel: itemler sahiplerine iade edilir.
+    Accept toggle: when both accept items swap, containers deleted.
+    Cancel: items returned to owners.
+  - Partner bildirimleri: 5 callback ile partner'a paket gonderme (open,
+    item, close, update, message) Program.cs'de wire'landi.
+    Partner notifications: 5 callbacks for sending packets to partner
+    (open, item, close, update, message) wired in Program.cs.
+  - HandleSecureTrade: container serial ile trade bulma, eski session ID
+    yaklasimi kaldirildi.
+    HandleSecureTrade: finds trade by container serial, removed old
+    session ID approach.
+
+DEGISTIRILEN DOSYALAR / FILES CHANGED:
+  - src/SphereNet.Game/Clients/GameClient.cs
+  - src/SphereNet.Game/Trade/TradeEngine.cs
+  - src/SphereNet.Network/Packets/Outgoing/ExtendedPackets.cs
+  - src/SphereNet.Server/Program.cs
+  - src/SphereNet.Tests/GameSystemTests.cs
+
 [2026-04-25k] - Paperdoll spam fix, outgoing packet dosya birlestirme
                (paperdoll spam fix, outgoing packet file consolidation)
 ----------------------------------------

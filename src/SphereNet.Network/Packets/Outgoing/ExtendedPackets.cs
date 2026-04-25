@@ -1719,3 +1719,82 @@ public sealed class PacketGumpValueInput : PacketWriter
     }
 }
 
+// ==================== Secure Trade Packets ====================
+
+/// <summary>0x6F action 0 — Open secure trade window.</summary>
+public sealed class PacketSecureTradeOpen : PacketWriter
+{
+    private readonly uint _partnerSerial;
+    private readonly uint _myContainerSerial;
+    private readonly uint _theirContainerSerial;
+    private readonly string _partnerName;
+
+    public PacketSecureTradeOpen(uint partnerSerial, uint myContainer, uint theirContainer, string partnerName)
+        : base(0x6F)
+    {
+        _partnerSerial = partnerSerial;
+        _myContainerSerial = myContainer;
+        _theirContainerSerial = theirContainer;
+        _partnerName = partnerName ?? "";
+    }
+
+    public override PacketBuffer Build()
+    {
+        var buf = CreateVariable(48);
+        buf.WriteByte(0x00);
+        buf.WriteUInt32(_partnerSerial);
+        buf.WriteUInt32(_myContainerSerial);
+        buf.WriteUInt32(_theirContainerSerial);
+        buf.WriteBool(true);
+        buf.WriteAsciiFixed(_partnerName, 30);
+        buf.WriteLengthAt(1);
+        return buf;
+    }
+}
+
+/// <summary>0x6F action 1 — Close/cancel secure trade.</summary>
+public sealed class PacketSecureTradeClose : PacketWriter
+{
+    private readonly uint _containerSerial;
+
+    public PacketSecureTradeClose(uint containerSerial) : base(0x6F)
+    {
+        _containerSerial = containerSerial;
+    }
+
+    public override PacketBuffer Build()
+    {
+        var buf = CreateVariable(8);
+        buf.WriteByte(0x01);
+        buf.WriteUInt32(_containerSerial);
+        buf.WriteLengthAt(1);
+        return buf;
+    }
+}
+
+/// <summary>0x6F action 2 — Update acceptance status.</summary>
+public sealed class PacketSecureTradeUpdate : PacketWriter
+{
+    private readonly uint _containerSerial;
+    private readonly bool _myAccepted;
+    private readonly bool _theirAccepted;
+
+    public PacketSecureTradeUpdate(uint containerSerial, bool myAccepted, bool theirAccepted) : base(0x6F)
+    {
+        _containerSerial = containerSerial;
+        _myAccepted = myAccepted;
+        _theirAccepted = theirAccepted;
+    }
+
+    public override PacketBuffer Build()
+    {
+        var buf = CreateVariable(17);
+        buf.WriteByte(0x02);
+        buf.WriteUInt32(_containerSerial);
+        buf.WriteUInt32(_myAccepted ? 1u : 0u);
+        buf.WriteUInt32(_theirAccepted ? 1u : 0u);
+        buf.WriteLengthAt(1);
+        return buf;
+    }
+}
+

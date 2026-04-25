@@ -3779,31 +3779,135 @@ public sealed class GameClient : ITextConsole
     /// Handle secure trade packet (0x6F).
     /// Actions: 0=display, 1=close, 2=update (check/uncheck accept).
     /// </summary>
-    public void HandleSecureTrade(byte action, uint sessionId, uint param)
+    public void HandleSecureTrade(byte action, uint containerSerial, uint param)
     {
         if (_character == null || _tradeManager == null) return;
 
-        var trade = _tradeManager.FindTradeFor(_character);
-        if (trade == null && action != 0) return;
+        var trade = _tradeManager.FindByContainer(containerSerial);
+        if (trade == null) return;
 
         switch (action)
         {
-            case 0: // Open/initiate trade — param is target serial
-                var target = _world.FindChar(new Serial(param));
-                if (target == null || !target.IsPlayer) { SysMessage(ServerMessages.Get("trade_invalid_target")); return; }
-                _tradeManager.StartTrade(_character, target);
-                SysMessage(ServerMessages.GetFormatted("trade_initiated", target.Name));
-                break;
-            case 1: // Close/cancel trade
-                trade?.Cancel();
-                SysMessage(ServerMessages.Get("trade_cancelled"));
+            case 1: // Cancel
+                CancelTrade(trade);
                 break;
             case 2: // Accept toggle
-                trade?.Accept(_character);
-                SysMessage(trade?.IsCompleted == true ? "Trade completed!" : "You have accepted the trade.");
+            {
+                bool bothAccepted = trade.ToggleAccept(_character);
+                SendTradeUpdateToBoth(trade);
+
+                if (bothAccepted)
+                    CompleteTrade(trade);
                 break;
+            }
         }
     }
+
+    public void InitiateTrade(Character partner, Item? firstItem = null)
+    {
+        if (_character == null || _tradeManager == null) return;
+
+        var existing = _tradeManager.FindTradeFor(_character);
+        if (existing != null) { SysMessage("You are already trading."); return; }
+
+        var partnerTrade = _tradeManager.FindTradeFor(partner);
+        if (partnerTrade != null) { SysMessage("They are already trading."); return; }
+
+        var cont1 = _world.CreateItem();
+        cont1.BaseId = 0x1E5E;
+        cont1.ItemType = Core.Enums.ItemType.Container;
+        cont1.Name = "Trade Container";
+
+        var cont2 = _world.CreateItem();
+        cont2.BaseId = 0x1E5E;
+        cont2.ItemType = Core.Enums.ItemType.Container;
+        cont2.Name = "Trade Container";
+
+        var trade = _tradeManager.StartTrade(_character, partner, cont1, cont2);
+
+        _netState.Send(new PacketWorldItem(cont1.Uid.Value, 0x1E5E, 1, 0, 0, 0, 0));
+        _netState.Send(new PacketWorldItem(cont2.Uid.Value, 0x1E5E, 1, 0, 0, 0, 0));
+        _netState.Send(new PacketSecureTradeOpen(
+            partner.Uid.Value, cont1.Uid.Value, cont2.Uid.Value, partner.GetName()));
+
+        SendTradeToPartner?.Invoke(partner, _character, cont1, cont2);
+
+        if (firstItem != null)
+        {
+            cont1.AddItem(firstItem);
+            _netState.Send(new PacketContainerItem(
+                firstItem.Uid.Value, firstItem.DispIdFull, 0,
+                firstItem.Amount, 30, 30,
+                cont1.Uid.Value, firstItem.Hue, _netState.IsClientPost6017));
+            SendTradeItemToPartner?.Invoke(partner, firstItem, cont1);
+        }
+    }
+
+    private void CancelTrade(SecureTrade trade)
+    {
+        var partner = trade.GetPartner(_character!);
+        var myCont = trade.GetOwnContainer(_character!);
+        var theirCont = trade.GetPartnerContainer(_character!);
+
+        foreach (var item in _world.GetContainerContents(myCont.Uid).ToList())
+            PlaceItemInPack(_character!, item);
+        foreach (var item in _world.GetContainerContents(theirCont.Uid).ToList())
+            PlaceItemInPack(partner, item);
+
+        _netState.Send(new PacketSecureTradeClose(myCont.Uid.Value));
+        SendTradeCloseToPartner?.Invoke(partner, theirCont.Uid.Value);
+
+        trade.Cancel();
+        _tradeManager!.EndTrade(trade);
+
+        myCont.Delete();
+        theirCont.Delete();
+    }
+
+    private void CompleteTrade(SecureTrade trade)
+    {
+        var initiator = trade.Initiator;
+        var partner = trade.Partner;
+        var cont1 = trade.InitiatorContainer;
+        var cont2 = trade.PartnerContainer;
+
+        foreach (var item in _world.GetContainerContents(cont1.Uid).ToList())
+            PlaceItemInPack(partner, item);
+        foreach (var item in _world.GetContainerContents(cont2.Uid).ToList())
+            PlaceItemInPack(initiator, item);
+
+        _netState.Send(new PacketSecureTradeClose(
+            trade.GetOwnContainer(_character!).Uid.Value));
+        SendTradeCloseToPartner?.Invoke(
+            trade.GetPartner(_character!),
+            trade.GetPartnerContainer(_character!).Uid.Value);
+
+        trade.Complete();
+        _tradeManager!.EndTrade(trade);
+
+        cont1.Delete();
+        cont2.Delete();
+
+        SysMessage("Trade complete.");
+        SendTradeMessageToPartner?.Invoke(trade.GetPartner(_character!), "Trade complete.");
+    }
+
+    private void SendTradeUpdateToBoth(SecureTrade trade)
+    {
+        var myCont = trade.GetOwnContainer(_character!);
+        bool myAcc = _character == trade.Initiator ? trade.InitiatorAccepted : trade.PartnerAccepted;
+        bool theirAcc = _character == trade.Initiator ? trade.PartnerAccepted : trade.InitiatorAccepted;
+        _netState.Send(new PacketSecureTradeUpdate(myCont.Uid.Value, myAcc, theirAcc));
+
+        var partner = trade.GetPartner(_character!);
+        SendTradeUpdateToPartner?.Invoke(partner, trade);
+    }
+
+    public Action<Character, Character, Item, Item>? SendTradeToPartner { get; set; }
+    public Action<Character, Item, Item>? SendTradeItemToPartner { get; set; }
+    public Action<Character, uint>? SendTradeCloseToPartner { get; set; }
+    public Action<Character, SecureTrade>? SendTradeUpdateToPartner { get; set; }
+    public Action<Character, string>? SendTradeMessageToPartner { get; set; }
 
     /// <summary>Handle rename request (0x75).</summary>
     public void HandleRename(uint serial, string name)
@@ -4862,6 +4966,27 @@ public sealed class GameClient : ITextConsole
         if (containerUid != 0 && containerUid != 0xFFFFFFFF)
         {
             var container = _world.FindItem(new Serial(containerUid));
+            if (container != null && _tradeManager?.FindByContainer(containerUid) is { } dropTrade)
+            {
+                if (!dropTrade.IsParticipant(_character))
+                {
+                    PlaceItemInPack(_character, item);
+                    _netState.Send(new PacketDropReject());
+                    return;
+                }
+                var myCont = dropTrade.GetOwnContainer(_character);
+                myCont.AddItem(item);
+                item.Position = new Point3D(30, 30, 0, _character.MapIndex);
+                dropTrade.ResetAcceptance();
+                SendTradeUpdateToBoth(dropTrade);
+                _netState.Send(new PacketContainerItem(
+                    item.Uid.Value, item.DispIdFull, 0,
+                    item.Amount, 30, 30,
+                    myCont.Uid.Value, item.Hue, _netState.IsClientPost6017));
+                SendTradeItemToPartner?.Invoke(dropTrade.GetPartner(_character), item, myCont);
+                _netState.Send(new PacketDropAck());
+                return;
+            }
             if (container != null)
             {
                 // Capacity enforcement — bank and normal containers have separate limits.
@@ -4957,6 +5082,14 @@ public sealed class GameClient : ITextConsole
                         return;
                     }
                 }
+
+                if (charTarget.IsPlayer && _tradeManager != null)
+                {
+                    InitiateTrade(charTarget, item);
+                    _netState.Send(new PacketDropAck());
+                    return;
+                }
+
                 PlaceItemInPack(charTarget, item);
                 _netState.Send(new PacketDropAck());
                 return;
@@ -6011,9 +6144,7 @@ public sealed class GameClient : ITextConsole
         if (_character == null || _tradeManager == null) return;
         var target = _world.FindChar(new Serial(targetUid));
         if (target == null || !target.IsPlayer) return;
-
-        _tradeManager.StartTrade(_character, target);
-        SysMessage(ServerMessages.GetFormatted("trade_initiated2", target.Name));
+        InitiateTrade(target);
     }
 
     // ==================== Party ====================

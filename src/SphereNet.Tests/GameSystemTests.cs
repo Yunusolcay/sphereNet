@@ -162,13 +162,15 @@ public class GameSystemTests
         var world = CreateWorld();
         var ch1 = world.CreateCharacter(); ch1.Name = "A";
         var ch2 = world.CreateCharacter(); ch2.Name = "B";
-        var trade = tm.StartTrade(ch1, ch2);
+        var cont1 = world.CreateItem(); cont1.Name = "C1";
+        var cont2 = world.CreateItem(); cont2.Name = "C2";
+        var trade = tm.StartTrade(ch1, ch2, cont1, cont2);
         Assert.False(trade.IsCompleted);
 
-        trade.Accept(ch1);
-        Assert.False(trade.IsCompleted); // both must accept
-        trade.Accept(ch2);
-        Assert.True(trade.IsCompleted);
+        trade.ToggleAccept(ch1);
+        Assert.False(trade.InitiatorAccepted && trade.PartnerAccepted);
+        bool both = trade.ToggleAccept(ch2);
+        Assert.True(both);
     }
 
     // --- Gump ---

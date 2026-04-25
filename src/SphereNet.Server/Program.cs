@@ -4686,6 +4686,46 @@ public static class Program
                 else if (victim.IsDead)
                     victim.Resurrect(); // offline / NPC fallback
             };
+
+            client.SendTradeToPartner = (partner, initiator, cont1, cont2) =>
+            {
+                if (_clientsByCharUid.TryGetValue(partner.Uid, out var pc))
+                {
+                    pc.NetState.Send(new PacketWorldItem(cont1.Uid.Value, 0x1E5E, 1, 0, 0, 0, 0));
+                    pc.NetState.Send(new PacketWorldItem(cont2.Uid.Value, 0x1E5E, 1, 0, 0, 0, 0));
+                    pc.NetState.Send(new PacketSecureTradeOpen(
+                        initiator.Uid.Value, cont2.Uid.Value, cont1.Uid.Value, initiator.GetName()));
+                }
+            };
+            client.SendTradeItemToPartner = (partner, item, container) =>
+            {
+                if (_clientsByCharUid.TryGetValue(partner.Uid, out var pc))
+                    pc.NetState.Send(new PacketContainerItem(
+                        item.Uid.Value, item.DispIdFull, 0,
+                        item.Amount, 30, 30,
+                        container.Uid.Value, item.Hue, pc.NetState.IsClientPost6017));
+            };
+            client.SendTradeCloseToPartner = (partner, containerSerial) =>
+            {
+                if (_clientsByCharUid.TryGetValue(partner.Uid, out var pc))
+                    pc.NetState.Send(new PacketSecureTradeClose(containerSerial));
+            };
+            client.SendTradeUpdateToPartner = (partner, trade) =>
+            {
+                if (_clientsByCharUid.TryGetValue(partner.Uid, out var pc))
+                {
+                    var theirCont = trade.GetOwnContainer(partner);
+                    bool theirAcc = partner == trade.Initiator ? trade.InitiatorAccepted : trade.PartnerAccepted;
+                    bool myAcc = partner == trade.Initiator ? trade.PartnerAccepted : trade.InitiatorAccepted;
+                    pc.NetState.Send(new PacketSecureTradeUpdate(theirCont.Uid.Value, theirAcc, myAcc));
+                }
+            };
+            client.SendTradeMessageToPartner = (partner, msg) =>
+            {
+                if (_clientsByCharUid.TryGetValue(partner.Uid, out var pc))
+                    pc.SysMessage(msg);
+            };
+
             _clients[state.Id] = client;
         }
         return client;
