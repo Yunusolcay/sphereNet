@@ -507,7 +507,9 @@ public sealed class BotClient : IDisposable
         {
             case BotAIActionType.Move:
                 await SendPacketAsync(BotPacketBuilder.BuildMoveRequest(action.Direction, _moveSequence++), ct);
-                await Task.Delay(_rng.Next(150, 400), ct);
+                bool isRunning = (action.Direction & 0x80) != 0;
+                int moveDelay = isRunning ? _rng.Next(100, 250) : _rng.Next(200, 450);
+                await Task.Delay(moveDelay, ct);
                 break;
             case BotAIActionType.Attack:
                 await SendPacketAsync(BotPacketBuilder.BuildAttackRequest(action.TargetSerial), ct);

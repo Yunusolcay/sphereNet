@@ -23,6 +23,17 @@ public sealed class BotWorldModel
 
     public int MoveRejectCount;
 
+    // Navigation state
+    public short DestX, DestY;
+    public bool HasDestination;
+    public int WaypointIndex;
+    public BotTravelPhase TravelPhase;
+    public int CurrentCityIndex = -1;
+    public int TargetCityIndex = -1;
+    public int PoiVisitCount;
+    public long LastDestReachedMs;
+    public int ConsecutiveStuck;
+
     public int DistanceTo(short tx, short ty)
     {
         int dx = Math.Abs(X - tx);
@@ -86,4 +97,10 @@ public sealed class KnownMobile
     public bool IsMountBody => MountBodies.Contains(Body);
     public bool IsMonster => Notoriety is 5 or 6;
     public bool IsLikelyHealer => IsHumanBody && Notoriety == 7;
+}
+
+public enum BotTravelPhase
+{
+    InCity,
+    TravelingToCity,
 }
