@@ -1895,12 +1895,7 @@ public static class Program
             {
                 if (c.Character == ch)
                 {
-                    // 0x88 paperdoll — title is the rendered char name
-                    // plus any title; we use the plain name here as the
-                    // GM-context paperdoll doesn't need the full title
-                    // line composition that Source-X computes.
-                    c.NetState.Send(new SphereNet.Network.Packets.Outgoing.PacketOpenPaperdoll(
-                        ch.Uid.Value, ch.GetName(), 0));
+                    c.SendPaperdoll(ch);
                     return;
                 }
             }

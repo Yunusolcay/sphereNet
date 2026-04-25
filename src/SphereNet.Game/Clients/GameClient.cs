@@ -1642,11 +1642,6 @@ public sealed class GameClient : ITextConsole
             _character.Hue, ghostFlags, ghostNoto);
         _netState.Send(ghostMoving);
 
-        // Refresh own paperdoll so the ghost body shows up on the
-        // gump as well — this also nudges ClassicUO to reload the
-        // mobile's animation atlas.
-        SendPaperdoll(_character);
-
         _netState.Send(new PacketDeathStatus(PacketDeathStatus.ActionDead));
 
         SendCharacterStatus(_character);
@@ -1735,8 +1730,6 @@ public sealed class GameClient : ITextConsole
         _netState.Send(resMoving);
 
         _netState.Send(resDraw);
-
-        SendPaperdoll(_character);
 
         // === Per-observer dispatch ===
         // Plain observer: never saw the ghost (filter dropped it during
@@ -7082,7 +7075,7 @@ public sealed class GameClient : ITextConsole
 
     private readonly Dictionary<uint, long> _paperdollThrottle = [];
 
-    private void SendPaperdoll(Character ch)
+    public void SendPaperdoll(Character ch)
     {
         long now = Environment.TickCount64;
         if (_paperdollThrottle.TryGetValue(ch.Uid.Value, out long last) && now - last < 2000)

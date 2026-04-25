@@ -4,6 +4,36 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-25k] - Paperdoll spam fix, outgoing packet dosya birlestirme
+               (paperdoll spam fix, outgoing packet file consolidation)
+----------------------------------------
+
+PAPERDOLL SPAM FIX:
+  - OpenPaperdollForOwner delegate'i artik throttle korumali SendPaperdoll()
+    kullaniyor. Script DCLICK komutu her tetiklendiginde 2s throttle devrede.
+    OpenPaperdollForOwner delegate now uses throttled SendPaperdoll().
+    Script DCLICK verb respects 2s throttle instead of sending raw packets.
+  - Olum ve dirilis yollarindan gereksiz SendPaperdoll kaldirildi. DrawPlayer
+    (0x20) ve DrawObject (0x78) zaten body/equipment degisimini iletiyor.
+    Removed unnecessary SendPaperdoll from death and resurrect paths.
+    DrawPlayer (0x20) and DrawObject (0x78) already convey body/equipment changes.
+  - SendPaperdoll public yapildi (delegate erisimi icin).
+    SendPaperdoll made public for delegate access.
+
+PACKET DOSYA BIRLESTIRME / PACKET FILE CONSOLIDATION:
+  - PacketMenuDisplay.cs ve PacketGumpValueInput.cs ExtendedPackets.cs'e tasinip
+    silindi. Outgoing'de artik 2 dosya: GamePackets.cs + ExtendedPackets.cs.
+    PacketMenuDisplay.cs and PacketGumpValueInput.cs merged into
+    ExtendedPackets.cs and deleted. Outgoing now has 2 files:
+    GamePackets.cs + ExtendedPackets.cs.
+
+DEGISTIRILEN DOSYALAR / FILES CHANGED:
+  - src/SphereNet.Game/Clients/GameClient.cs
+  - src/SphereNet.Server/Program.cs
+  - src/SphereNet.Network/Packets/Outgoing/ExtendedPackets.cs
+  - src/SphereNet.Network/Packets/Outgoing/PacketMenuDisplay.cs (silindi/deleted)
+  - src/SphereNet.Network/Packets/Outgoing/PacketGumpValueInput.cs (silindi/deleted)
+
 [2026-04-25j] - Client-emulator eksik yapilar: OpenDoor, Book, Weather, Profile, DropReject
                (client-emulator missing structures: OpenDoor, Book, Weather, Profile, DropReject)
 ----------------------------------------
