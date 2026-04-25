@@ -1569,6 +1569,17 @@ public static class Program
             _config.SeasonMode,
             (SeasonType)Math.Clamp(_config.SeasonDefault, (byte)SeasonType.Spring, (byte)SeasonType.Desolation),
             checked(_config.SeasonChangeIntervalMinutes * 60 * 1000));
+        _weatherEngine.OnWeatherChanged = (regionName, type, intensity, temp) =>
+        {
+            var pkt = new PacketWeather((byte)type, intensity, temp);
+            foreach (var c in _clients.Values)
+            {
+                if (!c.IsPlaying || c.Character == null) continue;
+                var r = _world.FindRegion(c.Character.Position);
+                if (r != null && r.Name == regionName)
+                    c.Send(pkt);
+            }
+        };
         VendorEngine.World = _world;
         _world.ObjectCreated += OnWorldObjectCreated;
         _world.ObjectDeleting += OnWorldObjectDeleting;
@@ -5134,10 +5145,10 @@ public static class Program
             client.HandleStatusRequest(type, serial);
     }
 
-    private static void OnProfileRequest(NetState state, byte mode, uint serial)
+    private static void OnProfileRequest(NetState state, byte mode, uint serial, string bioText)
     {
         if (_clients.TryGetValue(state.Id, out var client))
-            client.HandleProfileRequest(mode, serial);
+            client.HandleProfileRequest(mode, serial, bioText);
     }
 
     private static void OnTargetResponse(NetState state, byte type, uint targetId, uint serial,
@@ -5192,6 +5203,7 @@ public static class Program
                     client.HandleCastSpell((SpellType)spellId, 0);
                 break;
             case 0x58: // OpenDoor
+                client.OpenDoor();
                 break;
             case 0xF4: // SKILLLOCK
                 var parts = command.Split(' ');
@@ -5249,8 +5261,15 @@ public static class Program
         var seasonPacket = new PacketSeason((byte)_weatherEngine.CurrentSeason, playSound);
         foreach (var client in _clients.Values)
         {
-            if (client.IsPlaying)
-                client.Send(seasonPacket);
+            if (!client.IsPlaying || client.Character == null) continue;
+            client.Send(seasonPacket);
+
+            var r = _world.FindRegion(client.Character.Position);
+            if (r != null && !string.IsNullOrEmpty(r.Name))
+            {
+                var (wType, wIntensity, wTemp) = _weatherEngine.GetWeatherForRegion(r.Name);
+                client.Send(new PacketWeather((byte)wType, wIntensity, wTemp));
+            }
         }
     }
 

@@ -2323,9 +2323,7 @@ public sealed class GameClient : ITextConsole
 
             case ItemType.Book:
             case ItemType.Message:
-                // SphereNet does not yet ship a book gump -- mirror Source-X failure path so
-                // the player at least gets the upstream message.
-                SysMessage(ServerMessages.Get(Msg.ItemuseBookFail));
+                OpenBook(item, item.ItemType == ItemType.Book);
                 break;
 
             case ItemType.Spellbook:
@@ -4284,6 +4282,20 @@ public sealed class GameClient : ITextConsole
     }
 
 
+    public void OpenDoor()
+    {
+        if (_character == null) return;
+        foreach (var item in _world.GetItemsInRange(_character.Position, 2))
+        {
+            if (item.ItemType == ItemType.Door || item.ItemType == ItemType.DoorLocked ||
+                item.ItemType == ItemType.Portculis || item.ItemType == ItemType.PortLocked)
+            {
+                ToggleDoor(item);
+                return;
+            }
+        }
+    }
+
     private void ToggleDoor(Item door)
     {
         if (_character == null) return;
@@ -4870,11 +4882,9 @@ public sealed class GameClient : ITextConsole
                     int maxItems = isBank ? _world.MaxBankItems : _world.MaxContainerItems;
                     if (currentCount >= maxItems)
                     {
-                        // Source-X CClient::Item_DropContainer parity: bank vs
-                        // generic container produce different DEFMSG strings.
                         SysMessage(ServerMessages.Get(isBank ? Msg.BvboxFullItems : Msg.ContFullItems));
                         PlaceItemInPack(_character, item);
-                        _netState.Send(new PacketDropAck());
+                        _netState.Send(new PacketDropReject());
                         return;
                     }
                     int weightLimit = isBank ? _world.MaxBankWeight : _world.MaxContainerWeight;
@@ -4887,7 +4897,7 @@ public sealed class GameClient : ITextConsole
                         {
                             SysMessage(ServerMessages.Get(isBank ? Msg.BvboxFullWeight : Msg.ContFullWeight));
                             PlaceItemInPack(_character, item);
-                            _netState.Send(new PacketDropAck());
+                            _netState.Send(new PacketDropReject());
                             return;
                         }
                     }
@@ -4901,7 +4911,7 @@ public sealed class GameClient : ITextConsole
                     if (result == TriggerResult.True)
                     {
                         PlaceItemInPack(_character, item);
-                        _netState.Send(new PacketDropAck());
+                        _netState.Send(new PacketDropReject());
                         return;
                     }
                 }
@@ -4968,7 +4978,7 @@ public sealed class GameClient : ITextConsole
         if (dropResult == TriggerResult.True)
         {
             PlaceItemInPack(_character, item);
-            _netState.Send(new PacketDropAck());
+            _netState.Send(new PacketDropReject());
             return;
         }
 
@@ -5016,19 +5026,26 @@ public sealed class GameClient : ITextConsole
 
     // ==================== Status Request ====================
 
-    public void HandleProfileRequest(byte mode, uint serial)
+    public void HandleProfileRequest(byte mode, uint serial, string bioText = "")
     {
         if (_character == null) return;
-        if (mode != 0) return; // 0=request, 1=set (not supported yet)
 
         Character? ch = _world.FindChar(new Serial(serial));
         ch ??= _character;
+
+        if (mode == 1)
+        {
+            if (ch == _character || _character.PrivLevel >= PrivLevel.GM)
+                ch.SetTag("PROFILE_BIO", bioText);
+            return;
+        }
 
         string title = string.IsNullOrEmpty(ch.Title)
             ? ch.GetName()
             : $"{ch.GetName()}, {ch.Title}";
 
-        _netState.Send(new PacketProfileResponse(ch.Uid.Value, title));
+        string profile = ch.TryGetTag("PROFILE_BIO", out string? bio) && bio != null ? bio : "";
+        _netState.Send(new PacketProfileResponse(ch.Uid.Value, title, profile));
     }
 
     public void HandleStatusRequest(byte type, uint serial)
@@ -11394,6 +11411,34 @@ public sealed class GameClient : ITextConsole
 
     // ==================== Phase 2: Content Feature Handlers ====================
 
+    private void OpenBook(Item book, bool writable)
+    {
+        if (_character == null) return;
+
+        string title = book.TryGetTag("BOOK_TITLE", out string? t) && t != null ? t : book.GetName();
+        string author = book.TryGetTag("BOOK_AUTHOR", out string? a) && a != null ? a : "";
+        ushort pageCount = 16;
+        if (book.TryGetTag("BOOK_PAGES", out string? ps) && ushort.TryParse(ps, out ushort pc))
+            pageCount = pc;
+
+        _netState.Send(new PacketBookHeaderOut(
+            book.Uid.Value, writable, pageCount, title, author));
+
+        var pages = new List<(ushort PageNum, string[] Lines)>();
+        for (ushort i = 1; i <= pageCount; i++)
+        {
+            string[] lines;
+            if (book.TryGetTag($"PAGE_{i}", out string? content) && !string.IsNullOrEmpty(content))
+                lines = content.Split('\n');
+            else
+                lines = [];
+            pages.Add((i, lines));
+        }
+
+        _netState.Send(new PacketBookPageContent(
+            book.Uid.Value, pages.ToArray()));
+    }
+
     /// <summary>Handle book page read/write (0x66).</summary>
     public void HandleBookPage(uint serial, List<(ushort PageNum, string[] Lines)> pages)
     {
@@ -11406,19 +11451,21 @@ public sealed class GameClient : ITextConsole
         {
             if (lines.Length == 0)
             {
-                // Read request — send page content from tags
-                if (item.TryGetTag($"PAGE_{pageNum}", out string? content))
-                {
-                    _logger.LogDebug("[book_page_read] item=0x{Item:X8} page={Page}", serial, pageNum);
-                }
+                // Read request — send page content back
+                string[] pageLines;
+                if (item.TryGetTag($"PAGE_{pageNum}", out string? content) && !string.IsNullOrEmpty(content))
+                    pageLines = content.Split('\n');
+                else
+                    pageLines = [];
+
+                _netState.Send(new PacketBookPageContent(
+                    serial, [(pageNum, pageLines)]));
                 continue;
             }
 
             // Write request — store page content in tags
             string pageContent = string.Join("\n", lines);
             item.SetTag($"PAGE_{pageNum}", pageContent);
-            _logger.LogDebug("[book_page_write] item=0x{Item:X8} page={Page} lines={Lines}",
-                serial, pageNum, lines.Length);
         }
     }
 

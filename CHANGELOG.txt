@@ -4,6 +4,69 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-25j] - Client-emulator eksik yapilar: OpenDoor, Book, Weather, Profile, DropReject
+               (client-emulator missing structures: OpenDoor, Book, Weather, Profile, DropReject)
+----------------------------------------
+
+OPENDOOR MACRO (0x12 / 0x58):
+  - OpenDoor macro artik calisiyor. 0x58 text command handler GameClient.OpenDoor()
+    cagiriyor: karakter pozisyonundan 2 tile icindeki ilk kapi/portculis'i toggle eder.
+    OpenDoor macro now works. 0x58 text command handler calls GameClient.OpenDoor():
+    toggles the first door/portcullis within 2 tiles of character position.
+
+BOOK SISTEMI / BOOK SYSTEM (0x93 / 0x66):
+  - Kitaplara cift tikla artik calisiyor. PacketBookHeaderOut (0x93) ve
+    PacketBookPageContent (0x66) outgoing paketleri eklendi.
+    Double-clicking books now works. Added PacketBookHeaderOut (0x93) and
+    PacketBookPageContent (0x66) outgoing packets.
+  - Kitap icerik TAG-based: BOOK_TITLE, BOOK_AUTHOR, BOOK_PAGES, PAGE_N
+    tag'lerinden okunup yaziliyor. ItemType.Book writable, ItemType.Message read-only.
+    Book content is TAG-based: read/written from BOOK_TITLE, BOOK_AUTHOR,
+    BOOK_PAGES, PAGE_N tags. ItemType.Book is writable, ItemType.Message is read-only.
+  - HandleBookPage: read isteklerinde artik sayfa icerigini client'a gonderiyor
+    (eskiden sadece logluyordu).
+    HandleBookPage: now sends page content back to client on read requests
+    (was only logging).
+
+WEATHER EFEKTI / WEATHER EFFECT (0x65):
+  - PacketWeather (0x65) artik client'lara gonderiliyor. WeatherEngine.OnWeatherChanged
+    callback'i region bazli weather broadcast yapiyor.
+    PacketWeather (0x65) now sent to clients. WeatherEngine.OnWeatherChanged
+    callback handles per-region weather broadcast.
+  - BroadcastSeasonChange: season paketi ile birlikte her oyuncunun
+    bulundugu region'un weather durumunu da gonderiyor.
+    BroadcastSeasonChange: sends each player's current region weather
+    alongside the season packet.
+
+PROFILE WRITE (0xB8 MODE 1):
+  - Profil duzenleme artik calisiyor. 0xB8 incoming parser mode 1'de
+    bio text'i parse ediyor. PROFILE_BIO tag'ine kaydediliyor.
+    Profile editing now works. 0xB8 incoming parser extracts bio text
+    in mode 1. Stored in PROFILE_BIO tag.
+  - Profil okuma: PacketProfileResponse artik PROFILE_BIO tag'inden
+    bio text'i de gonderiyor.
+    Profile read: PacketProfileResponse now includes bio text from
+    PROFILE_BIO tag.
+  - GM'ler baska karakterlerin profilini de duzenleyebilir.
+    GMs can edit other characters' profiles.
+
+DROP REJECT (0x28):
+  - PacketDropReject (0x28) eklendi. Drop basarisiz oldugunda artik
+    client'a reject paketi gonderiliyor (container dolu, agirlik limiti,
+    trigger reject). ClassicUO drag ghost sorunu onlendi.
+    Added PacketDropReject (0x28). Drop failures now send reject packet
+    to client (container full, weight limit, trigger reject). Prevents
+    ClassicUO drag ghost issue.
+
+DEGISTIRILEN DOSYALAR / FILES CHANGED:
+  - src/SphereNet.Server/Program.cs
+  - src/SphereNet.Game/Clients/GameClient.cs
+  - src/SphereNet.Game/World/WeatherEngine.cs
+  - src/SphereNet.Network/Manager/NetworkManager.cs
+  - src/SphereNet.Network/Packets/Incoming/GamePackets.cs
+  - src/SphereNet.Network/Packets/Outgoing/GamePackets.cs
+  - src/SphereNet.Network/State/NetState.cs
+
 [2026-04-25i] - Skill & magery kapsamli denetim ve duzeltme (skill & magery audit and fixes)
 ----------------------------------------
 

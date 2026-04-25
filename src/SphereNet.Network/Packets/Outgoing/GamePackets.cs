@@ -518,3 +518,97 @@ public sealed class PacketPromptRequest : PacketWriter
         return buf;
     }
 }
+
+/// <summary>0x93 — Book header (outgoing: displays book gump with title/author).</summary>
+public sealed class PacketBookHeaderOut : PacketWriter
+{
+    private readonly uint _serial;
+    private readonly bool _writable;
+    private readonly bool _newStyleTitle;
+    private readonly ushort _pageCount;
+    private readonly string _title;
+    private readonly string _author;
+
+    public PacketBookHeaderOut(uint serial, bool writable, ushort pageCount, string title, string author)
+        : base(0x93)
+    {
+        _serial = serial;
+        _writable = writable;
+        _newStyleTitle = true;
+        _pageCount = pageCount;
+        _title = title;
+        _author = author;
+    }
+
+    public override PacketBuffer Build()
+    {
+        var buf = CreateVariable(100);
+        buf.WriteUInt32(_serial);
+        buf.WriteByte((byte)(_writable ? 1 : 0));
+        buf.WriteByte((byte)(_newStyleTitle ? 1 : 0));
+        buf.WriteUInt16(_pageCount);
+
+        // Title (length-prefixed ASCII string)
+        string title = _title.Length > 60 ? _title[..60] : _title;
+        buf.WriteUInt16((ushort)(title.Length + 1));
+        buf.WriteAsciiNull(title);
+
+        // Author (length-prefixed ASCII string)
+        string author = _author.Length > 30 ? _author[..30] : _author;
+        buf.WriteUInt16((ushort)(author.Length + 1));
+        buf.WriteAsciiNull(author);
+
+        buf.WriteLengthAt(1);
+        return buf;
+    }
+}
+
+/// <summary>0x66 — Book page content (outgoing: sends page text to client).</summary>
+public sealed class PacketBookPageContent : PacketWriter
+{
+    private readonly uint _serial;
+    private readonly (ushort PageNum, string[] Lines)[] _pages;
+
+    public PacketBookPageContent(uint serial, (ushort PageNum, string[] Lines)[] pages)
+        : base(0x66)
+    {
+        _serial = serial;
+        _pages = pages;
+    }
+
+    public override PacketBuffer Build()
+    {
+        var buf = CreateVariable(256);
+        buf.WriteUInt32(_serial);
+        buf.WriteUInt16((ushort)_pages.Length);
+
+        foreach (var (pageNum, lines) in _pages)
+        {
+            buf.WriteUInt16(pageNum);
+            buf.WriteUInt16((ushort)lines.Length);
+            foreach (var line in lines)
+                buf.WriteAsciiNull(line);
+        }
+
+        buf.WriteLengthAt(1);
+        return buf;
+    }
+}
+
+/// <summary>0x28 — Drop reject (item cannot be dropped at target location).</summary>
+public sealed class PacketDropReject : PacketWriter
+{
+    private readonly byte _reason; // 0=cannot lift, 5=rejected
+
+    public PacketDropReject(byte reason = 5) : base(0x28)
+    {
+        _reason = reason;
+    }
+
+    public override PacketBuffer Build()
+    {
+        var buf = CreateFixed(2);
+        buf.WriteByte(_reason);
+        return buf;
+    }
+}

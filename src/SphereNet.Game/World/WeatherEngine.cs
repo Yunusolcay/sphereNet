@@ -55,6 +55,9 @@ public sealed class WeatherEngine
     public SeasonType CurrentSeason => _currentSeason;
     public SeasonMode CurrentSeasonMode => _seasonMode;
 
+    /// <summary>Fired when weather changes in a region. Args: (regionName, type, intensity, temp).</summary>
+    public Action<string, WeatherType, byte, byte>? OnWeatherChanged { get; set; }
+
     public WeatherEngine(GameWorld world)
     {
         _world = world;
@@ -119,7 +122,10 @@ public sealed class WeatherEngine
                 expired.Add(name);
         }
         foreach (var name in expired)
+        {
             _regionWeather.Remove(name);
+            OnWeatherChanged?.Invoke(name, WeatherType.None, 0, 20);
+        }
 
         // Random weather generation — only for regions that actually
         // have an online player in them. The old full _world.Regions
@@ -153,6 +159,7 @@ public sealed class WeatherEngine
                     _ => 20
                 };
                 SetRegionWeather(region.Name, type, intensity, temp);
+                OnWeatherChanged?.Invoke(region.Name, type, intensity, temp);
             }
         }
 

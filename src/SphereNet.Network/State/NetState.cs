@@ -266,7 +266,7 @@ public sealed class NetState : IDisposable
     public Action<NetState, uint, short, short, sbyte, uint>? ItemDropHandler { get; set; }
     public Action<NetState, uint, byte, uint>? ItemEquipHandler { get; set; }
     public Action<NetState, byte, uint>? StatusRequestHandler { get; set; }
-    public Action<NetState, byte, uint>? ProfileRequestHandler { get; set; }
+    public Action<NetState, byte, uint, string>? ProfileRequestHandler { get; set; }
     public Action<NetState, byte, uint, uint, short, short, sbyte, ushort>? TargetResponseHandler { get; set; }
     public Action<NetState, uint, uint, uint, uint[], (ushort Id, string Text)[]>? GumpResponseHandler { get; set; }
     public Action<NetState, string>? ClientVersionHandler { get; set; }
@@ -363,8 +363,8 @@ public sealed class NetState : IDisposable
     internal void OnStatusRequest(byte type, uint serial)
         => StatusRequestHandler?.Invoke(this, type, serial);
 
-    internal void OnProfileRequest(byte mode, uint serial)
-        => ProfileRequestHandler?.Invoke(this, mode, serial);
+    internal void OnProfileRequest(byte mode, uint serial, string bioText)
+        => ProfileRequestHandler?.Invoke(this, mode, serial, bioText);
 
     internal void OnTargetResponse(byte type, uint targetId, uint serial, short x, short y, sbyte z, ushort graphic)
         => TargetResponseHandler?.Invoke(this, type, targetId, serial, x, y, z, graphic);

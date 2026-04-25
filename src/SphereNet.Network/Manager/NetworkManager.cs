@@ -551,7 +551,7 @@ public sealed class NetworkManager : IDisposable
         Action<NetState, uint, List<Packets.Incoming.VendorSellEntry>>? vendorSell = null,
         Action<NetState, byte, uint, uint>? secureTrade = null,
         Action<NetState, uint, string>? rename = null,
-        Action<NetState, byte, uint>? profileRequest = null,
+        Action<NetState, byte, uint, string>? profileRequest = null,
         // Phase 1
         Action<NetState, byte>? deathMenu = null,
         Action<NetState, int, string>? charDelete = null,

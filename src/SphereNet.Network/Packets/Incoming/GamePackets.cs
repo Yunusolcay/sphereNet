@@ -94,7 +94,15 @@ public sealed class PacketProfileRequest : PacketHandler
     {
         byte mode = buffer.ReadByte(); // 0=request, 1=set
         uint serial = buffer.ReadUInt32();
-        state.OnProfileRequest(mode, serial);
+        string bioText = "";
+        if (mode == 1)
+        {
+            ushort cmdType = buffer.ReadUInt16();
+            ushort textLen = buffer.ReadUInt16();
+            if (textLen > 0)
+                bioText = buffer.ReadUnicodeFixed(textLen);
+        }
+        state.OnProfileRequest(mode, serial, bioText);
     }
 }
 
