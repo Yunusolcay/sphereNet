@@ -143,6 +143,9 @@ public sealed class SphereConfig
 
     // State Recording
     public bool StateRecordingEnabled { get; set; } = true;
+    public bool StateRecordPlayersOnly { get; set; } = true;
+    public int StateRecordMoveScanMs { get; set; } = 2000;
+    public int StateRecordSnapshotMs { get; set; } = 15000;
 
     // Player Macro
     public bool MacroEnabled { get; set; } = true;
@@ -368,6 +371,9 @@ public sealed class SphereConfig
 
         DecayTimer = ini.GetInt(section, "DecayTimer", DecayTimer);
         StateRecordingEnabled = ini.GetBool(section, "StateRecordingEnabled", StateRecordingEnabled);
+        StateRecordPlayersOnly = ini.GetBool(section, "StateRecordPlayersOnly", StateRecordPlayersOnly);
+        StateRecordMoveScanMs = Math.Max(500, ini.GetInt(section, "StateRecordMoveScanMs", StateRecordMoveScanMs));
+        StateRecordSnapshotMs = Math.Max(5000, ini.GetInt(section, "StateRecordSnapshotMs", StateRecordSnapshotMs));
         MacroEnabled = ini.GetBool(section, "MacroEnabled", MacroEnabled);
         MacroMaxSteps = Math.Clamp(ini.GetInt(section, "MacroMaxSteps", MacroMaxSteps), 5, 200);
         MacroMaxLoopMinutes = Math.Clamp(ini.GetInt(section, "MacroMaxLoopMinutes", MacroMaxLoopMinutes), 1, 1440);

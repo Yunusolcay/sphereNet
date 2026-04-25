@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
@@ -13,30 +14,37 @@ public sealed class StateRecorder : IDisposable
 {
     private readonly string _dbPath;
     private readonly ILogger _logger;
+    private readonly bool _playersOnly;
     private SqliteConnection? _db;
 
-    private const int MoveScanIntervalMs = 500;
-    private const int SnapshotIntervalMs = 10_000;
-    private const int FlushIntervalMs = 3_000;
+    private readonly int _moveScanIntervalMs;
+    private readonly int _snapshotIntervalMs;
     private const int CleanupIntervalMs = 600_000;
     private const int RetentionDays = 3;
 
     private long _lastMoveScanTick;
     private long _lastSnapshotTick;
-    private long _lastFlushTick;
     private long _lastCleanupTick;
 
-    private readonly List<MoveRecord> _moveBuffer = new(512);
-    private readonly List<SnapshotRecord> _snapshotBuffer = new(256);
+    private readonly ConcurrentQueue<MoveRecord> _moveQueue = new();
+    private readonly ConcurrentQueue<SnapshotRecord> _snapshotQueue = new();
     private readonly Dictionary<uint, (short X, short Y, sbyte Z, byte Map, byte Dir)> _lastPositions = [];
 
     private SqliteCommand? _insertMoveCmd;
     private SqliteCommand? _insertSnapshotCmd;
 
-    public StateRecorder(string dbPath, ILogger logger)
+    private Thread? _flushThread;
+    private volatile bool _disposed;
+    private readonly AutoResetEvent _flushSignal = new(false);
+
+    public StateRecorder(string dbPath, ILogger logger, bool playersOnly = true,
+        int moveScanMs = 2000, int snapshotMs = 15_000)
     {
         _dbPath = dbPath;
         _logger = logger;
+        _playersOnly = playersOnly;
+        _moveScanIntervalMs = moveScanMs;
+        _snapshotIntervalMs = snapshotMs;
     }
 
     public void Initialize()
@@ -112,7 +120,12 @@ public sealed class StateRecorder : IDisposable
         ddl.ExecuteNonQuery();
 
         PrepareStatements();
-        _logger.LogInformation("StateRecorder initialized: {Path}", _dbPath);
+
+        _flushThread = new Thread(FlushLoop) { Name = "StateRecFlush", IsBackground = true };
+        _flushThread.Start();
+
+        _logger.LogInformation("StateRecorder initialized: {Path} (playersOnly={PlayersOnly}, moveScan={MoveMs}ms, snapshot={SnapMs}ms)",
+            _dbPath, _playersOnly, _moveScanIntervalMs, _snapshotIntervalMs);
     }
 
     private void PrepareStatements()
@@ -159,35 +172,30 @@ public sealed class StateRecorder : IDisposable
     }
 
     // ----------------------------------------------------------------
-    //  Main tick — called every server tick (~100ms)
+    //  Main tick — called every server tick, lightweight scan only
     // ----------------------------------------------------------------
 
     public void Tick(long nowMs, IEnumerable<Character> allCharacters)
     {
         if (_db == null) return;
 
-        if (nowMs - _lastMoveScanTick >= MoveScanIntervalMs)
+        if (nowMs - _lastMoveScanTick >= _moveScanIntervalMs)
         {
             ScanMovements(allCharacters);
             _lastMoveScanTick = nowMs;
         }
 
-        if (nowMs - _lastSnapshotTick >= SnapshotIntervalMs)
+        if (nowMs - _lastSnapshotTick >= _snapshotIntervalMs)
         {
             TakeSnapshots(allCharacters);
+            _flushSignal.Set();
             _lastSnapshotTick = nowMs;
-        }
-
-        if (nowMs - _lastFlushTick >= FlushIntervalMs)
-        {
-            Flush();
-            _lastFlushTick = nowMs;
         }
 
         if (nowMs - _lastCleanupTick >= CleanupIntervalMs)
         {
-            Cleanup();
             _lastCleanupTick = nowMs;
+            ThreadPool.QueueUserWorkItem(_ => Cleanup());
         }
     }
 
@@ -197,6 +205,7 @@ public sealed class StateRecorder : IDisposable
         foreach (var ch in chars)
         {
             if (ch.IsDeleted) continue;
+            if (_playersOnly && !ch.IsPlayer) continue;
             uint uid = ch.Uid.Value;
             var cur = (ch.X, ch.Y, ch.Z, ch.Position.Map, (byte)ch.Direction);
 
@@ -208,8 +217,11 @@ public sealed class StateRecorder : IDisposable
             }
 
             _lastPositions[uid] = cur;
-            _moveBuffer.Add(new MoveRecord(uid, ts, cur.X, cur.Y, cur.Z, cur.Map, (byte)cur.Item5));
+            _moveQueue.Enqueue(new MoveRecord(uid, ts, cur.X, cur.Y, cur.Z, cur.Map, (byte)cur.Item5));
         }
+
+        if (!_moveQueue.IsEmpty)
+            _flushSignal.Set();
     }
 
     private void TakeSnapshots(IEnumerable<Character> chars)
@@ -219,11 +231,12 @@ public sealed class StateRecorder : IDisposable
         foreach (var ch in chars)
         {
             if (ch.IsDeleted) continue;
+            if (_playersOnly && !ch.IsPlayer) continue;
             byte flags = 0;
             if (ch.IsInWarMode) flags |= 0x40;
             if (ch.IsInvisible) flags |= 0x80;
 
-            _snapshotBuffer.Add(new SnapshotRecord(
+            _snapshotQueue.Enqueue(new SnapshotRecord(
                 ch.Uid.Value, ts, hourKey,
                 ch.X, ch.Y, ch.Z, ch.Position.Map, (byte)ch.Direction,
                 ch.BodyId, ch.Hue, ch.Name ?? "?", ch.IsPlayer,
@@ -232,18 +245,36 @@ public sealed class StateRecorder : IDisposable
         }
     }
 
-    private void Flush()
+    // ----------------------------------------------------------------
+    //  Background flush thread
+    // ----------------------------------------------------------------
+
+    private void FlushLoop()
     {
-        if (_moveBuffer.Count == 0 && _snapshotBuffer.Count == 0) return;
+        while (!_disposed)
+        {
+            _flushSignal.WaitOne(3_000);
+            if (_disposed) break;
+            FlushQueues();
+        }
+        FlushQueues();
+    }
+
+    private void FlushQueues()
+    {
+        if (_moveQueue.IsEmpty && _snapshotQueue.IsEmpty) return;
+
+        var moves = DrainQueue(_moveQueue);
+        var snaps = DrainQueue(_snapshotQueue);
 
         try
         {
             using var tx = _db!.BeginTransaction();
 
-            if (_moveBuffer.Count > 0)
+            if (moves.Count > 0)
             {
                 _insertMoveCmd!.Transaction = tx;
-                foreach (var r in _moveBuffer)
+                foreach (var r in moves)
                 {
                     _insertMoveCmd.Parameters["@u"].Value = (long)r.CharUid;
                     _insertMoveCmd.Parameters["@t"].Value = r.Ts;
@@ -256,10 +287,10 @@ public sealed class StateRecorder : IDisposable
                 }
             }
 
-            if (_snapshotBuffer.Count > 0)
+            if (snaps.Count > 0)
             {
                 _insertSnapshotCmd!.Transaction = tx;
-                foreach (var r in _snapshotBuffer)
+                foreach (var r in snaps)
                 {
                     _insertSnapshotCmd.Parameters["@u"].Value = (long)r.CharUid;
                     _insertSnapshotCmd.Parameters["@t"].Value = r.Ts;
@@ -290,13 +321,16 @@ public sealed class StateRecorder : IDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "StateRecorder flush failed ({Moves} moves, {Snaps} snapshots)",
-                _moveBuffer.Count, _snapshotBuffer.Count);
+                moves.Count, snaps.Count);
         }
-        finally
-        {
-            _moveBuffer.Clear();
-            _snapshotBuffer.Clear();
-        }
+    }
+
+    private static List<T> DrainQueue<T>(ConcurrentQueue<T> queue)
+    {
+        var list = new List<T>(queue.Count);
+        while (queue.TryDequeue(out var item))
+            list.Add(item);
+        return list;
     }
 
     private void Cleanup()
@@ -671,7 +705,10 @@ public sealed class StateRecorder : IDisposable
 
     public void Dispose()
     {
-        Flush();
+        _disposed = true;
+        _flushSignal.Set();
+        _flushThread?.Join(5_000);
+        _flushSignal.Dispose();
         _insertMoveCmd?.Dispose();
         _insertSnapshotCmd?.Dispose();
         _db?.Dispose();
