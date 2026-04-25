@@ -2,6 +2,7 @@ using SphereNet.Core.Enums;
 using SphereNet.Core.Types;
 using SphereNet.Game.Combat;
 using SphereNet.Game.Messages;
+using SphereNet.Game.Skills;
 using SphereNet.Game.Objects.Characters;
 using SphereNet.Game.Objects.Items;
 using SphereNet.Game.World;
@@ -43,6 +44,11 @@ public sealed class SpellEngine
     /// spell sideways.</summary>
     public Action<Character>? OnCasterFacingChanged { get; set; }
     public Action<Character, ushort>? OnCastAnimation { get; set; }
+
+    /// <summary>Callback fired to broadcast spell power words as overhead
+    /// speech (e.g. "In Lor" for Night Sight). Program.cs wires this to
+    /// send a 0x1C speech packet visible to nearby clients.</summary>
+    public Action<Character, string>? OnSpellWords { get; set; }
 
     /// <summary>Callback fired when a character's personal light level
     /// changes (e.g. after Night Sight). Program.cs wires this to the
@@ -208,6 +214,10 @@ public sealed class SpellEngine
             }
         }
 
+        var powerWords = def.GetPowerWords();
+        if (!string.IsNullOrEmpty(powerWords))
+            OnSpellWords?.Invoke(caster, powerWords);
+
         bool isAreaSpell = targetUid == caster.Uid;
         ushort castAnim = isAreaSpell
             ? (ushort)Core.Enums.AnimationType.CastArea
@@ -233,21 +243,7 @@ public sealed class SpellEngine
         var def = _spells.Get(spell);
         if (def == null) return false;
 
-        // Consume mana
-        if (caster.Mana < def.ManaCost)
-            return false;
-        caster.Mana -= (short)def.ManaCost;
-
-        // Consume reagents (unless using a wand / GM override).
-        var castWeapon = caster.GetEquippedItem(Layer.OneHanded);
-        bool castWithWand = castWeapon?.ItemType == ItemType.Wand;
-        if (!castWithWand && caster.PrivLevel < PrivLevel.GM &&
-            Character.ReagentsRequiredEnabled)
-        {
-            ConsumeReagents(caster, def);
-        }
-
-        // Resolve target
+        // Resolve target before consumption so LOS can be checked first
         Serial targetUid = Serial.Invalid;
         if (caster.TryGetTag("SPELL_TARGET_UID", out string? uidStr) && uint.TryParse(uidStr, out uint uid))
             targetUid = new Serial(uid);
@@ -263,9 +259,7 @@ public sealed class SpellEngine
             targetPos = new Point3D(tx, ty, tz, caster.MapIndex);
         }
 
-        // Line-of-sight check for spells that target a remote location. Self-buffs
-        // and same-tile targets skip the check. Source-X equivalent: CSpell::OnTarget
-        // CanSeeLOS block — "You cannot see that target."
+        // LOS check BEFORE consuming resources
         if (_world != null &&
             caster.PrivLevel < PrivLevel.GM &&
             (def.IsFlag(SpellFlag.TargChar) || def.IsFlag(SpellFlag.TargObj) ||
@@ -281,12 +275,46 @@ public sealed class SpellEngine
             }
         }
 
+        // Consume mana
+        if (caster.Mana < def.ManaCost)
+            return false;
+        caster.Mana -= (short)def.ManaCost;
+
+        // Consume reagents (unless using a wand / GM override).
+        var castWeapon = caster.GetEquippedItem(Layer.OneHanded);
+        bool castWithWand = castWeapon?.ItemType == ItemType.Wand;
+        if (!castWithWand && caster.PrivLevel < PrivLevel.GM &&
+            Character.ReagentsRequiredEnabled)
+        {
+            ConsumeReagents(caster, def);
+        }
+
         // Clear cast state
         ClearCastState(caster);
 
         // Get skill level for effect calculation
         var primarySkill = def.GetPrimarySkill();
         int skillLevel = caster.GetSkill(primarySkill);
+
+        // Mark targets an item (rune), not a character
+        if (spell == SpellType.Mark)
+        {
+            var rune = _world?.FindItem(targetUid);
+            if (rune != null)
+            {
+                rune.SetTag("RUNE_X", caster.X.ToString());
+                rune.SetTag("RUNE_Y", caster.Y.ToString());
+                rune.SetTag("RUNE_Z", caster.Z.ToString());
+                rune.SetTag("RUNE_MAP", caster.MapIndex.ToString());
+                OnSysMessage?.Invoke(caster, ServerMessages.Get(Msg.SpellMarkCont));
+            }
+            else
+            {
+                OnSysMessage?.Invoke(caster, "You must target a recall rune.");
+            }
+            if (def.Sound > 0) OnPlaySound?.Invoke(caster.Position, (ushort)def.Sound);
+            return true;
+        }
 
         // Apply spell effect
         if (def.IsFlag(SpellFlag.TargChar) || def.IsFlag(SpellFlag.TargObj))
@@ -494,19 +522,25 @@ public sealed class SpellEngine
     }
 
     /// <summary>
-    /// Calculate magic resistance. Maps to resist logic in OnSpellEffect.
-    /// Returns resist percentage (0-25 typically).
+    /// Calculate magic resistance. Returns resist percentage (0-50).
+    /// Graduated scaling: higher MR vs spell difficulty = more reduction.
+    /// Also triggers MR skill gain via UseQuick.
     /// </summary>
     private int CalcMagicResist(Character target, SpellDef def, Character caster)
     {
         int mr = target.GetSkill(SkillType.MagicResistance);
-        int magery = caster.GetSkill(SkillType.Magery);
+        int spellCircle = 1 + (int)def.Id / 8;
+        int difficulty = spellCircle * 80;
 
-        int resistFirst = mr / 50; // MR/5 → tenths, so /50 in 0-1000 scale
-        int resistSecond = ((magery - 200) / 50) + (1 + (int)def.Id / 8) * 5;
+        SkillEngine.UseQuick(target, SkillType.MagicResistance, spellCircle * 10);
 
-        bool success = _rand.Next(100) < resistFirst + Math.Max(0, resistFirst - resistSecond);
-        return success ? 25 : 0;
+        int resistPct;
+        if (mr > difficulty)
+            resistPct = Math.Min(50, 25 + (mr - difficulty) / 20);
+        else
+            resistPct = Math.Max(0, 25 - (difficulty - mr) / 20);
+
+        return resistPct;
     }
 
     /// <summary>Get damage type for spell.</summary>
@@ -526,7 +560,7 @@ public sealed class SpellEngine
 
     private void ApplyBuff(Character caster, Character target, SpellDef def, int effect)
     {
-        short bonus = (short)Math.Max(1, effect / 10);
+        short bonus = (short)Math.Max(1, effect / 5);
         switch (def.Id)
         {
             case SpellType.Strength:
@@ -559,7 +593,7 @@ public sealed class SpellEngine
 
     private void ApplyCurse(Character caster, Character target, SpellDef def, int effect)
     {
-        short penalty = (short)Math.Max(1, effect / 10);
+        short penalty = (short)Math.Max(1, effect / 5);
         switch (def.Id)
         {
             case SpellType.Weaken:
@@ -616,18 +650,7 @@ public sealed class SpellEngine
                 }
                 break;
             case SpellType.Mark:
-                // Mark a rune with current location
-                if (target != caster)
-                {
-                    var item = _world.FindItem(new Serial((uint)effect));
-                    if (item != null)
-                    {
-                        item.SetTag("RUNE_X", caster.X.ToString());
-                        item.SetTag("RUNE_Y", caster.Y.ToString());
-                        item.SetTag("RUNE_Z", caster.Z.ToString());
-                        OnSysMessage?.Invoke(caster, ServerMessages.Get(Msg.SpellMarkCont));
-                    }
-                }
+                // Handled in CastDone before ApplyCharEffect
                 break;
             case SpellType.GateTravel:
                 // Source-X CCharSpell GateTravel: rune must be marked, else
@@ -862,7 +885,7 @@ public sealed class SpellEngine
             if (eff.AppliedFlag != StatFlag.None) t.SetStatFlag(eff.AppliedFlag);
             if (eff.LightChanged)
             {
-                t.LightLevel = (byte)Math.Max(0, t.LightLevel - 6);
+                t.LightLevel = 30;
                 OnPersonalLightChanged?.Invoke(t);
             }
         }

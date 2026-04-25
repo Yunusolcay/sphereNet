@@ -1869,9 +1869,12 @@ public sealed class GameClient : ITextConsole
 
             if (needsTarget)
             {
-                // Open target cursor, cast when target is selected
                 SetPendingTarget((serial, x, y, z, graphic) =>
                 {
+                    if (_character == null) return;
+                    _character.SetTag("SPELL_TARGET_POS_X", x.ToString());
+                    _character.SetTag("SPELL_TARGET_POS_Y", y.ToString());
+                    _character.SetTag("SPELL_TARGET_POS_Z", z.ToString());
                     HandleCastSpell(spell, serial != 0 ? serial : _character.Uid.Value);
                 });
                 return;
@@ -1882,9 +1885,24 @@ public sealed class GameClient : ITextConsole
         }
 
         var targetPos = _character.Position;
-        var targetChar = _world.FindChar(new Serial(targetUid));
-        if (targetChar != null)
-            targetPos = targetChar.Position;
+        if (_character.TryGetTag("SPELL_TARGET_POS_X", out string? spx) &&
+            _character.TryGetTag("SPELL_TARGET_POS_Y", out string? spy) &&
+            _character.TryGetTag("SPELL_TARGET_POS_Z", out string? spz))
+        {
+            short.TryParse(spx, out short stx);
+            short.TryParse(spy, out short sty);
+            sbyte.TryParse(spz, out sbyte stz);
+            targetPos = new Point3D(stx, sty, stz, _character.MapIndex);
+            _character.RemoveTag("SPELL_TARGET_POS_X");
+            _character.RemoveTag("SPELL_TARGET_POS_Y");
+            _character.RemoveTag("SPELL_TARGET_POS_Z");
+        }
+        else
+        {
+            var targetChar = _world.FindChar(new Serial(targetUid));
+            if (targetChar != null)
+                targetPos = targetChar.Position;
+        }
 
         int castTime = _spellEngine.CastStart(_character, spell, new Serial(targetUid), targetPos);
         if (castTime > 0)
@@ -1968,6 +1986,23 @@ public sealed class GameClient : ITextConsole
                     new TriggerArgs { CharSrc = _character, N1 = spellId });
                 _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.SpellSuccess,
                     new TriggerArgs { CharSrc = _character, N1 = spellId });
+
+                // Consume scroll if cast was initiated from one
+                if (_character.TryGetTag("SCROLL_UID", out string? scrollUidStr))
+                {
+                    _character.RemoveTag("SCROLL_UID");
+                    if (uint.TryParse(scrollUidStr, out uint scrollUid))
+                    {
+                        var scroll = _world.FindItem(new Serial(scrollUid));
+                        if (scroll != null && !scroll.IsDeleted)
+                        {
+                            if (scroll.Amount > 1)
+                                scroll.Amount--;
+                            else
+                                scroll.Delete();
+                        }
+                    }
+                }
             }
             else
             {
@@ -2390,13 +2425,13 @@ public sealed class GameClient : ITextConsole
 
             case ItemType.WeaponMacePick:
                 SysMessage(ServerMessages.GetFormatted(Msg.ItemuseMacepickTarg, item.Name ?? "pick"));
-                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Mining, new Serial(serial)));
+                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Mining, new Serial(serial), new Point3D(x, y, z)));
                 break;
 
             // ---- pole/sextant/spyglass ----
             case ItemType.FishPole:
                 SysMessage(ServerMessages.Get("fishing_promt"));
-                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Fishing, new Serial(serial)));
+                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Fishing, new Serial(serial), new Point3D(x, y, z)));
                 break;
             case ItemType.Fish:
                 SysMessage(ServerMessages.Get(Msg.ItemuseFishFail));
@@ -2418,7 +2453,7 @@ public sealed class GameClient : ITextConsole
             // ---- ore / forge / ingot (overridable via @DClick trigger) ----
             case ItemType.Ore:
                 SysMessage(ServerMessages.Get(Msg.ItemuseForge));
-                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Mining, new Serial(serial)));
+                SetPendingTarget((serial, x, y, z, gfx) => RouteSkillTarget(SkillType.Mining, new Serial(serial), new Point3D(x, y, z)));
                 break;
             case ItemType.Forge:
             case ItemType.Ingot:
@@ -2486,8 +2521,22 @@ public sealed class GameClient : ITextConsole
 
             // ---- spell tools (Source-X routes via CClient::Cmd_Skill_Magery) ----
             case ItemType.Wand:
+                if (item.More1 > 0)
+                    HandleCastSpell((SpellType)item.More1, 0);
+                else
+                    SysMessage("This wand has no charges.");
+                break;
             case ItemType.Scroll:
-                SysMessage("You begin casting the spell.");
+                if (item.More1 > 0)
+                {
+                    var scrollSpell = (SpellType)item.More1;
+                    _character.SetTag("SCROLL_UID", item.Uid.Value.ToString());
+                    HandleCastSpell(scrollSpell, 0);
+                }
+                else
+                {
+                    SysMessage("The scroll is blank.");
+                }
                 break;
 
             // ---- crystal ball / cannon ----
@@ -2767,12 +2816,12 @@ public sealed class GameClient : ITextConsole
     }
 
     /// <summary>Re-enter the active-skill pipeline with a pre-resolved Serial target.</summary>
-    private void RouteSkillTarget(SkillType skill, Serial target)
+    private void RouteSkillTarget(SkillType skill, Serial target, Point3D? point = null)
     {
         if (_character == null) return;
         var obj = target.IsValid ? _world.FindObject(target) : null;
         var sink = new InfoSkillSink(this, _character);
-        _skillHandlers?.UseActiveSkill(sink, skill, obj);
+        _skillHandlers?.UseActiveSkill(sink, skill, obj, point);
     }
 
     /// <summary>Source-X uses scissors to convert hides/cloth to leather/bolts.</summary>
@@ -3609,14 +3658,18 @@ public sealed class GameClient : ITextConsole
                 if (index < recipes.Count)
                 {
                     var recipe = recipes[index];
-                    var result = _craftingEngine.TryCraft(_character, recipe);
 
-                    // Fire @SkillMakeItem trigger
                     _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.SkillMakeItem,
                         new TriggerArgs { CharSrc = _character, N1 = (int)craftSkill });
 
+                    var result = _craftingEngine.TryCraft(_character, recipe);
+
                     if (result != null)
+                    {
+                        _triggerDispatcher?.FireItemTrigger(result, ItemTrigger.Create,
+                            new TriggerArgs { CharSrc = _character, ItemSrc = result });
                         SysMessage(ServerMessages.GetFormatted("craft_success", result.GetName()));
+                    }
                     else
                         SysMessage(ServerMessages.Get("craft_fail"));
 
@@ -5665,8 +5718,7 @@ public sealed class GameClient : ITextConsole
         }
 
         // No-target path: fire stroke, run engine, fire success/fail.
-        if (kind == SkillHandlers.ActiveSkillTargetKind.None ||
-            kind == SkillHandlers.ActiveSkillTargetKind.Menu)
+        if (kind == SkillHandlers.ActiveSkillTargetKind.None)
         {
             _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.SkillStroke,
                 new TriggerArgs { CharSrc = _character, N1 = skillId });
@@ -5683,10 +5735,20 @@ public sealed class GameClient : ITextConsole
             return;
         }
 
+        // Menu path: show category selection gump (Tracking).
+        if (kind == SkillHandlers.ActiveSkillTargetKind.Menu)
+        {
+            ShowTrackingMenu(skill, skillId);
+            return;
+        }
+
         // Target-required path.
-        SysMessage(kind == SkillHandlers.ActiveSkillTargetKind.Item
-            ? $"What item do you wish to use your {skill} skill on?"
-            : $"Whom do you wish to use your {skill} skill on?");
+        SysMessage(kind switch
+        {
+            SkillHandlers.ActiveSkillTargetKind.Item => $"What item do you wish to use your {skill} skill on?",
+            SkillHandlers.ActiveSkillTargetKind.Ground => $"Where do you wish to use your {skill} skill?",
+            _ => $"Whom do you wish to use your {skill} skill on?"
+        });
 
         SetPendingTarget((serial, x, y, z, graphic) =>
         {
@@ -5694,12 +5756,56 @@ public sealed class GameClient : ITextConsole
 
             var uid = new Serial(serial);
             Objects.ObjBase? target = uid.IsValid ? _world.FindObject(uid) : null;
+            var point = new Point3D(x, y, z);
 
             _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.SkillStroke,
                 new TriggerArgs { CharSrc = _character, N1 = skillId });
 
             var sink = new InfoSkillSink(this, _character);
-            bool ok = _skillHandlers?.UseActiveSkill(sink, skill, target) ?? false;
+            bool ok = _skillHandlers?.UseActiveSkill(sink, skill, target, point) ?? false;
+
+            if (_triggerDispatcher != null)
+            {
+                _triggerDispatcher.FireCharTrigger(_character,
+                    ok ? CharTrigger.SkillSuccess : CharTrigger.SkillFail,
+                    new TriggerArgs { CharSrc = _character, N1 = skillId });
+            }
+        });
+    }
+
+    private void ShowTrackingMenu(SkillType skill, int skillId)
+    {
+        if (_character == null) return;
+
+        var gump = new GumpBuilder(_character.Uid.Value, 0, 300, 220);
+        gump.AddResizePic(0, 0, 5054, 300, 220);
+        gump.AddText(30, 15, 0, "What do you wish to track?");
+        gump.AddButton(30, 55, 4005, 4007, 1);
+        gump.AddText(70, 55, 0, "Animals");
+        gump.AddButton(30, 85, 4005, 4007, 2);
+        gump.AddText(70, 85, 0, "Monsters");
+        gump.AddButton(30, 115, 4005, 4007, 3);
+        gump.AddText(70, 115, 0, "Humans");
+        gump.AddButton(150, 175, 4017, 4019, 0);
+        gump.AddText(190, 175, 0, "Cancel");
+
+        SendGump(gump, (buttonId, switches, textEntries) =>
+        {
+            if (_character == null || buttonId == 0) return;
+
+            var category = buttonId switch
+            {
+                1 => Skills.Information.ActiveSkillEngine.TrackingCategory.Animals,
+                2 => Skills.Information.ActiveSkillEngine.TrackingCategory.Monsters,
+                3 => Skills.Information.ActiveSkillEngine.TrackingCategory.Humans,
+                _ => Skills.Information.ActiveSkillEngine.TrackingCategory.Animals,
+            };
+
+            _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.SkillStroke,
+                new TriggerArgs { CharSrc = _character, N1 = skillId });
+
+            var sink = new InfoSkillSink(this, _character);
+            bool ok = Skills.Information.ActiveSkillEngine.Tracking(sink, category);
 
             if (_triggerDispatcher != null)
             {

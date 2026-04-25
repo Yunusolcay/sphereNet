@@ -4,6 +4,114 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-25i] - Skill & magery kapsamli denetim ve duzeltme (skill & magery audit and fixes)
+----------------------------------------
+
+SPELL CASTING AKISI / SPELL CASTING FLOW:
+  - 0x56 macro handler: client spell hotbar/macro'sundan buyu kullanimi
+    artik dogru calisiyor (eskiden yok sayiliyordu).
+    0x56 macro handler: client spell hotbar/macro casting now works
+    correctly (was silently ignored).
+  - Spell target ground koordinatlari: field/area buyuleri (Fire Field,
+    Energy Field vb.) artik tiklanilan pozisyona dusuyor, caster
+    pozisyonuna degil. SPELL_TARGET_POS_X/Y/Z tag'leri ile iletiliyor.
+    Spell target ground coordinates: field/area spells now land at the
+    clicked position instead of caster position. Delivered via
+    SPELL_TARGET_POS_X/Y/Z tags.
+  - Scroll/Wand double-click: scroll'a cift tiklayinca buyu atiliyor ve
+    basarili cast'te scroll tuketiliyor. Wand icin More1 spell ID
+    kullaniliyor.
+    Scroll/Wand double-click: double-clicking a scroll now casts the
+    spell and consumes the scroll on success. Wands use More1 spell ID.
+  - Mark spell fix: rune serial'i artik dogru kullaniliyor (eskiden
+    GetEffect sonucu item serial olarak kullaniliyordu).
+    Mark spell fix: rune serial now correctly resolved (was using
+    GetEffect result as item serial).
+  - NightSight ReapplyAllAfterSave: isik seviyesi artik save/load
+    sonrasi dogru uygulanmak yerine 30'a set ediliyor.
+    NightSight ReapplyAllAfterSave: light level now set to 30 instead
+    of incorrect subtraction after save/load.
+  - LOS check sirasi: mana ve reagent tuketimi artik LOS kontrolunden
+    SONRA yapiliyor (eskiden once tuketilip LOS fail olunca kayboluyordu).
+    LOS check order: mana and reagent consumption now happens AFTER LOS
+    check (was consumed before, lost on LOS failure).
+
+SPELL POWER WORDS:
+  - Buyu atarken karakter power words soyluyor (orn. "In Lor", "Vas Flam").
+    SpellEngine.OnSpellWords callback'i CastStart'ta ateslenip
+    PacketSpeechUnicodeOut ile yakin client'lara broadcast ediliyor.
+    Characters now speak power words when casting (e.g. "In Lor",
+    "Vas Flam"). SpellEngine.OnSpellWords fires at CastStart, broadcast
+    via PacketSpeechUnicodeOut to nearby clients.
+  - SpellDef.GetPowerWords(): script RUNES alanini kullanir, tanimli
+    degilse 64 Magery buyusu icin hardcoded fallback tablosu.
+    SpellDef.GetPowerWords(): uses script RUNES field, falls back to
+    hardcoded table for all 64 Magery spells.
+
+SKILL HANDLER DUZELTMELERI / SKILL HANDLER FIXES:
+  - Crafting handler null guard: OnCraftSkillUsed null ise artik false
+    donuyor (eskiden true donup sessizce hicbir sey yapmiyordu).
+    Crafting handler null guard: returns false when OnCraftSkillUsed is
+    null (was returning true silently doing nothing).
+  - Veterinary active skill path: artik skill butonundan hayvan
+    hedefleme cursor'u aciliyor (eskiden Unsupported olarak dusuyordu).
+    Veterinary active skill path: now opens character target cursor from
+    skill button (was falling through as Unsupported).
+  - Healing target fallback: hedef bulunamazsa artik false donuyor,
+    sessizce self-heal yapmiyor.
+    Healing target fallback: returns false when target not found instead
+    of silently self-healing.
+  - Random.Shared: tum new Random() kullanimi Random.Shared ile
+    degistirildi (ayni seed sorunu onlendi).
+    Random.Shared: all new Random() replaced with Random.Shared to
+    prevent same-seed issues.
+  - Crafted item backpack fallback: backpack null ise item yere dusuyor.
+    Crafted item backpack fallback: item drops to ground when backpack
+    is null.
+
+TRIGGER / SCRIPT:
+  - @SkillMakeItem zamanlama: trigger artik TryCraft'tan ONCE atesleniyor
+    (Source-X paritesi: script ACTDIFF/resource degistirebilir).
+    @SkillMakeItem timing: trigger now fires BEFORE TryCraft (Source-X
+    parity: scripts can modify ACTDIFF/resources).
+  - @Create trigger: crafted item'larda artik @Create trigger atesleniyor.
+    @Create trigger: now fires on crafted items after creation.
+
+BALANCE / POLISH:
+  - Tracking menu: skill butonundan Tracking kullanildiginda
+    Animals/Monsters/Humans kategori secim gump'i aciliyor.
+    Tracking menu: category selection gump (Animals/Monsters/Humans)
+    shown when using Tracking from skill button.
+  - Stat buff/curse scaling: effect/10 → effect/5, GM Magery'de ~10
+    stat bonus (eskiden ~5, Source-X paritesine yakin).
+    Stat buff/curse scaling: effect/10 → effect/5, ~10 stat bonus at
+    GM Magery (was ~5, closer to Source-X parity).
+  - MagicResist graduated: binary 0%/25% yerine 0-50% arasi graduated
+    resist. MR skill'i spell difficulty'sine gore gain veriyor.
+    MagicResist graduated: 0-50% graduated resist instead of binary
+    0%/25%. MR skill gains based on spell difficulty.
+
+CRAFTING:
+  - Recipe loading: ItemDef SKILLMAKE/RESOURCES tanimlari otomatik
+    olarak CraftRecipe'ye donusturuluyor. SkillMakeRaw/ResourcesRaw
+    alanlari ItemDef'e eklendi.
+    Recipe loading: ItemDef SKILLMAKE/RESOURCES definitions auto-loaded
+    into CraftRecipe. SkillMakeRaw/ResourcesRaw fields added to ItemDef.
+  - DefinitionLoader.AllItemDefs: tum ItemDef'lere erisim icin yeni
+    IEnumerable property.
+    DefinitionLoader.AllItemDefs: new IEnumerable property for accessing
+    all registered ItemDefs.
+
+DEGISTIRILEN DOSYALAR / FILES CHANGED:
+  - src/SphereNet.Server/Program.cs
+  - src/SphereNet.Game/Clients/GameClient.cs
+  - src/SphereNet.Game/Magic/SpellEngine.cs
+  - src/SphereNet.Game/Magic/SpellDef.cs
+  - src/SphereNet.Game/Skills/SkillHandlers.cs
+  - src/SphereNet.Game/Crafting/CraftingEngine.cs
+  - src/SphereNet.Game/Definitions/DefinitionLoader.cs
+  - src/SphereNet.Scripting/Definitions/ItemDef.cs
+
 [2026-04-25h] - Tick pipeline performans optimizasyonu (tick pipeline performance tuning)
 ----------------------------------------
 

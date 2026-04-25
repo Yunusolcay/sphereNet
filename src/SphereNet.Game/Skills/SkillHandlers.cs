@@ -139,6 +139,10 @@ public sealed class SkillHandlers
         SkillType.RemoveTrap     => ActiveSkillTargetKind.Item,
         SkillType.Poisoning      => ActiveSkillTargetKind.Item,
         SkillType.Herding        => ActiveSkillTargetKind.Character,
+        SkillType.Veterinary     => ActiveSkillTargetKind.Character,
+        SkillType.Mining         => ActiveSkillTargetKind.Ground,
+        SkillType.Fishing        => ActiveSkillTargetKind.Ground,
+        SkillType.Lumberjacking  => ActiveSkillTargetKind.Ground,
         _                        => ActiveSkillTargetKind.Unsupported,
     };
 
@@ -167,12 +171,16 @@ public sealed class SkillHandlers
             case SkillType.RemoveTrap:       return ActiveSkillEngine.RemoveTrap(sink, target as Item);
             case SkillType.Poisoning:        return ActiveSkillEngine.Poisoning(sink, target as Item);
             case SkillType.Herding:          return ActiveSkillEngine.Herding(sink, target as Character, point);
+            case SkillType.Veterinary:
+                if (target is Character vetAnimal)
+                    return UseSkill(ch, SkillType.Veterinary, vetAnimal.Position);
+                return false;
             case SkillType.Tracking:         return ActiveSkillEngine.Tracking(sink, ActiveSkillEngine.TrackingCategory.Animals);
             default:                         return UseSkill(ch, skill, point);
         }
     }
 
-    public enum ActiveSkillTargetKind { None, Character, Item, Menu, Unsupported }
+    public enum ActiveSkillTargetKind { None, Character, Item, Menu, Ground, Unsupported }
 
     public bool UseSkill(Character ch, SkillType skill, Point3D? target = null)
     {
@@ -270,7 +278,7 @@ public sealed class SkillHandlers
             {
                 if (nearby == ch || !nearby.IsStatFlag(StatFlag.Hidden)) continue;
                 int detectDiff = ch.GetSkill(SkillType.DetectingHidden) - nearby.GetSkill(SkillType.Hiding);
-                if (detectDiff > 0 || new Random().Next(1000) < 300)
+                if (detectDiff > 0 || Random.Shared.Next(1000) < 300)
                 {
                     nearby.ClearStatFlag(StatFlag.Hidden);
                     nearby.ClearStatFlag(StatFlag.Invisible);
@@ -296,7 +304,7 @@ public sealed class SkillHandlers
             var ore = _world.CreateItem();
             ore.BaseId = 0x19B9;
             ore.Name = "iron ore";
-            ore.Amount = (ushort)new Random().Next(1, 3);
+            ore.Amount = (ushort)Random.Shared.Next(1, 3);
             if (ch.Backpack != null)
                 ch.Backpack.AddItem(ore);
             else
@@ -346,7 +354,7 @@ public sealed class SkillHandlers
             var logs = _world.CreateItem();
             logs.BaseId = 0x1BDD;
             logs.Name = "logs";
-            logs.Amount = (ushort)new Random().Next(1, 5);
+            logs.Amount = (ushort)Random.Shared.Next(1, 5);
             if (ch.Backpack != null)
                 ch.Backpack.AddItem(logs);
             else
@@ -385,7 +393,7 @@ public sealed class SkillHandlers
     private bool HandleHealing(Character ch, Point3D? target)
     {
         var healTarget = target != null ? FindNearbyChar(ch, target.Value) : ch;
-        if (healTarget == null) healTarget = ch;
+        if (healTarget == null) return false;
         bool success = SkillEngine.UseQuick(ch, SkillType.Healing, 40);
         if (success)
         {
@@ -475,7 +483,7 @@ public sealed class SkillHandlers
             gold.BaseId = 0x0EED;
             gold.Name = "Gold";
             gold.ItemType = ItemType.Gold;
-            gold.Amount = (ushort)new Random().Next(1, 10);
+            gold.Amount = (ushort)Random.Shared.Next(1, 10);
             ch.Backpack.AddItem(gold);
         }
         return success;
@@ -509,43 +517,50 @@ public sealed class SkillHandlers
 
     private bool HandleInscription(Character ch, Point3D? target)
     {
-        OnCraftSkillUsed?.Invoke(ch, SkillType.Inscription);
+        if (OnCraftSkillUsed == null) return false;
+        OnCraftSkillUsed.Invoke(ch, SkillType.Inscription);
         return true;
     }
 
     private bool HandleCooking(Character ch, Point3D? target)
     {
-        OnCraftSkillUsed?.Invoke(ch, SkillType.Cooking);
+        if (OnCraftSkillUsed == null) return false;
+        OnCraftSkillUsed.Invoke(ch, SkillType.Cooking);
         return true;
     }
 
     private bool HandleAlchemy(Character ch, Point3D? target)
     {
-        OnCraftSkillUsed?.Invoke(ch, SkillType.Alchemy);
+        if (OnCraftSkillUsed == null) return false;
+        OnCraftSkillUsed.Invoke(ch, SkillType.Alchemy);
         return true;
     }
 
     private bool HandleTailoring(Character ch, Point3D? target)
     {
-        OnCraftSkillUsed?.Invoke(ch, SkillType.Tailoring);
+        if (OnCraftSkillUsed == null) return false;
+        OnCraftSkillUsed.Invoke(ch, SkillType.Tailoring);
         return true;
     }
 
     private bool HandleBlacksmithing(Character ch, Point3D? target)
     {
-        OnCraftSkillUsed?.Invoke(ch, SkillType.Blacksmithing);
+        if (OnCraftSkillUsed == null) return false;
+        OnCraftSkillUsed.Invoke(ch, SkillType.Blacksmithing);
         return true;
     }
 
     private bool HandleCarpentry(Character ch, Point3D? target)
     {
-        OnCraftSkillUsed?.Invoke(ch, SkillType.Carpentry);
+        if (OnCraftSkillUsed == null) return false;
+        OnCraftSkillUsed.Invoke(ch, SkillType.Carpentry);
         return true;
     }
 
     private bool HandleTinkering(Character ch, Point3D? target)
     {
-        OnCraftSkillUsed?.Invoke(ch, SkillType.Tinkering);
+        if (OnCraftSkillUsed == null) return false;
+        OnCraftSkillUsed.Invoke(ch, SkillType.Tinkering);
         return true;
     }
 
@@ -556,7 +571,8 @@ public sealed class SkillHandlers
 
     private bool HandleBowcraft(Character ch, Point3D? target)
     {
-        OnCraftSkillUsed?.Invoke(ch, SkillType.Bowcraft);
+        if (OnCraftSkillUsed == null) return false;
+        OnCraftSkillUsed.Invoke(ch, SkillType.Bowcraft);
         return true;
     }
 

@@ -61,6 +61,7 @@ public sealed class DefinitionLoader
 
     public static CharDef? GetCharDef(int baseId) => _charDefs.GetValueOrDefault(baseId);
     public static ItemDef? GetItemDef(int baseId) => _itemDefs.GetValueOrDefault(baseId);
+    public static IEnumerable<KeyValuePair<int, ItemDef>> AllItemDefs => _itemDefs;
     public static RegionResourceDef? GetRegionResourceDef(int id) => _regionResourceDefs.GetValueOrDefault(id);
     public static RegionTypeDef? GetRegionTypeDef(int id) => _regionTypeDefs.GetValueOrDefault(id);
     public static SkillDef? GetSkillDef(int skillIndex) => _skillDefs.GetValueOrDefault(skillIndex);

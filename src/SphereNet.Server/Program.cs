@@ -1214,6 +1214,19 @@ public static class Program
                 caster.Hue, flags, noto);
             BroadcastNearby(caster.Position, 18, pkt, 0);
         };
+        _spellEngine.OnSpellWords = (caster, words) =>
+        {
+            var pkt = new PacketSpeechUnicodeOut(
+                caster.Uid.Value,
+                caster.BodyId,
+                0x06,
+                caster.SpeechColor != 0 ? caster.SpeechColor : (ushort)0x03B2,
+                3,
+                "TRK",
+                caster.Name ?? "",
+                words);
+            BroadcastNearby(caster.Position, 18, pkt, 0);
+        };
         _spellEngine.OnCastAnimation = (caster, animId) =>
         {
             ushort anim = caster.IsMounted ? MapAnimToMounted(animId) : animId;
@@ -1548,6 +1561,9 @@ public static class Program
         var gatheringEngine = new GatheringEngine(_world, _triggerDispatcher);
         _skillHandlers = new SkillHandlers(_world, gatheringEngine);
         _craftingEngine = new CraftingEngine(_world);
+        int recipeCount = _craftingEngine.LoadRecipesFromDefs(_resources);
+        if (recipeCount > 0)
+            _log.LogInformation("Loaded {Count} craft recipes from SKILLMAKE definitions", recipeCount);
         _weatherEngine = new WeatherEngine(_world);
         _weatherEngine.Configure(
             _config.SeasonMode,
@@ -5172,6 +5188,8 @@ public static class Program
                 }
                 break;
             case 0x56: // CastSpell
+                if (int.TryParse(command.Split(' ')[0], out int spellId) && spellId > 0)
+                    client.HandleCastSpell((SpellType)spellId, 0);
                 break;
             case 0x58: // OpenDoor
                 break;

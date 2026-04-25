@@ -42,6 +42,8 @@ public sealed class ItemDef : BaseDef
 
     public ushort DupItemId { get; set; }
     public List<ResourceId> SkillMake { get; } = [];
+    public string SkillMakeRaw { get; set; } = "";
+    public string ResourcesRaw { get; set; } = "";
 
     public ItemDef(ResourceId id) : base(id) { }
 
@@ -71,8 +73,8 @@ public sealed class ItemDef : BaseDef
             case "TEVENTS":
                 ParseEventsList(value);
                 break;
-            case "SKILLMAKE": ParseResourceList(value, SkillMake); break;
-            case "RESOURCES": ParseResourceList(value, BaseResources); break;
+            case "SKILLMAKE": SkillMakeRaw = value.Trim(); ParseResourceList(value, SkillMake); break;
+            case "RESOURCES": ResourcesRaw = value.Trim(); ParseResourceList(value, BaseResources); break;
             case "RANGE": (RangeMin, RangeMax) = ParseRange(value); break;
             case "RANGEH": int.TryParse(value, out int rh); RangeMax = rh; break;
             case "RANGEL": int.TryParse(value, out int rl); RangeMin = rl; break;

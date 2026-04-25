@@ -1,8 +1,11 @@
 using SphereNet.Core.Enums;
+using SphereNet.Game.Definitions;
 using SphereNet.Game.Objects.Characters;
 using SphereNet.Game.Objects.Items;
 using SphereNet.Game.Skills;
 using SphereNet.Game.World;
+using SphereNet.Scripting.Definitions;
+using SphereNet.Scripting.Resources;
 
 namespace SphereNet.Game.Crafting;
 
@@ -36,7 +39,6 @@ public sealed class CraftingEngine
 {
     private readonly GameWorld _world;
     private readonly Dictionary<ushort, CraftRecipe> _recipes = [];
-    private readonly Random _rand = new();
 
     public CraftingEngine(GameWorld world)
     {
@@ -111,10 +113,11 @@ public sealed class CraftingEngine
             if (quality >= 150)
                 item.Name = "exceptional " + item.Name;
 
-            // Place in crafter's backpack
             var pack = crafter.Backpack;
             if (pack != null)
                 pack.AddItem(item);
+            else
+                _world.PlaceItemWithDecay(item, crafter.Position);
 
             return item;
         }
@@ -139,7 +142,7 @@ public sealed class CraftingEngine
     {
         int excess = skillLevel - difficulty;
         int quality = 100 + excess / 10;
-        quality += _rand.Next(-10, 11);
+        quality += Random.Shared.Next(-10, 11);
         return Math.Max(10, Math.Min(200, quality));
     }
 
@@ -196,5 +199,116 @@ public sealed class CraftingEngine
                 ConsumeFromContainer(item, itemId, ref remaining);
             }
         }
+    }
+
+    /// <summary>
+    /// Scan all loaded ItemDefs for SKILLMAKE entries and register them as
+    /// CraftRecipes. Called once after definitions are loaded.
+    /// </summary>
+    public int LoadRecipesFromDefs(ResourceHolder resources)
+    {
+        int count = 0;
+        foreach (var (baseId, def) in DefinitionLoader.AllItemDefs)
+        {
+            if (string.IsNullOrWhiteSpace(def.SkillMakeRaw))
+                continue;
+
+            var recipe = ParseRecipe(def, (ushort)baseId, resources);
+            if (recipe != null)
+            {
+                RegisterRecipe(recipe);
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static CraftRecipe? ParseRecipe(ItemDef def, ushort resultId, ResourceHolder resources)
+    {
+        var skillParts = def.SkillMakeRaw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (skillParts.Length == 0) return null;
+
+        SkillType primarySkill = SkillType.None;
+        int difficulty = 0;
+        var skillReqs = new List<(SkillType Skill, int MinValue)>();
+
+        foreach (var part in skillParts)
+        {
+            if (part.StartsWith("t_", StringComparison.OrdinalIgnoreCase) ||
+                part.StartsWith("i_", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            int spaceIdx = part.LastIndexOf(' ');
+            if (spaceIdx < 0) continue;
+
+            string skillName = part[..spaceIdx].Trim();
+            string valStr = part[(spaceIdx + 1)..].Trim();
+
+            if (!Enum.TryParse<SkillType>(skillName, true, out var skill))
+                continue;
+
+            int val = 0;
+            if (valStr.Contains('.'))
+            {
+                if (double.TryParse(valStr, System.Globalization.CultureInfo.InvariantCulture, out double dv))
+                    val = (int)(dv * 10);
+            }
+            else if (int.TryParse(valStr, out int iv))
+            {
+                val = iv * 10;
+            }
+
+            if (primarySkill == SkillType.None)
+            {
+                primarySkill = skill;
+                difficulty = val;
+            }
+            skillReqs.Add((skill, val));
+        }
+
+        if (primarySkill == SkillType.None) return null;
+
+        ushort dispId = def.DispIndex != 0 ? def.DispIndex : resultId;
+
+        var recipe = new CraftRecipe
+        {
+            ResultItemId = dispId,
+            ResultName = def.Name ?? "",
+            PrimarySkill = primarySkill,
+            Difficulty = difficulty / 10
+        };
+
+        foreach (var sr in skillReqs)
+            recipe.SkillRequirements.Add(sr);
+
+        if (!string.IsNullOrWhiteSpace(def.ResourcesRaw))
+        {
+            var resParts = def.ResourcesRaw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            foreach (var rp in resParts)
+            {
+                int spIdx = rp.IndexOf(' ');
+                if (spIdx < 0) continue;
+
+                string amtStr = rp[..spIdx].Trim();
+                string resName = rp[(spIdx + 1)..].Trim();
+                if (!int.TryParse(amtStr, out int amount) || amount <= 0) continue;
+
+                var rid = resources.ResolveDefName(resName);
+                ushort resItemId;
+                if (rid.IsValid)
+                {
+                    var resDef = DefinitionLoader.GetItemDef(rid.Index);
+                    resItemId = resDef?.DispIndex ?? (ushort)rid.Index;
+                }
+                else
+                {
+                    continue;
+                }
+
+                recipe.Resources.Add(new CraftResource { ItemId = resItemId, Amount = amount });
+            }
+        }
+
+        return recipe;
     }
 }
