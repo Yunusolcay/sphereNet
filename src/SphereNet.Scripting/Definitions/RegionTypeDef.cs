@@ -36,18 +36,26 @@ public sealed class RegionTypeDef : ResourceLink
 
     /// <summary>
     /// Parse "weight defname" or just "defname" resource entry.
-    /// Format: RESOURCES weight,defname  or  RESOURCES defname
+    /// Format: RESOURCES weight defname  or  RESOURCES defname
+    /// Weight can be float (e.g. 50.0, 0.5) — scaled by x10 for integer precision.
     /// </summary>
     private void ParseResourceEntry(string arg)
     {
         var parts = arg.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        int weight = 1;
+        int weight = 10;
         string resName;
 
-        if (parts.Length >= 2 && int.TryParse(parts[0], out int w))
+        if (parts.Length >= 2)
         {
-            weight = w;
-            resName = parts[1];
+            if (double.TryParse(parts[0], System.Globalization.CultureInfo.InvariantCulture, out double dw))
+            {
+                weight = Math.Max(1, (int)Math.Round(dw * 10));
+                resName = parts[1];
+            }
+            else
+            {
+                resName = parts[0];
+            }
         }
         else
         {

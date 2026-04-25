@@ -64,6 +64,19 @@ public sealed class DefinitionLoader
     public static IEnumerable<KeyValuePair<int, ItemDef>> AllItemDefs => _itemDefs;
     public static RegionResourceDef? GetRegionResourceDef(int id) => _regionResourceDefs.GetValueOrDefault(id);
     public static RegionTypeDef? GetRegionTypeDef(int id) => _regionTypeDefs.GetValueOrDefault(id);
+
+    /// <summary>Find first REGIONTYPE matching an ItemTypeFilter (e.g. "t_rock", "t_water", "t_tree").</summary>
+    public static RegionTypeDef? FindRegionTypeByFilter(string typeFilter)
+    {
+        foreach (var kv in _regionTypeDefs)
+        {
+            if (kv.Value.ItemTypeFilter != null &&
+                kv.Value.ItemTypeFilter.Equals(typeFilter, StringComparison.OrdinalIgnoreCase) &&
+                kv.Value.Resources.Count > 0)
+                return kv.Value;
+        }
+        return null;
+    }
     public static SkillDef? GetSkillDef(int skillIndex) => _skillDefs.GetValueOrDefault(skillIndex);
     public static SkillDef? GetSkillDef(string? name)
     {
@@ -132,6 +145,22 @@ public sealed class DefinitionLoader
                     LoadTemplateDef(link);
                     break;
             }
+        }
+
+        ResolveRegionResourceReapDefNames();
+    }
+
+    private void ResolveRegionResourceReapDefNames()
+    {
+        foreach (var kv in _regionResourceDefs)
+        {
+            var def = kv.Value;
+            if (def.Reap != 0 || string.IsNullOrEmpty(def.ReapRaw))
+                continue;
+
+            ushort dispId = TemplateEngine.ResolveDispId(_resources, def.ReapRaw);
+            if (dispId != 0)
+                def.Reap = dispId;
         }
     }
 

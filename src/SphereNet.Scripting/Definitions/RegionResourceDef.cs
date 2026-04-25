@@ -16,6 +16,9 @@ public sealed class RegionResourceDef : ResourceLink
     /// <summary>The BASEID of the item produced when gathered.</summary>
     public ushort Reap { get; set; }
 
+    /// <summary>Raw REAP value from script (defname like "i_ore_iron"). Resolved post-load.</summary>
+    public string? ReapRaw { get; set; }
+
     /// <summary>Amount of items yielded per successful gather.</summary>
     public int ReapAmountMin { get; set; } = 1;
     public int ReapAmountMax { get; set; } = 1;
@@ -41,6 +44,8 @@ public sealed class RegionResourceDef : ResourceLink
                 break;
             case "REAP":
                 Reap = ParseHexOrDec(arg);
+                if (Reap == 0)
+                    ReapRaw = arg.Trim();
                 break;
             case "REAPAMOUNT":
                 ParseRange(arg, out int rmin, out int rmax);
@@ -48,11 +53,10 @@ public sealed class RegionResourceDef : ResourceLink
                 ReapAmountMax = rmax;
                 break;
             case "REGEN":
-                if (int.TryParse(arg, out int regen))
-                    Regen = regen;
+                Regen = EvalSimpleExpression(arg);
                 break;
             case "SKILL":
-                ParseRange(arg, out int smin, out int smax);
+                ParseFloatRange(arg, out int smin, out int smax);
                 SkillMin = smin;
                 SkillMax = smax;
                 break;
@@ -69,6 +73,47 @@ public sealed class RegionResourceDef : ResourceLink
         if (parts.Length >= 1) int.TryParse(parts[0].Trim(), out min);
         if (parts.Length >= 2) int.TryParse(parts[1].Trim(), out max);
         else max = min;
+    }
+
+    /// <summary>Parse float range and convert to tenths (e.g. "1.0,100.0" → 10,1000).</summary>
+    private static void ParseFloatRange(string val, out int min, out int max)
+    {
+        min = 0; max = 0;
+        var parts = val.Split(',');
+        if (parts.Length >= 1)
+        {
+            if (double.TryParse(parts[0].Trim(), System.Globalization.CultureInfo.InvariantCulture, out double d))
+                min = (int)Math.Round(d * 10);
+            else if (int.TryParse(parts[0].Trim(), out int i))
+                min = i;
+        }
+        if (parts.Length >= 2)
+        {
+            if (double.TryParse(parts[1].Trim(), System.Globalization.CultureInfo.InvariantCulture, out double d))
+                max = (int)Math.Round(d * 10);
+            else if (int.TryParse(parts[1].Trim(), out int i))
+                max = i;
+        }
+        else max = min;
+    }
+
+    /// <summary>Evaluate simple arithmetic expressions like "60*60*10" → 36000.</summary>
+    private static int EvalSimpleExpression(string val)
+    {
+        val = val.Trim();
+        if (val.Contains('*'))
+        {
+            long result = 1;
+            foreach (var part in val.Split('*'))
+            {
+                if (long.TryParse(part.Trim(), out long v))
+                    result *= v;
+                else
+                    return 0;
+            }
+            return (int)Math.Min(result, int.MaxValue);
+        }
+        return int.TryParse(val, out int simple) ? simple : 0;
     }
 
     private static ushort ParseHexOrDec(string val)

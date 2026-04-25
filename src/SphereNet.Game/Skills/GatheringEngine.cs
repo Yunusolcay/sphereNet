@@ -20,13 +20,17 @@ public readonly struct GatherResult
 /// <summary>
 /// Region-based resource gathering engine.
 /// Routes Mining/Fishing/Lumberjacking through REGIONTYPE → REGIONRESOURCE definitions.
-/// Falls back to hardcoded items when no region resources are defined.
+/// Per-tile invisible marker items track depletion (Source-X parity).
 /// </summary>
 public sealed class GatheringEngine
 {
     private readonly GameWorld _world;
     private readonly TriggerDispatcher? _triggerDispatcher;
     private readonly Random _rng = new();
+
+    private const string TagResourceMarker = "RESOURCE_MARKER";
+    private const string TagSkillType = "RES_SKILL";
+    private const ushort MarkerBaseId = 0x1;
 
     /// <summary>Skill → ItemTypeFilter mapping for REGIONTYPE filtering.</summary>
     private static readonly Dictionary<SkillType, string> _skillTypeFilters = new()
@@ -45,33 +49,36 @@ public sealed class GatheringEngine
     /// <summary>
     /// Sink-aware gather: creates the item but does NOT add to backpack.
     /// Caller uses sink.DeliverItem for stacking + client notification.
-    /// Includes sector-based resource depletion tracking.
+    /// Per-tile invisible marker items track resource depletion.
     /// </summary>
     public GatherResult TryGatherForSink(Character ch, SkillType skill, Point3D target)
     {
         if (!_skillTypeFilters.TryGetValue(skill, out var typeFilter))
             return new GatherResult { Handled = false };
 
-        var region = _world.FindRegion(target);
-        if (region == null || region.RegionTypes.Count == 0)
-            return new GatherResult { Handled = false };
-
         RegionTypeDef? matchedType = null;
-        foreach (var rtRid in region.RegionTypes)
+
+        var region = _world.FindRegion(target);
+        if (region != null && region.RegionTypes.Count > 0)
         {
-            var rtDef = DefinitionLoader.GetRegionTypeDef(rtRid.Index);
-            if (rtDef == null) continue;
-
-            if (rtDef.ItemTypeFilter != null &&
-                rtDef.ItemTypeFilter.Equals(typeFilter, StringComparison.OrdinalIgnoreCase))
+            foreach (var rtRid in region.RegionTypes)
             {
-                matchedType = rtDef;
-                break;
-            }
+                var rtDef = DefinitionLoader.GetRegionTypeDef(rtRid.Index);
+                if (rtDef == null) continue;
 
-            if (rtDef.ItemTypeFilter == null && matchedType == null)
-                matchedType = rtDef;
+                if (rtDef.ItemTypeFilter != null &&
+                    rtDef.ItemTypeFilter.Equals(typeFilter, StringComparison.OrdinalIgnoreCase))
+                {
+                    matchedType = rtDef;
+                    break;
+                }
+
+                if (rtDef.ItemTypeFilter == null && matchedType == null)
+                    matchedType = rtDef;
+            }
         }
+
+        matchedType ??= DefinitionLoader.FindRegionTypeByFilter(typeFilter);
 
         if (matchedType == null || matchedType.Resources.Count == 0)
             return new GatherResult { Handled = false };
@@ -81,14 +88,19 @@ public sealed class GatheringEngine
         if (resDef == null)
             return new GatherResult { Handled = false };
 
-        // Resource depletion check
-        var sector = _world.GetSector(target);
-        if (sector != null && resDef.AmountMax > 0)
-        {
-            int available = sector.GetResourceAmount(resRid.Index, resDef.AmountMax, resDef.Regen);
-            if (available <= 0)
-                return new GatherResult { Handled = true, Depleted = true };
-        }
+        // mr_nothing: weighted "found nothing" result
+        if (resDef.Reap == 0)
+            return new GatherResult { Handled = true, Success = false };
+
+        string skillTag = skill.ToString();
+        var marker = FindMarker(target, skillTag);
+
+        if (marker != null && marker.Amount <= 0)
+            return new GatherResult { Handled = true, Depleted = true };
+
+        int playerSkill = ch.GetSkill(skill);
+        if (resDef.SkillMin > 0 && playerSkill < resDef.SkillMin)
+            return new GatherResult { Handled = true, Success = false };
 
         int difficulty = (resDef.SkillMin + resDef.SkillMax) / 2;
         int diffPct = difficulty / 10;
@@ -118,18 +130,32 @@ public sealed class GatheringEngine
                 _triggerDispatcher.FireResourceTrigger(resDef, "ResourceGather", ch, args);
             }
 
-            ushort itemId = resDef.Reap;
-            int amount = _rng.Next(resDef.ReapAmountMin, resDef.ReapAmountMax + 1);
+            int reapAmount = _rng.Next(resDef.ReapAmountMin, resDef.ReapAmountMax + 1);
 
-            if (itemId > 0 && amount > 0)
+            if (marker == null)
             {
-                sector?.ConsumeResource(resRid.Index, amount);
-
-                var item = _world.CreateItem();
-                item.BaseId = itemId;
-                item.Amount = (ushort)amount;
-                return new GatherResult { Handled = true, Success = true, Item = item };
+                int poolAmount = _rng.Next(
+                    Math.Max(1, resDef.AmountMin),
+                    Math.Max(2, resDef.AmountMax + 1));
+                marker = CreateMarker(target, skillTag, (ushort)poolAmount, resDef.Regen);
             }
+
+            int remaining = marker.Amount - reapAmount;
+            if (remaining <= 0)
+            {
+                marker.Amount = 0;
+                long regenMs = resDef.Regen > 0 ? resDef.Regen * 1000L : 36_000_000L;
+                marker.DecayTime = Environment.TickCount64 + regenMs;
+            }
+            else
+            {
+                marker.Amount = (ushort)remaining;
+            }
+
+            var item = _world.CreateItem();
+            item.BaseId = resDef.Reap;
+            item.Amount = (ushort)reapAmount;
+            return new GatherResult { Handled = true, Success = true, Item = item };
         }
 
         return new GatherResult { Handled = true, Success = false };
@@ -161,5 +187,33 @@ public sealed class GatheringEngine
         }
 
         return true;
+    }
+
+    private Item? FindMarker(Point3D tile, string skillTag)
+    {
+        foreach (var item in _world.GetItemsInRange(tile, 0))
+        {
+            if (item.BaseId != MarkerBaseId) continue;
+            if (!item.TryGetTag(TagResourceMarker, out string? mk) || mk != "1") continue;
+            if (!item.TryGetTag(TagSkillType, out string? st) || st != skillTag) continue;
+            if (item.X == tile.X && item.Y == tile.Y) return item;
+        }
+        return null;
+    }
+
+    private Item CreateMarker(Point3D tile, string skillTag, ushort amount, int regenSeconds)
+    {
+        var marker = _world.CreateItem();
+        marker.BaseId = MarkerBaseId;
+        marker.Amount = amount;
+        marker.SetAttr(ObjAttributes.Invis | ObjAttributes.Move_Never);
+        marker.SetTag(TagResourceMarker, "1");
+        marker.SetTag(TagSkillType, skillTag);
+
+        long regenMs = regenSeconds > 0 ? regenSeconds * 1000L : 36_000_000L;
+        marker.DecayTime = Environment.TickCount64 + regenMs;
+
+        _world.PlaceItem(marker, tile);
+        return marker;
     }
 }

@@ -291,6 +291,9 @@ public sealed class SkillHandlers
         return success;
     }
 
+    private const int FallbackResAmount = 20;
+    private const int FallbackRegenMs = 36_000_000;
+
     private bool HandleMining(Character ch, Point3D? target)
     {
         if (target == null) return false;
@@ -301,13 +304,19 @@ public sealed class SkillHandlers
             _gatheringEngine.TryGather(ch, SkillType.Mining, target.Value, out bool regionSuccess, out _, out _))
             return regionSuccess;
 
+        var marker = FindFallbackMarker(target.Value, "Mining");
+        if (marker != null && marker.Amount <= 0)
+            return false;
+
         bool success = SkillEngine.UseQuick(ch, SkillType.Mining, 50);
         if (success)
         {
+            int amount = Random.Shared.Next(1, 3);
+            ConsumeFallbackMarker(target.Value, "Mining", amount, ref marker);
             var ore = _world.CreateItem();
             ore.BaseId = 0x19B9;
             ore.Name = "iron ore";
-            ore.Amount = (ushort)Random.Shared.Next(1, 3);
+            ore.Amount = (ushort)amount;
             if (ch.Backpack != null)
                 ch.Backpack.AddItem(ore);
             else
@@ -326,9 +335,14 @@ public sealed class SkillHandlers
             _gatheringEngine.TryGather(ch, SkillType.Fishing, target.Value, out bool regionSuccess, out _, out _))
             return regionSuccess;
 
+        var marker = FindFallbackMarker(target.Value, "Fishing");
+        if (marker != null && marker.Amount <= 0)
+            return false;
+
         bool success = SkillEngine.UseQuick(ch, SkillType.Fishing, 40);
         if (success)
         {
+            ConsumeFallbackMarker(target.Value, "Fishing", 1, ref marker);
             var fish = _world.CreateItem();
             fish.BaseId = 0x09CC;
             fish.Name = "fish";
@@ -351,19 +365,63 @@ public sealed class SkillHandlers
             _gatheringEngine.TryGather(ch, SkillType.Lumberjacking, target.Value, out bool regionSuccess, out _, out _))
             return regionSuccess;
 
+        var marker = FindFallbackMarker(target.Value, "Lumberjacking");
+        if (marker != null && marker.Amount <= 0)
+            return false;
+
         bool success = SkillEngine.UseQuick(ch, SkillType.Lumberjacking, 50);
         if (success)
         {
+            int amount = Random.Shared.Next(1, 5);
+            ConsumeFallbackMarker(target.Value, "Lumberjacking", amount, ref marker);
             var logs = _world.CreateItem();
             logs.BaseId = 0x1BDD;
             logs.Name = "logs";
-            logs.Amount = (ushort)Random.Shared.Next(1, 5);
+            logs.Amount = (ushort)amount;
             if (ch.Backpack != null)
                 ch.Backpack.AddItem(logs);
             else
                 _world.PlaceItemWithDecay(logs, ch.Position);
         }
         return success;
+    }
+
+    private Item? FindFallbackMarker(Point3D tile, string skillTag)
+    {
+        foreach (var item in _world.GetItemsInRange(tile, 0))
+        {
+            if (item.BaseId != 0x1) continue;
+            if (!item.TryGetTag("RESOURCE_MARKER", out string? mk) || mk != "1") continue;
+            if (!item.TryGetTag("RES_SKILL", out string? st) || st != skillTag) continue;
+            if (item.X == tile.X && item.Y == tile.Y) return item;
+        }
+        return null;
+    }
+
+    private void ConsumeFallbackMarker(Point3D tile, string skillTag, int amount, ref Item? marker)
+    {
+        if (marker == null)
+        {
+            marker = _world.CreateItem();
+            marker.BaseId = 0x1;
+            marker.Amount = (ushort)FallbackResAmount;
+            marker.SetAttr(ObjAttributes.Invis | ObjAttributes.Move_Never);
+            marker.SetTag("RESOURCE_MARKER", "1");
+            marker.SetTag("RES_SKILL", skillTag);
+            marker.DecayTime = Environment.TickCount64 + FallbackRegenMs;
+            _world.PlaceItem(marker, tile);
+        }
+
+        int remaining = marker.Amount - amount;
+        if (remaining <= 0)
+        {
+            marker.Amount = 0;
+            marker.DecayTime = Environment.TickCount64 + FallbackRegenMs;
+        }
+        else
+        {
+            marker.Amount = (ushort)remaining;
+        }
     }
 
     private static void BroadcastSkillAnimation(Character ch, ushort animId, ushort soundId)
