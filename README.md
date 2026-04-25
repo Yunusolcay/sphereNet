@@ -111,25 +111,36 @@ Built-in bot system simulates real client connections over TCP. Bots follow the 
 100ms tick intervali (10 tick/saniye) ile stress test sonuclari.
 Stress test results with 100ms tick interval (10 ticks/second).
 
-**Test Ortami / Environment:** 100,000 NPC + ~1,900 item + degisken bot sayisi
-**Test Environment:** 100,000 NPCs + ~1,900 items + variable bot count
+**Test Ortami / Environment:** ~50,000 NPC + ~101,000 item + 300 bot (TCP baglanti / connection)
+**Test Environment:** ~50,000 NPCs + ~101,000 items + 300 bots (TCP connections)
 
-| Bot Sayisi | Avg Tick | Max Tick | pps_in | pps_out | Budget |
-|------------|----------|----------|--------|---------|--------|
-| 50 | 4.7ms | 13.2ms | 364/s | 94/s | 4.7% |
-| 100 | 6.6ms | 14.5ms | 2,245/s | 180/s | 6.6% |
-| 200 | 15.7ms | 44.9ms | 16,061/s | 360/s | 15.7% |
-| 300 | 53.6ms | 146.5ms | 5,320/s | 798/s | 53.6% |
+| Olcum / Sample | Avg Tick | Max Tick | pps_in | pps_out | Budget |
+|----------------|----------|----------|--------|---------|--------|
+| Baslangic / Start | 8.7ms | 35.1ms | 2,370/s | 790/s | 8.7% |
+| Kararli / Steady | 8.9ms | 33.5ms | 4,141/s | 802/s | 8.9% |
+| Yuk doruk / Peak | 9.1ms | 37.6ms | 7,366/s | 846/s | 9.1% |
 
-**Not / Note:** 300 bot testi worst-case senaryodur — 100K NPC yuku altinda 300 es zamanli baglanti. Gercek kullanim senaryolarinda oyuncular haritaya dagilacagindan tick sureleri cok daha dusuk olacaktir.
-The 300 bot test is a worst-case scenario — 300 simultaneous connections under 100K NPC load. Real-world scenarios with distributed players will have significantly lower tick times.
+**Save:** 102,780 item + 50,363 char → 0.6 saniye / seconds (BinaryGz, 3 shard)
 
-**Karsilastirma / Comparison (200 aggressive clients, same location):**
+**Tick dagilimi / Tick breakdown (300 bot, tipik slow_tick):**
 
-| Emulator | Avg Tick |
-|----------|----------|
-| Sphere 56x | 50-80ms |
-| **SphereNet** | **15.7ms** |
+| Faz / Phase | Ortalama / Average |
+|---|---|
+| Snapshot | 1.6ms |
+| NPC Build | 1.1ms |
+| NPC Apply | 20.8ms |
+| View Build | 0.7ms |
+| Apply + Flush | 0.4ms |
+
+**Not / Note:** 300 bot testi worst-case senaryodur — 50K NPC + 101K item yuku altinda 300 es zamanli baglanti. `npc_apply` fazindaki 20ms slow-tick spike'lari en buyuk bottleneck; ortalama tick sureleri bunun altinda kalir. Gercek kullanim senaryolarinda oyuncular haritaya dagilacagindan tick sureleri cok daha dusuk olacaktir.
+The 300 bot test is a worst-case scenario — 300 simultaneous connections under 50K NPC + 101K item load. The 20ms `npc_apply` phase spike in slow ticks is the main bottleneck; average tick times remain well below that. Real-world scenarios with distributed players will have significantly lower tick times.
+
+**Karsilastirma / Comparison (300 bot, ayni lokasyon / same location):**
+
+| Emulator | Avg Tick | Max Tick |
+|----------|----------|----------|
+| Sphere 56x | 50-80ms | 150+ms |
+| **SphereNet** | **9.0ms** | **37.6ms** |
 
 ---
 
