@@ -30,3 +30,6 @@ node_modules
 panel/dist
 panel/node_modules
 src/SphereNet.Server/panel
+.claude/settings.local.json
+tools/bot.txt
+/.claude
