@@ -4,6 +4,98 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-26] - Sphere save uyumlulugu: NPC yukleme, spawn sistemi, property parsing
+              (Sphere save compatibility: NPC loading, spawn system, property parsing)
+----------------------------------------
+
+SPHERE SAVE FORMAT — NPC YUKLEME / NPC LOADING:
+  - sphereworld.scp artik hem [WORLDITEM] hem [WORLDCHAR] section'larini yukluyor.
+    Onceden sadece LoadItemFile calisiyordu, NPC'ler (troll, innkeeper, guard, vendor)
+    tamamen kayboluyordu. Simdi ikinci pass ile LoadCharFile de calisiyor.
+    sphereworld.scp now loads both [WORLDITEM] and [WORLDCHAR] sections. Previously
+    only LoadItemFile ran — all NPCs were silently skipped and lost.
+  - spherestatics.scp, spheremultis.scp, spheredata.scp dosyalari da yukleniyor.
+    spherestatics, spheremultis, spheredata files are now loaded.
+  - spheredata.scp: GLOBALS (server degiskenleri) ve LIST (isimli listeler) destegi.
+    spheredata.scp: GLOBALS (server variables) and LIST (named lists) support.
+
+SPAWN SISTEMI / SPAWN SYSTEM:
+  - SPAWNID tag'indan spawn item tespiti: TYPE property'si olmasa bile SPAWNID tag'i
+    olan item'lar otomatik IT_SPAWN_CHAR olarak tanimlaniyor.
+    Spawn item detection from SPAWNID tag: items with SPAWNID are auto-classified
+    as IT_SPAWN_CHAR even without an explicit TYPE property.
+  - SPAWNID defname resolve: spawn group (spawn_Mages) veya tek chardef (c_horse)
+    dogrudan defname uzerinden cozumleniyor.
+    SPAWNID defname resolution: spawn groups and single chardefs resolve by name.
+  - TIMELO/TIMEHI (dakika) → spawn delay, MAXDIST → spawn range olarak aktariliyor.
+    TIMELO/TIMEHI (minutes) → spawn delay, MAXDIST → spawn range applied.
+  - ADDOBJ: multi-line yukleme (virgul ile biriktirilir), save'de SpawnComponent'in
+    runtime listesinden yaziliyor (stale tag degil, canli NPC serial'leri).
+    ADDOBJ: multi-line load (comma-accumulated), save writes from live SpawnComponent
+    state instead of stale tag — current spawned NPC serials are preserved.
+  - ADDOBJ sayisi MaxCount olarak kullaniliyor (Sphere'de spawn slot sayisi).
+    ADDOBJ count used as MaxCount (Sphere spawn slot count).
+  - GM cift tiklama: spawn NPC'leri oldurulur, timer sifirlanir, hemen respawn olur.
+    GM double-click: kills spawned NPCs, resets timer, triggers immediate respawn.
+
+EVENTS MULTI-LINE BUG DUZELTMESI / EVENTS MULTI-LINE BUG FIX:
+  - SetEventsList her cagride list.Clear() yapiyordu — Sphere'de her event ayri
+    satirda yazildigi icin sadece SON event kaliyordu. Simdi tek token ise append,
+    CSV ise clear+add davranisi korunuyor.
+    SetEventsList called list.Clear() on every invocation — since Sphere writes one
+    event per line, only the LAST event survived. Now single tokens append, CSV
+    values still clear+add.
+
+EVENTS SAVE FORMATI / EVENTS SAVE FORMAT:
+  - Tek CSV satiri yerine her event icin ayri EVENTS= satiri yaziliyor.
+    Each event written as a separate EVENTS= line instead of one CSV line.
+
+PROPERTY PARSING IYILESTIRMELERI / PROPERTY PARSING IMPROVEMENTS:
+  - StatLock[n], SkillLock[n] bracket syntax (Sphere formati) destegi.
+    StatLock[n], SkillLock[n] bracket syntax (Sphere format) support.
+  - OKARMA/OFAME → karma/fame, OFOOD → food, MAXFOOD → TAG mapping.
+  - FLAGS hex parsing duzeltmesi (0a0000000 gibi Sphere hex degerleri).
+    FLAGS hex parsing fix (Sphere hex values like 0a0000000).
+  - DISPID item display override (defname veya hex).
+    DISPID item display override (defname or hex).
+  - CONTGRID yukleme ve kaydetme.
+    CONTGRID load and save.
+  - TIMERMS (ms hassasiyetinde timer) yukleme ve kaydetme.
+    TIMERMS (ms-precision timer) load and save.
+  - MORE1 defname cozumleme (C_HORSE_TAN gibi degerler).
+    MORE1 defname resolution (values like C_HORSE_TAN).
+  - NPC TAG'lari: DSPEECH, EMOTECOLOR, VIRTUALGOLD, NEED, SPAWNITEM round-trip.
+    NPC TAGs: DSPEECH, EMOTECOLOR, VIRTUALGOLD, NEED, SPAWNITEM round-trip.
+  - Spawner property'leri (SPAWNID, TIMELO, TIMEHI, MAXDIST) bare property olarak
+    kaydediliyor (TAG. prefix'i olmadan, Source-X uyumlu).
+    Spawner properties saved as bare properties (no TAG. prefix, Source-X compatible).
+
+SAVE FORMATI IYILESTIRMELERI / SAVE FORMAT IMPROVEMENTS:
+  - COLOR, ATTR, FLAGS, OSKIN hex format (0{value:x}).
+  - Skill'ler isimle yaziliyor (Alchemy=1000) + ayri SkillLock[n] satirlari.
+    Skills written by name (Alchemy=1000) + separate SkillLock[n] lines.
+  - StatLock[0..2] satirlari yaziliyor.
+    StatLock[0..2] lines written.
+  - OKARMA/OFAME/OFOOD/MAXFOOD Sphere property isimleri ile yaziliyor.
+    OKARMA/OFAME/OFOOD/MAXFOOD written with Sphere property names.
+  - ADDCOMP/SECURE/LOCKITEM multi-line save (virgulden ayrilip ayri satirlar).
+    ADDCOMP/SECURE/LOCKITEM multi-line save (split from comma to separate lines).
+  - ID= defname varsa atlanir (Source-X uyumlu).
+    ID= omitted when defname exists (Source-X compatible).
+
+ACCOUNT FORMATI / ACCOUNT FORMAT:
+  - Sphere bare [username] section formati destegi (ACCOUNT prefix'siz).
+    Sphere bare [username] section format support (without ACCOUNT prefix).
+  - Bare CHARUID (index'siz) → FindFreeSlot ile otomatik slot atama.
+    Bare CHARUID (no index) → automatic slot assignment via FindFreeSlot.
+  - PASSWORD: MD5 hash otomatik tespiti (32 hex karakter) vs plaintext.
+    PASSWORD: auto-detect MD5 hash (32 hex chars) vs plaintext.
+  - PRIV hex parse (TryParseHexOrDec).
+
+GAMEWORLD:
+  - Global degisken ve liste sistemi (GLOBALS, LIST + ELEM).
+    Global variable and list system (GLOBALS, LIST + ELEM).
+
 [2026-04-26] - NEW.* property routing, ATTR hex parsing, container pozisyonlama
               (NEW.* property routing, ATTR hex parsing, container positioning)
 ----------------------------------------

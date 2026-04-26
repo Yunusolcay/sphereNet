@@ -110,44 +110,52 @@ public static class AccountPersistence
         return count;
     }
 
-    /// <summary>Parse "ACCOUNT alice" → "alice". Preserves legacy Sphere section
-    /// format where the account name rides on the section header instead of
-    /// being a separate property — that way existing .scp files keep loading
-    /// without a migration step.</summary>
     private static string? ExtractAccountName(string section)
     {
         if (section.StartsWith("ACCOUNT ", StringComparison.OrdinalIgnoreCase))
             return section[8..].Trim();
+        if (section.Equals("EOF", StringComparison.OrdinalIgnoreCase))
+            return null;
+        // Sphere/Source-X bare format: [username] — accept any non-keyword section
+        if (section.Length > 0 &&
+            !section.StartsWith("WORLD", StringComparison.OrdinalIgnoreCase) &&
+            !section.StartsWith("SPHERE", StringComparison.OrdinalIgnoreCase) &&
+            !section.StartsWith("LIST ", StringComparison.OrdinalIgnoreCase) &&
+            !section.StartsWith("GLOBALS", StringComparison.OrdinalIgnoreCase))
+            return section;
         return null;
     }
 
     private static void WriteAccount(ISaveWriter w, Account acc)
     {
-        w.BeginRecord("ACCOUNT " + acc.Name);
-        w.WriteProperty("PASSWORD", acc.PasswordHash ?? string.Empty);
-        w.WriteProperty("PLEVEL", ((int)acc.PrivLevel).ToString());
-        w.WriteProperty("LASTIP", acc.LastIp ?? string.Empty);
-        w.WriteProperty("TOTALCONNECTTIME", acc.TotalConnectTime.ToString());
-
-        if (acc.IsBanned) w.WriteProperty("BANNED", "1");
-        if (!string.IsNullOrEmpty(acc.ChatName)) w.WriteProperty("CHATNAME", acc.ChatName);
-        if (acc.FirstConnectDate != default)
-            w.WriteProperty("FIRSTCONNECTDATE", acc.FirstConnectDate.ToString("O"));
-        if (!string.IsNullOrEmpty(acc.FirstIp)) w.WriteProperty("FIRSTIP", acc.FirstIp);
-        if (acc.LastCharUid.IsValid) w.WriteProperty("LASTCHARUID", $"0{acc.LastCharUid.Value:X8}");
-        if (acc.MaxChars != 7) w.WriteProperty("MAXCHARS", acc.MaxChars.ToString());
-        if (acc.Guest) w.WriteProperty("GUEST", "1");
-        if (acc.Jail) w.WriteProperty("JAIL", "1");
-        if (!string.IsNullOrEmpty(acc.Lang)) w.WriteProperty("LANG", acc.Lang);
-        if (acc.Priv != 0) w.WriteProperty("PRIV", acc.Priv.ToString());
+        w.BeginRecord(acc.Name);
+        if (acc.PrivLevel > SphereNet.Core.Enums.PrivLevel.Player)
+            w.WriteProperty("PLEVEL", acc.PrivLevel.ToString());
+        if (acc.Priv != 0) w.WriteProperty("PRIV", $"0{acc.Priv:x}");
         if (acc.ResDisp != 0) w.WriteProperty("RESDISP", acc.ResDisp.ToString());
+        w.WriteProperty("PASSWORD", acc.PasswordHash ?? string.Empty);
+        if (acc.TotalConnectTime != 0) w.WriteProperty("TOTALCONNECTTIME", acc.TotalConnectTime.ToString());
+        if (acc.LastCharUid.IsValid) w.WriteProperty("LASTCHARUID", $"0{acc.LastCharUid.Value:x}");
 
         for (int i = 0; i < 7; i++)
         {
             var charUid = acc.GetCharSlot(i);
             if (charUid.IsValid)
-                w.WriteProperty($"CHARUID{i}", $"0{charUid.Value:X8}");
+                w.WriteProperty($"CHARUID{i}", $"0{charUid.Value:x}");
         }
+
+        if (acc.FirstConnectDate != default)
+            w.WriteProperty("FIRSTCONNECTDATE", acc.FirstConnectDate.ToString("yyyy/MM/dd HH:mm:ss"));
+        if (acc.LastLogin != default)
+            w.WriteProperty("LASTCONNECTDATE", acc.LastLogin.ToString("yyyy/MM/dd HH:mm:ss"));
+        if (!string.IsNullOrEmpty(acc.FirstIp)) w.WriteProperty("FIRSTIP", acc.FirstIp);
+        if (!string.IsNullOrEmpty(acc.LastIp)) w.WriteProperty("LASTIP", acc.LastIp);
+        if (!string.IsNullOrEmpty(acc.ChatName)) w.WriteProperty("CHATNAME", acc.ChatName);
+        if (!string.IsNullOrEmpty(acc.Lang)) w.WriteProperty("LANG", acc.Lang);
+        if (acc.MaxChars != 7) w.WriteProperty("MAXCHARS", acc.MaxChars.ToString());
+        if (acc.IsBanned) w.WriteProperty("BANNED", "1");
+        if (acc.Guest) w.WriteProperty("GUEST", "1");
+        if (acc.Jail) w.WriteProperty("JAIL", "1");
 
         foreach (var tag in acc.Tags.GetAll())
             w.WriteProperty("TAG." + tag.Key, tag.Value);
@@ -160,10 +168,29 @@ public static class AccountPersistence
         string upper = key.ToUpperInvariant();
         switch (upper)
         {
-            case "PASSWORD": acc.PasswordHash = val; break;
+            case "PASSWORD":
+                if (val.Length == 32 && val.All(c => "0123456789abcdefABCDEF".Contains(c)))
+                    acc.PasswordHash = val;
+                else
+                    acc.SetPassword(val);
+                break;
             case "PLEVEL":
                 if (int.TryParse(val, out int pl))
                     acc.PrivLevel = NormalizePrivLevel(pl);
+                else if (Enum.TryParse<SphereNet.Core.Enums.PrivLevel>(val, true, out var plv))
+                    acc.PrivLevel = plv;
+                break;
+            case "LASTCONNECTDATE":
+                if (DateTime.TryParse(val, System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.None, out var lcd))
+                    acc.LastLogin = lcd;
+                break;
+            case "LASTCONNECTTIME":
+                // Sphere last session length — store as TAG for round-trip
+                acc.SetTag("LASTCONNECTTIME", val);
+                break;
+            case "MAXHOUSES":
+                acc.SetTag("MaxHouses", val);
                 break;
             case "LASTIP": acc.LastIp = val; break;
             case "TOTALCONNECTTIME":
@@ -189,7 +216,7 @@ public static class AccountPersistence
             case "JAIL": acc.Jail = val == "1"; break;
             case "LANG": acc.Lang = val; break;
             case "PRIV":
-                if (uint.TryParse(val, out uint pv)) acc.Priv = pv;
+                if (TryParseHexOrDec(val, out uint pv)) acc.Priv = pv;
                 break;
             case "RESDISP":
                 if (byte.TryParse(val, out byte rd)) acc.ResDisp = rd;
@@ -198,6 +225,15 @@ public static class AccountPersistence
                 if (upper.StartsWith("TAG.") && upper.Length > 4)
                 {
                     acc.SetTag(upper[4..], val);
+                }
+                else if (upper == "CHARUID")
+                {
+                    // Sphere bare CHARUID=serial (no index) — append to next free slot
+                    if (TryParseHexOrDec(val, out uint cs))
+                    {
+                        int free = acc.FindFreeSlot();
+                        if (free >= 0) acc.SetCharSlot(free, new Serial(cs));
+                    }
                 }
                 else if (upper.StartsWith("CHARUID") && upper.Length == 8
                     && int.TryParse(upper.AsSpan(7), out int slotIdx))

@@ -39,6 +39,7 @@ public sealed class GameWorld
 
     // --- Global script variables (VAR/VAR0 system) ---
     private readonly Dictionary<string, string> _globalVars = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<string>> _globalLists = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Global OBJ reference UID for script cross-references.</summary>
     public Serial ObjReference { get; set; } = Serial.Invalid;
@@ -876,6 +877,23 @@ public sealed class GameWorld
 
     /// <summary>Get all global variable names for listing.</summary>
     public IEnumerable<string> GetGlobalVarNames() => _globalVars.Keys;
+
+    /// <summary>Get all global variables as key-value pairs (for save).</summary>
+    public IEnumerable<KeyValuePair<string, string>> GetAllGlobalVars() => _globalVars;
+
+    // ==================== Global Lists ====================
+
+    public List<string> GetOrCreateList(string name)
+    {
+        if (!_globalLists.TryGetValue(name, out var list))
+        {
+            list = [];
+            _globalLists[name] = list;
+        }
+        return list;
+    }
+
+    public IEnumerable<KeyValuePair<string, List<string>>> GetAllGlobalLists() => _globalLists;
 
     public (int Chars, int Items, int Sectors) GetStats()
     {

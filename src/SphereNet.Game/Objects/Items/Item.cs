@@ -19,6 +19,7 @@ public class Item : ObjBase
     public static Func<Ships.ShipEngine?>? ResolveShipEngine;
     public new static Func<World.GameWorld>? ResolveWorld;
     public static Func<Serial, Guild.GuildDef?>? ResolveGuild;
+    public static Func<string, ushort>? ResolveDefName;
     /// <summary>Invoked by MULTICREATE when a script registers a multi
     /// as a house at runtime. Program.cs wires this to
     /// HousingEngine.RegisterExistingMulti so the region tracker knows
@@ -52,6 +53,8 @@ public class Item : ObjBase
     private Serial _link = Serial.Invalid;
     private int _price;
     private ushort _quality = 50;
+
+    private ushort _dispId;
 
     // TDATA instance overrides (default 0)
     private uint _tdata1;
@@ -124,8 +127,10 @@ public class Item : ObjBase
     public bool IsEquipped { get; set; }
     public Layer EquipLayer { get; set; }
 
-    /// <summary>Full display id (BaseId, used in UO packet as item graphic).</summary>
-    public ushort DispIdFull => BaseId;
+    /// <summary>Full display id. Returns DISPID override when set, otherwise BaseId.</summary>
+    public ushort DispIdFull => _dispId != 0 ? _dispId : BaseId;
+
+    public ushort DispIdOverride => _dispId;
 
     /// <summary>
     /// Source-X-faithful display name. Mirrors <c>CItem::GetName()</c>
@@ -708,8 +713,17 @@ public class Item : ObjBase
 
             // Faz 1: Core fields
             case "MORE1": case "MORE":
-                _more1 = ParseHexOrDecUInt(value);
+            {
+                uint v = ParseHexOrDecUInt(value);
+                if (v == 0 && value.Length > 0 && value.Any(char.IsLetter) && ResolveDefName != null)
+                {
+                    ushort resolved = ResolveDefName(value);
+                    if (resolved != 0) v = resolved;
+                    else SetTag("MORE1_DEFNAME", value);
+                }
+                _more1 = v;
                 return true;
+            }
             case "MORE2":
                 _more2 = ParseHexOrDecUInt(value);
                 return true;
@@ -760,6 +774,45 @@ public class Item : ObjBase
             case "TDATA2": _tdata2 = ParseHexOrDecUInt(value); return true;
             case "TDATA3": _tdata3 = ParseHexOrDecUInt(value); return true;
             case "TDATA4": _tdata4 = ParseHexOrDecUInt(value); return true;
+
+            case "DISPID":
+            {
+                uint parsed = ParseHexOrDecUInt(value);
+                if (parsed != 0)
+                    _dispId = (ushort)parsed;
+                else if (ResolveDefName != null)
+                {
+                    ushort resolved = ResolveDefName(value);
+                    if (resolved != 0) _dispId = resolved;
+                }
+                return true;
+            }
+            case "CONTGRID":
+                if (byte.TryParse(value, out byte gv)) _containerGridIndex = gv;
+                return true;
+
+            // Sphere spawner properties — round-trip as TAGs
+            case "SPAWNID": case "TIMELO": case "TIMEHI": case "MAXDIST":
+                SetTag(upper, value);
+                return true;
+            case "ADDOBJ":
+            {
+                string? existing = Tags.Get(upper);
+                SetTag(upper, string.IsNullOrEmpty(existing) ? value : $"{existing},{value}");
+                return true;
+            }
+            // Multi/housing properties — round-trip as TAGs
+            case "REGION.FLAGS": case "REGION.EVENTS": case "OWNER": case "HOUSETYPE":
+            case "LOCKDOWNSPERCENT": case "BASEVENDORS": case "BASESTORAGE":
+                SetTag(upper, value);
+                return true;
+            // Multi-valued housing properties — accumulate comma-separated
+            case "ADDCOMP": case "SECURE": case "LOCKITEM":
+            {
+                string? existing = Tags.Get(upper);
+                SetTag(upper, string.IsNullOrEmpty(existing) ? value : $"{existing},{value}");
+                return true;
+            }
         }
 
         // Faz 3: Book/Message set

@@ -2507,7 +2507,16 @@ public sealed class GameClient : ITextConsole
                 break;
             case ItemType.SpawnItem:
             case ItemType.SpawnChar:
-                SysMessage(ServerMessages.Get(Msg.ItemuseSpawnReset));
+                if (item.SpawnChar != null)
+                {
+                    item.SpawnChar.KillAll();
+                    item.SpawnChar.ForceSpawn();
+                    SysMessage($"Spawn reset. {item.SpawnChar.GetSpawnDefName()} will respawn shortly.");
+                }
+                else
+                {
+                    SysMessage(ServerMessages.Get(Msg.ItemuseSpawnReset));
+                }
                 break;
 
             // ---- spell tools (Source-X routes via CClient::Cmd_Skill_Magery) ----

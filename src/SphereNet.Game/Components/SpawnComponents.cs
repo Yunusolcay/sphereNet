@@ -35,6 +35,7 @@ public sealed class SpawnComponent
     public ushort CharDefId { get => _charDefId; set => _charDefId = value; }
     public int SpawnRange { get => _spawnRange; set => _spawnRange = value; }
     public SpawnGroupDef? SpawnGroup { get => _spawnGroup; set => _spawnGroup = value; }
+    public IReadOnlyList<Serial> SpawnedUids => _spawnedUids;
 
     public SpawnComponent(Item spawnItem, GameWorld world)
     {
@@ -159,7 +160,7 @@ public sealed class SpawnComponent
         _world.OnNpcSpawned?.Invoke(ch);
     }
 
-    private void CleanupDead()
+    public void CleanupDead()
     {
         _spawnedUids.RemoveAll(uid =>
         {
@@ -225,6 +226,50 @@ public sealed class SpawnComponent
         if (_spawnGroup != null && !string.IsNullOrEmpty(_spawnGroup.DefName))
             return _spawnGroup.DefName;
         return _charDefId > 0 ? $"0{_charDefId:X}" : "";
+    }
+
+    /// <summary>
+    /// Resolve a Sphere SPAWNID defname (e.g. "spawn_Mages", "c_horse")
+    /// as either a spawn group or a single chardef.
+    /// </summary>
+    public void SetFromDefName(string spawnId, ResourceHolder resources)
+    {
+        _resources = resources;
+
+        var rid = resources.ResolveDefName(spawnId);
+        if (rid.IsValid)
+        {
+            if (rid.Type == ResType.Spawn)
+            {
+                var sgd = resources.GetResource(rid) as SpawnGroupDef;
+                if (sgd != null)
+                {
+                    _spawnGroup = sgd;
+                    return;
+                }
+            }
+            if (rid.Type == ResType.CharDef)
+            {
+                _charDefId = (ushort)Math.Clamp(rid.Index, 0, ushort.MaxValue);
+                return;
+            }
+        }
+
+        // Fallback: try as raw hex body ID
+        if (uint.TryParse(spawnId, System.Globalization.NumberStyles.HexNumber, null, out uint raw))
+            _charDefId = (ushort)(raw & 0xFFFF);
+    }
+
+    public void SetDelay(int minMinutes, int maxMinutes)
+    {
+        _minDelaySec = Math.Max(1, minMinutes) * 60;
+        _maxDelaySec = Math.Max(_minDelaySec, maxMinutes * 60);
+    }
+
+    public void RegisterExisting(Serial uid)
+    {
+        if (!_spawnedUids.Contains(uid))
+            _spawnedUids.Add(uid);
     }
 
     /// <summary>Force an immediate spawn tick (for SPAWNRESET).</summary>

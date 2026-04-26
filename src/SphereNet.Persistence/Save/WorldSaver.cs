@@ -36,6 +36,14 @@ public sealed class WorldSaver
 
     public Func<ResourceId, string?>? ResolveResourceName { get; set; }
 
+    /// <summary>Resolves an item BaseId (graphic) to its script defname
+    /// (e.g. 0x0E75 → "i_backpack"). Used for Source-X compatible section headers.</summary>
+    public Func<ushort, string?>? ResolveItemDefName { get; set; }
+
+    /// <summary>Resolves a character BodyId to its script defname
+    /// (e.g. 0x0190 → "c_man"). Used for Source-X compatible section headers.</summary>
+    public Func<ushort, string?>? ResolveCharDefName { get; set; }
+
     public WorldSaver(ILoggerFactory loggerFactory)
     {
         _logger = loggerFactory.CreateLogger<WorldSaver>();
@@ -56,7 +64,7 @@ public sealed class WorldSaver
 
             int itemCount = SaveSharded(allObjects, savePath, "sphereworld", isItems: true);
             int charCount = SaveSharded(allObjects, savePath, "spherechars", isItems: false);
-            SaveServerData(savePath);
+            SaveServerData(savePath, world);
 
             _logger.LogInformation("World save #{Index} complete: {Items} items, {Chars} chars in {Elapsed}s",
                 _saveIndex, itemCount, charCount, sw.Elapsed.TotalSeconds.ToString("F1"));
@@ -295,16 +303,19 @@ public sealed class WorldSaver
 
     private void WriteItem(ISaveWriter w, Item item)
     {
-        w.BeginRecord("WORLDITEM");
+        string? defname = ResolveItemDefName?.Invoke(item.BaseId);
+        w.BeginRecord(defname != null ? $"WORLDITEM {defname}" : "WORLDITEM");
         w.WriteProperty("SERIAL", $"0{item.Uid.Value:X8}");
         w.WriteProperty("UUID", item.Uuid.ToString("D"));
-        w.WriteProperty("ID", $"0{item.BaseId:X}");
+        if (defname == null)
+            w.WriteProperty("ID", $"0{item.BaseId:X}");
         w.WriteProperty("NAME", item.Name);
         w.WriteProperty("P", item.Position.ToString());
-        w.WriteProperty("COLOR", item.Hue.Value.ToString());
+        if (item.Hue.Value != 0) w.WriteProperty("COLOR", $"0{item.Hue.Value:x}");
         w.WriteProperty("AMOUNT", item.Amount.ToString());
         w.WriteProperty("TYPE", ((ushort)item.ItemType).ToString());
-        w.WriteProperty("ATTR", ((uint)item.Attributes).ToString());
+        if ((uint)item.Attributes != 0) w.WriteProperty("ATTR", $"0{(uint)item.Attributes:x}");
+        if (item.DispIdOverride != 0) w.WriteProperty("DISPID", $"0{item.DispIdOverride:x}");
 
         if (item.More1 != 0) w.WriteProperty("MORE1", $"0{item.More1:X}");
         if (item.More2 != 0) w.WriteProperty("MORE2", $"0{item.More2:X}");
@@ -320,13 +331,14 @@ public sealed class WorldSaver
 
         if (item.ContainedIn.IsValid) w.WriteProperty("CONT", $"0{item.ContainedIn.Value:X8}");
         if (item.EquipLayer != 0) w.WriteProperty("LAYER", ((byte)item.EquipLayer).ToString());
+        if (item.ContainerGridIndex != 0) w.WriteProperty("CONTGRID", item.ContainerGridIndex.ToString());
 
         long timeout = item.Timeout;
         if (timeout > 0)
         {
-            long remainingSec = (timeout - Environment.TickCount64) / 1000;
-            if (remainingSec > 0)
-                w.WriteProperty("TIMER", remainingSec.ToString());
+            long remainingMs = timeout - Environment.TickCount64;
+            if (remainingMs > 0)
+                w.WriteProperty("TIMERMS", remainingMs.ToString());
         }
 
         if (item.DecayTime > 0)
@@ -336,15 +348,51 @@ public sealed class WorldSaver
                 w.WriteProperty("DECAY", remainingSec.ToString());
         }
 
+        foreach (var r in item.Events)
+        {
+            if (r.Type != SphereNet.Core.Enums.ResType.Events || r.Index == 0) continue;
+            string? name = ResolveResourceName?.Invoke(r);
+            if (!string.IsNullOrWhiteSpace(name))
+                w.WriteProperty("EVENTS", name!);
+        }
+
+        // Spawn items: write ADDOBJ from live SpawnComponent state, not stale tag
+        if (item.SpawnChar != null)
+        {
+            item.SpawnChar.CleanupDead();
+            foreach (var uid in item.SpawnChar.SpawnedUids)
+                w.WriteProperty("ADDOBJ", $"0{uid.Value:x}");
+        }
+
         foreach (var (key, val) in item.Tags.GetAll())
-            w.WriteProperty("TAG." + key, val);
+        {
+            string upper = key.ToUpperInvariant();
+            if (upper == "ADDOBJ")
+                continue; // already written from SpawnComponent above
+            if (upper is "SPAWNID" or "TIMELO" or "TIMEHI" or "MAXDIST"
+                or "REGION.FLAGS" or "REGION.EVENTS" or "OWNER" or "HOUSETYPE"
+                or "LOCKDOWNSPERCENT" or "BASEVENDORS" or "BASESTORAGE")
+            {
+                w.WriteProperty(upper, val);
+            }
+            else if (upper is "ADDCOMP" or "SECURE" or "LOCKITEM")
+            {
+                foreach (var entry in val.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    w.WriteProperty(upper, entry);
+            }
+            else
+            {
+                w.WriteProperty("TAG." + key, val);
+            }
+        }
 
         w.EndRecord();
     }
 
     private void WriteChar(ISaveWriter w, Character ch)
     {
-        w.BeginRecord("WORLDCHAR");
+        string? defname = ResolveCharDefName?.Invoke(ch.BodyId);
+        w.BeginRecord(defname != null ? $"WORLDCHAR {defname}" : "WORLDCHAR");
         w.WriteProperty("SERIAL", $"0{ch.Uid.Value:X8}");
         w.WriteProperty("UUID", ch.Uuid.ToString("D"));
         w.WriteProperty("NAME", ch.Name);
@@ -356,7 +404,7 @@ public sealed class WorldSaver
         // brain hijack on every restart.
         if (ch.CharDefIndex != 0 && ch.CharDefIndex != ch.BaseId)
             w.WriteProperty("CHARDEFINDEX", $"0{ch.CharDefIndex:X}");
-        w.WriteProperty("COLOR", ch.Hue.Value.ToString());
+        if (ch.Hue.Value != 0) w.WriteProperty("COLOR", $"0{ch.Hue.Value:x}");
         w.WriteProperty("DIR", ((byte)ch.Direction).ToString());
         w.WriteProperty("STR", ch.Str.ToString());
         w.WriteProperty("DEX", ch.Dex.ToString());
@@ -367,8 +415,11 @@ public sealed class WorldSaver
         w.WriteProperty("MAXHITS", ch.MaxHits.ToString());
         w.WriteProperty("MAXMANA", ch.MaxMana.ToString());
         w.WriteProperty("MAXSTAM", ch.MaxStam.ToString());
-        w.WriteProperty("FAME", ch.Fame.ToString());
-        w.WriteProperty("KARMA", ch.Karma.ToString());
+        w.WriteProperty("OFAME", ch.Fame.ToString());
+        w.WriteProperty("OKARMA", ch.Karma.ToString());
+        if (ch.Food != 0) w.WriteProperty("OFOOD", ch.Food.ToString());
+        var maxFoodTag = ch.Tags.Get("MAXFOOD");
+        if (!string.IsNullOrEmpty(maxFoodTag)) w.WriteProperty("MAXFOOD", maxFoodTag);
         if (ch.ResPhysical != 0) w.WriteProperty("RESPHYSICAL", ch.ResPhysical.ToString());
         if (ch.ResFire != 0) w.WriteProperty("RESFIRE", ch.ResFire.ToString());
         if (ch.ResCold != 0) w.WriteProperty("RESCOLD", ch.ResCold.ToString());
@@ -376,8 +427,8 @@ public sealed class WorldSaver
         if (ch.ResEnergy != 0) w.WriteProperty("RESENERGY", ch.ResEnergy.ToString());
         if (ch.Kills != 0) w.WriteProperty("KILLS", ch.Kills.ToString());
         if (!string.IsNullOrEmpty(ch.Title)) w.WriteProperty("TITLE", ch.Title);
-        w.WriteProperty("FLAGS", ((uint)ch.StatFlags).ToString());
-        w.WriteProperty("NPCBRAIN", ((int)ch.NpcBrain).ToString());
+        w.WriteProperty("FLAGS", $"0{(uint)ch.StatFlags:x}");
+        w.WriteProperty("NPC", ((int)ch.NpcBrain).ToString());
         if (ch.NpcSpells.Count > 0)
         {
             foreach (var spell in ch.NpcSpells)
@@ -388,7 +439,7 @@ public sealed class WorldSaver
         if (ch.ODex != 0) w.WriteProperty("ODEX", ch.ODex.ToString());
         if (ch.OInt != 0) w.WriteProperty("OINT", ch.OInt.ToString());
         if (ch.OBody != 0) w.WriteProperty("OBODY", $"0{ch.OBody:X}");
-        if (ch.OSkin != 0) w.WriteProperty("OSKIN", ch.OSkin.ToString());
+        if (ch.OSkin != 0) w.WriteProperty("OSKIN", $"0{ch.OSkin:x}");
         if (ch.Luck != 0) w.WriteProperty("LUCK", ch.Luck.ToString());
         if (ch.Exp != 0) w.WriteProperty("EXP", ch.Exp.ToString());
         if (ch.Level != 0) w.WriteProperty("LEVEL", ch.Level.ToString());
@@ -416,9 +467,9 @@ public sealed class WorldSaver
         long chTimeout = ch.Timeout;
         if (chTimeout > 0)
         {
-            long chRemainingSec = (chTimeout - Environment.TickCount64) / 1000;
-            if (chRemainingSec > 0)
-                w.WriteProperty("TIMER", chRemainingSec.ToString());
+            long chRemainingMs = chTimeout - Environment.TickCount64;
+            if (chRemainingMs > 0)
+                w.WriteProperty("TIMERMS", chRemainingMs.ToString());
         }
 
         var accountTag = ch.Tags.Get("ACCOUNT");
@@ -427,10 +478,27 @@ public sealed class WorldSaver
 
         for (int s = 0; s < (int)SphereNet.Core.Enums.SkillType.Qty; s++)
         {
-            ushort val = ch.GetSkill((SphereNet.Core.Enums.SkillType)s);
+            var skillType = (SphereNet.Core.Enums.SkillType)s;
+            ushort val = ch.GetSkill(skillType);
             if (val > 0)
-                w.WriteProperty($"SKILL[{s}]",
-                    $"{val},{ch.GetSkillLock((SphereNet.Core.Enums.SkillType)s)}");
+            {
+                string skillName = Enum.IsDefined(skillType) ? skillType.ToString() : $"SKILL[{s}]";
+                w.WriteProperty(skillName, val.ToString());
+            }
+        }
+
+        for (int s = 0; s < (int)SphereNet.Core.Enums.SkillType.Qty; s++)
+        {
+            byte lockVal = ch.GetSkillLock((SphereNet.Core.Enums.SkillType)s);
+            if (lockVal != 0)
+                w.WriteProperty($"SkillLock[{s}]", lockVal.ToString());
+        }
+
+        for (int i = 0; i < 3; i++)
+        {
+            var slTag = ch.Tags.Get($"STATLOCK.{i}");
+            if (!string.IsNullOrEmpty(slTag))
+                w.WriteProperty($"StatLock[{i}]", slTag);
         }
 
         for (int layer = 0; layer <= (int)SphereNet.Core.Enums.Layer.Horse; layer++)
@@ -440,19 +508,12 @@ public sealed class WorldSaver
                 w.WriteProperty($"EQUIP[{layer}]", $"0{equip.Uid.Value:X8}");
         }
 
-        if (ch.Events.Count > 0)
+        foreach (var r in ch.Events)
         {
-            string eventsCsv = string.Join(',',
-                ch.Events
-                    .Where(r => r.Type == SphereNet.Core.Enums.ResType.Events && r.Index != 0)
-                    .Select(r =>
-                    {
-                        string? name = ResolveResourceName?.Invoke(r);
-                        return string.IsNullOrWhiteSpace(name) ? $"Events:{r.Index}" : name!;
-                    })
-                    .Distinct(StringComparer.OrdinalIgnoreCase));
-            if (!string.IsNullOrWhiteSpace(eventsCsv))
-                w.WriteProperty("EVENTS", eventsCsv);
+            if (r.Type != SphereNet.Core.Enums.ResType.Events || r.Index == 0) continue;
+            string? name = ResolveResourceName?.Invoke(r);
+            if (!string.IsNullOrWhiteSpace(name))
+                w.WriteProperty("EVENTS", name!);
         }
 
         foreach (var mem in ch.Memories)
@@ -472,17 +533,25 @@ public sealed class WorldSaver
 
         foreach (var (key, val) in ch.Tags.GetAll())
         {
-            if (key.Equals("ACCOUNT", StringComparison.OrdinalIgnoreCase))
+            string upper = key.ToUpperInvariant();
+            if (upper is "ACCOUNT" or "MAXFOOD")
                 continue;
+            if (upper.StartsWith("STATLOCK.", StringComparison.Ordinal))
+                continue;
+            if (upper is "DSPEECH" or "EMOTECOLOR" or "VIRTUALGOLD"
+                or "LASTUSED" or "LASTDISCONNECTED" or "NEED" or "SPAWNITEM")
+            {
+                w.WriteProperty(upper, val);
+                continue;
+            }
             w.WriteProperty("TAG." + key, val);
         }
 
         w.EndRecord();
     }
 
-    private void SaveServerData(string savePath)
+    private void SaveServerData(string savePath, GameWorld world)
     {
-        // spheredata.scp stays classic text — tiny file, no benefit from binary/gzip.
         string finalPath = Path.Combine(savePath, "spheredata.scp");
         string tmpPath = finalPath + ".tmp";
         using (var sw = new StreamWriter(tmpPath))
@@ -493,6 +562,28 @@ public sealed class WorldSaver
             sw.WriteLine("[SPHERE]");
             sw.WriteLine($"SAVECOUNT={_saveIndex}");
             sw.WriteLine($"TIME={DateTimeOffset.UtcNow.ToUnixTimeSeconds()}");
+            sw.WriteLine();
+
+            // GLOBALS
+            var globals = world.GetAllGlobalVars().ToList();
+            if (globals.Count > 0)
+            {
+                sw.WriteLine("[GLOBALS]");
+                foreach (var (key, val) in globals)
+                    sw.WriteLine($"{key}={val}");
+                sw.WriteLine();
+            }
+
+            // LISTs
+            foreach (var (name, list) in world.GetAllGlobalLists())
+            {
+                if (list.Count == 0) continue;
+                sw.WriteLine($"[LIST {name}]");
+                foreach (var elem in list)
+                    sw.WriteLine($"ELEM={elem}");
+                sw.WriteLine();
+            }
+
             sw.WriteLine("[EOF]");
         }
         CommitFile(finalPath);

@@ -2378,7 +2378,12 @@ public class Character : ObjBase
                     _skillClass = Math.Max(0, classId);
                 return true;
             case "TITLE": _title = value; return true;
-            case "FLAGS": if (uint.TryParse(normalized, out uint flagsVal)) _statFlags = (StatFlag)flagsVal; return true;
+            case "FLAGS":
+            {
+                uint flagsHex = ParseHexOrDecUInt(normalized);
+                _statFlags = (StatFlag)flagsHex;
+                return true;
+            }
             // KILLS handled below with POISONLEVEL
             case "CRIMINAL":
                 if (normalized == "1" || normalized.Equals("true", StringComparison.OrdinalIgnoreCase))
@@ -2590,6 +2595,51 @@ public class Character : ObjBase
         {
             SetTag(key, normalized);
             return true;
+        }
+
+        // StatLock[n] bracket syntax (Sphere format)
+        if (upperKey.StartsWith("STATLOCK[", StringComparison.Ordinal) && upperKey.Contains(']'))
+        {
+            int si = upperKey.IndexOf('[');
+            int ei = upperKey.IndexOf(']');
+            if (int.TryParse(upperKey.AsSpan(si + 1, ei - si - 1), out int slIdx))
+                SetTag($"STATLOCK.{slIdx}", normalized);
+            return true;
+        }
+
+        // SkillLock[n] bracket syntax (Sphere format)
+        if (upperKey.StartsWith("SKILLLOCK[", StringComparison.Ordinal) && upperKey.Contains(']'))
+        {
+            int si = upperKey.IndexOf('[');
+            int ei = upperKey.IndexOf(']');
+            if (int.TryParse(upperKey.AsSpan(si + 1, ei - si - 1), out int skIdx) &&
+                skIdx >= 0 && skIdx < _skillLocks.Length &&
+                byte.TryParse(normalized, out byte skLockVal))
+            {
+                _skillLocks[skIdx] = skLockVal;
+            }
+            return true;
+        }
+
+        // Sphere NPC/char properties — round-trip as TAGs
+        switch (upperKey)
+        {
+            case "OKARMA":
+                if (TryParseShortSingleOrRange(normalized, out short okv)) _karma = okv;
+                return true;
+            case "OFAME":
+                if (TryParseShortSingleOrRange(normalized, out short ofv)) _fame = ofv;
+                return true;
+            case "OFOOD":
+                if (ushort.TryParse(normalized, out ushort ofoodVal)) _food = ofoodVal;
+                return true;
+            case "MAXFOOD":
+                SetTag("MAXFOOD", normalized);
+                return true;
+            case "DSPEECH": case "EMOTECOLOR": case "VIRTUALGOLD":
+            case "LASTUSED": case "LASTDISCONNECTED": case "NEED": case "SPAWNITEM":
+                SetTag(upperKey, value);
+                return true;
         }
 
         // Guild/stone member properties

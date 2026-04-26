@@ -14,11 +14,20 @@ namespace SphereNet.Persistence.Load;
 /// Auto-detects on-disk format via the manifest and file extensions so a
 /// savedir can mix classic <c>.scp</c>, gzip, binary, or sharded layouts
 /// without loader changes.
+/// Handles both SphereNet saves (bare <c>[WORLDITEM]</c>) and classic
+/// Sphere/Source-X saves (<c>[WORLDITEM i_backpack]</c> with defname suffix).
 /// </summary>
 public sealed class WorldLoader
 {
     private readonly ILogger<WorldLoader> _logger;
     private int _migratedUuids;
+
+    /// <summary>Resolves a Sphere defname to a base graphic/body ID.
+    /// Returns 0 when the defname is unknown.</summary>
+    public Func<string, ushort>? ResolveItemDef { get; set; }
+
+    /// <inheritdoc cref="ResolveItemDef"/>
+    public Func<string, ushort>? ResolveCharDef { get; set; }
 
     public WorldLoader(ILoggerFactory loggerFactory)
     {
@@ -43,6 +52,8 @@ public sealed class WorldLoader
         {
             var itemPaths = ResolveSaveFiles(savePath, "sphereworld");
             var charPaths = ResolveSaveFiles(savePath, "spherechars");
+            var staticPaths = ResolveSaveFiles(savePath, "spherestatics");
+            var multiPaths = ResolveSaveFiles(savePath, "spheremultis");
 
             foreach (string path in itemPaths)
             {
@@ -51,12 +62,44 @@ public sealed class WorldLoader
                 _logger.LogInformation("Items: {Path} -> {Count}", Path.GetFileName(path), n);
             }
 
+            foreach (string path in staticPaths)
+            {
+                int n = LoadItemFile(world, path, itemContLinks);
+                itemCount += n;
+                _logger.LogInformation("Statics: {Path} -> {Count}", Path.GetFileName(path), n);
+            }
+
+            foreach (string path in multiPaths)
+            {
+                int n = LoadItemFile(world, path, itemContLinks);
+                itemCount += n;
+                _logger.LogInformation("Multis: {Path} -> {Count}", Path.GetFileName(path), n);
+            }
+
+            // Sphere/Source-X sphereworld.scp contains both [WORLDITEM] and
+            // [WORLDCHAR] sections. LoadItemFile above only processed items;
+            // now make a second pass over the same files to pick up NPCs.
+            foreach (string path in itemPaths)
+            {
+                int n = LoadCharFile(world, path, charAccountLinks);
+                if (n > 0)
+                {
+                    charCount += n;
+                    _logger.LogInformation("WorldChars: {Path} -> {Count}", Path.GetFileName(path), n);
+                }
+            }
+
             foreach (string path in charPaths)
             {
                 int n = LoadCharFile(world, path, charAccountLinks);
                 charCount += n;
                 _logger.LogInformation("Chars: {Path} -> {Count}", Path.GetFileName(path), n);
             }
+
+            // spheredata.scp — globals, lists, world scripts
+            var dataPaths = ResolveSaveFiles(savePath, "spheredata");
+            foreach (string path in dataPaths)
+                LoadDataFile(world, path);
         }
         finally
         {
@@ -177,7 +220,7 @@ public sealed class WorldLoader
 
         while (reader.NextRecord(out string section))
         {
-            if (!section.Equals("WORLDITEM", StringComparison.OrdinalIgnoreCase))
+            if (!ParseSectionType(section, "WORLDITEM", out string? defname))
             {
                 while (reader.NextProperty(out _, out _)) { /* skip */ }
                 continue;
@@ -187,7 +230,17 @@ public sealed class WorldLoader
             Serial contSerial = Serial.Invalid;
             byte layer = 0;
 
+            if (defname != null && ResolveItemDef != null)
+            {
+                ushort baseId = ResolveItemDef(defname);
+                if (baseId != 0)
+                    item.BaseId = baseId;
+                else
+                    _logger.LogDebug("Unknown item defname '{DefName}' — BaseId stays default", defname);
+            }
+
             bool hasUuid = false;
+            bool hasId = false;
             while (reader.NextProperty(out string key, out string val))
             {
                 string upper = key.ToUpperInvariant();
@@ -222,10 +275,18 @@ public sealed class WorldLoader
                     byte.TryParse(val, out layer);
                     continue;
                 }
+                if (upper == "CREATE")
+                    continue;
+                if (upper == "ID")
+                    hasId = true;
                 ApplyItemProperty(item, key, val);
             }
             if (!hasUuid)
                 _migratedUuids++;
+
+            if (!hasId && defname != null && item.BaseId == 0)
+                _logger.LogWarning("Item 0x{Uid:X} defname='{Def}' has no BaseId after load — will be invisible",
+                    item.Uid.Value, defname);
 
             if (contSerial.IsValid)
                 contLinks.Add((item, contSerial, layer));
@@ -248,7 +309,7 @@ public sealed class WorldLoader
 
         while (reader.NextRecord(out string section))
         {
-            if (!section.Equals("WORLDCHAR", StringComparison.OrdinalIgnoreCase))
+            if (!ParseSectionType(section, "WORLDCHAR", out string? defname))
             {
                 while (reader.NextProperty(out _, out _)) { /* skip */ }
                 continue;
@@ -257,6 +318,18 @@ public sealed class WorldLoader
             var ch = world.CreateCharacter();
             string? accountName = null;
             bool charHasUuid = false;
+
+            if (defname != null && ResolveCharDef != null)
+            {
+                ushort bodyId = ResolveCharDef(defname);
+                if (bodyId != 0)
+                {
+                    ch.BodyId = bodyId;
+                    ch.OBody = bodyId;
+                }
+                else
+                    _logger.LogDebug("Unknown char defname '{DefName}' — BodyId stays default", defname);
+            }
 
             while (reader.NextProperty(out string key, out string val))
             {
@@ -290,6 +363,9 @@ public sealed class WorldLoader
                         ch.SetTag("ACCOUNT", val);
                     continue;
                 }
+
+                if (key.Equals("CREATE", StringComparison.OrdinalIgnoreCase))
+                    continue;
 
                 ApplyCharProperty(ch, key, val);
             }
@@ -351,8 +427,24 @@ public sealed class WorldLoader
                 if (TryParseHexOrDec(val, out uint obody))
                     ch.OBody = (ushort)obody;
                 break;
+            case "OSKIN":
+                if (TryParseHexOrDec(val, out uint oskin))
+                    ch.OBody = (ushort)oskin;
+                break;
             case "ISPLAYER":
                 ch.IsPlayer = val == "1";
+                break;
+            case "OSTR":
+                if (short.TryParse(val, out short ostr))
+                    ch.Str = ostr;
+                break;
+            case "ODEX":
+                if (short.TryParse(val, out short odex))
+                    ch.Dex = odex;
+                break;
+            case "OINT":
+                if (short.TryParse(val, out short oint))
+                    ch.Int = oint;
                 break;
             default:
                 if (upper.StartsWith("SKILL[") && upper.Contains(']'))
@@ -371,7 +463,6 @@ public sealed class WorldLoader
                 }
                 if (upper.StartsWith("EQUIP["))
                 {
-                    // Deferred — equipment linking happens via CONT resolution pass.
                     break;
                 }
                 if (upper == "MEMORY")
@@ -384,9 +475,84 @@ public sealed class WorldLoader
                     }
                     break;
                 }
+                if (TryResolveSkillName(upper, out SkillType skill))
+                {
+                    if (ushort.TryParse(val, out ushort sv))
+                        ch.SetSkill(skill, sv);
+                    break;
+                }
                 ch.TrySetProperty(key, val);
                 break;
         }
+    }
+
+    private void LoadDataFile(GameWorld world, string path)
+    {
+        if (!File.Exists(path)) return;
+        using var reader = Formats.SaveIO.OpenReader(path);
+        int globals = 0, lists = 0;
+
+        while (reader.NextRecord(out string section))
+        {
+            string upper = section.ToUpperInvariant();
+
+            if (upper == "GLOBALS")
+            {
+                while (reader.NextProperty(out string key, out string val))
+                {
+                    world.SetGlobalVar(key, val);
+                    globals++;
+                }
+            }
+            else if (upper.StartsWith("LIST ", StringComparison.OrdinalIgnoreCase))
+            {
+                string listName = section[5..].Trim();
+                var list = world.GetOrCreateList(listName);
+                while (reader.NextProperty(out string key, out string val))
+                {
+                    if (key.Equals("ELEM", StringComparison.OrdinalIgnoreCase))
+                        list.Add(val);
+                }
+                lists++;
+            }
+            else if (upper.StartsWith("WORLDSCRIPT ", StringComparison.OrdinalIgnoreCase))
+            {
+                string scriptName = section[12..].Trim();
+                while (reader.NextProperty(out string key, out string val))
+                {
+                    world.SetGlobalVar($"SCRIPT.{scriptName}.{key}", val);
+                }
+            }
+            else
+            {
+                // SPHERE, TIMERF, EOF — skip properties
+                while (reader.NextProperty(out _, out _)) { }
+            }
+        }
+
+        if (globals > 0 || lists > 0)
+            _logger.LogInformation("Data: {Path} -> {Globals} globals, {Lists} lists",
+                Path.GetFileName(path), globals, lists);
+    }
+
+    /// <summary>Check whether <paramref name="section"/> matches
+    /// <paramref name="expectedType"/> (case-insensitive), handling both
+    /// SphereNet bare headers (<c>WORLDITEM</c>) and classic Sphere headers
+    /// with a defname suffix (<c>WORLDITEM i_backpack</c>).</summary>
+    private static bool ParseSectionType(string section, string expectedType, out string? defname)
+    {
+        defname = null;
+        if (section.Equals(expectedType, StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (section.StartsWith(expectedType, StringComparison.OrdinalIgnoreCase)
+            && section.Length > expectedType.Length
+            && section[expectedType.Length] == ' ')
+        {
+            defname = section[(expectedType.Length + 1)..].Trim();
+            if (defname.Length == 0) defname = null;
+            return true;
+        }
+        return false;
     }
 
     private static bool TryParseHexOrDec(string val, out uint result)
@@ -402,4 +568,30 @@ public sealed class WorldLoader
 
         return uint.TryParse(val, out result);
     }
+
+    private static bool TryResolveSkillName(string upper, out SkillType skill)
+    {
+        if (_sphereSkillNames.TryGetValue(upper, out skill))
+            return true;
+        if (Enum.TryParse(upper, true, out skill) && Enum.IsDefined(skill))
+            return true;
+        skill = SkillType.None;
+        return false;
+    }
+
+    private static readonly Dictionary<string, SkillType> _sphereSkillNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["EVALUATINGINTEL"] = SkillType.EvalInt,
+        ["EVALUATINGINTELLECT"] = SkillType.EvalInt,
+        ["ITEMID"] = SkillType.ItemId,
+        ["ITEMIDENTIFICATION"] = SkillType.ItemId,
+        ["MACEFIGHTING"] = SkillType.MaceFighting,
+        ["ANIMALLORE"] = SkillType.AnimalLore,
+        ["ARMSLOREBOWCRAFT"] = SkillType.Bowcraft,
+        ["DETECTINGHIDDEN"] = SkillType.DetectingHidden,
+        ["MAGICRESISTANCE"] = SkillType.MagicResistance,
+        ["SPIRITSPEAK"] = SkillType.SpiritSpeak,
+        ["TASTEID"] = SkillType.TasteId,
+        ["REMOVETRAP"] = SkillType.RemoveTrap,
+    };
 }

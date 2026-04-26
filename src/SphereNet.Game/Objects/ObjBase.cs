@@ -431,6 +431,10 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
                 if (this is Items.Item item)
                     return SetEventsList(item.Events, value);
                 return true;
+            case "TIMERMS":
+                if (long.TryParse(value, out long timerMs) && timerMs > 0)
+                    SetTimeout(Environment.TickCount64 + timerMs);
+                return true;
         }
 
         // TAG/DTAG — persistent on the object (saved). CTAG/CTAG0 —
@@ -717,7 +721,9 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
 
     private static bool SetEventsList(List<ResourceId> list, string value)
     {
-        list.Clear();
+        bool isMultiValue = value.Contains(',') || value.Contains(' ');
+        if (isMultiValue)
+            list.Clear();
         var parts = value.Split([',', ' '], StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         foreach (var part in parts)
         {

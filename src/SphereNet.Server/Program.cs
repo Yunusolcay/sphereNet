@@ -525,7 +525,47 @@ public static class Program
                 return link!.DefName!;
             return null;
         };
+        _saver.ResolveItemDefName = baseId =>
+        {
+            var def = DefinitionLoader.GetItemDef(baseId);
+            return def?.DefName;
+        };
+        _saver.ResolveCharDefName = bodyId =>
+        {
+            var def = DefinitionLoader.GetCharDef(bodyId);
+            return def?.DefName;
+        };
         _loader = new WorldLoader(_loggerFactory);
+        _loader.ResolveItemDef = defname =>
+        {
+            var rid = _resources.ResolveDefName(defname);
+            if (rid.IsValid && rid.Type == ResType.ItemDef)
+            {
+                var def = DefinitionLoader.GetItemDef(rid.Index);
+                return def?.DispIndex ?? (ushort)rid.Index;
+            }
+            return 0;
+        };
+        _loader.ResolveCharDef = defname =>
+        {
+            var rid = _resources.ResolveDefName(defname);
+            if (rid.IsValid && rid.Type == ResType.CharDef)
+            {
+                var def = DefinitionLoader.GetCharDef(rid.Index);
+                return def?.DispIndex ?? (ushort)rid.Index;
+            }
+            return 0;
+        };
+        SphereNet.Game.Objects.Items.Item.ResolveDefName = defname =>
+        {
+            var rid = _resources.ResolveDefName(defname);
+            if (rid.IsValid && rid.Type == ResType.ItemDef)
+            {
+                var def = DefinitionLoader.GetItemDef(rid.Index);
+                return def?.DispIndex ?? (ushort)rid.Index;
+            }
+            return 0;
+        };
 
         string savePath = ResolvePath(basePath, _config.WorldSaveDir);
         if (Directory.Exists(savePath))
@@ -4517,17 +4557,79 @@ public static class Program
     private static void InitializeSpawnItems()
     {
         int spawns = 0;
+        int fromTag = 0;
         foreach (var obj in _world.GetAllObjects())
         {
-            if (obj is SphereNet.Game.Objects.Items.Item item &&
-                item.ItemType == SphereNet.Core.Enums.ItemType.SpawnChar)
+            if (obj is not SphereNet.Game.Objects.Items.Item item)
+                continue;
+
+            // Sphere saves don't write TYPE — detect spawn items by SPAWNID tag
+            string? spawnId = item.Tags.Get("SPAWNID");
+            if (!string.IsNullOrEmpty(spawnId) && item.ItemType != ItemType.SpawnChar)
             {
-                item.InitializeSpawnComponent(_world, _resources);
-                spawns++;
+                item.ItemType = ItemType.SpawnChar;
+                fromTag++;
             }
+
+            if (item.ItemType != ItemType.SpawnChar)
+                continue;
+
+            item.InitializeSpawnComponent(_world, _resources);
+
+            // Apply Sphere SPAWNID/TIMELO/TIMEHI/MAXDIST tags
+            if (!string.IsNullOrEmpty(spawnId) && item.SpawnChar != null)
+            {
+                item.SpawnChar.SetFromDefName(spawnId, _resources);
+
+                string? timeLo = item.Tags.Get("TIMELO");
+                string? timeHi = item.Tags.Get("TIMEHI");
+                if (timeLo != null || timeHi != null)
+                {
+                    int.TryParse(timeLo ?? "5", out int lo);
+                    int.TryParse(timeHi ?? "10", out int hi);
+                    item.SpawnChar.SetDelay(lo, hi);
+                }
+
+                string? maxDist = item.Tags.Get("MAXDIST");
+                if (maxDist != null && int.TryParse(maxDist, out int dist))
+                    item.SpawnChar.SpawnRange = dist;
+
+                // ADDOBJ: re-register already-spawned NPC serials.
+                // In Sphere, ADDOBJ count determines MaxCount (each line = one spawn slot).
+                string? addObj = item.Tags.Get("ADDOBJ");
+                if (!string.IsNullOrEmpty(addObj))
+                {
+                    var tokens = addObj.Split(',', System.StringSplitOptions.TrimEntries | System.StringSplitOptions.RemoveEmptyEntries);
+                    if (tokens.Length > item.SpawnChar.MaxCount)
+                        item.SpawnChar.MaxCount = tokens.Length;
+
+                    foreach (string tok in tokens)
+                    {
+                        if (TryParseHexOrDecUInt(tok, out uint npcSerial))
+                        {
+                            var ch = _world.FindChar(new SphereNet.Core.Types.Serial(npcSerial));
+                            if (ch != null && !ch.IsDead && !ch.IsDeleted)
+                                item.SpawnChar.RegisterExisting(new SphereNet.Core.Types.Serial(npcSerial));
+                        }
+                    }
+                }
+            }
+
+            spawns++;
         }
         if (spawns > 0)
-            _log.LogInformation("Initialized {Count} spawn items", spawns);
+            _log.LogInformation("Initialized {Count} spawn items ({FromTag} from SPAWNID tag)", spawns, fromTag);
+    }
+
+    private static bool TryParseHexOrDecUInt(string val, out uint result)
+    {
+        result = 0;
+        if (string.IsNullOrEmpty(val)) return false;
+        if (val.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            return uint.TryParse(val.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out result);
+        if (val.StartsWith('0') && val.Length > 1 && !val.Contains('.'))
+            return uint.TryParse(val.AsSpan(1), System.Globalization.NumberStyles.HexNumber, null, out result);
+        return uint.TryParse(val, out result);
     }
 
     private static void PlaceTeleporters()
