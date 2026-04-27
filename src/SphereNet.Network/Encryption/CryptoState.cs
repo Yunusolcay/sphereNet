@@ -12,7 +12,8 @@ public sealed class CryptoState
 {
     private LoginEncryption? _loginCrypt;
     private TwofishGameEncryption? _twofishCrypt;
-    private Md5GameEncryption? _md5Encrypt; // MD5-based outgoing encryption (Source-X EncryptMD5)
+    private BlowfishGameEncryption? _blowfishCrypt;
+    private Md5GameEncryption? _md5Encrypt;
     private EncryptionType _encType = EncryptionType.None;
     private uint _key1;
     private uint _key2;
@@ -125,10 +126,18 @@ public sealed class CryptoState
         if (_encType == EncryptionType.None)
             return;
 
-        if (_twofishCrypt != null)
+        switch (_encType)
         {
-            _twofishCrypt.Decrypt(data, offset, length);
-            return;
+            case EncryptionType.Twofish:
+                _twofishCrypt?.Decrypt(data, offset, length);
+                return;
+            case EncryptionType.BlowfishTwofish:
+                _twofishCrypt?.Decrypt(data, offset, length);
+                _blowfishCrypt?.Decrypt(data, offset, length);
+                return;
+            case EncryptionType.Blowfish:
+                _blowfishCrypt?.Decrypt(data, offset, length);
+                return;
         }
 
         _loginCrypt?.Decrypt(data, offset, length);
@@ -187,15 +196,26 @@ public sealed class CryptoState
             {
                 byte[] testBuf = rawData.ToArray();
                 TwofishGameEncryption? thisTf = null;
+                BlowfishGameEncryption? thisBf = null;
 
-                if (encTry == 3) // ENC_TFISH
+                switch (encTry)
                 {
-                    thisTf = new TwofishGameEncryption(derivedSeed);
-                    thisTf.Decrypt(testBuf, 0, testBuf.Length);
-                }
-                else if (encTry == 1 || encTry == 2)
-                {
-                    continue; // Blowfish not implemented
+                    case 0: // ENC_NONE — no game-layer decryption
+                        break;
+                    case 1: // ENC_BFISH — Blowfish only (1.26.x – 2.0.0)
+                        thisBf = new BlowfishGameEncryption(derivedSeed);
+                        thisBf.Decrypt(testBuf, 0, testBuf.Length);
+                        break;
+                    case 2: // ENC_BTFISH — Twofish then Blowfish (2.0.0x – 2.0.3)
+                        thisTf = new TwofishGameEncryption(derivedSeed);
+                        thisBf = new BlowfishGameEncryption(derivedSeed);
+                        thisTf.Decrypt(testBuf, 0, testBuf.Length);
+                        thisBf.Decrypt(testBuf, 0, testBuf.Length);
+                        break;
+                    case 3: // ENC_TFISH — Twofish only (3.0.0+)
+                        thisTf = new TwofishGameEncryption(derivedSeed);
+                        thisTf.Decrypt(testBuf, 0, testBuf.Length);
+                        break;
                 }
 
                 if (testBuf[0] == 0x91)
@@ -207,8 +227,9 @@ public sealed class CryptoState
                     {
                         _key1 = relayKey1;
                         _key2 = relayKey2;
-                        _encType = encTry == 3 ? EncryptionType.Twofish : EncryptionType.None;
+                        _encType = (EncryptionType)encTry;
                         _twofishCrypt = thisTf;
+                        _blowfishCrypt = thisBf;
                         _md5Encrypt = thisTf != null ? new Md5GameEncryption(thisTf.Md5Digest) : null;
                         _loginCrypt = null;
                         _initialized = true;
@@ -271,6 +292,7 @@ public sealed class CryptoState
     {
         _loginCrypt = null;
         _twofishCrypt = null;
+        _blowfishCrypt = null;
         _md5Encrypt = null;
         _encType = EncryptionType.None;
         _key1 = 0;

@@ -344,6 +344,61 @@ public sealed class BlowfishEncryption
 }
 
 /// <summary>
+/// Blowfish-based game stream cipher for UO 2.0.x clients (ENC_BFISH / ENC_BTFISH).
+/// Port of Source-X CCrypto::InitBlowFish + DecryptBlowFish.
+/// Same table-XOR stream pattern as TwofishGameEncryption but using Blowfish ECB
+/// for the table encryption step.
+/// </summary>
+public sealed class BlowfishGameEncryption
+{
+    private const int TableSize = 256;
+
+    private readonly BlowfishEncryption _cipher;
+    private readonly byte[] _table = new byte[TableSize];
+    private int _position;
+
+    public BlowfishGameEncryption(uint seed)
+    {
+        byte[] key =
+        [
+            (byte)(seed >> 24), (byte)(seed >> 16),
+            (byte)(seed >> 8), (byte)seed,
+            (byte)(seed >> 24), (byte)(seed >> 16),
+            (byte)(seed >> 8), (byte)seed
+        ];
+
+        _cipher = new BlowfishEncryption(key);
+
+        for (int i = 0; i < TableSize; i++)
+            _table[i] = (byte)i;
+
+        EncryptTable();
+        _position = 0;
+    }
+
+    private void EncryptTable()
+    {
+        byte[] tmp = new byte[TableSize];
+        Buffer.BlockCopy(_table, 0, tmp, 0, TableSize);
+        _cipher.Encrypt(tmp, 0, TableSize);
+        Buffer.BlockCopy(tmp, 0, _table, 0, TableSize);
+    }
+
+    public void Decrypt(byte[] data, int offset, int length)
+    {
+        for (int i = 0; i < length; i++)
+        {
+            if (_position >= TableSize)
+            {
+                EncryptTable();
+                _position = 0;
+            }
+            data[offset + i] ^= _table[_position++];
+        }
+    }
+}
+
+/// <summary>
 /// Twofish-based game stream cipher for UO 6.0.x+ clients (ENC_TFISH / ENC_BTFISH).
 /// Exact port of Source-X CCrypto::InitTwoFish + DecryptTwoFish.
 /// Key = seed repeated 4 times as 128-bit Twofish key.
