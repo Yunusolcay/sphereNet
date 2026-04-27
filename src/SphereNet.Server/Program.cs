@@ -129,6 +129,8 @@ public static class Program
 
     private static bool _running;
     private static bool _multicoreRuntimeEnabled;
+    private static long _multicoreFallbackMs;
+    private const long MulticoreRecoveryCooldownMs = 30_000;
     private static int _tickCounter;
     private static DateTime _serverStartTime;
     private static int _saveCount;
@@ -6455,6 +6457,14 @@ public static class Program
         long tickStart = Stopwatch.GetTimestamp();
         try
         {
+            if (!_multicoreRuntimeEnabled && _multicoreFallbackMs > 0
+                && Environment.TickCount64 - _multicoreFallbackMs >= MulticoreRecoveryCooldownMs)
+            {
+                _multicoreRuntimeEnabled = true;
+                _multicoreFallbackMs = 0;
+                _log.LogInformation("Multicore mode re-enabled after {Cooldown}s cooldown.", MulticoreRecoveryCooldownMs / 1000);
+            }
+
             if (_multicoreRuntimeEnabled)
                 RunMulticoreTick();
             else
@@ -6464,6 +6474,7 @@ public static class Program
         {
             _log.LogWarning(oce, "Multicore tick timeout. Falling back to single-thread mode.");
             _multicoreRuntimeEnabled = false;
+            _multicoreFallbackMs = Environment.TickCount64;
             RunSingleThreadTick();
         }
         catch (Exception ex)
@@ -6472,6 +6483,7 @@ public static class Program
             {
                 _log.LogWarning(ex, "Multicore tick failure. Falling back to single-thread mode.");
                 _multicoreRuntimeEnabled = false;
+                _multicoreFallbackMs = Environment.TickCount64;
                 RunSingleThreadTick();
             }
             else
@@ -6570,6 +6582,10 @@ public static class Program
 
         _telemetrySnapshotUs = ToMicroseconds(Stopwatch.GetTimestamp() - p0);
         _telemetryComputeUs = 0;
+        _telemetryNpcBuildUs = 0;
+        _telemetryClientStateUs = 0;
+        _telemetryNpcApplyUs = 0;
+        _telemetryViewBuildUs = 0;
 
         long p1 = Stopwatch.GetTimestamp();
 

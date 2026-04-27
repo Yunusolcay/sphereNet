@@ -128,7 +128,7 @@ public sealed class NetworkManager : IDisposable
             _listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             _listenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             _listenSocket.Bind(new IPEndPoint(addr, port));
-            _listenSocket.Listen(32);
+            _listenSocket.Listen(128);
             _listenSocket.Blocking = false;
             _isRunning = true;
             _logger.LogInformation("Listening on {IP}:{Port}", ip, port);
