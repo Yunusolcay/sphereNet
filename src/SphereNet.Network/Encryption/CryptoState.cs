@@ -126,6 +126,12 @@ public sealed class CryptoState
         if (_encType == EncryptionType.None)
             return;
 
+        if (_loginCrypt != null)
+        {
+            _loginCrypt.Decrypt(data, offset, length);
+            return;
+        }
+
         switch (_encType)
         {
             case EncryptionType.Twofish:

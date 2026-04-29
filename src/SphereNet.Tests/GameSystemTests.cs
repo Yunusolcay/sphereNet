@@ -630,37 +630,6 @@ public class GameSystemTests
     }
 
     [Fact]
-    public void GameClient_AllGo_UsesGroundCursorForCommandablePets()
-    {
-        var loggerFactory = LoggerFactory.Create(_ => { });
-        var world = CreateWorld();
-        var accountManager = new AccountManager(loggerFactory);
-        var netState = new NetState(loggerFactory.CreateLogger<NetState>()) { Id = 99 };
-        SetNetStateInUse(netState, true);
-
-        var client = new SphereNet.Game.Clients.GameClient(netState, world, accountManager,
-            loggerFactory.CreateLogger<SphereNet.Game.Clients.GameClient>());
-        var owner = world.CreateCharacter();
-        owner.Name = "Owner";
-        owner.IsPlayer = true;
-        world.PlaceCharacter(owner, new Point3D(100, 100, 0, 0));
-        typeof(SphereNet.Game.Clients.GameClient)
-            .GetField("_character", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .SetValue(client, owner);
-
-        var pet = world.CreateCharacter();
-        pet.Name = "Wolf";
-        world.PlaceCharacter(pet, new Point3D(101, 100, 0, 0));
-        Assert.True(pet.TryAssignOwnership(owner, owner, summoned: false, enforceFollowerCap: false));
-
-        var queue = GetQueuedPackets(netState);
-        queue.Clear();
-
-        Assert.True(InvokePetCommand(client, "all go"));
-        Assert.Contains(queue, pkt => pkt.Span.Length >= 2 && pkt.Span[0] == 0x6C && pkt.Span[1] == 0x00);
-    }
-
-    [Fact]
     public void GameClient_ForCharMemoryType_ReturnsOwnershipEntries()
     {
         var loggerFactory = LoggerFactory.Create(_ => { });

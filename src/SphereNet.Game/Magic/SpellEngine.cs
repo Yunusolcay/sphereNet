@@ -237,11 +237,18 @@ public sealed class SpellEngine
             return false;
 
         if (!int.TryParse(spellStr, out int spellId))
+        {
+            ClearCastState(caster);
             return false;
+        }
 
         var spell = (SpellType)spellId;
         var def = _spells.Get(spell);
-        if (def == null) return false;
+        if (def == null)
+        {
+            ClearCastState(caster);
+            return false;
+        }
 
         // Resolve target before consumption so LOS can be checked first
         Serial targetUid = Serial.Invalid;
@@ -277,7 +284,11 @@ public sealed class SpellEngine
 
         // Consume mana
         if (caster.Mana < def.ManaCost)
+        {
+            ClearCastState(caster);
+            OnSpellInterrupt?.Invoke(caster, "You lack the mana to cast that spell.");
             return false;
+        }
         caster.Mana -= (short)def.ManaCost;
 
         // Consume reagents (unless using a wand / GM override).
@@ -317,7 +328,15 @@ public sealed class SpellEngine
         }
 
         // Apply spell effect
-        if (def.IsFlag(SpellFlag.TargChar) || def.IsFlag(SpellFlag.TargObj))
+        if (spell is SpellType.Recall or SpellType.GateTravel)
+        {
+            var rune = _world?.FindItem(targetUid);
+            if (rune != null)
+                ApplyRuneTravelSpell(caster, rune, def);
+            else
+                OnSysMessage?.Invoke(caster, ServerMessages.Get(Msg.SpellRecallBlank));
+        }
+        else if (def.IsFlag(SpellFlag.TargChar) || def.IsFlag(SpellFlag.TargObj))
         {
             var target = _world?.FindChar(targetUid);
             if (target != null)
@@ -624,6 +643,41 @@ public sealed class SpellEngine
         }
     }
 
+    private void ApplyRuneTravelSpell(Character caster, Item rune, SpellDef def)
+    {
+        if (!rune.TryGetTag("RUNE_X", out string? rx) ||
+            !rune.TryGetTag("RUNE_Y", out string? ry))
+        {
+            OnSysMessage?.Invoke(caster, ServerMessages.Get(Msg.SpellRecallBlank));
+            return;
+        }
+
+        short.TryParse(rx, out short x);
+        short.TryParse(ry, out short y);
+        sbyte z = 0;
+        if (rune.TryGetTag("RUNE_Z", out string? rz))
+            sbyte.TryParse(rz, out z);
+        byte map = caster.MapIndex;
+        if (rune.TryGetTag("RUNE_MAP", out string? rm))
+            byte.TryParse(rm, out map);
+
+        var dest = new Point3D(x, y, z, map);
+        if (def.Id == SpellType.Recall)
+        {
+            _world.MoveCharacter(caster, dest);
+            return;
+        }
+
+        var gate = _world.CreateItem();
+        gate.BaseId = 0x0F6C; // moongate graphic
+        gate.ItemType = ItemType.Moongate;
+        gate.Name = "moongate";
+        gate.MoreP = dest;
+        gate.DecayTime = Environment.TickCount64 + 30_000;
+        _world.PlaceItem(gate, caster.Position);
+        OnSysMessage?.Invoke(caster, ServerMessages.Get(Msg.SpellGateOpen));
+    }
+
     private void ApplySpecificSpell(Character caster, Character target, SpellDef def, int effect)
     {
         switch (def.Id)
@@ -899,6 +953,7 @@ public sealed class SpellRegistry
 {
     private readonly Dictionary<SpellType, SpellDef> _spells = [];
 
+    public void Clear() => _spells.Clear();
     public void Register(SpellDef def) => _spells[def.Id] = def;
     public SpellDef? Get(SpellType id) => _spells.GetValueOrDefault(id);
     public IEnumerable<SpellDef> GetAll() => _spells.Values;

@@ -1,3 +1,4 @@
+using SphereNet.Core.Enums;
 using SphereNet.Core.Types;
 
 namespace SphereNet.Game.Movement;
@@ -24,7 +25,7 @@ public sealed class Pathfinder
     /// Find a path from start to goal. Returns the next step direction,
     /// or null if no path found.
     /// </summary>
-    public List<Point3D>? FindPath(Point3D start, Point3D goal, byte mapIndex)
+    public List<Point3D>? FindPath(Point3D start, Point3D goal, byte mapIndex, CanFlags canFlags = CanFlags.None)
     {
         if (start.GetDistanceTo(goal) <= 1)
             return [goal];
@@ -76,7 +77,7 @@ public sealed class Pathfinder
                         continue;
 
                     var neighborPos = new Point3D(nx, ny, nz, mapIndex);
-                    if (!IsWalkable(neighborPos))
+                    if (!IsWalkable(neighborPos, canFlags))
                         continue;
 
                     int moveCost = (dx != 0 && dy != 0) ? 14 : 10; // diagonal vs cardinal
@@ -101,7 +102,7 @@ public sealed class Pathfinder
         return null; // no path found
     }
 
-    private bool IsWalkable(Point3D pos)
+    private bool IsWalkable(Point3D pos, CanFlags canFlags = CanFlags.None)
     {
         foreach (var ch in _world.GetCharsInRange(pos, 0))
         {
@@ -111,12 +112,22 @@ public sealed class Pathfinder
         foreach (var item in _world.GetItemsInRange(pos, 0))
         {
             if (item.IsStaticBlock) return false;
+            if (item.TryGetTag("FIELD_DAMAGE", out _))
+            {
+                if ((canFlags & CanFlags.C_FireImmune) == 0)
+                    return false;
+            }
         }
 
         var mapData = _world.MapData;
         if (mapData != null)
         {
             if (!mapData.IsPassable(pos.Map, pos.X, pos.Y, pos.Z))
+                return false;
+
+            var terrain = mapData.GetTerrainTile(pos.Map, pos.X, pos.Y);
+            var landData = mapData.GetLandTileData(terrain.TileId);
+            if (landData.IsWet && (canFlags & CanFlags.C_Swim) == 0)
                 return false;
         }
 

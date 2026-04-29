@@ -566,6 +566,12 @@ public static class ActiveSkillEngine
             return false;
         }
 
+        if (!IsMinableTile(world, target))
+        {
+            sink.SysMessage(ServerMessages.Get(Msg.Mining4));
+            return false;
+        }
+
         if (gatheringEngine != null)
         {
             var result = gatheringEngine.TryGatherForSink(ch, SkillType.Mining, target);
@@ -611,6 +617,41 @@ public static class ActiveSkillEngine
             sink.SysMessage(ServerMessages.Get(Msg.Mining3));
         }
         return success;
+    }
+
+    private static bool IsMinableTile(World.GameWorld world, Point3D target)
+    {
+        var mapData = world.MapData;
+        if (mapData == null) return true;
+
+        // Check land tile name (rock, cave, mountain, ore)
+        var terrain = mapData.GetTerrainTile(target.Map, target.X, target.Y);
+        var landData = mapData.GetLandTileData(terrain.TileId);
+        if (!string.IsNullOrEmpty(landData.Name))
+        {
+            string name = landData.Name;
+            if (name.Contains("rock", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("cave", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("mountain", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("ore", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        // Check statics at target for minable rock walls
+        var statics = mapData.GetStatics(target.Map, target.X, target.Y);
+        foreach (var st in statics)
+        {
+            var itemData = mapData.GetItemTileData(st.TileId);
+            if (string.IsNullOrEmpty(itemData.Name)) continue;
+            if ((itemData.IsWall || itemData.IsImpassable) &&
+                (itemData.Name.Contains("rock", StringComparison.OrdinalIgnoreCase) ||
+                 itemData.Name.Contains("cave", StringComparison.OrdinalIgnoreCase) ||
+                 itemData.Name.Contains("mountain", StringComparison.OrdinalIgnoreCase) ||
+                 itemData.Name.Contains("ore", StringComparison.OrdinalIgnoreCase)))
+                return true;
+        }
+
+        return false;
     }
 
     // -------------------------------------------------------------- Fishing

@@ -202,6 +202,7 @@ public sealed class CraftingEngine
     /// </summary>
     public int LoadRecipesFromDefs(ResourceHolder resources)
     {
+        _recipes.Clear();
         int count = 0;
         foreach (var (baseId, def) in DefinitionLoader.AllItemDefs)
         {

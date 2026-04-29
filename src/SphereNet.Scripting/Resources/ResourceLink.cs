@@ -19,6 +19,7 @@ public class ResourceLink : ResourceDef
         set => _scriptFilePath = value != null ? string.Intern(value) : null;
     }
     public int ScriptLineNumber { get; set; }
+    public string HeaderArgument { get; set; } = "";
     public bool HasBeenScanned { get; set; }
 
     /// <summary>

@@ -624,11 +624,37 @@ public static class Program
         scriptInterpreter.ServerPropertyResolver = ResolveServerProperty;
         _triggerDispatcher.Runner = _triggerRunner;
 
-        // Wire @SkillGain trigger via callback
+        // Wire @SkillGain trigger + blue system message (Source-X parity)
         SkillEngine.OnSkillGain = (ch, skill, newVal) =>
         {
             _triggerDispatcher.FireCharTrigger(ch, CharTrigger.SkillGain,
                 new TriggerArgs { CharSrc = ch, N1 = (int)skill, N2 = newVal });
+
+            if (ch.IsPlayer && _clientsByCharUid.TryGetValue(ch.Uid, out var gc))
+            {
+                var def = SphereNet.Game.Definitions.DefinitionLoader.GetSkillDef((int)skill);
+                string skillName = !string.IsNullOrEmpty(def?.Name) ? def.Name : skill.ToString();
+                string valStr = $"{newVal / 10}.{newVal % 10}";
+                gc.SysMessage($"Your skill in {skillName} has increased to {valStr}.", 0x0480);
+                gc.SendSkillList();
+            }
+        };
+        // Wire stat gain message (Source-X: "You feel stronger/more agile/smarter")
+        SkillEngine.OnStatGain = (ch, statIdx, newVal) =>
+        {
+            if (ch.IsPlayer && _clientsByCharUid.TryGetValue(ch.Uid, out var gc))
+            {
+                string msg = statIdx switch
+                {
+                    0 => "You feel stronger.",
+                    1 => "You feel more agile.",
+                    2 => "You feel smarter.",
+                    _ => ""
+                };
+                if (msg.Length > 0)
+                    gc.SysMessage(msg, 0x0480);
+                gc.SendCharacterStatus(ch);
+            }
         };
         // Wire scripted (custom) skill trigger chain
         SkillHandlers.OnScriptedSkillUse = (ch, skill) =>
@@ -1261,7 +1287,7 @@ public static class Program
             var pkt = new PacketSpeechUnicodeOut(
                 caster.Uid.Value,
                 caster.BodyId,
-                0x06,
+                0x00,
                 caster.SpeechColor != 0 ? caster.SpeechColor : (ushort)0x03B2,
                 3,
                 "TRK",
@@ -2284,32 +2310,17 @@ public static class Program
 
         _log.LogInformation("Type 'help' for commands. Enter commands directly (e.g. save, status, quit).");
 
-        // Schedule all existing NPCs with stagger. Each NPC's first tick
-        // checks IsInActiveArea; sleeping ones won't be rescheduled and
-        // exit the wheel. After the initial wave (~30s), only active-sector
-        // NPCs remain in the wheel.
+        // Do not enqueue the whole saved NPC population at startup. Large
+        // worlds can contain 80K+ NPCs; draining that initial wheel while no
+        // player is online stalls the login handshake. NPCs are woken when a
+        // player activates their sector via WakeNewlyActiveSectorNpcs().
         if (_npcTimerWheel != null)
         {
-            long now = Environment.TickCount64;
-            var jitter = new Random(0);
-            int scheduled = 0;
             int npcCount = 0;
             foreach (var obj in _world.GetAllObjects())
                 if (obj is Character c && !c.IsPlayer && !c.IsDead && !c.IsDeleted)
                     npcCount++;
-            int staggerMs = Math.Clamp(npcCount * 2, 1000, 30_000);
-            foreach (var obj in _world.GetAllObjects())
-            {
-                if (obj is Character npc && !npc.IsPlayer && !npc.IsDead && !npc.IsDeleted)
-                {
-                    long when = npc.NextNpcActionTime > 0
-                        ? npc.NextNpcActionTime
-                        : now + jitter.Next(0, staggerMs);
-                    _npcTimerWheel.Schedule(npc, when);
-                    scheduled++;
-                }
-            }
-            _log.LogInformation("NPC timer wheel initialized: {Count} NPCs scheduled ({StaggerMs}ms stagger)", scheduled, staggerMs);
+            _log.LogInformation("NPC timer wheel initialized: {Count} NPCs deferred until sectors become active", npcCount);
         }
 
         // --- 9. Main Game Loop ---
@@ -4516,6 +4527,10 @@ public static class Program
         // Re-process definitions from reloaded resources
         var defLoader = new DefinitionLoader(_resources, _spellRegistry);
         defLoader.LoadAll();
+        int recipeCount = _craftingEngine.LoadRecipesFromDefs(_resources);
+        if (recipeCount > 0)
+            _log.LogInformation("ReSync: reloaded {Count} craft recipes from SKILLMAKE definitions.", recipeCount);
+        PlaceTeleporters();
         _commands?.InvalidateAreaCache();
         if (_commands != null)
         {
@@ -4573,6 +4588,11 @@ public static class Program
                 fromTag++;
             }
 
+            // Source-X parity: spawn items are always invisible (ATTR_INVIS).
+            // Old Sphere saves may omit ATTR for spawn items detected via SPAWNID tag.
+            if (item.ItemType == ItemType.SpawnChar && !item.IsAttr(SphereNet.Core.Enums.ObjAttributes.Invis))
+                item.SetAttr(SphereNet.Core.Enums.ObjAttributes.Invis);
+
             if (item.ItemType != ItemType.SpawnChar)
                 continue;
 
@@ -4615,6 +4635,9 @@ public static class Program
                         }
                     }
                 }
+
+                // Tags override MOREP — reset timer with final values
+                item.SpawnChar.ResetTimer();
             }
 
             spawns++;
@@ -5095,6 +5118,9 @@ public static class Program
     /// </summary>
     private static void MarkClientsNearDirtyObjects()
     {
+        if (_clientsByCharUid.Count == 0)
+            return;
+
         const int Range = 18;
         int secRadius = (Range / SphereNet.Game.World.Sectors.Sector.SectorSize) + 1;
         foreach (var obj in _world.DirtyObjects)
@@ -7426,7 +7452,7 @@ public static class Program
     /// <summary>Minimal ITextConsole for REF command execution.</summary>
     private sealed class RefExecConsole : ITextConsole
     {
-        public PrivLevel GetPrivLevel() => PrivLevel.Owner;
+        public PrivLevel GetPrivLevel() => PrivLevel.Admin;
         public string GetName() => "SERVER";
         public void SysMessage(string text) { }
     }

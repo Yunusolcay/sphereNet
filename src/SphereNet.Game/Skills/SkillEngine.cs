@@ -36,6 +36,9 @@ public static class SkillEngine
     /// <summary>Callback fired when a skill gain occurs. Args: (Character, SkillType, newValue).</summary>
     public static Action<Character, SkillType, int>? OnSkillGain { get; set; }
 
+    /// <summary>Callback fired when a stat gain occurs. Args: (Character, statIndex: 0=STR 1=DEX 2=INT, newValue).</summary>
+    public static Action<Character, int, int>? OnStatGain { get; set; }
+
     /// <summary>Skill variance for S-curve calculation (Source-X: SKILL_VARIANCE = 100).</summary>
     private const int SkillVariance = 100;
 
@@ -99,6 +102,11 @@ public static class SkillEngine
         int currentSkill = ch.GetSkill(skill);
         int skillMax = GetSkillMax(ch, skill);
 
+        // Lock state: 0=Up (gain), 1=Down (decay only), 2=Locked (no change)
+        byte lockState = ch.GetSkillLock(skill);
+        if (lockState == 2)
+            return;
+
         // Check total skill cap
         int totalSkill = GetSkillSum(ch);
         int totalMax = GetSkillSumMax(ch);
@@ -127,8 +135,8 @@ public static class SkillEngine
                 TrySkillDecay(ch, skill);
             }
 
-            // Skill gain
-            if (roll <= chance)
+            // Skill gain — only when lock state is Up (0)
+            if (lockState == 0 && roll <= chance)
             {
                 ch.SetSkill(skill, (ushort)(currentSkill + 1));
                 OnSkillGain?.Invoke(ch, skill, currentSkill + 1);
@@ -228,6 +236,13 @@ public static class SkillEngine
     /// Try to gain stats from skill use.
     /// Stats gain based on SkillDef stat mapping or hardcoded fallback.
     /// </summary>
+    private static int GetStatLock(Character ch, int statIdx)
+    {
+        if (ch.TryGetTag($"STATLOCK_{statIdx}", out string? val) && int.TryParse(val, out int lock_))
+            return lock_;
+        return 0;
+    }
+
     private static void TryStatGain(Character ch, SkillType skill)
     {
         var def = DefinitionLoader.GetSkillDef((int)skill);
@@ -249,15 +264,15 @@ public static class SkillEngine
                 int roll = _rand.Next(total);
                 if (roll < def.BonusStr)
                 {
-                    if (ch.Str < ResolveStrCap(ch)) { ch.Str++; ch.MaxHits++; }
+                    if (GetStatLock(ch, 0) == 0 && ch.Str < ResolveStrCap(ch)) { ch.Str++; ch.MaxHits++; OnStatGain?.Invoke(ch, 0, ch.Str); }
                 }
                 else if (roll < def.BonusStr + def.BonusDex)
                 {
-                    if (ch.Dex < ResolveDexCap(ch)) { ch.Dex++; ch.MaxStam++; }
+                    if (GetStatLock(ch, 1) == 0 && ch.Dex < ResolveDexCap(ch)) { ch.Dex++; ch.MaxStam++; OnStatGain?.Invoke(ch, 1, ch.Dex); }
                 }
                 else
                 {
-                    if (ch.Int < ResolveIntCap(ch)) { ch.Int++; ch.MaxMana++; }
+                    if (GetStatLock(ch, 2) == 0 && ch.Int < ResolveIntCap(ch)) { ch.Int++; ch.MaxMana++; OnStatGain?.Invoke(ch, 2, ch.Int); }
                 }
             }
         }
@@ -266,11 +281,12 @@ public static class SkillEngine
             // Fallback: use hardcoded stat target
             int statIdx = def != null ? GetSkillStatTargetFromDef(def) : GetSkillStatTarget(skill);
             if (statIdx < 0) return;
+            if (GetStatLock(ch, statIdx) != 0) return;
             switch (statIdx)
             {
-                case 0: if (ch.Str < ResolveStrCap(ch)) { ch.Str++; ch.MaxHits++; } break;
-                case 1: if (ch.Dex < ResolveDexCap(ch)) { ch.Dex++; ch.MaxStam++; } break;
-                case 2: if (ch.Int < ResolveIntCap(ch)) { ch.Int++; ch.MaxMana++; } break;
+                case 0: if (ch.Str < ResolveStrCap(ch)) { ch.Str++; ch.MaxHits++; OnStatGain?.Invoke(ch, 0, ch.Str); } break;
+                case 1: if (ch.Dex < ResolveDexCap(ch)) { ch.Dex++; ch.MaxStam++; OnStatGain?.Invoke(ch, 1, ch.Dex); } break;
+                case 2: if (ch.Int < ResolveIntCap(ch)) { ch.Int++; ch.MaxMana++; OnStatGain?.Invoke(ch, 2, ch.Int); } break;
             }
         }
     }

@@ -139,15 +139,38 @@ public sealed class SpawnComponent
 
         ch.SetStatFlag(StatFlag.Spawned);
 
-        // Random position within range
-        short dx = (short)_rand.Next(-_spawnRange, _spawnRange + 1);
-        short dy = (short)_rand.Next(-_spawnRange, _spawnRange + 1);
-        var pos = new Point3D(
-            (short)(_spawnItem.X + dx),
-            (short)(_spawnItem.Y + dy),
-            _spawnItem.Z,
-            _spawnItem.MapIndex
-        );
+        // Random position within range — validate terrain before placement
+        Point3D pos = default;
+        bool validPos = false;
+        var mapData = _world.MapData;
+        bool canSwim = charDef != null && (charDef.Can & Core.Enums.CanFlags.C_Swim) != 0;
+
+        for (int attempt = 0; attempt < 10; attempt++)
+        {
+            short dx = (short)_rand.Next(-_spawnRange, _spawnRange + 1);
+            short dy = (short)_rand.Next(-_spawnRange, _spawnRange + 1);
+            short px = (short)(_spawnItem.X + dx);
+            short py = (short)(_spawnItem.Y + dy);
+            sbyte pz = _spawnItem.Z;
+
+            if (mapData != null)
+            {
+                pz = mapData.GetEffectiveZ(_spawnItem.MapIndex, px, py, _spawnItem.Z);
+                if (!mapData.IsPassable(_spawnItem.MapIndex, px, py, pz))
+                    continue;
+                var terrain = mapData.GetTerrainTile(_spawnItem.MapIndex, px, py);
+                var landData = mapData.GetLandTileData(terrain.TileId);
+                if (landData.IsWet && !canSwim)
+                    continue;
+            }
+
+            pos = new Point3D(px, py, pz, _spawnItem.MapIndex);
+            validPos = true;
+            break;
+        }
+
+        if (!validPos)
+            pos = new Point3D(_spawnItem.X, _spawnItem.Y, _spawnItem.Z, _spawnItem.MapIndex);
 
         ch.SetTag("SPAWN_POINT_UUID", _spawnItem.Uuid.ToString("D"));
         _world.PlaceCharacter(ch, pos);
@@ -276,6 +299,37 @@ public sealed class SpawnComponent
     public void ForceSpawn()
     {
         _nextSpawnTick = 0;
+    }
+
+    /// <summary>
+    /// Read spawn timing from item's MOREP (Source-X parity).
+    /// MOREP.X = min spawn time (minutes), MOREP.Y = max spawn time (minutes),
+    /// MOREP.Z = home distance (tiles).
+    /// </summary>
+    public void ApplyMoreP()
+    {
+        var mp = _spawnItem.MoreP;
+        if (mp.X > 0 || mp.Y > 0)
+        {
+            int minMin = Math.Max(1, (int)mp.X);
+            int maxMin = Math.Max(minMin, mp.Y > 0 ? (int)mp.Y : minMin);
+            SetDelay(minMin, maxMin);
+        }
+        if (mp.Z > 0)
+            _spawnRange = mp.Z;
+    }
+
+    /// <summary>Reset the spawn timer using current delay values.</summary>
+    public void ResetTimer()
+    {
+        SetNextSpawnTime();
+    }
+
+    /// <summary>Check if any spawned NPCs are still alive.</summary>
+    public bool HasAliveSpawns()
+    {
+        CleanupDead();
+        return _spawnedUids.Count > 0;
     }
 }
 

@@ -344,12 +344,32 @@ public sealed class ScriptInterpreter
                     break;
                 }
 
-                // TRYLEVEL — same as TRY but with PLEVEL check (skip if SRC has lower plevel)
+                // TRYLEVEL <plevel> <verb args...> — same as TRY but fail closed
+                // when there is no concrete source to authorize.
                 case "TRYLEVEL":
-                    // Not commonly used; just execute like TRY for now
-                    ExecuteLine(key, target, source, args, scope);
+                {
+                    string tryLevelLine = ResolveArgs(key.Arg, target, source, args, scope);
+                    int firstSpace = tryLevelLine.IndexOf(' ');
+                    string plevelTok = firstSpace > 0 ? tryLevelLine[..firstSpace].Trim() : tryLevelLine.Trim();
+                    string rest = firstSpace > 0 ? tryLevelLine[(firstSpace + 1)..].Trim() : "";
+                    if (!int.TryParse(plevelTok, out int minPlevel) ||
+                        string.IsNullOrWhiteSpace(rest) ||
+                        source == null ||
+                        (int)(source?.GetPrivLevel() ?? PrivLevel.Guest) < minPlevel)
+                    {
+                        i++;
+                        break;
+                    }
+
+                    int spIdx = rest.IndexOf(' ');
+                    string verb = spIdx > 0 ? rest[..spIdx].Trim() : rest.Trim();
+                    string verbArgs = spIdx > 0 ? rest[(spIdx + 1)..].Trim() : "";
+                    var actor = source!;
+                    if (!target.TryExecuteCommand(verb, verbArgs, actor))
+                        actor.TryExecuteScriptCommand(target, verb, verbArgs, args);
                     i++;
                     break;
+                }
 
                 // These are block terminators — skip if encountered at top level
                 case "ENDIF":
@@ -1339,7 +1359,7 @@ public sealed class ScriptInterpreter
     private sealed class NullConsole : ITextConsole
     {
         public static readonly NullConsole Instance = new();
-        public PrivLevel GetPrivLevel() => PrivLevel.Owner;
+        public PrivLevel GetPrivLevel() => PrivLevel.Guest;
         public void SysMessage(string text) { }
         public string GetName() => "SYSTEM";
     }

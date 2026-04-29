@@ -1380,14 +1380,19 @@ public class Item : ObjBase
             SpawnChar = new SpawnComponent(this, world);
 
         SpawnChar.SetFromMore1(_more1, resources);
+        SpawnChar.ApplyMoreP();
 
-        // MORE2 low word = max count, high word = min delay in minutes
-        if (_more2 != 0)
+        // Source-X parity: AMOUNT = max count of spawned creatures.
+        if (_amount > 1)
+            SpawnChar.MaxCount = _amount;
+        else if (_more2 != 0)
         {
             ushort maxCount = (ushort)(_more2 & 0xFFFF);
             if (maxCount > 0)
                 SpawnChar.MaxCount = maxCount;
         }
+
+        SpawnChar.ResetTimer();
     }
 
     // --- Helper methods ---

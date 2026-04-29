@@ -26,7 +26,9 @@ public sealed class SpellDef : ResourceLink
         switch (key.ToUpperInvariant())
         {
             case "NAME": Name = value; break;
-            case "RUNES": Runes = value; break;
+            case "RUNES":
+                Runes = value.StartsWith('.') ? value[1..] : value;
+                break;
             case "MANAUSE": int.TryParse(value, out int m); ManaCost = m; break;
             case "CASTTIME": int.TryParse(value, out int ct); CastTime = ct; break;
             case "EFFECT_ID": int.TryParse(value, out int e); Effect = e; break;

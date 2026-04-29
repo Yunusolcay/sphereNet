@@ -2509,9 +2509,18 @@ public sealed class GameClient : ITextConsole
             case ItemType.SpawnChar:
                 if (item.SpawnChar != null)
                 {
-                    item.SpawnChar.KillAll();
-                    item.SpawnChar.ForceSpawn();
-                    SysMessage($"Spawn reset. {item.SpawnChar.GetSpawnDefName()} will respawn shortly.");
+                    var defName = item.SpawnChar.GetSpawnDefName();
+                    if (item.SpawnChar.HasAliveSpawns())
+                    {
+                        item.SpawnChar.KillAll();
+                        item.SpawnChar.ResetTimer();
+                        SysMessage($"Spawn cleared: {defName}. Timer reset.");
+                    }
+                    else
+                    {
+                        item.SpawnChar.ForceSpawn();
+                        SysMessage($"Spawn forced: {defName}. Spawning now.");
+                    }
                 }
                 else
                 {
@@ -5723,8 +5732,9 @@ public sealed class GameClient : ITextConsole
         if (serial == 0 && x == -1 && y == -1 && z == -1)
             return true;
 
-        // Additional client variants may send negative coords while serial is invalid.
-        if (serial == 0 && (x < 0 || y < 0 || z < 0))
+        // Additional client cancel variant: serial=0 with out-of-world x/y.
+        // Note: z < 0 is valid (caves/dungeons), only reject impossible x/y.
+        if (serial == 0 && (x < 0 || y < 0))
             return true;
 
         // Another observed cancel form: invalid serial + no model + max coords.
@@ -6304,17 +6314,18 @@ public sealed class GameClient : ITextConsole
                 delta.UpdatedChars.Add(ch);
         }
 
+        bool isStaff = _character.PrivLevel >= Core.Enums.PrivLevel.Counsel;
         foreach (var item in _world.GetItemsInRange(center, range))
         {
             if (item.IsDeleted || item.IsEquipped || !item.IsOnGround) continue;
             bool isInvis = item.IsAttr(Core.Enums.ObjAttributes.Invis);
-            if (isInvis && !_character.AllShow)
+            if (isInvis && !_character.AllShow && !isStaff)
                 continue;
 
             uint uid = item.Uid.Value;
             delta.CurrentItems.Add(uid);
             if (!_knownItems.Contains(uid))
-                delta.NewItems.Add((item, isInvis && _character.AllShow));
+                delta.NewItems.Add((item, isInvis && (_character.AllShow || isStaff)));
         }
 
         return delta;
@@ -7282,7 +7293,7 @@ public sealed class GameClient : ITextConsole
         }
     }
 
-    private void SendCharacterStatus(Character ch, bool includeExtendedStats = true)
+    public void SendCharacterStatus(Character ch, bool includeExtendedStats = true)
     {
         // Expansion level matched to client version capabilities
         byte expansion;
@@ -9534,7 +9545,7 @@ public sealed class GameClient : ITextConsole
         return name.Length > 30 ? name[..30] : name;
     }
 
-    private void SendSkillList()
+    public void SendSkillList()
     {
         if (_character == null) return;
 

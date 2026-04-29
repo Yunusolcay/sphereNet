@@ -116,6 +116,10 @@ public sealed class DefinitionLoader
     public void LoadAll()
     {
         _resourcesStatic = _resources;
+        ClearRegistries();
+        _spells.Clear();
+        ResetCounters();
+
         foreach (var link in _resources.GetAllResources())
         {
             switch (link.Id.Type)
@@ -148,6 +152,27 @@ public sealed class DefinitionLoader
         }
 
         ResolveRegionResourceReapDefNames();
+    }
+
+    private void ResetCounters()
+    {
+        SpellsLoaded = 0;
+        ItemDefsLoaded = 0;
+        CharDefsLoaded = 0;
+        RegionResourceDefsLoaded = 0;
+        RegionTypeDefsLoaded = 0;
+        SkillDefsLoaded = 0;
+    }
+
+    private static void ClearRegistries()
+    {
+        _charDefs.Clear();
+        _itemDefs.Clear();
+        _skillClassDefs.Clear();
+        _regionResourceDefs.Clear();
+        _regionTypeDefs.Clear();
+        _skillDefs.Clear();
+        _templateDefs.Clear();
     }
 
     private void ResolveRegionResourceReapDefNames()
@@ -291,6 +316,14 @@ public sealed class DefinitionLoader
             }
             if (insideTrigger)
                 continue;
+
+            // CAN uses pipe-separated defnames (e.g. MT_WALK|MT_FLY|MT_FIRE_IMMUNE)
+            if (key.Key.Equals("CAN", StringComparison.OrdinalIgnoreCase) && key.Arg.Contains('|'))
+            {
+                def.Can = (CanFlags)ResolvePipeFlags(key.Arg);
+                continue;
+            }
+
             def.LoadFromKey(key.Key, key.Arg);
         }
 
@@ -299,8 +332,6 @@ public sealed class DefinitionLoader
 
         if (_charDefs.TryGetValue(link.Id.Index, out var existing))
         {
-            // Index collision: another CHARDEF already lives here. Log so
-            // we can spot accidental overwrites caused by alias collisions.
             System.Diagnostics.Debug.WriteLine(
                 $"[chardef_collision] index={link.Id.Index:X} previous='{existing.DefName}' brain={existing.NpcBrain} new='{def.DefName}' brain={def.NpcBrain}");
         }
@@ -396,7 +427,9 @@ public sealed class DefinitionLoader
                         if (srid.IsValid) def.Sound = srid.Index;
                     }
                     break;
-                case "RUNES": def.Runes = key.Arg; break;
+                case "RUNES":
+                    def.Runes = key.Arg.StartsWith('.') ? key.Arg[1..] : key.Arg;
+                    break;
                 case "PROMPT_MSG": def.TargetPrompt = key.Arg; break;
                 case "EFFECT_ID":
                     if (TryParseHex(key.Arg, out ushort eid)) def.EffectId = eid;
@@ -476,16 +509,13 @@ public sealed class DefinitionLoader
     {
         var def = new RegionTypeDef(link.Id);
 
-        // Parse item type filter from header if present (e.g. [REGIONTYPE defname t_rock])
-        if (!string.IsNullOrEmpty(link.DefName))
+        // Parse item type filter from header if present (e.g. [REGIONTYPE defname t_rock]).
+        // DEFNAME inside the body can overwrite link.DefName, so use the original header.
+        if (!string.IsNullOrWhiteSpace(link.HeaderArgument))
         {
-            var headerParts = link.DefName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var headerParts = link.HeaderArgument.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (headerParts.Length >= 2)
-            {
                 def.ItemTypeFilter = headerParts[1].Trim();
-                // The actual defname is the first part
-                // DefName will be set from key if present
-            }
         }
 
         var keys = link.StoredKeys;
@@ -697,5 +727,31 @@ public sealed class DefinitionLoader
         if (val.Length >= 2 && val[0] == '0')
             return ulong.TryParse(val, System.Globalization.NumberStyles.HexNumber, null, out result);
         return ulong.TryParse(val, out result);
+    }
+
+    private uint ResolvePipeFlags(string value)
+    {
+        if (!value.Contains('|'))
+        {
+            string trimmed = value.Trim();
+            var rid = _resources.ResolveDefName(trimmed);
+            if (rid.IsValid) return (uint)rid.Index;
+            if (TryParseHex(trimmed, out ushort single)) return single;
+            if (uint.TryParse(trimmed, out uint dec)) return dec;
+            return 0;
+        }
+
+        uint result = 0;
+        foreach (var part in value.Split('|', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            var rid = _resources.ResolveDefName(part);
+            if (rid.IsValid)
+                result |= (uint)rid.Index;
+            else if (TryParseHex(part, out ushort hex))
+                result |= hex;
+            else if (uint.TryParse(part, out uint num))
+                result |= num;
+        }
+        return result;
     }
 }

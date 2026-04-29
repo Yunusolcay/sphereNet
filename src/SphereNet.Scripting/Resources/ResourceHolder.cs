@@ -18,12 +18,15 @@ public sealed class ResourceHolder
     private readonly Dictionary<string, string> _defTexts = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ResourceScript> _scriptFiles = [];
     private readonly Dictionary<string, string> _defMessages = new(StringComparer.OrdinalIgnoreCase);
-    private readonly List<(Point3D Src, Point3D Dest, string Name)> _teleporters = [];
+    private readonly List<TeleporterEntry> _teleporters = [];
     private readonly ILogger _logger;
 
-    public IReadOnlyList<(Point3D Src, Point3D Dest, string Name)> Teleporters => _teleporters;
+    public IReadOnlyList<(Point3D Src, Point3D Dest, string Name)> Teleporters =>
+        _teleporters.Select(t => (t.Src, t.Dest, t.Name)).ToList();
 
     public string ScpBaseDir { get; set; } = "";
+
+    private sealed record TeleporterEntry(Point3D Src, Point3D Dest, string Name, string FilePath);
 
     public ResourceHolder(ILogger<ResourceHolder> logger)
     {
@@ -87,7 +90,8 @@ public sealed class ResourceHolder
     /// for fast access by DefinitionLoader (avoids re-reading script files).
     /// </summary>
     private static bool IsDefinitionType(ResType t) => t is
-        ResType.ItemDef or ResType.CharDef or ResType.SpellDef or ResType.SkillClass or ResType.SkillDef or ResType.Names or ResType.Speech or ResType.Template;
+        ResType.ItemDef or ResType.CharDef or ResType.SpellDef or ResType.SkillClass or ResType.SkillDef
+        or ResType.Names or ResType.Speech or ResType.Template or ResType.RegionResource or ResType.RegionType;
 
     /// <summary>
     /// Load all sections from a script file.
@@ -149,7 +153,7 @@ public sealed class ResourceHolder
             {
                 string sectionUpper = section.Name.ToUpperInvariant();
                 if (sectionUpper == "TELEPORTERS")
-                    LoadTeleporters(section);
+                    LoadTeleporters(section, filePath);
                 count++;
                 continue;
             }
@@ -206,7 +210,8 @@ public sealed class ResourceHolder
             var link = new ResourceLink(rid)
             {
                 ScriptFilePath = filePath,
-                ScriptLineNumber = section.Context.LineNumber
+                ScriptLineNumber = section.Context.LineNumber,
+                HeaderArgument = rawArg
             };
 
             link.ScanSection(section, retainKeys: IsDefinitionType(resType));
@@ -564,6 +569,9 @@ public sealed class ResourceHolder
             .ToList();
         foreach (var key in staleDefNames)
             _defNames.Remove(key);
+
+        _teleporters.RemoveAll(t => string.Equals(Path.GetFullPath(t.FilePath), normalized,
+            StringComparison.OrdinalIgnoreCase));
     }
 
     private void ReloadResourcesFromFile(ScriptFile file, string filePath)
@@ -583,6 +591,13 @@ public sealed class ResourceHolder
             if (resType == ResType.DefName)
             {
                 LoadDefNames(section);
+                continue;
+            }
+
+            if (resType == ResType.WorldScript)
+            {
+                if (section.Name.Equals("TELEPORTERS", StringComparison.OrdinalIgnoreCase))
+                    LoadTeleporters(section, filePath);
                 continue;
             }
 
@@ -625,7 +640,8 @@ public sealed class ResourceHolder
             var link = new ResourceLink(rid)
             {
                 ScriptFilePath = filePath,
-                ScriptLineNumber = section.Context.LineNumber
+                ScriptLineNumber = section.Context.LineNumber,
+                HeaderArgument = rawArg
             };
 
             link.ScanSection(section, retainKeys: IsDefinitionType(resType));
@@ -647,7 +663,7 @@ public sealed class ResourceHolder
         }
     }
 
-    private void LoadTeleporters(ScriptSection section)
+    private void LoadTeleporters(ScriptSection section, string filePath)
     {
         foreach (var key in section.Keys)
         {
@@ -674,7 +690,7 @@ public sealed class ResourceHolder
             var dest = ParseTeleportPoint(destStr);
             if (dest.X == 0 && dest.Y == 0) continue;
 
-            _teleporters.Add((src, dest, name));
+            _teleporters.Add(new TeleporterEntry(src, dest, name, filePath));
         }
 
         _logger.LogInformation("Loaded {Count} teleporters", _teleporters.Count);

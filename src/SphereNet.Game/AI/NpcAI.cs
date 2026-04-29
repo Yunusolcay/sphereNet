@@ -2,6 +2,7 @@ using SphereNet.Core.Configuration;
 using SphereNet.Core.Enums;
 using SphereNet.Core.Types;
 using SphereNet.Game.Combat;
+using SphereNet.Game.Definitions;
 using SphereNet.Game.Movement;
 using SphereNet.Game.Objects.Characters;
 using SphereNet.Game.Objects.Items;
@@ -91,6 +92,7 @@ public sealed class NpcAI
             {
                 _pathCache.Remove(uid);
                 _pathIndex.Remove(uid);
+                _losFailCounts.Remove(uid);
             }
         }
     }
@@ -124,21 +126,32 @@ public sealed class NpcAI
             return;
         }
 
-        // NPC tick cadence by role:
-        //   Combat/active pets: 250ms (responsive fighting)
-        //   Monsters/animals: 750ms (idle wander)
-        //   Service NPCs (vendor/banker/healer/stable): 3-5s (minimal movement)
+        // NPC tick cadence by role, scaled by CharDef.MoveRate.
+        // Source-X: MoveRate default=100 (normal speed). Higher = slower.
+        // Base delays: combat 400ms, idle wander 1000ms, service 3-5s.
         bool isActive = npc.FightTarget.IsValid ||
             (npc.NpcMaster.IsValid && npc.PetAIMode is PetAIMode.Attack
                 or PetAIMode.Follow or PetAIMode.Come or PetAIMode.Guard);
         bool isService = npc.NpcBrain is NpcBrainType.Vendor or NpcBrainType.Banker
             or NpcBrainType.Stable or NpcBrainType.Healer;
+
+        int moveRate = 100;
+        var charDef = DefinitionLoader.GetCharDef(npc.CharDefIndex);
+        if (charDef != null && charDef.MoveRate > 0)
+            moveRate = charDef.MoveRate;
+
         if (isActive)
-            npc.NextNpcActionTime = now + 250 + _rand.Next(0, 100);
+        {
+            int baseDelay = 400 * moveRate / 100;
+            npc.NextNpcActionTime = now + baseDelay + _rand.Next(0, 100);
+        }
         else if (isService)
             npc.NextNpcActionTime = now + 3000 + _rand.Next(0, 2000);
         else
-            npc.NextNpcActionTime = now + 750 + _rand.Next(0, 250);
+        {
+            int baseDelay = 1000 * moveRate / 100;
+            npc.NextNpcActionTime = now + baseDelay + _rand.Next(0, 250);
+        }
 
         // Pet behavior — owned NPCs follow pet AI mode
         if (npc.NpcMaster.IsValid)
@@ -448,14 +461,39 @@ public sealed class NpcAI
         npc.FleeStepsCurrent = 0;
 
         int dist = npc.Position.GetDistanceTo(target.Position);
+        bool hasLOS = _world.CanSeeLOS(npc.Position, target.Position);
+
+        // No line of sight — pathfind around obstacles to reach target
+        if (!hasLOS && dist > 1)
+        {
+            IncrementLosFailCount(npc);
+            if (GetLosFailCount(npc) > 15)
+            {
+                npc.FightTarget = Serial.Invalid;
+                ClearLosFailCount(npc);
+                return;
+            }
+            MoveToward(npc, target.Position, run: true);
+            return;
+        }
+        ClearLosFailCount(npc);
 
         // Random idle combat sound (Source-X: Berserk or 1/6 chance)
         if (npc.NpcBrain == NpcBrainType.Berserk || _rand.Next(6) == 0)
             EmitSound(npc, CreatureSoundType.Idle);
 
-        // Dragon breath (Source-X: NPCACT_BREATH, range 0-8, stam >= 50%, 3s cooldown)
-        if (npc.NpcBrain == NpcBrainType.Dragon && dist <= 8
-            && npc.Stam >= npc.MaxStam / 2)
+        // Dragon breath: fires for Dragon brain, fire-immune monsters, or explicit BREATH.DAM tag
+        bool canBreath = npc.NpcBrain == NpcBrainType.Dragon;
+        if (!canBreath)
+        {
+            var breathDef = DefinitionLoader.GetCharDef(npc.CharDefIndex);
+            canBreath = breathDef != null && (breathDef.Can & CanFlags.C_FireImmune) != 0
+                        && npc.NpcBrain is NpcBrainType.Monster or NpcBrainType.Dragon or NpcBrainType.Berserk;
+        }
+        if (!canBreath)
+            canBreath = npc.TryGetTag("BREATH.DAM", out _);
+
+        if (canBreath && dist <= 8 && npc.Stam >= npc.MaxStam / 2 && hasLOS)
         {
             long now = Environment.TickCount64;
             long nextBreath = 0;
@@ -476,7 +514,7 @@ public sealed class NpcAI
 
         // Object throwing (Source-X: NPCACT_THROWING, range 2-8, stam >= 50%)
         if (dist >= 2 && dist <= 8 && npc.Stam >= npc.MaxStam / 2
-            && npc.TryGetTag("THROWOBJ", out _))
+            && hasLOS && npc.TryGetTag("THROWOBJ", out _))
         {
             int throwDmg = Math.Max(1, npc.Dex / 4 + _rand.Next(npc.Dex / 4 + 1));
             int throwMin = 2, throwMax = 8;
@@ -504,15 +542,34 @@ public sealed class NpcAI
             }
         }
 
-        // NPC spellcasting (Source-X: NPC_FightMagery)
-        if (TryNpcCastSpell(npc, target, dist))
+        // NPC spellcasting — requires LOS for ranged spells
+        if (hasLOS && TryNpcCastSpell(npc, target, dist))
             return;
 
         // Melee / ranged
         if (dist <= GetAttackRange(npc))
             TrySwingAttack(npc, target);
         else
-            MoveToward(npc, target.Position);
+            MoveToward(npc, target.Position, run: true);
+    }
+
+    private readonly Dictionary<uint, int> _losFailCounts = [];
+
+    private void IncrementLosFailCount(Character npc)
+    {
+        _losFailCounts.TryGetValue(npc.Uid.Value, out int count);
+        _losFailCounts[npc.Uid.Value] = count + 1;
+    }
+
+    private int GetLosFailCount(Character npc)
+    {
+        _losFailCounts.TryGetValue(npc.Uid.Value, out int count);
+        return count;
+    }
+
+    private void ClearLosFailCount(Character npc)
+    {
+        _losFailCounts.Remove(npc.Uid.Value);
     }
 
     /// <summary>Source-X: NPC_Act_Flee — step-counted retreat.</summary>
@@ -530,14 +587,31 @@ public sealed class NpcAI
 
     /// <summary>
     /// Source-X: NPC_FightMagery — attempt to cast a spell at the target.
-    /// Requires INT >= 5, spell list on NPC, distance 3+ (kiting), mana available.
+    /// Requires INT >= 5, spell list on NPC, mana available.
+    /// When mana drops below 25% of INT, NPC abandons magic and goes melee.
+    /// At melee range with good mana, steps back to gain casting distance.
     /// </summary>
     private bool TryNpcCastSpell(Character npc, Character target, int dist)
     {
         if (npc.Int < 5 || npc.NpcSpells.Count == 0)
             return false;
-        if (dist < 3 || dist > GetNpcSight(npc))
+
+        int mana = npc.Mana;
+        int intStat = npc.Int;
+
+        // Mana depleted — switch to melee tactics entirely
+        if (mana < intStat / 4)
             return false;
+
+        if (dist > GetNpcSight(npc))
+            return false;
+
+        // At melee range with sufficient mana, step back to gain casting distance
+        if (dist <= 1 && mana >= intStat / 3)
+        {
+            MoveAway(npc, target.Position);
+            return true;
+        }
 
         // NoMagic region check
         var region = _world.FindRegion(npc.Position);
@@ -545,18 +619,16 @@ public sealed class NpcAI
             return false;
 
         // Mana-based cast chance (Source-X formula)
-        int mana = npc.Mana;
-        int intStat = npc.Int;
         int chance = mana >= intStat / 2 ? mana : intStat - mana;
         if (_rand.Next(chance + 1) < intStat / 4)
         {
-            // Failed chance — but if mana is decent, kite instead
+            // Failed chance — kite to maintain distance while mana regens
             if (mana > intStat / 3)
             {
                 if (dist < 4)
                     MoveAway(npc, target.Position);
                 else if (dist > 8)
-                    MoveToward(npc, target.Position);
+                    MoveToward(npc, target.Position, run: true);
                 return true;
             }
             return false;
@@ -588,6 +660,7 @@ public sealed class NpcAI
     /// <summary>
     /// Find the best target in sight range by motivation score.
     /// Source-X: NPC_LookAround → NPC_LookAtCharMonster loop.
+    /// Only acquires targets within line of sight.
     /// </summary>
     private (Character? target, int motivation) FindBestTarget(Character npc, int sightRange)
     {
@@ -597,6 +670,7 @@ public sealed class NpcAI
         foreach (var ch in _world.GetCharsInRange(npc.Position, sightRange))
         {
             if (ch == npc || !IsAttackable(ch)) continue;
+            if (!_world.CanSeeLOS(npc.Position, ch.Position)) continue;
             int motivation = GetAttackMotivation(npc, ch);
             if (motivation > bestMotivation)
             {
@@ -1050,6 +1124,42 @@ public sealed class NpcAI
 
     // --- Movement helpers ---
 
+    private bool CanNpcEnterTile(Character npc, Point3D pos)
+    {
+        var mapData = _world.MapData;
+        if (mapData == null) return true;
+
+        var terrain = mapData.GetTerrainTile(pos.Map, pos.X, pos.Y);
+        var landData = mapData.GetLandTileData(terrain.TileId);
+
+        bool isWater = landData.IsWet;
+        if (isWater)
+        {
+            var charDef = DefinitionLoader.GetCharDef(npc.CharDefIndex);
+            bool canSwim = charDef != null && (charDef.Can & Core.Enums.CanFlags.C_Swim) != 0;
+            if (!canSwim) return false;
+        }
+
+        if (IsTileDangerous(npc, pos))
+            return false;
+
+        return true;
+    }
+
+    private bool IsTileDangerous(Character npc, Point3D pos)
+    {
+        foreach (var item in _world.GetItemsInRange(pos, 0))
+        {
+            if (!item.TryGetTag("FIELD_DAMAGE", out _))
+                continue;
+            var charDef = DefinitionLoader.GetCharDef(npc.CharDefIndex);
+            bool fireImmune = charDef != null && (charDef.Can & CanFlags.C_FireImmune) != 0;
+            if (!fireImmune)
+                return true;
+        }
+        return false;
+    }
+
     private void Wander(Character npc)
     {
         int dx = _rand.Next(-1, 2);
@@ -1064,6 +1174,8 @@ public sealed class NpcAI
             return;
         var newPos = new Point3D(nx, ny, nz, npc.MapIndex);
         if (mapData != null && !mapData.IsPassable(newPos.Map, newPos.X, newPos.Y, newPos.Z))
+            return;
+        if (!CanNpcEnterTile(npc, newPos))
             return;
 
         _world.MoveCharacter(npc, newPos);
@@ -1089,11 +1201,12 @@ public sealed class NpcAI
         Wander(npc);
     }
 
-    private void MoveToward(Character npc, Point3D target)
+    private void MoveToward(Character npc, Point3D target, bool run = false)
     {
         var dir = npc.Position.GetDirectionTo(target);
         GetDirectionDelta(dir, out short dx, out short dy);
-        dir |= Direction.Running;
+        if (run)
+            dir |= Direction.Running;
 
         short nx = (short)(npc.X + dx);
         short ny = (short)(npc.Y + dy);
@@ -1105,6 +1218,8 @@ public sealed class NpcAI
 
         bool directBlocked = false;
         if (mapData != null && !mapData.IsPassable(directPos.Map, directPos.X, directPos.Y, directPos.Z))
+            directBlocked = true;
+        if (!directBlocked && !CanNpcEnterTile(npc, directPos))
             directBlocked = true;
         if (!directBlocked)
         {
@@ -1139,7 +1254,9 @@ public sealed class NpcAI
         if (!_pathCache.TryGetValue(uid, out var path) || path.Count == 0)
         {
             // Calculate new path
-            path = _pathfinder.FindPath(npc.Position, target, npc.MapIndex);
+            var npcDef = DefinitionLoader.GetCharDef(npc.CharDefIndex);
+            var npcCanFlags = npcDef?.Can ?? Core.Enums.CanFlags.None;
+            path = _pathfinder.FindPath(npc.Position, target, npc.MapIndex, npcCanFlags);
             if (path == null || path.Count == 0)
             {
                 npc.Direction = dir;
@@ -1220,6 +1337,8 @@ public sealed class NpcAI
             return;
         var newPos = new Point3D(nx, ny, nz, npc.MapIndex);
         if (mapData != null && !mapData.IsPassable(newPos.Map, newPos.X, newPos.Y, newPos.Z))
+            return;
+        if (!CanNpcEnterTile(npc, newPos))
             return;
 
         _world.MoveCharacter(npc, newPos);
