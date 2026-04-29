@@ -4,6 +4,78 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-04-29] - NPC AI engine: akilli buyu secimi, melee taktik, healer/guard/vendor/witness
+              (NPC AI engine: intelligent spellcasting, melee tactics, healer/guard/vendor/witness)
+----------------------------------------
+
+AKILLI BUYU SECIMI / INTELLIGENT SPELL SELECTION:
+  - Rastgele buyu secimi yerine ChooseBestSpell: oncelik sirasi self-cure (zehir),
+    self-heal (HP<%50), dispel (summon hedef), area spell (3+ dusman), paralyze,
+    poison, yuksek hasar, debuff, fallback. Magic Reflect kontrolu.
+    ChooseBestSpell replaces random spell pick: priority self-cure (poison),
+    self-heal (HP<50%), dispel (summoned target), area spells (3+ enemies),
+    paralyze, poison, high damage, debuffs, fallback. Magic Reflect awareness.
+  - Heal dongusu onleme: self-heal %33 (kritik %50), cure %50 sansla — NPC hem
+    iyilesir hem saldiriya devam eder, sonsuz heal dongusu olmaz.
+    Heal loop prevention: self-heal 33% (critical 50%), cure 50% chance — NPC
+    heals and attacks in mix, no infinite heal loop.
+
+MELEE TAKTIK SISTEMI / MELEE TACTICS SYSTEM:
+  - Kusatma/cevreleme: hedefin yanina yaklasirken (dist<=3) acik yonden flank,
+    vurustan sonra (%33) hedefin etrafinda bos tile'a surround adimi.
+    Surround/flank: approach from open flank (dist<=3), post-attack sidestep
+    (33% chance) to unoccupied tile around target.
+  - HP-based taktik geri cekilme: HP<%25 melee NPC bitisikteyken %33 ihtimalle
+    bir adim geri cekilip sonraki tick'te tekrar saldiriyor.
+    HP-based tactical retreat: HP<25% melee NPC at dist=1, 33% chance to step
+    back then re-engage next tick.
+  - Akilli hedef onceliklendirme: yarali hedef +15, caster NPC +10, healer NPC +20,
+    bize saldiran hedef +15 motivasyon bonusu.
+    Smart target prioritization: wounded target +15, caster NPC +10, healer NPC +20,
+    retaliating target +15 motivation bonus.
+  - Grup vurus dagilimi: swing delay'e UID-based 0-200ms offset — ayni hedefe
+    saldiran NPC'ler farkli zamanlarda vuruyor.
+    Group attack stagger: UID-based 0-200ms offset on swing delay — NPCs attacking
+    same target swing at different times.
+
+GELISMIS KACIS / IMPROVED FLEE:
+  - Pathfinder-based kacis: ters yon bloklaninca alternatif diagonal yonler deniyor.
+    Pathfinder-based flee: tries diagonal alternatives when direct retreat is blocked.
+  - Kacis sirasinda buyu atma (kiting): her 3 adimda saldiri buyusu, her 4 adimda
+    self-heal (HP<%33).
+    Spell kiting while fleeing: offensive spell every 3rd step, self-heal every 4th
+    step (HP<33%).
+
+MUTTEFIK CAGRISI / ALLY CALL FOR HELP:
+  - NotifyNearbyAllies: monster yeni hedef buldugunda 8 tile icindeki ayni BodyId'li
+    NPC'ler kavgaya katiliyor.
+    NotifyNearbyAllies: when a monster acquires a target, same-BodyId NPCs within
+    8 tiles join the fight.
+
+HEALER AI GENISLEME / HEALER AI EXPANSION:
+  - Menzil 3 → 5 tile. Healer uzaktaki olulere dogru yuruyor.
+    Range 3 → 5 tiles. Healer walks toward distant dead players.
+  - Yeni oncelik: resurrect > cure poison > heal (zehir tedavisi eklendi).
+    New priority: resurrect > cure poison > heal (poison cure added).
+
+GUARD AI IYILESTIRME / GUARD AI IMPROVEMENT:
+  - AlertGuardsInRange: "Guards!" cagrisinda sadece yeni guard spawn degil, mevcut
+    devriye guardlari da hostile'a yonlendiriliyor.
+    AlertGuardsInRange: "Guards!" call redirects existing patrol guards toward
+    hostiles, not just spawning new ones.
+
+VENDOR RESTOCK TIMER:
+  - ActVendor tick'inde 10 dakikada bir @NPCRestock trigger otomatik atesleniyor
+    (sadece player etkilesiminde degil).
+    @NPCRestock trigger fires automatically every 10 minutes in ActVendor tick
+    (not only on player interaction).
+
+SUC TANIK SISTEMI / CRIME WITNESS SYSTEM:
+  - Human/Vendor NPC'ler guarded bolgede criminal/murderer gordugunde "Guards!"
+    diye bagirip AlertGuardsInRange cagiriyor.
+    Human/Vendor NPCs in guarded regions yell "Guards!" and call AlertGuardsInRange
+    when they see a criminal/murderer.
+
 [2026-04-26] - Sphere save uyumlulugu: NPC yukleme, spawn sistemi, property parsing
               (Sphere save compatibility: NPC loading, spawn system, property parsing)
 ----------------------------------------

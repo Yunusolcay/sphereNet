@@ -309,6 +309,24 @@ public sealed class NpcAI
     public Action<Character>? OnGuardLightningStrike { get; set; }
     public Action<Character>? OnNpcTeleport { get; set; }
 
+    /// <summary>
+    /// Redirect all idle guard-brain NPCs in range toward a hostile target.
+    /// Called by the "Guards!" speech handler so existing patrols respond.
+    /// </summary>
+    public void AlertGuardsInRange(Point3D center, Character hostile, int range = 14)
+    {
+        foreach (var npc in _world.GetCharsInRange(center, range))
+        {
+            if (npc.IsPlayer || npc.IsDead || npc.IsDeleted) continue;
+            if (npc.NpcBrain != NpcBrainType.Guard) continue;
+            if (npc.FightTarget.IsValid) continue;
+
+            npc.FightTarget = hostile.Uid;
+            npc.NextNpcActionTime = 0;
+            OnWakeNpc?.Invoke(npc);
+        }
+    }
+
     private void GuardEngage(Character guard, Character target)
     {
         if (!guard.TryGetTag("GUARD_YELLED", out _))
@@ -384,6 +402,7 @@ public sealed class NpcAI
             npc.FightTarget = bestTarget.Uid;
             npc.Memory_Fight_Start(bestTarget);
             EmitSound(npc, CreatureSoundType.Notice);
+            NotifyNearbyAllies(npc, bestTarget);
             ActFight(npc, bestTarget, bestMotivation);
             return;
         }
@@ -439,6 +458,27 @@ public sealed class NpcAI
     }
 
     /// <summary>
+    /// Alert nearby same-type NPCs to join the fight. Source-X parity:
+    /// monsters of the same body type rally when one detects a threat.
+    /// </summary>
+    private void NotifyNearbyAllies(Character npc, Character target)
+    {
+        foreach (var ally in _world.GetCharsInRange(npc.Position, 8))
+        {
+            if (ally == npc || ally.IsPlayer || ally.IsDead || ally.IsDeleted) continue;
+            if (ally.FightTarget.IsValid) continue;
+            if (ally.NpcMaster.IsValid) continue;
+            if (ally.BodyId != npc.BodyId) continue;
+            if (ally.NpcBrain is not (NpcBrainType.Monster or NpcBrainType.Dragon or NpcBrainType.Berserk))
+                continue;
+
+            ally.FightTarget = target.Uid;
+            ally.NextNpcActionTime = 0;
+            OnWakeNpc?.Invoke(ally);
+        }
+    }
+
+    /// <summary>
     /// Shared fight action. Source-X: NPC_Act_Fight — flee / special / spell / archery / melee.
     /// </summary>
     private void ActFight(Character npc, Character target, int motivation)
@@ -477,6 +517,16 @@ public sealed class NpcAI
             return;
         }
         ClearLosFailCount(npc);
+
+        // HP-based tactical retreat: melee-only NPCs briefly disengage when
+        // critically wounded, then re-engage. Casters already kite via spells.
+        if (npc.NpcSpells.Count == 0 && npc.MaxHits > 0 && npc.Hits < npc.MaxHits / 4
+            && dist <= 1 && _rand.Next(3) == 0)
+        {
+            MoveAway(npc, target.Position);
+            EmitSound(npc, CreatureSoundType.GetHit);
+            return;
+        }
 
         // Random idle combat sound (Source-X: Berserk or 1/6 chance)
         if (npc.NpcBrain == NpcBrainType.Berserk || _rand.Next(6) == 0)
@@ -548,9 +598,101 @@ public sealed class NpcAI
 
         // Melee / ranged
         if (dist <= GetAttackRange(npc))
+        {
             TrySwingAttack(npc, target);
+            // After attacking, try to surround: if adjacent allies also occupy
+            // the same side, sidestep to flank from an open direction.
+            if (dist <= 1 && _rand.Next(3) == 0)
+                TrySurroundStep(npc, target);
+        }
         else
-            MoveToward(npc, target.Position, run: true);
+        {
+            // When closing distance, approach from an open flank if possible
+            if (dist <= 3)
+                MoveTowardFlank(npc, target);
+            else
+                MoveToward(npc, target.Position, run: true);
+        }
+    }
+
+    /// <summary>
+    /// Step to an open adjacent tile around the target to surround it.
+    /// Picks a random unoccupied neighbor of the target that is still in melee range.
+    /// </summary>
+    private void TrySurroundStep(Character npc, Character target)
+    {
+        Span<(short x, short y)> candidates = stackalloc (short, short)[8];
+        int count = 0;
+
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            for (int dy = -1; dy <= 1; dy++)
+            {
+                if (dx == 0 && dy == 0) continue;
+                short tx = (short)(target.X + dx);
+                short ty = (short)(target.Y + dy);
+                if (tx == npc.X && ty == npc.Y) continue;
+
+                bool occupied = false;
+                foreach (var ch in _world.GetCharsInRange(new Point3D(tx, ty, target.Z, target.MapIndex), 0))
+                {
+                    if (!ch.IsDead && ch != target) { occupied = true; break; }
+                }
+                if (!occupied)
+                    candidates[count++] = (tx, ty);
+            }
+        }
+
+        if (count == 0) return;
+
+        var pick = candidates[_rand.Next(count)];
+        var mapData = _world.MapData;
+        sbyte nz = mapData?.GetEffectiveZ(npc.MapIndex, pick.x, pick.y, npc.Z) ?? npc.Z;
+        if (Math.Abs(nz - npc.Z) > 12) return;
+        var pos = new Point3D(pick.x, pick.y, nz, npc.MapIndex);
+        if (mapData != null && !mapData.IsPassable(pos.Map, pos.X, pos.Y, pos.Z)) return;
+        if (!CanNpcEnterTile(npc, pos)) return;
+
+        _world.MoveCharacter(npc, pos);
+    }
+
+    /// <summary>
+    /// Move toward the target but prefer an unoccupied flank direction.
+    /// </summary>
+    private void MoveTowardFlank(Character npc, Character target)
+    {
+        // Check which sides of the target are already occupied by allies
+        var dir = npc.Position.GetDirectionTo(target.Position);
+        int dirInt = (int)dir & 0x07;
+
+        // Try clockwise and counter-clockwise rotations to find an open approach
+        for (int rot = 0; rot <= 2; rot++)
+        {
+            foreach (int sign in rot == 0 ? new[] { 0 } : new[] { 1, -1 })
+            {
+                int tryDir = (dirInt + sign * rot) & 0x07;
+                GetDirectionDelta((Direction)tryDir, out short dx, out short dy);
+                short adjX = (short)(target.X - dx);
+                short adjY = (short)(target.Y - dy);
+
+                bool occupied = false;
+                foreach (var ch in _world.GetCharsInRange(
+                    new Point3D(adjX, adjY, target.Z, target.MapIndex), 0))
+                {
+                    if (!ch.IsDead && ch != npc && ch != target) { occupied = true; break; }
+                }
+
+                if (!occupied)
+                {
+                    var approachPos = new Point3D(adjX, adjY, target.Z, target.MapIndex);
+                    MoveToward(npc, approachPos, run: true);
+                    return;
+                }
+            }
+        }
+
+        // All flanks occupied, just go direct
+        MoveToward(npc, target.Position, run: true);
     }
 
     private readonly Dictionary<uint, int> _losFailCounts = [];
@@ -572,7 +714,7 @@ public sealed class NpcAI
         _losFailCounts.Remove(npc.Uid.Value);
     }
 
-    /// <summary>Source-X: NPC_Act_Flee — step-counted retreat.</summary>
+    /// <summary>Source-X: NPC_Act_Flee — step-counted retreat with kiting spellcast.</summary>
     private void ActFlee(Character npc, Character target)
     {
         npc.FleeStepsCurrent++;
@@ -582,7 +724,80 @@ public sealed class NpcAI
             npc.FightTarget = Serial.Invalid;
             return;
         }
-        MoveAway(npc, target.Position);
+
+        int dist = npc.Position.GetDistanceTo(target.Position);
+
+        // Kiting: cast a spell while fleeing if mana allows (every 3rd step)
+        if (npc.NpcSpells.Count > 0 && npc.Mana >= npc.Int / 3
+            && dist >= 2 && dist <= 8
+            && npc.FleeStepsCurrent % 3 == 0
+            && _world.CanSeeLOS(npc.Position, target.Position))
+        {
+            var spell = ChooseBestSpell(npc, target, dist);
+            if (spell != SpellType.None)
+                OnNpcCastSpell?.Invoke(npc, target, spell);
+        }
+
+        // Self-heal while fleeing (every 4th step)
+        if (npc.NpcSpells.Count > 0 && npc.MaxHits > 0 && npc.Hits < npc.MaxHits / 3
+            && npc.FleeStepsCurrent % 4 == 0)
+        {
+            if (npc.NpcSpells.Contains(SpellType.GreaterHeal))
+            {
+                OnNpcCastSpell?.Invoke(npc, npc, SpellType.GreaterHeal);
+            }
+            else if (npc.NpcSpells.Contains(SpellType.Heal))
+            {
+                OnNpcCastSpell?.Invoke(npc, npc, SpellType.Heal);
+            }
+        }
+
+        // Pathfinder-based escape: find a direction away from threat
+        FleeAway(npc, target.Position);
+    }
+
+    private void FleeAway(Character npc, Point3D threat)
+    {
+        // Try the direct opposite direction first
+        var dir = npc.Position.GetDirectionTo(threat);
+        GetDirectionDelta(dir, out short dx, out short dy);
+
+        short nx = (short)(npc.X - dx);
+        short ny = (short)(npc.Y - dy);
+        var mapData = _world.MapData;
+        sbyte nz = mapData?.GetEffectiveZ(npc.MapIndex, nx, ny, npc.Z) ?? npc.Z;
+
+        if (Math.Abs(nz - npc.Z) <= 12)
+        {
+            var newPos = new Point3D(nx, ny, nz, npc.MapIndex);
+            if ((mapData == null || mapData.IsPassable(newPos.Map, newPos.X, newPos.Y, newPos.Z))
+                && CanNpcEnterTile(npc, newPos))
+            {
+                _world.MoveCharacter(npc, newPos);
+                return;
+            }
+        }
+
+        // Direct blocked — try two diagonal alternatives
+        for (int rot = 1; rot <= 2; rot++)
+        {
+            foreach (int sign in new[] { 1, -1 })
+            {
+                int altDir = (((int)dir & 0x07) + sign * rot) & 0x07;
+                GetDirectionDelta((Direction)altDir, out short adx, out short ady);
+                short ax = (short)(npc.X - adx);
+                short ay = (short)(npc.Y - ady);
+                sbyte az = mapData?.GetEffectiveZ(npc.MapIndex, ax, ay, npc.Z) ?? npc.Z;
+                if (Math.Abs(az - npc.Z) > 12) continue;
+                var altPos = new Point3D(ax, ay, az, npc.MapIndex);
+                if ((mapData == null || mapData.IsPassable(altPos.Map, altPos.X, altPos.Y, altPos.Z))
+                    && CanNpcEnterTile(npc, altPos))
+                {
+                    _world.MoveCharacter(npc, altPos);
+                    return;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -634,18 +849,138 @@ public sealed class NpcAI
             return false;
         }
 
-        // Pick a random spell from the NPC's list
-        int startIdx = _rand.Next(npc.NpcSpells.Count);
-        for (int i = 0; i < npc.NpcSpells.Count; i++)
-        {
-            var spell = npc.NpcSpells[(startIdx + i) % npc.NpcSpells.Count];
-            if (spell == SpellType.None) continue;
+        var spell = ChooseBestSpell(npc, target, dist);
+        if (spell == SpellType.None)
+            return false;
 
-            OnNpcCastSpell?.Invoke(npc, target, spell);
-            return true;
+        OnNpcCastSpell?.Invoke(npc, target, spell);
+        return true;
+    }
+
+    /// <summary>
+    /// Intelligent spell selection. Priority:
+    /// 1. Self-cure if poisoned
+    /// 2. Self-heal if HP &lt; 50%
+    /// 3. Dispel if target is summoned
+    /// 4. Area spells if 3+ enemies nearby
+    /// 5. High damage at close range
+    /// 6. Ranged damage at distance
+    /// 7. Fallback: random non-reflected spell
+    /// </summary>
+    private SpellType ChooseBestSpell(Character npc, Character target, int dist)
+    {
+        var spells = npc.NpcSpells;
+        bool targetReflects = target.IsStatFlag(StatFlag.Reflection);
+
+        // 1. Self-cure if poisoned (50% chance — don't loop on cure forever)
+        if (npc.IsPoisoned && _rand.Next(2) == 0)
+        {
+            if (spells.Contains(SpellType.Cure))
+                return SpellType.Cure;
+            if (spells.Contains(SpellType.ArchCure))
+                return SpellType.ArchCure;
         }
 
-        return false;
+        // 2. Self-heal if HP < 50% (33% chance — mix heals with offense)
+        //    HP < 25% gets 50% chance (more urgent)
+        if (npc.MaxHits > 0 && npc.Hits < npc.MaxHits / 2)
+        {
+            bool shouldHeal = npc.Hits < npc.MaxHits / 4
+                ? _rand.Next(2) == 0   // 50% when critical
+                : _rand.Next(3) == 0;  // 33% when wounded
+
+            if (shouldHeal)
+            {
+                if (npc.Hits < npc.MaxHits / 4 && spells.Contains(SpellType.GreaterHeal))
+                    return SpellType.GreaterHeal;
+                if (spells.Contains(SpellType.Heal))
+                    return SpellType.Heal;
+                if (spells.Contains(SpellType.GreaterHeal))
+                    return SpellType.GreaterHeal;
+            }
+        }
+
+        // 3. Dispel if target is summoned
+        if (target.IsSummoned)
+        {
+            if (spells.Contains(SpellType.Dispel))
+                return SpellType.Dispel;
+            if (spells.Contains(SpellType.MassDispel))
+                return SpellType.MassDispel;
+        }
+
+        // 4. Area spells if 3+ enemies nearby
+        int nearbyEnemies = 0;
+        foreach (var ch in _world.GetCharsInRange(target.Position, 3))
+        {
+            if (ch == npc || ch.IsDead) continue;
+            if (ch.IsPlayer || (ch.NpcBrain != npc.NpcBrain && ch.BodyId != npc.BodyId))
+                nearbyEnemies++;
+        }
+        if (nearbyEnemies >= 3)
+        {
+            if (spells.Contains(SpellType.MeteorSwarm) && !targetReflects)
+                return SpellType.MeteorSwarm;
+            if (spells.Contains(SpellType.ChainLightning) && !targetReflects)
+                return SpellType.ChainLightning;
+        }
+
+        // 5. Paralyze fleeing targets
+        if (dist > 4 && spells.Contains(SpellType.Paralyze) && !targetReflects)
+            return SpellType.Paralyze;
+
+        // 6. Poison if target isn't poisoned yet
+        if (!target.IsPoisoned && spells.Contains(SpellType.Poison) && !targetReflects)
+        {
+            if (_rand.Next(3) == 0)
+                return SpellType.Poison;
+        }
+
+        // 7. Damage spells — prefer high damage, avoid if target reflects
+        if (!targetReflects)
+        {
+            if (dist <= 4)
+            {
+                if (spells.Contains(SpellType.Explosion))
+                    return SpellType.Explosion;
+                if (spells.Contains(SpellType.Flamestrike))
+                    return SpellType.Flamestrike;
+            }
+            if (spells.Contains(SpellType.EnergyBolt))
+                return SpellType.EnergyBolt;
+            if (spells.Contains(SpellType.Lightning))
+                return SpellType.Lightning;
+            if (spells.Contains(SpellType.Fireball))
+                return SpellType.Fireball;
+            if (spells.Contains(SpellType.Harm))
+                return SpellType.Harm;
+            if (spells.Contains(SpellType.MagicArrow))
+                return SpellType.MagicArrow;
+        }
+
+        // 8. Curse/Weaken debuffs (safe against reflect)
+        if (spells.Contains(SpellType.Curse) && _rand.Next(4) == 0)
+            return SpellType.Curse;
+        if (spells.Contains(SpellType.Weaken) && _rand.Next(4) == 0)
+            return SpellType.Weaken;
+
+        // 9. Fallback: random non-reflected spell (skip heals/cures on enemies)
+        int startIdx = _rand.Next(spells.Count);
+        for (int i = 0; i < spells.Count; i++)
+        {
+            var spell = spells[(startIdx + i) % spells.Count];
+            if (spell == SpellType.None) continue;
+            if (spell is SpellType.Heal or SpellType.GreaterHeal or SpellType.Cure or SpellType.ArchCure)
+                continue;
+            if (targetReflects && spell is SpellType.Lightning or SpellType.EnergyBolt
+                or SpellType.Explosion or SpellType.Flamestrike or SpellType.MagicArrow
+                or SpellType.Fireball or SpellType.Harm or SpellType.MeteorSwarm
+                or SpellType.ChainLightning)
+                continue;
+            return spell;
+        }
+
+        return SpellType.None;
     }
 
     /// <summary>Source-X: BREATH.DAM — defaults to STR*5/100, clamped 1-200.</summary>
@@ -707,6 +1042,20 @@ public sealed class NpcAI
 
         // Distance penalty
         motivation -= npc.Position.GetDistanceTo(target.Position);
+
+        // Prioritize wounded targets (easier kills)
+        if (target.MaxHits > 0 && target.Hits < target.MaxHits / 3)
+            motivation += 15;
+
+        // Prioritize dangerous targets: casters/healers are high-value
+        if (!target.IsPlayer && target.NpcSpells.Count > 0)
+            motivation += 10;
+        if (!target.IsPlayer && target.NpcBrain == NpcBrainType.Healer)
+            motivation += 20;
+
+        // Targets actively attacking us get priority (retaliation)
+        if (target.FightTarget == npc.Uid)
+            motivation += 15;
 
         // Fear: flee if HP is low (Source-X: MonsterFear + STR check)
         if (_config.MonsterFear && npc.MaxHits > 0 && npc.Hits < npc.MaxHits / 2)
@@ -783,22 +1132,41 @@ public sealed class NpcAI
         OnNpcSound?.Invoke(npc, type);
     }
 
-    /// <summary>Healer: resurrect dead, heal wounded, refuse criminals/evil.</summary>
+    /// <summary>Healer: resurrect dead, cure poison, heal wounded. Range 5, refuse criminals/evil.</summary>
     private void ActHealer(Character npc)
     {
-        // Priority 1: resurrect dead players in range (Source-X: 3 tiles)
-        foreach (var ch in _world.GetCharsInRange(npc.Position, 3))
+        const int healerRange = 5;
+
+        // Priority 1: resurrect dead players in range
+        foreach (var ch in _world.GetCharsInRange(npc.Position, healerRange))
         {
             if (ch == npc || !ch.IsDead || !ch.IsPlayer) continue;
             if (ch.IsCriminal || ch.IsMurderer) continue;
+
+            if (npc.Position.GetDistanceTo(ch.Position) > 2)
+            {
+                MoveToward(npc, ch.Position);
+                return;
+            }
 
             OnHealerAction?.Invoke(npc, ch, true);
             ch.Resurrect();
             return;
         }
 
-        // Priority 2: heal wounded friendly NPCs/players (HP < 50%)
-        foreach (var ch in _world.GetCharsInRange(npc.Position, 3))
+        // Priority 2: cure poisoned allies
+        foreach (var ch in _world.GetCharsInRange(npc.Position, healerRange))
+        {
+            if (ch == npc || ch.IsDead || !ch.IsPoisoned) continue;
+            if (ch.IsCriminal || ch.IsMurderer) continue;
+
+            OnHealerCure?.Invoke(npc, ch);
+            ch.CurePoison();
+            return;
+        }
+
+        // Priority 3: heal wounded friendly NPCs/players (HP < 50%)
+        foreach (var ch in _world.GetCharsInRange(npc.Position, healerRange))
         {
             if (ch == npc || ch.IsDead) continue;
             if (ch.IsCriminal || ch.IsMurderer) continue;
@@ -818,9 +1186,32 @@ public sealed class NpcAI
     /// Used by Program.cs to broadcast cast animation and sound.</summary>
     public Action<Character, Character, bool>? OnHealerAction { get; set; }
 
-    /// <summary>Vendor/Banker/Stable: stay near home, barely move.</summary>
+    /// <summary>Callback: healer cures poison. Parameters: healer, target.
+    /// Program.cs broadcasts cure animation/sound.</summary>
+    public Action<Character, Character>? OnHealerCure { get; set; }
+
+    /// <summary>Callback: vendor needs restocking. Program.cs fires @NPCRestock trigger.</summary>
+    public Action<Character>? OnVendorRestock { get; set; }
+
+    private const int VendorRestockIntervalMs = 10 * 60 * 1000; // 10 minutes
+
+    /// <summary>Vendor/Banker/Stable: stay near home, barely move, periodic restock.</summary>
     private void ActVendor(Character npc)
     {
+        CheckWitnessCrime(npc);
+
+        // Periodic restock check (vendor brain only)
+        if (npc.NpcBrain == NpcBrainType.Vendor)
+        {
+            long now = Environment.TickCount64;
+            if (!npc.TryGetTag("RESTOCK_TIME", out string? rtStr) || !long.TryParse(rtStr, out long lastRestock)
+                || now - lastRestock >= VendorRestockIntervalMs)
+            {
+                OnVendorRestock?.Invoke(npc);
+                npc.SetTag("RESTOCK_TIME", now.ToString());
+            }
+        }
+
         if (!npc.TryGetTag("HOME_X", out string? hx) || !npc.TryGetTag("HOME_Y", out string? hy))
             return;
         if (!short.TryParse(hx, out short homeX) || !short.TryParse(hy, out short homeY))
@@ -861,11 +1252,40 @@ public sealed class NpcAI
             WanderHome(npc);
     }
 
-    /// <summary>Human: idle, look around, wander occasionally.</summary>
+    /// <summary>Callback: NPC witnesses a crime and calls guards. Parameters: witness, criminal.</summary>
+    public Action<Character, Character>? OnWitnessCrime { get; set; }
+
+    /// <summary>Human: idle, look around, wander occasionally. Witnesses crimes.</summary>
     private void ActHuman(Character npc)
     {
+        CheckWitnessCrime(npc);
+
         if (_rand.Next(100) < 10)
             WanderHome(npc);
+    }
+
+    /// <summary>
+    /// Crime witness: civilian NPCs in guarded regions report nearby criminals.
+    /// Source-X parity: townsfolk yell "Guards!" when they see crime.
+    /// </summary>
+    private void CheckWitnessCrime(Character npc)
+    {
+        if (_rand.Next(5) != 0) return;
+
+        var region = _world.FindRegion(npc.Position);
+        if (region == null || !region.IsFlag(RegionFlag.Guarded)) return;
+
+        foreach (var ch in _world.GetCharsInRange(npc.Position, 6))
+        {
+            if (ch == npc || ch.IsDead || ch.IsDeleted) continue;
+            if (!ch.IsPlayer) continue;
+            if (!ch.IsStatFlag(StatFlag.Criminal) && !ch.IsCriminal && !ch.IsMurderer) continue;
+            if (!_world.CanSeeLOS(npc.Position, ch.Position)) continue;
+
+            OnNpcSay?.Invoke(npc, "Guards! A villain!");
+            OnWitnessCrime?.Invoke(npc, ch);
+            return;
+        }
     }
 
     /// <summary>
@@ -1059,8 +1479,11 @@ public sealed class NpcAI
             return;
 
         // Source-X formula 0 swing delay, identical to player code.
+        // Group stagger: offset swing timer by a UID-derived amount so
+        // multiple NPCs hitting the same target don't all swing in unison.
         int swingDelayMs = SphereNet.Game.Clients.GameClient.GetSwingDelayMs(npc, weapon);
-        npc.NextAttackTime = now + swingDelayMs;
+        int stagger = (int)(npc.Uid.Value * 2654435761u % 200);
+        npc.NextAttackTime = now + swingDelayMs + stagger;
 
         // Face the target *before* the swing — Source-X UpdateDir(pCharTarg).
         // Direction setter marks the dirty flag; the actual 0x77 broadcast

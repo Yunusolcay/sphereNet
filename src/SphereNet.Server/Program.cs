@@ -1546,6 +1546,23 @@ public static class Program
                 healer.X, healer.Y, healer.Z);
             BroadcastNearby(healer.Position, 18, sound, 0);
         };
+        _npcAI.OnHealerCure = (healer, target) =>
+        {
+            ushort healAnim = healer.IsMounted ? MapAnimToMounted(16) : (ushort)16;
+            var anim = new PacketAnimation(healer.Uid.Value, healAnim, 4, 1, false, false, 0);
+            BroadcastNearby(healer.Position, 18, anim, 0);
+            var sound = new PacketSound(0x01E0, healer.X, healer.Y, healer.Z);
+            BroadcastNearby(healer.Position, 18, sound, 0);
+        };
+        _npcAI.OnVendorRestock = vendor =>
+        {
+            _triggerDispatcher?.FireCharTrigger(vendor, CharTrigger.NPCRestock,
+                new TriggerArgs { CharSrc = vendor });
+        };
+        _npcAI.OnWitnessCrime = (witness, criminal) =>
+        {
+            _npcAI.AlertGuardsInRange(witness.Position, criminal);
+        };
         _npcAI.OnWakeNpc = WakeNpc;
         _npcAI.OnNpcSound = (npc, type) =>
         {
@@ -5920,6 +5937,10 @@ public static class Program
         foreach (var hostile in hostiles)
         {
             if (hostile.IsDeleted || hostile.IsDead) continue;
+
+            // Alert existing patrol guards in range toward this hostile
+            _npcAI.AlertGuardsInRange(speaker.Position, hostile);
+
             var summonedGuard = FindNearbyGuardResponder(speaker.Position) ?? SummonCityGuardNear(hostile, region.Name);
             if (summonedGuard != null && !summonedGuard.IsDeleted)
             {
