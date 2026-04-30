@@ -1141,9 +1141,17 @@ public static class Program
         };
         _commands.OnKillRequested += (gm, targetUid) =>
         {
-            var victim = !targetUid.HasValue || targetUid.Value.Value == 0
-                ? gm
-                : _world.FindChar(targetUid.Value);
+            if (!targetUid.HasValue || targetUid.Value.Value == 0)
+            {
+                if (_clientsByCharUid.TryGetValue(gm.Uid, out var gmClient))
+                {
+                    gmClient.SysMessage("Select target to kill.");
+                    gmClient.BeginKillTarget();
+                }
+                return;
+            }
+
+            var victim = _world.FindChar(targetUid.Value);
 
             if (victim == null)
             {
@@ -4636,6 +4644,7 @@ public static class Program
                 // ADDOBJ: re-register already-spawned NPC serials.
                 // In Sphere, ADDOBJ count determines MaxCount (each line = one spawn slot).
                 string? addObj = item.Tags.Get("ADDOBJ");
+                int spawnRange = item.SpawnChar.SpawnRange;
                 if (!string.IsNullOrEmpty(addObj))
                 {
                     var tokens = addObj.Split(',', System.StringSplitOptions.TrimEntries | System.StringSplitOptions.RemoveEmptyEntries);
@@ -4648,7 +4657,17 @@ public static class Program
                         {
                             var ch = _world.FindChar(new SphereNet.Core.Types.Serial(npcSerial));
                             if (ch != null && !ch.IsDead && !ch.IsDeleted)
+                            {
                                 item.SpawnChar.RegisterExisting(new SphereNet.Core.Types.Serial(npcSerial));
+                                if (ch.Home.X == 0 && ch.Home.Y == 0)
+                                    ch.Home = item.Position;
+                                if (ch.HomeDist == 10)
+                                    ch.HomeDist = (short)spawnRange;
+                                if (!ch.TryGetTag("SPAWNITEM", out _))
+                                    ch.SetTag("SPAWNITEM", $"0{item.Uid.Value:x8}");
+                                if (!ch.IsStatFlag(SphereNet.Core.Enums.StatFlag.Spawned))
+                                    ch.SetStatFlag(SphereNet.Core.Enums.StatFlag.Spawned);
+                            }
                         }
                     }
                 }
@@ -4886,6 +4905,17 @@ public static class Program
                     victimClient.OnResurrect();
                 else if (victim.IsDead)
                     victim.Resurrect(); // offline / NPC fallback
+            };
+            client.OnKillTarget = (killer, victim) =>
+            {
+                if (victim.IsDead || victim.IsDeleted)
+                {
+                    client.SysMessage($"'{victim.Name}' is already dead.");
+                    return;
+                }
+                BroadcastLightningStrike(victim);
+                _deathEngine.ProcessDeath(victim, killer);
+                client.SysMessage($"Killed '{victim.Name}'.");
             };
 
             client.SendTradeToPartner = (partner, initiator, cont1, cont2) =>

@@ -1626,6 +1626,12 @@ public class Character : ObjBase
                 value = dam.HasValue ? $"{dam.Value.Min},{dam.Value.Max}" : "0,0";
                 return true;
             }
+            case "CAN":
+            {
+                var cdef = Definitions.DefinitionLoader.GetCharDef(_charDefIndex);
+                value = cdef != null ? $"0{(uint)cdef.Can:X}" : "0";
+                return true;
+            }
             case "FOOD": value = _food.ToString(); return true;
             case "PRIVLEVEL": value = ((int)PrivLevel).ToString(); return true;
             case "ISMOUNTED": value = IsMounted ? "1" : "0"; return true;
@@ -1794,7 +1800,14 @@ public class Character : ObjBase
             case "ISCHAR": value = "1"; return true;
             case "ISITEM": value = "0"; return true;
             case "DISPIDDEC": value = _bodyId.ToString(); return true;
-            case "HEIGHT": value = "10"; return true;
+            case "BASEID": value = $"0{BaseId:X}"; return true;
+            case "DUID": value = Uid.Value.ToString(); return true;
+            case "HEIGHT":
+            {
+                var hdef = Definitions.DefinitionLoader.GetCharDef(_charDefIndex);
+                value = hdef != null && hdef.Height > 0 ? hdef.Height.ToString() : "10";
+                return true;
+            }
             case "ISVENDOR": value = _npcBrain == NpcBrainType.Vendor ? "1" : "0"; return true;
             case "AC":
             {

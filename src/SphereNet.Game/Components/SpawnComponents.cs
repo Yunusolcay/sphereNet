@@ -47,7 +47,12 @@ public sealed class SpawnComponent
     /// <summary>Called each tick from the item's OnTick.</summary>
     public void OnTick(long currentTick)
     {
+        int prevCount = _spawnedUids.Count;
         CleanupDead();
+
+        // NPC died → reset timer so respawn waits TIMELO-TIMEHI minutes
+        if (_spawnedUids.Count < prevCount && _spawnedUids.Count < _maxCount)
+            SetNextSpawnTime();
 
         if (currentTick < _nextSpawnTick) return;
         if (_spawnedUids.Count >= _maxCount) return;
@@ -62,14 +67,12 @@ public sealed class SpawnComponent
         ushort bodyId = _charDefId;
         int defIndex = bodyId;
 
-        // If we have a spawn group, pick a random member from it
         if (_spawnGroup != null)
         {
             string? memberName = _spawnGroup.SelectRandomMember(_rand);
             if (string.IsNullOrEmpty(memberName))
                 return;
 
-            // Resolve member defname to a chardef index
             if (_resources != null)
             {
                 var rid = _resources.ResolveDefName(memberName);
@@ -88,9 +91,6 @@ public sealed class SpawnComponent
         var ch = _world.CreateCharacter();
         ch.BaseId = bodyId;
         ch.BodyId = bodyId;
-        // CharDefIndex carries the full 24-bit defname hash so trigger /
-        // CharDef lookups (TriggerDispatcher / SpeechEngine) resolve to
-        // the actual spawned defname instead of being clamped to ushort.
         ch.CharDefIndex = defIndex;
         ch.IsPlayer = false;
 
@@ -102,21 +102,25 @@ public sealed class SpawnComponent
                 ch.BodyId = charDef.DispIndex;
                 ch.BaseId = charDef.DispIndex;
             }
+            ch.OBody = ch.BodyId;
+
             if (!string.IsNullOrWhiteSpace(charDef.Name))
                 ch.Name = DefinitionLoader.ResolveNames(charDef.Name);
             else
                 ch.Name = $"Spawn_{bodyId:X}";
 
-            int strVal = charDef.StrMax > 0 ? charDef.StrMax : Math.Max(1, charDef.StrMin);
-            int dexVal = charDef.DexMax > 0 ? charDef.DexMax : Math.Max(1, charDef.DexMin);
-            int intVal = charDef.IntMax > 0 ? charDef.IntMax : Math.Max(1, charDef.IntMin);
+            int strVal = RandomRange(charDef.StrMin, charDef.StrMax);
+            int dexVal = RandomRange(charDef.DexMin, charDef.DexMax);
+            int intVal = RandomRange(charDef.IntMin, charDef.IntMax);
 
             ch.Str = (short)Math.Clamp(strVal, 1, short.MaxValue);
             ch.Dex = (short)Math.Clamp(dexVal, 1, short.MaxValue);
             ch.Int = (short)Math.Clamp(intVal, 1, short.MaxValue);
 
-            int hits = charDef.HitsMax > 0 ? charDef.HitsMax : Math.Max(1, strVal);
-            ch.MaxHits = (short)Math.Clamp(hits, 1, short.MaxValue);
+            int hitsVal = charDef.HitsMax > 0
+                ? RandomRange(charDef.HitsMin, charDef.HitsMax)
+                : Math.Max(1, strVal);
+            ch.MaxHits = (short)Math.Clamp(hitsVal, 1, short.MaxValue);
             ch.Hits = ch.MaxHits;
             ch.MaxMana = ch.Int;
             ch.Mana = ch.Int;
@@ -125,10 +129,23 @@ public sealed class SpawnComponent
 
             if (charDef.NpcBrain != NpcBrainType.None)
                 ch.NpcBrain = charDef.NpcBrain;
+
+            if (charDef.MaxFood > 0)
+            {
+                ch.Food = charDef.MaxFood;
+                ch.SetTag("MAXFOOD", charDef.MaxFood.ToString());
+            }
+
+            if (charDef.DamPhysical != 0) ch.DamPhysical = charDef.DamPhysical;
+            if (charDef.DamFire != 0) ch.DamFire = charDef.DamFire;
+            if (charDef.DamCold != 0) ch.DamCold = charDef.DamCold;
+            if (charDef.DamPoison != 0) ch.DamPoison = charDef.DamPoison;
+            if (charDef.DamEnergy != 0) ch.DamEnergy = charDef.DamEnergy;
         }
         else
         {
             ch.Name = $"Spawn_{bodyId:X}";
+            ch.OBody = bodyId;
             ch.Str = 50; ch.Dex = 50; ch.Int = 20;
             ch.MaxHits = 50; ch.MaxMana = 20; ch.MaxStam = 50;
             ch.Hits = 50; ch.Mana = 20; ch.Stam = 50;
@@ -138,6 +155,13 @@ public sealed class SpawnComponent
             ch.NpcBrain = NpcBrainType.Monster;
 
         ch.SetStatFlag(StatFlag.Spawned);
+
+        // HOME = spawn item position, HOMEDIST = spawn range
+        ch.Home = new Point3D(_spawnItem.X, _spawnItem.Y, _spawnItem.Z, _spawnItem.MapIndex);
+        ch.HomeDist = (short)_spawnRange;
+
+        // SPAWNITEM = spawn item serial (Sphere format: 0x4XXXXXXX)
+        ch.SetTag("SPAWNITEM", $"0{_spawnItem.Uid.Value:x8}");
 
         // Random position within range — validate terrain before placement
         Point3D pos = default;
@@ -176,11 +200,14 @@ public sealed class SpawnComponent
         _world.PlaceCharacter(ch, pos);
         _spawnedUids.Add(ch.Uid);
 
-        // Source-X parity: spawn-point NPCs need the same trigger
-        // sequence the manual ".add" path runs (@Create -> brain
-        // finalisation -> @NPCRestock -> @CreateLoot). The hook keeps
-        // the dispatcher dependency out of this component.
         _world.OnNpcSpawned?.Invoke(ch);
+    }
+
+    private int RandomRange(int min, int max)
+    {
+        if (max <= 0) return Math.Max(1, min);
+        if (min >= max) return Math.Max(1, min);
+        return _rand.Next(min, max + 1);
     }
 
     public void CleanupDead()
@@ -198,14 +225,17 @@ public sealed class SpawnComponent
         _nextSpawnTick = Environment.TickCount64 + delaySec * 1000;
     }
 
-    /// <summary>Kill all spawned creatures (for despawn/delete).</summary>
+    /// <summary>Remove all spawned creatures from the world (for despawn/delete).</summary>
     public void KillAll()
     {
         foreach (var uid in _spawnedUids)
         {
             var ch = _world.FindChar(uid);
-            if (ch != null && !ch.IsDead)
+            if (ch == null || ch.IsDeleted) continue;
+            if (!ch.IsDead)
                 ch.Kill();
+            _world.DeleteObject(ch);
+            ch.Delete();
         }
         _spawnedUids.Clear();
     }

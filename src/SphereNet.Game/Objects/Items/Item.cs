@@ -209,6 +209,7 @@ public class Item : ObjBase
 
     public void Delete()
     {
+        SpawnChar?.KillAll();
         _isDeleted = true;
         _contents.Clear();
     }

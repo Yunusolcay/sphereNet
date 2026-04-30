@@ -118,6 +118,10 @@ public sealed class GameClient : ITextConsole
     /// to revive its owner.</summary>
     public Action<Character>? OnResurrectOther { get; set; }
 
+    /// <summary>Wired by Program.cs. GM .kill target cursor callback —
+    /// args are (killer, victim).</summary>
+    public Action<Character, Character>? OnKillTarget { get; set; }
+
     private Account? _account;
     private Character? _character;
 
@@ -168,6 +172,7 @@ public sealed class GameClient : ITextConsole
     private bool _pendingControlTarget;
     private bool _pendingDupeTarget;
     private bool _pendingHealTarget;
+    private bool _pendingKillTarget;
     private bool _pendingBankTarget;
     private bool _pendingSummonToTarget;
     private bool _pendingMountTarget;
@@ -5267,6 +5272,7 @@ public sealed class GameClient : ITextConsole
             _pendingControlTarget = false;
             _pendingDupeTarget = false;
             _pendingHealTarget = false;
+            _pendingKillTarget = false;
             _pendingBankTarget = false;
             _pendingSummonToTarget = false;
             _pendingMountTarget = false;
@@ -5539,6 +5545,15 @@ public sealed class GameClient : ITextConsole
             victim.Mana = victim.MaxMana;
             victim.Stam = victim.MaxStam;
             SysMessage(ServerMessages.GetFormatted("gm_heal_done", victim.Name));
+            return;
+        }
+
+        if (_pendingKillTarget)
+        {
+            _pendingKillTarget = false;
+            var victim = ResolvePickedChar(serial);
+            if (victim == null) { SysMessage(ServerMessages.Get("target_must_object")); return; }
+            OnKillTarget?.Invoke(_character!, victim);
             return;
         }
 
@@ -6774,6 +6789,15 @@ public sealed class GameClient : ITextConsole
         if (_character == null || _targetCursorActive) return;
         ClearPendingTargetState();
         _pendingHealTarget = true;
+        _targetCursorActive = true;
+        _netState.Send(new PacketTarget(0, (uint)Random.Shared.Next(1, int.MaxValue)));
+    }
+
+    public void BeginKillTarget()
+    {
+        if (_character == null || _targetCursorActive) return;
+        ClearPendingTargetState();
+        _pendingKillTarget = true;
         _targetCursorActive = true;
         _netState.Send(new PacketTarget(0, (uint)Random.Shared.Next(1, int.MaxValue)));
     }
@@ -8148,11 +8172,13 @@ public sealed class GameClient : ITextConsole
         if (!TryFindDialogSections(dialogId, out var layoutSection))
             return false;
 
+        var textLines = LoadDialogTextLines(dialogId);
+
         var prevSubject = _dialogSubjectUid;
         _dialogSubjectUid = subject?.Uid ?? Serial.Invalid;
         try
         {
-            return RenderScriptDialog(dialogId, requestedPage, layoutSection, subject?.Uid ?? Serial.Invalid);
+            return RenderScriptDialog(dialogId, requestedPage, layoutSection, subject?.Uid ?? Serial.Invalid, textLines);
         }
         finally
         {
@@ -8161,7 +8187,8 @@ public sealed class GameClient : ITextConsole
     }
 
     private bool RenderScriptDialog(string dialogId, int requestedPage,
-        SphereNet.Scripting.Parsing.ScriptSection layoutSection, Serial subjectUid)
+        SphereNet.Scripting.Parsing.ScriptSection layoutSection, Serial subjectUid,
+        List<string>? textLines = null)
     {
         if (_character == null) return false;
 
@@ -8368,6 +8395,29 @@ public sealed class GameClient : ITextConsole
                     }
                     break;
                 }
+                case "HTMLGUMP":
+                {
+                    if (!currentPageVisible) break;
+                    // HTMLGUMP x y w h textIndex hasBackground hasScrollbar
+                    var parts = SplitTokens(args, 7);
+                    if (parts.Length >= 7)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        int idx = ParseIntToken(parts[4]);
+                        string html = "";
+                        if (textLines != null && idx >= 0 && idx < textLines.Count)
+                            html = ResolveDialogHtml(textLines[idx], _character);
+                        gump.AddHtmlGump(
+                            x, y,
+                            ParseIntToken(parts[2]),
+                            ParseIntToken(parts[3]),
+                            html,
+                            ParseIntToken(parts[5]) != 0,
+                            ParseIntToken(parts[6]) != 0);
+                    }
+                    break;
+                }
                 case "DCROPPEDTEXT":
                 {
                     if (!currentPageVisible) break;
@@ -8385,8 +8435,29 @@ public sealed class GameClient : ITextConsole
                     }
                     break;
                 }
+                case "CROPPEDTEXT":
+                {
+                    if (!currentPageVisible) break;
+                    // CROPPEDTEXT x y w h hue textIndex
+                    var parts = SplitTokens(args, 6);
+                    if (parts.Length >= 6)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        int idx = ParseIntToken(parts[5]);
+                        string txt = "";
+                        if (textLines != null && idx >= 0 && idx < textLines.Count)
+                            txt = ResolveDialogHtml(textLines[idx], _character);
+                        gump.AddCroppedText(
+                            x, y,
+                            ParseIntToken(parts[2]),
+                            ParseIntToken(parts[3]),
+                            ParseIntToken(parts[4]),
+                            txt);
+                    }
+                    break;
+                }
                 case "DTEXT":
-                case "TEXT":
                 {
                     if (!currentPageVisible) break;
                     // DTEXT x y hue text...
@@ -8397,6 +8468,24 @@ public sealed class GameClient : ITextConsole
                         int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
                         gump.AddText(x, y, ParseIntToken(parts[2]),
                             ResolveDialogHtml(parts[3], _character));
+                    }
+                    break;
+                }
+                case "TEXT":
+                {
+                    if (!currentPageVisible) break;
+                    // TEXT x y hue textIndex — index into [dialog NAME text] section
+                    var parts = SplitTokens(args, 4);
+                    if (parts.Length >= 4)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        int hue = ParseIntToken(parts[2]);
+                        int idx = ParseIntToken(parts[3]);
+                        string txt = "";
+                        if (textLines != null && idx >= 0 && idx < textLines.Count)
+                            txt = ResolveDialogHtml(textLines[idx], _character);
+                        gump.AddText(x, y, hue, txt);
                     }
                     break;
                 }
@@ -8449,7 +8538,6 @@ public sealed class GameClient : ITextConsole
                     break;
                 }
                 case "DTEXTENTRY":
-                case "TEXTENTRY":
                 {
                     if (!currentPageVisible) break;
                     // DTEXTENTRY x y w h hue entryId initialText...
@@ -8467,15 +8555,32 @@ public sealed class GameClient : ITextConsole
                     }
                     break;
                 }
+                case "TEXTENTRY":
+                {
+                    if (!currentPageVisible) break;
+                    // TEXTENTRY x y w h hue entryId textIndex
+                    var parts = SplitTokens(args, 7);
+                    if (parts.Length >= 7)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        int idx = ParseIntToken(parts[6]);
+                        string txt = "";
+                        if (textLines != null && idx >= 0 && idx < textLines.Count)
+                            txt = ResolveDialogHtml(textLines[idx], _character);
+                        gump.AddTextEntry(x, y,
+                            ParseIntToken(parts[2]),
+                            ParseIntToken(parts[3]),
+                            ParseIntToken(parts[4]),
+                            ParseIntToken(parts[5]),
+                            txt);
+                    }
+                    break;
+                }
                 case "DTEXTENTRYLIMITED":
-                case "TEXTENTRYLIMITED":
                 {
                     if (!currentPageVisible) break;
                     // DTEXTENTRYLIMITED x y w h hue entryId maxChars initialText...
-                    // The 7th token (maxChars) is the client-side input cap;
-                    // forward it via the gump layout's textentrylimited
-                    // control so admin INPDLG rows respect their script
-                    // length (NAME 30, BODY 30, COLOR 16, FOOD 4, etc.).
                     var parts = SplitTokens(args, 7, keepRemainder: true);
                     if (parts.Length >= 8)
                     {
@@ -8488,6 +8593,30 @@ public sealed class GameClient : ITextConsole
                             ParseIntToken(parts[4]),
                             ParseIntToken(parts[5]),
                             ResolveDialogHtml(parts[7], _character),
+                            maxLen);
+                    }
+                    break;
+                }
+                case "TEXTENTRYLIMITED":
+                {
+                    if (!currentPageVisible) break;
+                    // TEXTENTRYLIMITED x y w h hue entryId textIndex maxChars
+                    var parts = SplitTokens(args, 8);
+                    if (parts.Length >= 8)
+                    {
+                        int x = ResolveDialogCoord(parts[0], ref cursorX, ref rowCursorX) + originX;
+                        int y = ResolveDialogCoord(parts[1], ref cursorY, ref rowCursorY) + originY;
+                        int idx = ParseIntToken(parts[6]);
+                        int maxLen = ParseIntToken(parts[7]);
+                        string txt = "";
+                        if (textLines != null && idx >= 0 && idx < textLines.Count)
+                            txt = ResolveDialogHtml(textLines[idx], _character);
+                        gump.AddTextEntryLimited(x, y,
+                            ParseIntToken(parts[2]),
+                            ParseIntToken(parts[3]),
+                            ParseIntToken(parts[4]),
+                            ParseIntToken(parts[5]),
+                            txt,
                             maxLen);
                     }
                     break;
@@ -9254,6 +9383,46 @@ public sealed class GameClient : ITextConsole
         }
 
         return false;
+    }
+
+    private List<string> LoadDialogTextLines(string dialogId)
+    {
+        var lines = new List<string>();
+        if (_commands?.Resources == null) return lines;
+
+        foreach (var script in _commands.Resources.ScriptFiles)
+        {
+            var file = script.Open();
+            try
+            {
+                var sections = file.ReadAllSections();
+                foreach (var section in sections)
+                {
+                    if (!section.Name.Equals("DIALOG", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var parts = section.Argument.Split(
+                        new[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length < 2) continue;
+                    if (!parts[0].Equals(dialogId, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!parts[1].Equals("TEXT", StringComparison.OrdinalIgnoreCase)) continue;
+
+                    foreach (var key in section.Keys)
+                    {
+                        string line = string.IsNullOrEmpty(key.Arg)
+                            ? key.Key
+                            : $"{key.Key} {key.Arg}";
+                        lines.Add(line.TrimEnd());
+                    }
+                    return lines;
+                }
+            }
+            finally
+            {
+                script.Close();
+            }
+        }
+        return lines;
     }
 
     private bool TryFindMenuSection(string menuDefname, out SphereNet.Scripting.Parsing.ScriptSection menuSection)
