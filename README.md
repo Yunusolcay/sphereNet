@@ -4,8 +4,6 @@
 >
 > **[EN]** A .NET 9 Ultima Online private server emulator based on [Source-X](https://github.com/Sphereserver/Source-X).
 
-![SphereNet Console](sphereNetConsole.png)
-
 ---
 
 ## Ozellikler / Features
@@ -13,8 +11,8 @@
 - Source-X `.scp` script uyumlulugu / Source-X `.scp` script compatibility
 - T2A → TOL eklenti paketi destegi / T2A → TOL expansion support
 - Blowfish, Twofish, Huffman sifreleme / encryption
-- Windows (GUI + headless), Linux, macOS
-- Telnet yonetim konsolu + SignalR web panel / Telnet admin console + SignalR web panel
+- Headless konsol (Windows, Linux, macOS) + SignalR web panel
+- Telnet yonetim konsolu / Telnet admin console
 
 ---
 
@@ -98,15 +96,10 @@ Source-X resends visible objects in full each tick. SphereNet tracks field-level
 Source-X harita dosyalarini tamamen RAM'e yukler. SphereNet `MemoryMappedFile` ile yukler — isletim sistemi hangi sayfalarin RAM'de kalacagini yonetir, ~200MB tasarruf.
 Source-X loads map files entirely into RAM. SphereNet uses `MemoryMappedFile` — the OS manages page residency, saving ~200MB.
 
-### WinForms Yonetim Konsolu / WinForms Admin Console
-
-Source-X'te yalnizca terminal ciktisi vardir. SphereNet Windows'ta renk kodlu log, CPU/RAM metrikleri, canli istatistikler ve komut gecmisi sunan bir GUI konsol icerir.
-Source-X only has terminal output. SphereNet includes a Windows GUI console with color-coded logs, CPU/RAM metrics, live stats and command history.
-
 ### Web Panel (SignalR Canli Dashboard / Live Dashboard)
 
-HTTP durum sayfasinin otesinde, ASP.NET Core + SignalR tabanli gercek zamanli yonetim paneli. Canli log akisi, CPU/RAM metrikleri, oyuncu listesi ve sunucu kontrol komutlari tarayicidan calisir. Token tabanli kimlik dogrulama ve sıkistirma middleware icerir.
-Beyond a simple HTTP status page — a real-time admin dashboard built on ASP.NET Core + SignalR. Live log streaming, CPU/RAM metrics, player list and server control commands run from the browser. Includes token-based auth and compression middleware.
+ASP.NET Core + SignalR tabanli gercek zamanli yonetim paneli. Canli log akisi, CPU/RAM metrikleri, oyuncu listesi ve sunucu kontrol komutlari tarayicidan calisir. Token tabanli kimlik dogrulama ve sıkistirma middleware icerir. `SphereNet.Host` launcher uzerinden veya standalone calistirilabilir.
+Real-time admin dashboard built on ASP.NET Core + SignalR. Live log streaming, CPU/RAM metrics, player list and server control commands run from the browser. Includes token-based auth and compression middleware. Can run via `SphereNet.Host` launcher or standalone.
 
 ### NPC Timer Wheel
 
@@ -200,8 +193,8 @@ dotnet build
 Edit `config/sphere.ini`, place UO client files at `MULFILES` path, add scripts under `scripts/`.
 
 ```bash
-dotnet run --project src/SphereNet.Server              # Windows GUI
-dotnet run --project src/SphereNet.Server -- --headless # headless
+dotnet run --project src/SphereNet.Server   # headless konsol / headless console
+dotnet run --project src/SphereNet.Host     # web panel + sunucu yoneticisi / web panel + server manager
 ```
 
 | Port | Amac / Purpose |
@@ -209,6 +202,7 @@ dotnet run --project src/SphereNet.Server -- --headless # headless
 | 2593 | UO istemci / client |
 | 2594 | Telnet admin |
 | 2595 | HTTP durum / status |
+| 2596 | Web panel (Host modu / Host mode) |
 
 ---
 
@@ -222,7 +216,9 @@ src/
 ├── SphereNet.Game/          # Oyun mantigi / Game logic (AI, Combat, Magic, Death, ...)
 ├── SphereNet.MapData/       # MUL/UOP harita okuyucu / map readers
 ├── SphereNet.Persistence/   # Save/load
-└── SphereNet.Server/        # Giris noktasi / Entry point
+├── SphereNet.Panel/         # SignalR web panel (ASP.NET Core)
+├── SphereNet.Host/          # Launcher / sunucu yoneticisi / server manager
+└── SphereNet.Server/        # Headless sunucu / Headless server entry point
 ```
 
 ---
