@@ -53,6 +53,7 @@ public sealed partial class GameClient
         public List<(Character Character, bool HiddenAsAllShow)> NewChars { get; } = [];
         public List<Character> UpdatedChars { get; } = [];
         public List<(Item Item, bool HiddenAsAllShow)> NewItems { get; } = [];
+        public List<Item> UpdatedItems { get; } = [];
     }
 
     /// <summary>
@@ -117,6 +118,8 @@ public sealed partial class GameClient
             delta.CurrentItems.Add(uid);
             if (!_knownItems.Contains(uid))
                 delta.NewItems.Add((item, isInvis && (_character.AllShow || isStaff)));
+            else
+                delta.UpdatedItems.Add(item);
         }
 
         return delta;
@@ -197,7 +200,29 @@ public sealed partial class GameClient
                 SendWorldItemAllShow(item);
             else
                 SendWorldItem(item);
-            _knownItems.Add(item.Uid.Value);
+            uint nuid = item.Uid.Value;
+            _knownItems.Add(nuid);
+            _lastKnownItemState[nuid] = (item.X, item.Y, item.Z, item.DispIdFull, item.Hue, item.Amount);
+        }
+
+        foreach (var item in delta.UpdatedItems)
+        {
+            uint uid = item.Uid.Value;
+            if (_lastKnownItemState.TryGetValue(uid, out var prev))
+            {
+                bool changed = prev.X != item.X || prev.Y != item.Y || prev.Z != item.Z ||
+                               prev.DispId != item.DispIdFull || prev.Hue != item.Hue ||
+                               prev.Amount != item.Amount;
+                if (changed)
+                {
+                    SendWorldItem(item);
+                    _lastKnownItemState[uid] = (item.X, item.Y, item.Z, item.DispIdFull, item.Hue, item.Amount);
+                }
+            }
+            else
+            {
+                _lastKnownItemState[uid] = (item.X, item.Y, item.Z, item.DispIdFull, item.Hue, item.Amount);
+            }
         }
 
         var staleChars = new List<uint>();
@@ -225,7 +250,10 @@ public sealed partial class GameClient
             }
         }
         foreach (uint uid in staleItems)
+        {
             _knownItems.Remove(uid);
+            _lastKnownItemState.Remove(uid);
+        }
     }
 
     /// <summary>

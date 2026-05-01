@@ -761,6 +761,21 @@ public sealed partial class GameClient
         return false;
     }
 
+    /// <summary>Consume one arrow/bolt from the backpack. Source-X Fight_Hit ammo burn.</summary>
+    private void ConsumeAmmoFromBackpack(ItemType ammo)
+    {
+        if (_character?.Backpack == null) return;
+        foreach (var it in _character.Backpack.Contents)
+        {
+            if (it.ItemType != ammo || it.Amount <= 0) continue;
+            if (it.Amount <= 1)
+                _world.RemoveItem(it);
+            else
+                it.Amount = (ushort)(it.Amount - 1);
+            return;
+        }
+    }
+
     /// <summary>Find a key in the player's backpack that opens a locked container/door.</summary>
     private Item? FindBackpackKeyFor(Item locked)
     {

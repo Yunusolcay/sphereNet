@@ -4,6 +4,74 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-05-02] - Paket paritesi, olum pipeline, skill/stat lock, ground item update
+              (Packet parity, death pipeline, skill/stat lock, ground item update)
+----------------------------------------
+
+OLUM PIPELINE / DEATH PIPELINE:
+  - Spell kill artik DeathEngine.ProcessDeath uzerinden geciyor; corpse/loot/trigger
+    zinciri duzgun calisiyor. Onceki target.Kill() dogrudan cagri bypass'i giderildi.
+    Spell kill now routes through DeathEngine.ProcessDeath; proper corpse/loot/trigger
+    chain. Removed direct target.Kill() bypass.
+  - Dispel/MassDispel summoned creature olumu de ayni pipeline'a baglandi.
+    Dispel/MassDispel summoned creature death also routed to same pipeline.
+  - SpellEngine.OnTargetKilled callback eklendi, Program.cs'te corpse broadcast
+    (player + NPC) ile tam olarak baglandi.
+    Added SpellEngine.OnTargetKilled callback, wired in Program.cs with full corpse
+    broadcast (player + NPC death handling).
+
+RANGED AMMO TUKETIMI / RANGED AMMO CONSUMPTION:
+  - Her swing'de 1 ok/bolt tuketiliyor (hit/miss fark etmez). Stack 0'a inince
+    item siliniyor.
+    Consumes 1 arrow/bolt per swing (hit or miss). Item removed when stack depleted.
+  - ConsumeAmmoFromBackpack metodu eklendi.
+    Added ConsumeAmmoFromBackpack method.
+
+EQUIP BROADCAST:
+  - Equip degisikligi yakinlardaki oyunculara PacketWornItem ile broadcast ediliyor.
+    Equip changes broadcast to nearby players via PacketWornItem.
+  - Unequip (pickup from body) sirasinda PacketDeleteObject broadcast eklendi.
+    Added PacketDeleteObject broadcast on unequip (pickup from body).
+
+STATUS PAKETI / STATUS PACKET:
+  - PacketStatusFull gercek degerlerle dolduruluyor: armor (CalcArmorDefense),
+    weight (GetTotalWeight), stat cap, follower count/max, elemental resist
+    (fire/cold/poison/energy), luck, damage min/max, max weight.
+    PacketStatusFull now filled with real values: armor, weight, stat cap,
+    followers, elemental resists, luck, damage range, max weight.
+
+STAT LOCK PAKETI / STAT LOCK PACKET:
+  - PacketStatLockInfo (0xBF sub 0x19) eklendi. Login/status update sirasinda
+    stat lock durumu client'a gonderiliyor.
+    Added PacketStatLockInfo (0xBF sub 0x19). Stat lock state sent to client
+    on login/status update.
+  - STATLOCK tag formati birlesti: tum referanslar STATLOCK.N (dot) formatina
+    cevirildi. Runtime, save/load, script ayni formati kullaniyor.
+    Unified STATLOCK tag format: all references use STATLOCK.N (dot).
+    Runtime, save/load, and script now share the same format.
+
+SKILL LOCK ROUTING:
+  - 0x3A PacketSkillLock type uyumsuzlugu giderildi (0xFF -> 0xF4). Client skill
+    lock degisiklikleri artik server'a ulasip kaydediliyor.
+    Fixed 0x3A PacketSkillLock type mismatch (0xFF -> 0xF4). Client skill lock
+    changes now reach the server and persist correctly.
+
+PAPERDOLL FLAG:
+  - Paperdoll flag dinamik hesaplaniyor: bit 0x01 = warmode (hedef karakterden),
+    bit 0x02 = dress permission (kendi paperdoll).
+    Paperdoll flag computed dynamically: bit 0x01 = warmode (from target),
+    bit 0x02 = dress permission (own paperdoll).
+
+GROUND ITEM UPDATE:
+  - Bilinen ground item'larin pozisyon/dispId/hue/amount degisimi tespit edilip
+    client'a 0x1A ile yeniden gonderiliyor. Kapi, gemi parcasi, hareket eden item,
+    amount/hue degisimi desync sorunu giderildi.
+    Known ground items now re-sent via 0x1A when position/dispId/hue/amount changes.
+    Fixes desync for doors, ship parts, moving items, amount/hue changes.
+  - _lastKnownItemState tracking dictionary eklendi (karakter icin _lastKnownPos
+    benzeri).
+    Added _lastKnownItemState tracking dictionary (mirrors _lastKnownPos for chars).
+
 [2026-05-02] - Karakter olusturma, spawn engine yeniden yazimi, savas & engine duzeltmeleri
               (Character creation, spawn engine rewrite, combat & engine fixes)
 ----------------------------------------

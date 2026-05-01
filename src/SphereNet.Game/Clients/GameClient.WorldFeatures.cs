@@ -1016,7 +1016,7 @@ public sealed partial class GameClient
                     byte stat = data[0];
                     byte lockVal = data[1];
                     // stat: 0=str, 1=dex, 2=int — store as tags
-                    _character.SetTag($"STATLOCK_{stat}", lockVal.ToString());
+                    _character.SetTag($"STATLOCK.{stat}", lockVal.ToString());
                 }
                 break;
             case 0x0013: // context menu request

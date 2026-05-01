@@ -140,7 +140,13 @@ public sealed partial class GameClient
                     return;
                 }
             }
+            var unequipOwner = owner;
             owner?.Unequip(item.EquipLayer);
+            if (unequipOwner != null)
+            {
+                var removePkt = new PacketDeleteObject(item.Uid.Value);
+                BroadcastNearby?.Invoke(unequipOwner.Position, UpdateRange, removePkt, _character.Uid.Value);
+            }
         }
         else if (item.ContainedIn.IsValid)
         {
@@ -348,12 +354,12 @@ public sealed partial class GameClient
 
         target.Equip(item, (Layer)layer);
 
-        // Notify client about the equipped item
-        _netState.Send(new PacketWornItem(
+        var wornPkt = new PacketWornItem(
             item.Uid.Value, item.DispIdFull, layer,
-            target.Uid.Value, item.Hue));
+            target.Uid.Value, item.Hue);
+        _netState.Send(wornPkt);
+        BroadcastNearby?.Invoke(target.Position, UpdateRange, wornPkt, _character.Uid.Value);
 
-        // Fire @Equip (post-equip notification)
         _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Equip,
             new TriggerArgs { CharSrc = _character, ItemSrc = item });
     }

@@ -1324,6 +1324,83 @@ public static class Program
             var animPkt = new PacketAnimation(caster.Uid.Value, anim);
             BroadcastNearby(caster.Position, 18, animPkt, 0);
         };
+        _spellEngine.OnTargetKilled = (victim, killer) =>
+        {
+            var effectiveKiller = killer != null ? ResolveEffectiveOffender(killer) : null;
+
+            if (effectiveKiller != null)
+                _triggerDispatcher?.FireCharTrigger(effectiveKiller, CharTrigger.Kill,
+                    new TriggerArgs { CharSrc = effectiveKiller, O1 = victim });
+            _triggerDispatcher?.FireCharTrigger(victim, CharTrigger.Death,
+                new TriggerArgs { CharSrc = effectiveKiller });
+
+            var victimPos = victim.Position;
+            byte victimDir = (byte)((byte)victim.Direction & 0x07);
+            var corpse = _deathEngine.ProcessDeath(victim, effectiveKiller);
+            if (effectiveKiller != null)
+                effectiveKiller.FightTarget = Serial.Invalid;
+
+            if (corpse != null)
+            {
+                if (victim.IsPlayer)
+                {
+                    var corpsePacket = new PacketWorldItem(
+                        corpse.Uid.Value, corpse.DispIdFull, corpse.Amount,
+                        corpse.X, corpse.Y, corpse.Z, corpse.Hue, victimDir);
+                    BroadcastNearby(victimPos, 18, corpsePacket, 0);
+
+                    foreach (var corpseItem in corpse.Contents)
+                    {
+                        var containerItem = new PacketContainerItem(
+                            corpseItem.Uid.Value, corpseItem.DispIdFull, 0,
+                            corpseItem.Amount, corpseItem.X, corpseItem.Y,
+                            corpse.Uid.Value, corpseItem.Hue, useGridIndex: true);
+                        BroadcastNearby(victimPos, 18, containerItem, 0);
+                    }
+
+                    var corpseEquipEntries = new List<(byte Layer, uint ItemSerial)>();
+                    var usedLayers = new HashSet<byte>();
+                    foreach (var item in corpse.Contents)
+                    {
+                        byte layer = (byte)item.EquipLayer;
+                        if (layer == (byte)Layer.None || layer == (byte)Layer.Face || layer == (byte)Layer.Pack)
+                            continue;
+                        if (!usedLayers.Add(layer))
+                            continue;
+                        corpseEquipEntries.Add((layer, item.Uid.Value));
+                    }
+
+                    var corpseEquip = new PacketCorpseEquipment(corpse.Uid.Value, corpseEquipEntries);
+                    BroadcastNearby(victimPos, 18, corpseEquip, 0);
+                }
+                else
+                {
+                    var corpsePacket = new PacketWorldItem(
+                        corpse.Uid.Value, corpse.DispIdFull, corpse.Amount,
+                        corpse.X, corpse.Y, corpse.Z, corpse.Hue, victimDir);
+                    BroadcastNearby(victimPos, 18, corpsePacket, 0);
+
+                    var dirToKiller = effectiveKiller != null
+                        ? victim.Position.GetDirectionTo(effectiveKiller.Position)
+                        : victim.Direction;
+                    uint npcFallDir = (uint)dirToKiller <= 3 ? 1u : 0u;
+                    var deathAnim = new PacketDeathAnimation(victim.Uid.Value, corpse.Uid.Value, npcFallDir);
+                    BroadcastNearby(victimPos, 18, deathAnim, 0);
+
+                    var removeMobile = new PacketDeleteObject(victim.Uid.Value);
+                    BroadcastNearby(victimPos, 18, removeMobile, 0);
+                }
+            }
+
+            foreach (var c in _clients.Values)
+            {
+                if (c.Character == victim)
+                {
+                    c.OnCharacterDeath();
+                    break;
+                }
+            }
+        };
         GameRegion.ClientCountProvider = regionObj =>
         {
             int count = 0;

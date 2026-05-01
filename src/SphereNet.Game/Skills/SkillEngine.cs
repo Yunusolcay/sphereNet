@@ -239,7 +239,7 @@ public static class SkillEngine
     /// </summary>
     private static int GetStatLock(Character ch, int statIdx)
     {
-        if (ch.TryGetTag($"STATLOCK_{statIdx}", out string? val) && int.TryParse(val, out int lock_))
+        if (ch.TryGetTag($"STATLOCK.{statIdx}", out string? val) && int.TryParse(val, out int lock_))
             return lock_;
         return 0;
     }

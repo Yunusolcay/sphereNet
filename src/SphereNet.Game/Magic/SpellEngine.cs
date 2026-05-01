@@ -55,6 +55,11 @@ public sealed class SpellEngine
     /// matching GameClient so it can send a fresh 0x4E packet.</summary>
     public Action<Character>? OnPersonalLightChanged { get; set; }
 
+    /// <summary>Callback fired when a spell kills a target. Program.cs wires
+    /// this to the DeathEngine pipeline so corpse/loot/triggers are processed
+    /// instead of the bare Character.Kill() that skips them.</summary>
+    public Action<Character, Character?>? OnTargetKilled { get; set; }
+
     /// <summary>One entry per active time-limited spell effect. Captures
     /// what was applied (stat deltas, light level, flag) so UndoEffect can
     /// revert exactly those changes when the timer fires. Runtime-only —
@@ -473,8 +478,13 @@ public sealed class SpellEngine
             {
                 target.Hits -= (short)Math.Min(damage, short.MaxValue);
                 target.RecordAttack(caster.Uid, damage);
-                if (target.Hits <= 0)
-                    target.Kill();
+                if (target.Hits <= 0 && !target.IsDead)
+                {
+                    if (OnTargetKilled != null)
+                        OnTargetKilled.Invoke(target, caster);
+                    else
+                        target.Kill();
+                }
             }
         }
         // Heal spells
@@ -753,9 +763,13 @@ public sealed class SpellEngine
                 break;
             case SpellType.Dispel:
             case SpellType.MassDispel:
-                // Remove summoned creatures near target
-                if (target.IsStatFlag(StatFlag.Conjured))
-                    target.Kill();
+                if (target.IsStatFlag(StatFlag.Conjured) && !target.IsDead)
+                {
+                    if (OnTargetKilled != null)
+                        OnTargetKilled.Invoke(target, caster);
+                    else
+                        target.Kill();
+                }
                 break;
             case SpellType.Resurrection:
                 if (target.IsDead)

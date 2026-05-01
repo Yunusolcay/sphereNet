@@ -712,7 +712,8 @@ public sealed partial class GameClient
             ? ch.GetName()
             : $"{ch.GetName()}, {ch.Title}";
         byte paperdollFlags = 0;
-        if (_character != null && ch == _character) paperdollFlags |= 0x01; // can edit (own paperdoll)
+        if (ch.IsInWarMode) paperdollFlags |= 0x01;
+        if (_character != null && ch == _character) paperdollFlags |= 0x02;
         _netState.Send(new PacketOpenPaperdoll(ch.Uid.Value, title, paperdollFlags));
 
         SendCharacterStatus(ch, includeExtendedStats: ch == _character);
@@ -757,13 +758,31 @@ public sealed partial class GameClient
             foreach (var gi in pack.Contents)
                 if (gi.BaseId == 0x0EED) gold += gi.Amount;
 
+        ushort armor = (ushort)CombatEngine.CalcArmorDefense(ch);
+        ushort weight = (ushort)Math.Clamp(ch.GetTotalWeight(), 0, ushort.MaxValue);
+        short statCap = 225;
+        var weapon = ch.GetEquippedItem(Core.Enums.Layer.OneHanded) ?? ch.GetEquippedItem(Core.Enums.Layer.TwoHanded);
+        var (dmgMin, dmgMax) = CombatEngine.CalcWeaponDamage(ch, weapon);
+        ushort maxWeight = (ushort)Math.Clamp((ch.Str * 7 / 2) + 40 + ch.ModMaxWeight, 0, ushort.MaxValue);
+
         _netState.Send(new PacketStatusFull(
             ch.Uid.Value, statusName,
             hits, maxHits,
             ch.Str, ch.Dex, ch.Int,
             stam, maxStam, mana, maxMana,
-            gold, (ushort)0, (ushort)0,
-            ch.Fame, ch.Karma, 0, expansion
+            gold, armor, weight,
+            ch.Fame, ch.Karma, 0, expansion,
+            statCap: statCap,
+            followers: ch.CurFollower,
+            maxFollowers: ch.MaxFollower,
+            resFire: ch.ResFire,
+            resCold: ch.ResCold,
+            resPoison: ch.ResPoison,
+            resEnergy: ch.ResEnergy,
+            luck: ch.Luck,
+            damageMin: (short)dmgMin,
+            damageMax: (short)dmgMax,
+            maxWeight: maxWeight
         ));
 
         // Keep self bars synchronized on clients that rely on A1/A2/A3 updates.
@@ -772,6 +791,14 @@ public sealed partial class GameClient
             _netState.Send(new PacketUpdateHealth(ch.Uid.Value, maxHits, hits));
             _netState.Send(new PacketUpdateMana(ch.Uid.Value, maxMana, mana));
             _netState.Send(new PacketUpdateStamina(ch.Uid.Value, maxStam, stam));
+
+            ch.TryGetTag("STATLOCK.0", out string? slRaw);
+            ch.TryGetTag("STATLOCK.1", out string? dlRaw);
+            ch.TryGetTag("STATLOCK.2", out string? ilRaw);
+            byte strLock = byte.TryParse(slRaw, out byte sl) ? sl : (byte)0;
+            byte dexLock = byte.TryParse(dlRaw, out byte dl) ? dl : (byte)0;
+            byte intLock = byte.TryParse(ilRaw, out byte il) ? il : (byte)0;
+            _netState.Send(new PacketStatLockInfo(ch.Uid.Value, strLock, dexLock, intLock));
         }
     }
 

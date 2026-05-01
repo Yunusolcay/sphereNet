@@ -258,7 +258,7 @@ public sealed class PacketSkillLock : PacketHandler
     {
         ushort skillId = buffer.ReadUInt16();
         byte lockState = buffer.ReadByte();
-        state.OnTextCommand(0xFF, $"SKILLLOCK {skillId} {lockState}");
+        state.OnTextCommand(0xF4, $"SKILLLOCK {skillId} {lockState}");
     }
 }
 

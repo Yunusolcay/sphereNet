@@ -350,6 +350,7 @@ public sealed partial class GameClient
         _knownChars.Clear();
         _knownItems.Clear();
         _lastKnownPos.Clear();
+        _lastKnownItemState.Clear();
 
         // Fire @LogIn trigger
         _triggerDispatcher?.FireCharTrigger(_character, CharTrigger.LogIn, new TriggerArgs { CharSrc = _character });
@@ -443,6 +444,7 @@ public sealed partial class GameClient
         _knownChars.Clear();
         _knownItems.Clear();
         _lastKnownPos.Clear();
+        _lastKnownItemState.Clear();
 
         // 2. Reposition player first, then send full appearance.
         // DrawPlayer (0x20) must come BEFORE DrawObject (0x78) because the

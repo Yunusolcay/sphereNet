@@ -17,13 +17,23 @@ public sealed class PacketStatusFull : PacketWriter
     private readonly ushort _weight;
     private readonly short _fame, _karma;
     private readonly byte _flags;
-    private readonly byte _expansionLevel; // 0=pre-AOS, 3=AOS, 4=SE, 5=ML, 6=KR, 7=SA+
+    private readonly byte _expansionLevel;
+    private readonly short _statCap;
+    private readonly byte _followers, _maxFollowers;
+    private readonly short _resFire, _resCold, _resPoison, _resEnergy;
+    private readonly short _luck;
+    private readonly short _damageMin, _damageMax;
+    private readonly ushort _maxWeight;
 
     public PacketStatusFull(uint serial, string name,
         short hits, short maxHits, short str, short dex, short intel,
         short stam, short maxStam, short mana, short maxMana,
         int gold, ushort armor, ushort weight,
-        short fame, short karma, byte flags, byte expansionLevel)
+        short fame, short karma, byte flags, byte expansionLevel,
+        short statCap = 225, byte followers = 0, byte maxFollowers = 5,
+        short resFire = 0, short resCold = 0, short resPoison = 0, short resEnergy = 0,
+        short luck = 0, short damageMin = 0, short damageMax = 0,
+        ushort maxWeight = 0)
         : base(0x11)
     {
         _serial = serial; _name = name;
@@ -33,6 +43,10 @@ public sealed class PacketStatusFull : PacketWriter
         _gold = gold; _armorRating = armor; _weight = weight;
         _fame = fame; _karma = karma; _flags = flags;
         _expansionLevel = expansionLevel;
+        _statCap = statCap; _followers = followers; _maxFollowers = maxFollowers;
+        _resFire = resFire; _resCold = resCold; _resPoison = resPoison; _resEnergy = resEnergy;
+        _luck = luck; _damageMin = damageMin; _damageMax = damageMax;
+        _maxWeight = maxWeight;
     }
 
     public override PacketBuffer Build()
@@ -45,7 +59,6 @@ public sealed class PacketStatusFull : PacketWriter
         buf.WriteBool(false); // can rename
         buf.WriteByte(_expansionLevel);
 
-        // Base stats (always present)
         buf.WriteByte(0); // gender+race
         buf.WriteInt16(_str);
         buf.WriteInt16(_dex);
@@ -58,32 +71,32 @@ public sealed class PacketStatusFull : PacketWriter
         buf.WriteUInt16(_armorRating);
         buf.WriteUInt16(_weight);
 
-        if (_expansionLevel >= 3) // AOS+
+        if (_expansionLevel >= 3)
         {
-            buf.WriteInt16(0); // stat cap
-            buf.WriteByte(0); // followers
-            buf.WriteByte(5); // max followers
+            buf.WriteInt16(_statCap);
+            buf.WriteByte(_followers);
+            buf.WriteByte(_maxFollowers);
         }
 
-        if (_expansionLevel >= 4) // SE+
+        if (_expansionLevel >= 4)
         {
-            buf.WriteInt16(0); // fire resist
-            buf.WriteInt16(0); // cold resist
-            buf.WriteInt16(0); // poison resist
-            buf.WriteInt16(0); // energy resist
-            buf.WriteInt16(0); // luck
-            buf.WriteInt16(0); // damage min
-            buf.WriteInt16(0); // damage max
+            buf.WriteInt16(_resFire);
+            buf.WriteInt16(_resCold);
+            buf.WriteInt16(_resPoison);
+            buf.WriteInt16(_resEnergy);
+            buf.WriteInt16(_luck);
+            buf.WriteInt16(_damageMin);
+            buf.WriteInt16(_damageMax);
             buf.WriteInt32(0); // tithing points
         }
 
-        if (_expansionLevel >= 5) // ML+
+        if (_expansionLevel >= 5)
         {
-            buf.WriteUInt16(0xFFFF); // max weight
-            buf.WriteByte(1); // race (1=human, 2=elf, 3=gargoyle)
+            buf.WriteUInt16(_maxWeight);
+            buf.WriteByte(1); // race (1=human)
         }
 
-        if (_expansionLevel >= 7) // SA+
+        if (_expansionLevel >= 7)
         {
             buf.WriteInt16(0); // hit chance increase
             buf.WriteInt16(0); // swing speed increase
@@ -1143,6 +1156,33 @@ public sealed class PacketMapChange : PacketWriter
         var buf = CreateVariable(64);
         buf.WriteUInt16(0x0008); // sub-command
         buf.WriteByte(_mapId);
+        buf.WriteLengthAt(1);
+        return buf;
+    }
+}
+
+/// <summary>0xBF sub 0x19 — Stat lock info. Tells client current lock
+/// state for STR/DEX/INT (0=up, 1=down, 2=locked).</summary>
+public sealed class PacketStatLockInfo : PacketWriter
+{
+    private readonly uint _serial;
+    private readonly byte _strLock, _dexLock, _intLock;
+
+    public PacketStatLockInfo(uint serial, byte strLock, byte dexLock, byte intLock) : base(0xBF)
+    {
+        _serial = serial;
+        _strLock = strLock; _dexLock = dexLock; _intLock = intLock;
+    }
+
+    public override PacketBuffer Build()
+    {
+        var buf = CreateVariable(64);
+        buf.WriteUInt16(0x0019); // sub-command
+        buf.WriteByte(2); // type 2 = full update (all 3 stats)
+        buf.WriteUInt32(_serial);
+        buf.WriteByte(0); // unknown
+        byte lockFlags = (byte)((_strLock & 0x03) | ((_dexLock & 0x03) << 2) | ((_intLock & 0x03) << 4));
+        buf.WriteByte(lockFlags);
         buf.WriteLengthAt(1);
         return buf;
     }

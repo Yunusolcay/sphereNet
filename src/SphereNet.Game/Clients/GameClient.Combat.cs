@@ -435,6 +435,7 @@ public sealed partial class GameClient
                 SysMessage(ServerMessages.Get(Msg.CombatArchNoammo));
                 return;
             }
+            ConsumeAmmoFromBackpack(ammoType);
         }
 
         // Each swing burns a small bit of stamina (Source-X
