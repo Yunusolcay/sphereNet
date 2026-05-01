@@ -19,6 +19,7 @@ public sealed class ResourceHolder
     private readonly List<ResourceScript> _scriptFiles = [];
     private readonly Dictionary<string, string> _defMessages = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<TeleporterEntry> _teleporters = [];
+    private readonly Dictionary<string, (string FilePath, List<string> Lines)> _dialogTextCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ILogger _logger;
 
     public IReadOnlyList<(Point3D Src, Point3D Dest, string Name)> Teleporters =>
@@ -174,6 +175,26 @@ public sealed class ResourceHolder
             }
 
             string rawArg = section.Argument;
+
+            if (resType == ResType.Dialog)
+            {
+                var argParts = rawArg.Split(new[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries);
+                if (argParts.Length >= 2 && argParts[1].Equals("TEXT", StringComparison.OrdinalIgnoreCase))
+                {
+                    var textLines = new List<string>();
+                    foreach (var key in section.Keys)
+                    {
+                        string line = string.IsNullOrEmpty(key.Arg)
+                            ? key.Key
+                            : $"{key.Key} {key.Arg}";
+                        textLines.Add(line.TrimEnd());
+                    }
+                    _dialogTextCache[argParts[0]] = (filePath, textLines);
+                    count++;
+                    continue;
+                }
+            }
+
             int index = ParseResourceIndex(rawArg, resType);
             if (index < 0) continue;
 
@@ -442,6 +463,9 @@ public sealed class ResourceHolder
     public IReadOnlyDictionary<string, string> GetAllDefMessages() => _defMessages;
     public bool TryGetDefValue(string key, out string value) => _defTexts.TryGetValue(key, out value!);
 
+    public List<string> GetDialogTextLines(string dialogId) =>
+        _dialogTextCache.TryGetValue(dialogId, out var entry) ? entry.Lines : [];
+
     public IReadOnlyList<ResourceScript> ScriptFiles => _scriptFiles;
 
     /// <summary>
@@ -514,6 +538,7 @@ public sealed class ResourceHolder
     public int ResyncAll()
     {
         int reloaded = 0;
+        _dialogTextCache.Clear();
         // Force fresh disk reads for all script files.
         ScriptFile.ClearFileCache();
 
@@ -572,6 +597,14 @@ public sealed class ResourceHolder
 
         _teleporters.RemoveAll(t => string.Equals(Path.GetFullPath(t.FilePath), normalized,
             StringComparison.OrdinalIgnoreCase));
+
+        var staleDialogs = _dialogTextCache
+            .Where(kvp => string.Equals(Path.GetFullPath(kvp.Value.FilePath), normalized,
+                StringComparison.OrdinalIgnoreCase))
+            .Select(kvp => kvp.Key)
+            .ToList();
+        foreach (var key in staleDialogs)
+            _dialogTextCache.Remove(key);
     }
 
     private void ReloadResourcesFromFile(ScriptFile file, string filePath)
@@ -607,6 +640,25 @@ public sealed class ResourceHolder
                 continue;
 
             string rawArg = section.Argument;
+
+            if (resType == ResType.Dialog)
+            {
+                var argParts = rawArg.Split(new[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries);
+                if (argParts.Length >= 2 && argParts[1].Equals("TEXT", StringComparison.OrdinalIgnoreCase))
+                {
+                    var textLines = new List<string>();
+                    foreach (var key in section.Keys)
+                    {
+                        string line = string.IsNullOrEmpty(key.Arg)
+                            ? key.Key
+                            : $"{key.Key} {key.Arg}";
+                        textLines.Add(line.TrimEnd());
+                    }
+                    _dialogTextCache[argParts[0]] = (filePath, textLines);
+                    continue;
+                }
+            }
+
             int index = ParseResourceIndex(rawArg, resType);
             if (index < 0) continue;
 

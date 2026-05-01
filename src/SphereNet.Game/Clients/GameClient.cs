@@ -8172,7 +8172,7 @@ public sealed class GameClient : ITextConsole
         if (!TryFindDialogSections(dialogId, out var layoutSection))
             return false;
 
-        var textLines = LoadDialogTextLines(dialogId);
+        var textLines = _commands.Resources.GetDialogTextLines(dialogId);
 
         var prevSubject = _dialogSubjectUid;
         _dialogSubjectUid = subject?.Uid ?? Serial.Invalid;
@@ -9385,45 +9385,7 @@ public sealed class GameClient : ITextConsole
         return false;
     }
 
-    private List<string> LoadDialogTextLines(string dialogId)
-    {
-        var lines = new List<string>();
-        if (_commands?.Resources == null) return lines;
 
-        foreach (var script in _commands.Resources.ScriptFiles)
-        {
-            var file = script.Open();
-            try
-            {
-                var sections = file.ReadAllSections();
-                foreach (var section in sections)
-                {
-                    if (!section.Name.Equals("DIALOG", StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    var parts = section.Argument.Split(
-                        new[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries);
-                    if (parts.Length < 2) continue;
-                    if (!parts[0].Equals(dialogId, StringComparison.OrdinalIgnoreCase)) continue;
-                    if (!parts[1].Equals("TEXT", StringComparison.OrdinalIgnoreCase)) continue;
-
-                    foreach (var key in section.Keys)
-                    {
-                        string line = string.IsNullOrEmpty(key.Arg)
-                            ? key.Key
-                            : $"{key.Key} {key.Arg}";
-                        lines.Add(line.TrimEnd());
-                    }
-                    return lines;
-                }
-            }
-            finally
-            {
-                script.Close();
-            }
-        }
-        return lines;
-    }
 
     private bool TryFindMenuSection(string menuDefname, out SphereNet.Scripting.Parsing.ScriptSection menuSection)
     {

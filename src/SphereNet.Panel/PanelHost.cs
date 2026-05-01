@@ -115,9 +115,12 @@ public sealed class PanelHost : IDisposable
             {
                 var path = ctx.Request.Path.Value ?? "";
 
+                bool isSetupPhase = string.IsNullOrEmpty(_ctx.AdminPassword);
+
                 if (path == "/api/auth/login" ||
                     path == "/api/setup/needed" ||
                     path == "/api/setup/config" ||
+                    (isSetupPhase && path == "/api/setup/apply") ||
                     path == "/health" ||
                     path.StartsWith("/hubs/") ||
                     !path.StartsWith("/api/"))
@@ -239,10 +242,11 @@ public sealed class PanelHost : IDisposable
 
             var p = new Core.Configuration.IniParser();
             p.Load(_ctx.IniPath);
+            var rawPassword = p.GetValue("SPHERE", "AdminPassword") ?? "";
             var cfg = new SetupConfig(
                 ServerName    : p.GetValue("SPHERE", "ServName")      ?? _ctx.ServerName,
                 ServPort      : p.GetInt  ("SPHERE", "ServPort",       2593),
-                AdminPassword : p.GetValue("SPHERE", "AdminPassword")  ?? "",
+                AdminPassword : string.IsNullOrEmpty(rawPassword) ? "" : "********",
                 AdminPanelPort: p.GetInt  ("SPHERE", "AdminPanelPort", 0),
                 TickSleepMode : p.GetInt  ("SPHERE", "TickSleepMode",  2),
                 DebugPackets  : p.GetBool ("SPHERE", "DebugPackets",   false),

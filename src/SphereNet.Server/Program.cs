@@ -500,6 +500,7 @@ public static class Program
         // --- 6. Accounts ---
         _accounts = new AccountManager(_loggerFactory);
         _accounts.AutoCreateAccounts = true;
+        _accounts.Md5Passwords = _config.Md5Passwords;
         _accounts.DefaultPrivLevel = (PrivLevel)_config.DefaultCommandLevel;
         if (_accounts.DefaultPrivLevel < PrivLevel.Counsel)
         {

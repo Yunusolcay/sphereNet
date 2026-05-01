@@ -14,6 +14,8 @@ namespace SphereNet.Network.State;
 /// </summary>
 public sealed class NetState : IDisposable
 {
+    private const int MaxSendQueueSize = 4096;
+
     private Socket? _socket;
     private readonly byte[] _recvBuffer = new byte[65536];
     private int _recvLength;
@@ -74,6 +76,7 @@ public sealed class NetState : IDisposable
     {
         _socket = socket;
         _socket.NoDelay = true;
+        _socket.SendTimeout = 5000;
         _socket.LingerState = new LingerOption(false, 0);
         RemoteEndPoint = socket.RemoteEndPoint as IPEndPoint;
         LocalEndPoint = socket.LocalEndPoint as IPEndPoint;
@@ -202,7 +205,17 @@ public sealed class NetState : IDisposable
                     Id, opcode, raw.Length, FormatHex(raw, 32));
         }
 
-        lock (_sendLock) { _sendQueue.Enqueue(packet); }
+        lock (_sendLock)
+        {
+            if (_sendQueue.Count >= MaxSendQueueSize)
+            {
+                _logger.LogWarning("Send queue overflow for #{Id} ({EP}), disconnecting",
+                    Id, RemoteEndPoint);
+                MarkClosing();
+                return;
+            }
+            _sendQueue.Enqueue(packet);
+        }
     }
 
     /// <summary>Send a pre-built PacketWriter.</summary>

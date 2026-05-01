@@ -105,20 +105,27 @@ public sealed class Account : IScriptObj
     }
     public bool RemoveTag(string key) => _tags.Remove(key);
 
-    /// <summary>Simple password check (MD5 hash comparison).</summary>
+    public bool UseMd5Passwords { get; set; } = true;
+
     public bool CheckPassword(string password)
     {
         if (string.IsNullOrEmpty(_passwordHash)) return true;
-        string hash = ComputeHash(password);
-        return string.Equals(hash, _passwordHash, StringComparison.OrdinalIgnoreCase);
+
+        if (UseMd5Passwords)
+        {
+            string hash = ComputeMd5(password);
+            return string.Equals(hash, _passwordHash, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return string.Equals(password, _passwordHash, StringComparison.Ordinal);
     }
 
     public void SetPassword(string password)
     {
-        _passwordHash = ComputeHash(password);
+        _passwordHash = UseMd5Passwords ? ComputeMd5(password) : password;
     }
 
-    private static string ComputeHash(string input)
+    private static string ComputeMd5(string input)
     {
         var bytes = System.Text.Encoding.UTF8.GetBytes(input);
         var hash = System.Security.Cryptography.MD5.HashData(bytes);
