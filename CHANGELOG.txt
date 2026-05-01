@@ -4,6 +4,38 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-05-02] - GM komut paritesi: CURE, POISON, REVEAL, GOUID, GOCHAR, OPENPAPERDOLL, SHOWSKILLS, PAGE routing
+              (GM command parity: CURE, POISON, REVEAL, GOUID, GOCHAR, OPENPAPERDOLL, SHOWSKILLS, PAGE routing)
+----------------------------------------
+
+GM KOMUTLARI / GM COMMANDS:
+  - CURE: Hedef karakterin zehrini temizler. Argumansiz = kendine, UID ile = hedefe.
+    Cures target's poison. No args = self, UID arg = target.
+  - POISON: Hedefe 1-5 seviye zehir uygular. UID + seviye veya sadece seviye.
+    Applies poison level 1-5 to target. UID + level or level only.
+  - REVEAL: Hedefin Hidden/Invisible flaglerini kaldirir.
+    Clears target's Hidden/Invisible stat flags.
+
+TELEPORT ARAMA / TELEPORT SEARCH:
+  - GOUID: Serial (hex/dec) ile objeye teleport. Source-X GOUID paritesi.
+    Teleport to object by serial (hex/dec). Source-X GOUID parity.
+  - GOCHAR: Isim aramasiyla karaktere teleport. Source-X GOCHAR paritesi.
+    Teleport to character by name search. Source-X GOCHAR parity.
+
+UI KOMUTLARI / UI COMMANDS:
+  - OPENPAPERDOLL: Hedefin paperdoll'unu GM'de acar. UID ile veya argumansiz = kendi.
+    Opens target's paperdoll on GM client. UID arg or no args = self.
+  - SHOWSKILLS: GM'e skill listesi gonderir.
+    Sends skill list to GM client.
+
+PAGE YONLENDIRME / PAGE ROUTING:
+  - .PAGE artik online Counsel+ staff'a SysMessage olarak yonlendiriliyor.
+    .PAGE now routes to online Counsel+ staff via SysMessage broadcast.
+  - Staff yoksa oyuncuya bilgi mesaji gosteriliyor, tum page'ler loglanıyor.
+    If no staff online, player gets a notification. All pages are logged.
+  - Argumansiz kullanim icin usage mesaji eklendi.
+    Added usage message for empty args.
+
 [2026-05-02] - Paket paritesi, olum pipeline, skill/stat lock, ground item update
               (Packet parity, death pipeline, skill/stat lock, ground item update)
 ----------------------------------------

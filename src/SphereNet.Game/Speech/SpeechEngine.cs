@@ -274,6 +274,12 @@ public sealed class CommandHandler
     /// <summary>Source-X parity: <c>.BANK</c> with no args opens the
     /// caller's own bank box on the GM client.</summary>
     public event Action<Character>? OnBankSelfRequested;
+    /// <summary><c>.OPENPAPERDOLL</c> — open target's paperdoll on the GM client.</summary>
+    public event Action<Character, Character>? OnOpenPaperdollRequested;
+    /// <summary><c>.SHOWSKILLS</c> — send skill list to the target's client.</summary>
+    public event Action<Character>? OnShowSkillsRequested;
+    /// <summary><c>.PAGE</c> — player page received, route to online staff.</summary>
+    public event Action<Character, string>? OnPageReceived;
     /// <summary>Source-X parity: <c>.UNMOUNT</c> dismounts the caller.</summary>
     public event Action<Character>? OnUnmountRequested;
     /// <summary>Source-X parity: <c>.ANIM &lt;id&gt;</c> plays an
@@ -579,6 +585,67 @@ public sealed class CommandHandler
             }
             OnSysMessage?.Invoke(gm, ServerMessages.GetFormatted("gm_go_usage", safeArgs));
             return false;
+        });
+
+        Register("GOUID", PrivLevel.Counsel, (gm, args) =>
+        {
+            string raw = args.Trim();
+            if (string.IsNullOrEmpty(raw))
+            { OnSysMessage?.Invoke(gm, "Usage: .gouid <serial>"); return; }
+            string uidText = raw.Replace("0x", "", StringComparison.OrdinalIgnoreCase).Trim();
+            if (!uint.TryParse(uidText, System.Globalization.NumberStyles.HexNumber, null, out uint uid)
+                && !uint.TryParse(raw, out uid))
+            { OnSysMessage?.Invoke(gm, "Invalid UID."); return; }
+            var obj = _registeredWorld?.FindObject(new Core.Types.Serial(uid));
+            if (obj == null) { OnSysMessage?.Invoke(gm, "Object not found."); return; }
+            byte oldMap = gm.MapIndex;
+            _registeredWorld!.MoveCharacter(gm, obj.Position);
+            if (oldMap != obj.Position.Map) OnCharacterMapChanged?.Invoke(gm);
+            OnSysMessage?.Invoke(gm, $"Teleported to {obj.Name} at {obj.Position}.");
+        });
+
+        Register("GOCHAR", PrivLevel.Counsel, (gm, args) =>
+        {
+            string name = args.Trim();
+            if (string.IsNullOrEmpty(name))
+            { OnSysMessage?.Invoke(gm, "Usage: .gochar <name>"); return; }
+            Character? found = null;
+            if (_registeredWorld != null)
+            {
+                foreach (var obj in _registeredWorld.GetAllObjects())
+                {
+                    if (obj is Character ch && !ch.IsDeleted &&
+                        ch.Name != null && ch.Name.Contains(name, StringComparison.OrdinalIgnoreCase))
+                    { found = ch; break; }
+                }
+            }
+            if (found == null) { OnSysMessage?.Invoke(gm, $"Character '{name}' not found."); return; }
+            byte oldMap = gm.MapIndex;
+            _registeredWorld!.MoveCharacter(gm, found.Position);
+            if (oldMap != found.Position.Map) OnCharacterMapChanged?.Invoke(gm);
+            OnSysMessage?.Invoke(gm, $"Teleported to {found.Name} at {found.Position}.");
+        });
+
+        Register("OPENPAPERDOLL", PrivLevel.Counsel, (gm, args) =>
+        {
+            string raw = args.Trim();
+            Character target = gm;
+            if (!string.IsNullOrEmpty(raw) && _registeredWorld != null)
+            {
+                string uidText = raw.Replace("0x", "", StringComparison.OrdinalIgnoreCase).Trim();
+                if (uint.TryParse(uidText, System.Globalization.NumberStyles.HexNumber, null, out uint uid)
+                    || uint.TryParse(raw, out uid))
+                {
+                    var found = _registeredWorld.FindChar(new Core.Types.Serial(uid));
+                    if (found != null) target = found;
+                }
+            }
+            OnOpenPaperdollRequested?.Invoke(gm, target);
+        });
+
+        Register("SHOWSKILLS", PrivLevel.Counsel, (gm, _) =>
+        {
+            OnShowSkillsRequested?.Invoke(gm);
         });
 
         Register("KILL", PrivLevel.GM, (gm, args) =>
@@ -930,8 +997,13 @@ public sealed class CommandHandler
 
         Register("PAGE", PrivLevel.Player, (gm, args) =>
         {
+            if (string.IsNullOrWhiteSpace(args))
+            {
+                OnSysMessage?.Invoke(gm, "Usage: .PAGE <message>");
+                return;
+            }
             OnSysMessage?.Invoke(gm, ServerMessages.GetFormatted("gm_page_submitted", args));
-            // TODO: Route to online GMs via OnPageCommand event
+            OnPageReceived?.Invoke(gm, args);
         });
 
         Register("RESYNC", PrivLevel.Admin, (gm, _) =>
@@ -1331,6 +1403,73 @@ public sealed class CommandHandler
             }
             OnSysMessage?.Invoke(gm, ServerMessages.Get("gm_heal_target"));
             OnHealTargetRequested?.Invoke(gm);
+        });
+
+        Register("CURE", PrivLevel.GM, (gm, args) =>
+        {
+            string raw = args.Trim();
+            Character target = gm;
+            if (!string.IsNullOrEmpty(raw) && _registeredWorld != null)
+            {
+                string uidText = raw.Replace("0x", "", StringComparison.OrdinalIgnoreCase).Trim();
+                if (uint.TryParse(uidText, System.Globalization.NumberStyles.HexNumber, null, out uint uid)
+                    || uint.TryParse(raw, out uid))
+                {
+                    var found = _registeredWorld.FindChar(new Core.Types.Serial(uid));
+                    if (found == null) { OnSysMessage?.Invoke(gm, "Character not found."); return; }
+                    target = found;
+                }
+            }
+            target.CurePoison();
+            OnSysMessage?.Invoke(gm, $"{target.Name} cured.");
+        });
+
+        Register("POISON", PrivLevel.GM, (gm, args) =>
+        {
+            string raw = args.Trim();
+            byte level = 1;
+            Character target = gm;
+            var parts = raw.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 1 && _registeredWorld != null)
+            {
+                string first = parts[0].Replace("0x", "", StringComparison.OrdinalIgnoreCase).Trim();
+                if (uint.TryParse(first, System.Globalization.NumberStyles.HexNumber, null, out uint uid)
+                    || uint.TryParse(parts[0], out uid))
+                {
+                    var found = _registeredWorld.FindChar(new Core.Types.Serial(uid));
+                    if (found == null) { OnSysMessage?.Invoke(gm, "Character not found."); return; }
+                    target = found;
+                }
+                else if (byte.TryParse(parts[0], out byte lvl))
+                {
+                    level = lvl;
+                }
+            }
+            if (parts.Length >= 2 && byte.TryParse(parts[1], out byte lvl2))
+                level = lvl2;
+            level = Math.Clamp(level, (byte)1, (byte)5);
+            target.ApplyPoison(level);
+            OnSysMessage?.Invoke(gm, $"{target.Name} poisoned (level {level}).");
+        });
+
+        Register("REVEAL", PrivLevel.GM, (gm, args) =>
+        {
+            string raw = args.Trim();
+            Character target = gm;
+            if (!string.IsNullOrEmpty(raw) && _registeredWorld != null)
+            {
+                string uidText = raw.Replace("0x", "", StringComparison.OrdinalIgnoreCase).Trim();
+                if (uint.TryParse(uidText, System.Globalization.NumberStyles.HexNumber, null, out uint uid)
+                    || uint.TryParse(raw, out uid))
+                {
+                    var found = _registeredWorld.FindChar(new Core.Types.Serial(uid));
+                    if (found == null) { OnSysMessage?.Invoke(gm, "Character not found."); return; }
+                    target = found;
+                }
+            }
+            target.ClearStatFlag(StatFlag.Hidden);
+            target.ClearStatFlag(StatFlag.Invisible);
+            OnSysMessage?.Invoke(gm, $"{target.Name} revealed.");
         });
 
         // .SUICIDE — instant self-kill.

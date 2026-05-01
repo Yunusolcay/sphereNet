@@ -1114,6 +1114,42 @@ public static class Program
             foreach (var c in _clients.Values)
                 if (c.Character == gm) { c.BeginMountTarget(); break; }
         };
+        _commands.OnOpenPaperdollRequested += (gm, target) =>
+        {
+            foreach (var c in _clients.Values)
+                if (c.Character == gm) { c.SendPaperdoll(target); break; }
+        };
+        _commands.OnShowSkillsRequested += gm =>
+        {
+            foreach (var c in _clients.Values)
+                if (c.Character == gm) { c.SendSkillList(); break; }
+        };
+        _commands.OnPageReceived += (player, message) =>
+        {
+            var pageMsg = $"[PAGE from {player.GetName()}] {message}";
+            _log.LogInformation("{PageMessage}", pageMsg);
+            var staffNotified = false;
+            foreach (var c in _clients.Values)
+            {
+                if (c.Character != null && c.Character != player &&
+                    c.Character.PrivLevel >= PrivLevel.Counsel)
+                {
+                    c.SysMessage(pageMsg);
+                    staffNotified = true;
+                }
+            }
+            if (!staffNotified)
+            {
+                foreach (var c in _clients.Values)
+                {
+                    if (c.Character == player)
+                    {
+                        c.SysMessage("No staff members are currently online. Your page has been logged.");
+                        break;
+                    }
+                }
+            }
+        };
         _commands.OnSummonCageTargetRequested += gm =>
         {
             foreach (var c in _clients.Values)
