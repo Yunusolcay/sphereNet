@@ -270,7 +270,11 @@ public sealed class GameWorld
         _uidTable.Free(obj.Uid);
 
         if (obj is Item delItem && delItem.ContainedIn.IsValid)
+        {
             ContainerIndexRemove(delItem.ContainedIn.Value, delItem);
+            if (_objects.TryGetValue(delItem.ContainedIn.Value, out var parentObj) && parentObj is Item parentItem)
+                parentItem.RemoveItem(delItem);
+        }
 
         var sector = GetSector(obj.Position);
         if (sector != null)

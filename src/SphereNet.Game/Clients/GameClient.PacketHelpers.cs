@@ -506,6 +506,14 @@ public sealed partial class GameClient
         ));
     }
 
+    private void SendWorldItemAllShow(Item item)
+    {
+        _netState.Send(new PacketWorldItem(
+            item.Uid.Value, item.DispIdFull, item.Amount,
+            item.X, item.Y, item.Z, item.Hue
+        ));
+    }
+
     /// <summary>Place a dragged item into the target character's backpack and
     /// send the client a 0x25 ContainerItem packet so it actually appears there.
     /// Without the packet the client only sees the previous 0x1D delete and
@@ -1232,8 +1240,7 @@ public sealed partial class GameClient
             else if (charDef.DamFire != 0 || charDef.DamCold != 0 || charDef.DamPoison != 0 || charDef.DamEnergy != 0)
                 npc.DamPhysical = (short)(100 - charDef.DamFire - charDef.DamCold - charDef.DamPoison - charDef.DamEnergy);
 
-            // Equip ITEMNEWBIE items
-            EquipNewbieItems(npc, charDef);
+            EquipNewbieItems(npc, charDef.NewbieItems);
         }
         else
         {
@@ -1309,14 +1316,14 @@ public sealed partial class GameClient
         return ushort.TryParse(v, out hue);
     }
 
-    private void EquipNewbieItems(Character npc, CharDef charDef)
+    private void EquipNewbieItems(Character ch, IReadOnlyList<NewbieItemEntry> newbieItems)
     {
-        if (charDef.NewbieItems.Count == 0 || _commands?.Resources == null)
+        if (newbieItems.Count == 0 || _commands?.Resources == null)
             return;
 
         var resources = _commands.Resources;
         ushort lastHue = 0; // for COLOR=match_hair / match_*
-        foreach (var entry in charDef.NewbieItems)
+        foreach (var entry in newbieItems)
         {
             // Resolve random_* / weighted-template pools to a single itemdef.
             string pickedName = TemplateEngine.PickRandomItemDefName(entry.DefName);
@@ -1381,18 +1388,18 @@ public sealed partial class GameClient
             }
             if (layer == Layer.None)
             {
-                var pack = npc.Backpack;
+                var pack = ch.Backpack;
                 if (pack == null)
                 {
                     pack = _world.CreateItem();
                     pack.BaseId = 0x0E75;
-                    npc.Equip(pack, Layer.Pack);
+                    ch.Equip(pack, Layer.Pack);
                 }
                 pack.AddItem(item);
             }
             else
             {
-                npc.Equip(item, layer);
+                ch.Equip(item, layer);
             }
         }
     }

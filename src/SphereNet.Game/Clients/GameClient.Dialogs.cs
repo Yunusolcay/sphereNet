@@ -762,25 +762,31 @@ public sealed partial class GameClient
         parser.DialogArgResolver = Resolve;
         try
         {
+            // Source-X parity: dialog button target = dialog subject
+            // (the inspected object), NOT the GM character. SRC = GM,
+            // target = inspected object. This ensures TRYP/INPDLG/property
+            // edits operate on the correct object.
+            IScriptObj buttonTarget = _character;
+            if (_dialogSubjectUid.IsValid)
+            {
+                var subj = _world.FindObject(_dialogSubjectUid);
+                if (subj != null)
+                    buttonTarget = subj;
+            }
+
             var trigArgs = new SphereNet.Scripting.Execution.TriggerArgs(_character)
             {
                 Number1 = buttonId,
                 ArgString = buttonId.ToString(),
             };
 
-            // Snapshot visible character state BEFORE the handler runs so
-            // any property assignment (src.p=…, src.body=…, src.hue=…,
-            // src.flags=…) can be broadcast as a concrete view update
-            // afterwards. Without this the TrySetProperty path silently
-            // updates private fields and nearby clients keep rendering
-            // the old snapshot.
             var posBefore = _character.Position;
             ushort bodyBefore = _character.BodyId;
             ushort hueBefore = _character.Hue.Value;
             var flagsBefore = _character.StatFlags;
 
             bool ran = _triggerDispatcher.Runner.TryRunDialogButton(
-                buttonSection, buttonId, _character, this, trigArgs);
+                buttonSection, buttonId, buttonTarget, this, trigArgs);
             if (ran && _character != null)
             {
                 bool moved = !_character.Position.Equals(posBefore);

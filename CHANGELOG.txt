@@ -4,6 +4,99 @@
  All notable changes are documented in this file.
 ================================================================================
 
+[2026-05-02] - Karakter olusturma, spawn engine yeniden yazimi, savas & engine duzeltmeleri
+              (Character creation, spawn engine rewrite, combat & engine fixes)
+----------------------------------------
+
+KARAKTER OLUSTURMA / CHARACTER CREATION:
+  - 0xF8 (HS) ve 0x00 paket parse: cinsiyet, stat dagilimi, skill secimi, sac/sakal/
+    cilt gorunumu tam olarak okunuyor. CharCreateInfo tipi eklendi.
+    Full 0xF8 (HS) and 0x00 packet parsing: gender, stat allocation, skill selection,
+    hair/beard/skin appearance. New CharCreateInfo type.
+  - Stat cap: toplam 80 siniri, Math.Clamp(10-60) her stat icin.
+    Stat cap: total 80 limit, Math.Clamp(10-60) per stat.
+  - Skill cap: toplam 120 puan siniri, orantili olcekleme.
+    Skill cap: total 120 point limit, proportional scaling.
+  - EquipPlayerNewbieItems: NEWBIE section'dan (MALE_DEFAULT/FEMALE_DEFAULT) baslangic
+    esyalari okunuyor ve yeni karaktere giydiriliyor.
+    EquipPlayerNewbieItems: reads starting items from NEWBIE sections
+    (MALE_DEFAULT/FEMALE_DEFAULT) and equips them on new characters.
+  - Sac/sakal grafik dogrulama (IsValidHairGraphic/IsValidBeardGraphic).
+    Hair/beard graphic validation (IsValidHairGraphic/IsValidBeardGraphic).
+  - MaxHits/MaxMana/MaxStam stat'lardan otomatik hesaplaniyor.
+    MaxHits/MaxMana/MaxStam auto-calculated from stats.
+  - ResourceHolder: NEWBIE section tipi taninir hale getirildi.
+    ResourceHolder: NEWBIE section type now recognized as definition type.
+
+SPAWN ENGINE YENIDEN YAZIMI / SPAWN ENGINE REWRITE:
+  - @PreSpawn, @Spawn, @AddObj, @DelObj trigger desteği — script spawn'u iptal
+    edebilir, NPC'yi degistirebilir veya silme bildirimi alabilir.
+    @PreSpawn, @Spawn, @AddObj, @DelObj trigger support — script can abort spawn,
+    modify NPC, or receive deletion notifications.
+  - START/STOP/RESET/DELOBJ verb'leri: Source-X CCSPawn komut paritesi.
+    START/STOP/RESET/DELOBJ verbs: Source-X CCSpawn command parity.
+  - Timer pause: max count'a ulasildiginda timer durduruluyor (-1), NPC olunce
+    otomatik yeniden basliyor.
+    Timer pause: pauses at max count (-1), auto-resumes when NPC dies.
+  - Varsayilan gecikme 15-30 dakika (onceki 5-10dk). Source-X varsayilani.
+    Default delay 15-30 minutes (was 5-10min). Source-X default.
+  - TIMELO/TIMEHI/PILE/MAXDIST/COUNT property okuma/yazma.
+    TIMELO/TIMEHI/PILE/MAXDIST/COUNT property read/write support.
+  - spawn.AT(n): index ile spawned NPC erisimi.
+    spawn.AT(n): access spawned NPC by index.
+  - KillAll re-entrancy guard (_killingChildren flag).
+    KillAll re-entrancy guard (_killingChildren flag).
+  - FindSpawnPosition: 25 deneme (onceki 10), ayri metod.
+    FindSpawnPosition: 25 attempts (was 10), extracted to separate method.
+  - ItemSpawn PILE destegi: stackable item'lar icin miktar rasgele.
+    ItemSpawn PILE support: random amount for stackable items.
+  - SpawnComponent.MaxCount set → item.Amount otomatik senkronize.
+    SpawnComponent.MaxCount setter auto-syncs item.Amount.
+  - Spawn DClick: her zaman reset (onceki toggle davranisi kaldirildi).
+    Spawn DClick: always reset (removed previous toggle behavior).
+  - Item @Timer: artik item silmiyor, Source-X paritesi.
+    Item @Timer: no longer deletes items on return, Source-X parity.
+
+SAVAS DUZELTMELERI / COMBAT FIXES:
+  - TriggerResult.False = 2 (onceki 0, Default ile ayni degerdi — bug).
+    TriggerResult.False = 2 (was 0, same as Default — bug fix).
+  - Hit sansi %5-95 arasi clamp (pre-AOS ve AOS). Garantili miss/hit onlendi.
+    Hit chance clamped 5-95% (pre-AOS and AOS). Prevents guaranteed miss/hit.
+  - Parry: sadece kalkan (Shield) ile calisir, iki elli silah parry yapamaz.
+    Parry: only works with actual shields, not two-handed weapons.
+  - Kendine saldiri engeli (target == self kontrolu).
+    Self-attack prevention (target == self check).
+  - short.MaxValue overflow korumasi (hasar ve reflect).
+    short.MaxValue overflow protection (damage and reflect).
+  - @Hit/@GetHit trigger'lari NPC saldiri dongusu icin eklendi.
+    @Hit/@GetHit triggers now fire for NPC combat loop.
+  - Hareket throttle: 5→3 tahmini adim toleransi.
+    Movement throttle: 5→3 predicted move tolerance.
+
+ENGINE DUZELTMELERI / ENGINE FIXES:
+  - Buyu: olu caster kontrolu, alan etkisi kendi kendine hasar onleme.
+    Spell: dead caster check, area effect self-damage prevention for harmful spells.
+  - Skill: olu karakter exp kazanamaz, skill cap 1200 (120.0).
+    Skill: dead characters can't gain exp, skill cap 1200 (120.0).
+  - Guard: harita kontrolu (MapIndex), mesafe siniri (>20 ignore).
+    Guard: cross-map check (MapIndex), distance limit (>20 ignore).
+  - Pet Come: farkli haritadaysa teleport.
+    Pet Come: cross-map teleport to follow target.
+  - Item: FindContentItem ve TotalWeight icin recursive derinlik siniri (16).
+    Item: recursive depth limit (16) for FindContentItem and TotalWeight.
+  - GameWorld.DeleteObject: parent container'dan item cikarma duzeltmesi.
+    GameWorld.DeleteObject: proper parent container item removal.
+  - AllShow: item'lar hue override olmadan gosteriliyor (SendWorldItemAllShow).
+    AllShow: items shown without hue override (SendWorldItemAllShow).
+  - Dialog button target: GM degil, incelenen obje (Source-X paritesi).
+    Dialog button target: inspected object, not GM character (Source-X parity).
+  - WorldLoader TYPE: TrySetProperty ile parse (defname cozumleme destegi).
+    WorldLoader TYPE: parsed via TrySetProperty (defname resolution support).
+  - WorldSaver AMOUNT: sadece >1 yaziliyor (gereksiz AMOUNT=1 onlendi).
+    WorldSaver AMOUNT: only written when >1 (skip unnecessary AMOUNT=1).
+  - Server tick: ProcessAllOutput tick sonrasi cagriliyor.
+    Server tick: ProcessAllOutput called after tick processing.
+
 [2026-04-29] - NPC AI engine: akilli buyu secimi, melee taktik, healer/guard/vendor/witness
               (NPC AI engine: intelligent spellcasting, melee tactics, healer/guard/vendor/witness)
 ----------------------------------------

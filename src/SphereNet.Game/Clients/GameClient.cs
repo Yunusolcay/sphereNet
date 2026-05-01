@@ -122,6 +122,10 @@ public sealed partial class GameClient : ITextConsole
     /// args are (killer, victim).</summary>
     public Action<Character, Character>? OnKillTarget { get; set; }
 
+    /// <summary>Appearance data from 0xF8/0x00 packet, consumed once during
+    /// new character creation inside HandleCharSelect.</summary>
+    public CharCreateInfo? PendingCharCreate { get; set; }
+
     private Account? _account;
     private Character? _character;
 

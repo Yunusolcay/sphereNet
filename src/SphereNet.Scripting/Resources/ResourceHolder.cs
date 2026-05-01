@@ -92,7 +92,8 @@ public sealed class ResourceHolder
     /// </summary>
     private static bool IsDefinitionType(ResType t) => t is
         ResType.ItemDef or ResType.CharDef or ResType.SpellDef or ResType.SkillClass or ResType.SkillDef
-        or ResType.Names or ResType.Speech or ResType.Template or ResType.RegionResource or ResType.RegionType;
+        or ResType.Names or ResType.Speech or ResType.Template or ResType.RegionResource or ResType.RegionType
+        or ResType.NewBie;
 
     /// <summary>
     /// Load all sections from a script file.

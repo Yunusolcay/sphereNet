@@ -270,26 +270,27 @@ public class Item : ObjBase
         return false;
     }
 
-    public Item? FindContentItem(Serial uid)
+    public Item? FindContentItem(Serial uid, int maxDepth = 16)
     {
+        if (maxDepth <= 0) return null;
         foreach (var item in _contents)
         {
             if (item.Uid == uid) return item;
-            var found = item.FindContentItem(uid);
+            var found = item.FindContentItem(uid, maxDepth - 1);
             if (found != null) return found;
         }
         return null;
     }
 
-    public int TotalWeight
+    public int TotalWeight => CalcTotalWeight(16);
+
+    private int CalcTotalWeight(int maxDepth)
     {
-        get
-        {
-            int w = Amount;
-            foreach (var child in _contents)
-                w += child.TotalWeight;
-            return w;
-        }
+        int w = Amount;
+        if (maxDepth <= 0) return w;
+        foreach (var child in _contents)
+            w += child.CalcTotalWeight(maxDepth - 1);
+        return w;
     }
 
     // --- IScriptObj overrides ---
@@ -518,7 +519,7 @@ public class Item : ObjBase
         {
             switch (upper)
             {
-                case "SPAWNCOUNT" or "SPAWNCUR":
+                case "SPAWNCOUNT" or "SPAWNCUR" or "COUNT":
                     value = SpawnChar.CurrentCount.ToString();
                     return true;
                 case "SPAWNMAX":
@@ -529,6 +530,37 @@ public class Item : ObjBase
                     return true;
                 case "SPAWNRANGE":
                     value = SpawnChar.SpawnRange.ToString();
+                    return true;
+                case "PILE":
+                    value = "0";
+                    return true;
+                case "TIMELO":
+                    value = Tags.Get("TIMELO") ?? "15";
+                    return true;
+                case "TIMEHI":
+                    value = Tags.Get("TIMEHI") ?? "30";
+                    return true;
+                case "MAXDIST":
+                    value = SpawnChar.SpawnRange.ToString();
+                    return true;
+            }
+            // spawn.AT(n) — access spawned NPC by index
+            if (upper.StartsWith("AT(", StringComparison.Ordinal) && upper.EndsWith(')'))
+            {
+                if (int.TryParse(upper[3..^1], out int idx))
+                {
+                    var ch = SpawnChar.GetSpawnedAt(idx);
+                    value = ch != null ? $"0{ch.Uid.Value:X}" : "0";
+                }
+                return true;
+            }
+        }
+        if (SpawnItem != null)
+        {
+            switch (upper)
+            {
+                case "PILE":
+                    value = SpawnItem.Pile.ToString();
                     return true;
             }
         }
@@ -898,11 +930,44 @@ public class Item : ObjBase
         {
             switch (upper)
             {
-                case "SPAWNMAX":
+                case "SPAWNMAX" or "AMOUNT":
                     if (int.TryParse(value, out int sm)) SpawnChar.MaxCount = sm;
                     return true;
-                case "SPAWNRANGE":
+                case "SPAWNRANGE" or "MAXDIST":
                     if (int.TryParse(value, out int sr)) SpawnChar.SpawnRange = sr;
+                    return true;
+                case "TIMELO":
+                {
+                    SetTag("TIMELO", value);
+                    if (int.TryParse(value, out int lo))
+                    {
+                        string? hiStr = Tags.Get("TIMEHI");
+                        int hi = 30;
+                        if (hiStr != null) int.TryParse(hiStr, out hi);
+                        SpawnChar.SetDelay(lo, hi);
+                    }
+                    return true;
+                }
+                case "TIMEHI":
+                {
+                    SetTag("TIMEHI", value);
+                    if (int.TryParse(value, out int hi))
+                    {
+                        string? loStr = Tags.Get("TIMELO");
+                        int lo = 15;
+                        if (loStr != null) int.TryParse(loStr, out lo);
+                        SpawnChar.SetDelay(lo, hi);
+                    }
+                    return true;
+                }
+            }
+        }
+        if (SpawnItem != null)
+        {
+            switch (upper)
+            {
+                case "PILE":
+                    if (int.TryParse(value, out int pv)) SpawnItem.Pile = pv;
                     return true;
             }
         }
@@ -1308,12 +1373,22 @@ public class Item : ObjBase
         {
             switch (upper)
             {
-                case "SPAWNRESET":
-                    SpawnChar.KillAll();
-                    SpawnChar.ForceSpawn();
+                case "SPAWNRESET" or "RESET":
+                    SpawnChar.Reset();
                     return true;
                 case "SPAWNCLEAR":
                     SpawnChar.KillAll();
+                    return true;
+                case "START":
+                    SpawnChar.Start();
+                    return true;
+                case "STOP":
+                    SpawnChar.Stop();
+                    return true;
+                case "DELOBJ":
+                    if (!string.IsNullOrEmpty(args) && uint.TryParse(args.TrimStart('0'),
+                        System.Globalization.NumberStyles.HexNumber, null, out uint duid))
+                        SpawnChar.DelObj(new Core.Types.Serial(duid));
                     return true;
             }
         }
@@ -1338,28 +1413,25 @@ public class Item : ObjBase
         }
 
         // TIMER expiry — Source-X CItem::_OnTick parity:
-        // 1. Fire @Timer trigger
-        // 2. RETURN 1 → keep item alive
-        // 3. RETURN 0 → delete item
-        // 4. Default (no handler) → item-type specific; delete only if decay
+        // Fire @Timer trigger, then fall through to type-specific behavior.
+        // Source-X: RETURN 1 = script handled it; Default/0 = no handler,
+        // engine continues with OnTickComponent for the item type.
+        // Item deletion is driven by DecayTime above, not by @Timer return.
         long timeout = Timeout;
+        bool timerFired = false;
         if (timeout > 0 && Environment.TickCount64 >= timeout)
         {
+            timerFired = true;
             SetTimeout(0);
-            var trigResult = OnTimerExpired?.Invoke(this);
-            if (trigResult == TriggerResult.True)
-            {
-                // keep alive
-            }
-            else if (trigResult.HasValue && trigResult != TriggerResult.True)
-            {
-                _isDeleted = true;
-                return false;
-            }
-            // no handler → keep alive, timer consumed
+            OnTimerExpired?.Invoke(this);
         }
 
-        // Spawn component ticks
+        // Source-X parity: the item's timer IS the spawn timer.
+        // When it fires (including manual TIMER=1 via .info),
+        // sync SpawnComponent so it spawns on this tick.
+        if (timerFired && SpawnChar != null)
+            SpawnChar.ForceSpawn();
+
         long now = Environment.TickCount64;
         SpawnChar?.OnTick(now);
         SpawnItem?.OnTick(now);

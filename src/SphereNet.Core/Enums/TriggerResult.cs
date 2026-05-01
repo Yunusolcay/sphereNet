@@ -7,6 +7,6 @@ public enum TriggerResult : byte
 {
     Default = 0,
     True = 1,
-    False = 0,
+    False = 2,
     Qty
 }

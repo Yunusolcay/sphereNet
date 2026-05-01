@@ -558,7 +558,7 @@ public sealed class NetworkManager : IDisposable
         Action<NetState>? logoutRequest = null,
         Action<NetState>? helpRequest = null,
         Action<NetState, ushort>? serverSelect = null,
-        Action<NetState, string>? charCreate = null,
+        Action<NetState, Core.Types.CharCreateInfo>? charCreate = null,
         Action<NetState, uint, byte, List<Packets.Incoming.VendorBuyEntry>>? vendorBuy = null,
         Action<NetState, uint, List<Packets.Incoming.VendorSellEntry>>? vendorSell = null,
         Action<NetState, byte, uint, uint>? secureTrade = null,

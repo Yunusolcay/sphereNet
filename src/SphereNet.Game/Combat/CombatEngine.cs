@@ -100,14 +100,14 @@ public static class CombatEngine
             case 1: // pre-AOS
             {
                 int chance = (attackSkill + 500) * 100 / Math.Max(1, (targetSkill + 500) * 2);
-                return Math.Clamp(chance, 0, 100);
+                return Math.Clamp(chance, 5, 95);
             }
             case 2: // AOS
             {
                 int atkCalc = (attackSkill / 10 + 20) * 100;
                 int defCalc = (targetSkill / 10 + 20) * 100;
                 int chance = atkCalc * 100 / Math.Max(1, defCalc * 2);
-                return Math.Clamp(chance, 2, 100);
+                return Math.Clamp(chance, 5, 95);
             }
             default: // Sphere custom (era 0)
             {
@@ -224,10 +224,10 @@ public static class CombatEngine
         var (dmgMin, dmgMax) = CalcWeaponDamage(attacker, weapon, era);
         int damage = _rand.Next(dmgMin, dmgMax + 1);
 
-        // Parry check (simplified)
+        // Parry check — only works with actual shields, not two-handed weapons
         int parrySkill = target.GetSkill(SkillType.Parrying);
         var shield = target.GetEquippedItem(Layer.TwoHanded);
-        if (shield != null && parrySkill > 0)
+        if (shield != null && shield.ItemType == ItemType.Shield && parrySkill > 0)
         {
             int parryChance = parrySkill / 30;
             if (_rand.Next(100) < parryChance)
@@ -257,13 +257,13 @@ public static class CombatEngine
         // ProcessDeath bail out ("already dead") leaving a ghost NPC.
         if (damage > 0)
         {
-            target.Hits -= (short)damage;
+            target.Hits -= (short)Math.Min(damage, short.MaxValue);
             target.RecordAttack(attacker.Uid, damage);
 
             if (target.IsStatFlag(StatFlag.Reactive) && attacker != target && !attacker.IsDead)
             {
                 int reflect = Math.Max(1, damage / 4);
-                attacker.Hits -= (short)reflect;
+                attacker.Hits -= (short)Math.Min(reflect, short.MaxValue);
             }
 
             if (DurabilityEnabled)

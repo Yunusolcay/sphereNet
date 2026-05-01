@@ -233,6 +233,12 @@ public sealed class SpellEngine
     /// </summary>
     public bool CastDone(Character caster)
     {
+        if (caster.IsDead)
+        {
+            ClearCastState(caster);
+            return false;
+        }
+
         if (!caster.TryGetTag("SPELL_CASTING", out string? spellStr))
             return false;
 
@@ -465,7 +471,7 @@ public sealed class SpellEngine
             damage = CombatEngine.ApplyElementalResist(target, damage, dmgType);
             if (damage > 0)
             {
-                target.Hits -= (short)damage;
+                target.Hits -= (short)Math.Min(damage, short.MaxValue);
                 target.RecordAttack(caster.Uid, damage);
                 if (target.Hits <= 0)
                     target.Kill();
@@ -496,9 +502,10 @@ public sealed class SpellEngine
     private void ApplyAreaEffect(Character caster, Point3D center, SpellDef def, int skillLevel)
     {
         int range = 3 + skillLevel / 300; // scale range with skill
+        bool harmful = def.IsFlag(SpellFlag.Damage) || def.IsFlag(SpellFlag.Curse);
         foreach (var target in _world.GetCharsInRange(center, range))
         {
-            if (target == caster && def.IsFlag(SpellFlag.TargNoSelf)) continue;
+            if (target == caster && (harmful || def.IsFlag(SpellFlag.TargNoSelf))) continue;
             if (target.IsDead && !def.IsFlag(SpellFlag.TargDead)) continue;
 
             ApplyCharEffect(caster, target, def, skillLevel);

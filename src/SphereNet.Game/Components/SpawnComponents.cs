@@ -11,7 +11,7 @@ namespace SphereNet.Game.Components;
 
 /// <summary>
 /// Spawn point component for IT_SPAWN_CHAR items.
-/// Maps to CItemSpawn in Source-X. Periodically creates NPCs within range.
+/// Maps to CCSpawn in Source-X. Periodically creates NPCs within range.
 /// Supports both single chardef (MORE1 = body ID) and spawn groups (MORE1 → SPAWN defname).
 /// </summary>
 public sealed class SpawnComponent
@@ -23,19 +23,34 @@ public sealed class SpawnComponent
     private ushort _charDefId;
     private SpawnGroupDef? _spawnGroup;
     private int _maxCount = 1;
-    private int _spawnRange = 5;
-    private int _minDelaySec = 300;
-    private int _maxDelaySec = 600;
+    private int _spawnRange = 15;
+    private int _minDelaySec = 900;   // Source-X default: 15 min
+    private int _maxDelaySec = 1800;  // Source-X default: 30 min
     private long _nextSpawnTick;
+    private bool _stopped;
+    private bool _killingChildren;
     private readonly Random _rand = new();
     private ResourceHolder? _resources;
 
+    /// <summary>Trigger dispatch delegate wired from Program.cs.
+    /// Fires @PreSpawn, @Spawn, @AddObj, @DelObj on the spawn item.</summary>
+    public static Func<Item, ItemTrigger, SpawnTriggerArgs, TriggerResult>? OnSpawnTrigger;
+
     public int CurrentCount => _spawnedUids.Count;
-    public int MaxCount { get => _maxCount; set => _maxCount = value; }
+    public int MaxCount
+    {
+        get => _maxCount;
+        set
+        {
+            _maxCount = value;
+            _spawnItem.Amount = (ushort)Math.Clamp(value, 1, ushort.MaxValue);
+        }
+    }
     public ushort CharDefId { get => _charDefId; set => _charDefId = value; }
     public int SpawnRange { get => _spawnRange; set => _spawnRange = value; }
     public SpawnGroupDef? SpawnGroup { get => _spawnGroup; set => _spawnGroup = value; }
     public IReadOnlyList<Serial> SpawnedUids => _spawnedUids;
+    public bool IsStopped => _stopped;
 
     public SpawnComponent(Item spawnItem, GameWorld world)
     {
@@ -47,19 +62,33 @@ public sealed class SpawnComponent
     /// <summary>Called each tick from the item's OnTick.</summary>
     public void OnTick(long currentTick)
     {
+        if (_stopped) return;
+
         int prevCount = _spawnedUids.Count;
         CleanupDead();
 
-        // NPC died → reset timer so respawn waits TIMELO-TIMEHI minutes
+        // NPC died → re-enable timer if it was paused at max
         if (_spawnedUids.Count < prevCount && _spawnedUids.Count < _maxCount)
-            SetNextSpawnTime();
+        {
+            if (_nextSpawnTick < 0)
+                SetNextSpawnTime();
+        }
 
+        if (_nextSpawnTick < 0) return; // paused at max count
         if (currentTick < _nextSpawnTick) return;
-        if (_spawnedUids.Count >= _maxCount) return;
+        if (_spawnedUids.Count >= _maxCount)
+        {
+            PauseTimer();
+            return;
+        }
         if (_charDefId == 0 && _spawnGroup == null) return;
 
         SpawnOne();
-        SetNextSpawnTime();
+
+        if (_spawnedUids.Count >= _maxCount)
+            PauseTimer();
+        else
+            SetNextSpawnTime();
     }
 
     private void SpawnOne()
@@ -86,6 +115,20 @@ public sealed class SpawnComponent
             }
             else
                 return;
+        }
+
+        // @PreSpawn — script can override spawn ID or abort (return TRUE)
+        if (OnSpawnTrigger != null)
+        {
+            var preArgs = new SpawnTriggerArgs { SpawnDefIndex = defIndex };
+            var result = OnSpawnTrigger(_spawnItem, ItemTrigger.PreSpawn, preArgs);
+            if (result == TriggerResult.True)
+                return; // script aborted spawn
+            if (preArgs.SpawnDefIndex != defIndex)
+            {
+                defIndex = preArgs.SpawnDefIndex;
+                bodyId = (ushort)Math.Clamp(defIndex, 0, ushort.MaxValue);
+            }
         }
 
         var ch = _world.CreateCharacter();
@@ -161,20 +204,40 @@ public sealed class SpawnComponent
 
         ch.SetStatFlag(StatFlag.Spawned);
 
-        // HOME = spawn item position, HOMEDIST = spawn range
         ch.Home = new Point3D(_spawnItem.X, _spawnItem.Y, _spawnItem.Z, _spawnItem.MapIndex);
         ch.HomeDist = (short)_spawnRange;
-
-        // SPAWNITEM = spawn item serial (Sphere format: 0x4XXXXXXX)
         ch.SetTag("SPAWNITEM", $"0{_spawnItem.Uid.Value:x8}");
 
-        // Random position within range — validate terrain before placement
-        Point3D pos = default;
-        bool validPos = false;
-        var mapData = _world.MapData;
-        bool canSwim = charDef != null && (charDef.Can & Core.Enums.CanFlags.C_Swim) != 0;
+        // @Spawn — script can modify NPC or abort (return TRUE → delete NPC)
+        if (OnSpawnTrigger != null)
+        {
+            var spawnArgs = new SpawnTriggerArgs { SpawnedChar = ch };
+            var result = OnSpawnTrigger(_spawnItem, ItemTrigger.Spawn, spawnArgs);
+            if (result == TriggerResult.True)
+            {
+                _world.DeleteObject(ch);
+                ch.Delete();
+                return;
+            }
+        }
 
-        for (int attempt = 0; attempt < 10; attempt++)
+        Point3D pos = FindSpawnPosition(charDef);
+        ch.SetTag("SPAWN_POINT_UUID", _spawnItem.Uuid.ToString("D"));
+        _world.PlaceCharacter(ch, pos);
+        _spawnedUids.Add(ch.Uid);
+
+        // @AddObj — notify script that NPC was registered
+        OnSpawnTrigger?.Invoke(_spawnItem, ItemTrigger.AddObj, new SpawnTriggerArgs { SpawnedChar = ch });
+
+        _world.OnNpcSpawned?.Invoke(ch);
+    }
+
+    private Point3D FindSpawnPosition(CharDef? charDef)
+    {
+        var mapData = _world.MapData;
+        bool canSwim = charDef != null && (charDef.Can & CanFlags.C_Swim) != 0;
+
+        for (int attempt = 0; attempt < 25; attempt++)
         {
             short dx = (short)_rand.Next(-_spawnRange, _spawnRange + 1);
             short dy = (short)_rand.Next(-_spawnRange, _spawnRange + 1);
@@ -193,19 +256,10 @@ public sealed class SpawnComponent
                     continue;
             }
 
-            pos = new Point3D(px, py, pz, _spawnItem.MapIndex);
-            validPos = true;
-            break;
+            return new Point3D(px, py, pz, _spawnItem.MapIndex);
         }
 
-        if (!validPos)
-            pos = new Point3D(_spawnItem.X, _spawnItem.Y, _spawnItem.Z, _spawnItem.MapIndex);
-
-        ch.SetTag("SPAWN_POINT_UUID", _spawnItem.Uuid.ToString("D"));
-        _world.PlaceCharacter(ch, pos);
-        _spawnedUids.Add(ch.Uid);
-
-        _world.OnNpcSpawned?.Invoke(ch);
+        return new Point3D(_spawnItem.X, _spawnItem.Y, _spawnItem.Z, _spawnItem.MapIndex);
     }
 
     private int RandomRange(int min, int max)
@@ -217,11 +271,25 @@ public sealed class SpawnComponent
 
     public void CleanupDead()
     {
+        if (_killingChildren) return;
         _spawnedUids.RemoveAll(uid =>
         {
             var ch = _world.FindChar(uid);
-            return ch == null || ch.IsDeleted || ch.IsDead;
+            if (ch == null || ch.IsDeleted || ch.IsDead)
+            {
+                if (ch != null)
+                    FireDelObj(ch);
+                return true;
+            }
+            return false;
         });
+    }
+
+    private void FireDelObj(Character ch)
+    {
+        if (_killingChildren) return;
+        ch.ClearStatFlag(StatFlag.Spawned);
+        OnSpawnTrigger?.Invoke(_spawnItem, ItemTrigger.DelObj, new SpawnTriggerArgs { SpawnedChar = ch });
     }
 
     private void SetNextSpawnTime()
@@ -231,19 +299,68 @@ public sealed class SpawnComponent
         _spawnItem.SetTimeout(_nextSpawnTick);
     }
 
-    /// <summary>Remove all spawned creatures from the world (for despawn/delete).</summary>
+    private void PauseTimer()
+    {
+        _nextSpawnTick = -1;
+        _spawnItem.SetTimeout(-1);
+    }
+
+    /// <summary>Remove all spawned creatures from the world.</summary>
     public void KillAll()
     {
+        _killingChildren = true;
         foreach (var uid in _spawnedUids)
         {
             var ch = _world.FindChar(uid);
             if (ch == null || ch.IsDeleted) continue;
+            ch.ClearStatFlag(StatFlag.Spawned);
             if (!ch.IsDead)
                 ch.Kill();
             _world.DeleteObject(ch);
             ch.Delete();
         }
         _spawnedUids.Clear();
+        _killingChildren = false;
+    }
+
+    /// <summary>Remove a specific spawned NPC by UID (DELOBJ verb).</summary>
+    public void DelObj(Serial uid)
+    {
+        var ch = _world.FindChar(uid);
+        if (ch != null)
+        {
+            FireDelObj(ch);
+            if (!ch.IsDead) ch.Kill();
+            _world.DeleteObject(ch);
+            ch.Delete();
+        }
+        _spawnedUids.Remove(uid);
+
+        if (_spawnedUids.Count < _maxCount && _nextSpawnTick < 0 && !_stopped)
+            SetNextSpawnTime();
+    }
+
+    /// <summary>Source-X RESET verb: kill all + immediate respawn.</summary>
+    public void Reset()
+    {
+        KillAll();
+        _stopped = false;
+        ForceSpawn();
+    }
+
+    /// <summary>Source-X START verb: resume spawning.</summary>
+    public void Start()
+    {
+        _stopped = false;
+        ForceSpawn();
+    }
+
+    /// <summary>Source-X STOP verb: kill all + disable timer permanently.</summary>
+    public void Stop()
+    {
+        KillAll();
+        _stopped = true;
+        PauseTimer();
     }
 
     /// <summary>
@@ -254,13 +371,10 @@ public sealed class SpawnComponent
     {
         _resources = resources;
 
-        // Try to find a spawn group matching this more1 value
-        // First, try direct resource lookup by iterating spawn groups
         foreach (var res in resources.GetAllResources())
         {
             if (res.Id.Type == ResType.Spawn && res is SpawnGroupDef sgd)
             {
-                // Check if the more1 matches the hash of this spawn group's defname
                 if (!string.IsNullOrEmpty(sgd.DefName))
                 {
                     var spawnRid = resources.ResolveDefName(sgd.DefName);
@@ -273,7 +387,6 @@ public sealed class SpawnComponent
             }
         }
 
-        // Not a spawn group — treat as direct chardef ID
         _charDefId = (ushort)(more1 & 0xFFFF);
     }
 
@@ -284,7 +397,14 @@ public sealed class SpawnComponent
     {
         if (_spawnGroup != null && !string.IsNullOrEmpty(_spawnGroup.DefName))
             return _spawnGroup.DefName;
-        return _charDefId > 0 ? $"0{_charDefId:X}" : "";
+        if (_charDefId > 0)
+        {
+            var cdef = DefinitionLoader.GetCharDef(_charDefId);
+            if (cdef != null && !string.IsNullOrEmpty(cdef.DefName))
+                return cdef.DefName;
+            return $"0{_charDefId:X}";
+        }
+        return "";
     }
 
     /// <summary>
@@ -315,7 +435,6 @@ public sealed class SpawnComponent
             }
         }
 
-        // Fallback: try as raw hex body ID
         if (uint.TryParse(spawnId, System.Globalization.NumberStyles.HexNumber, null, out uint raw))
         {
             _charDefId = (ushort)(raw & 0xFFFF);
@@ -371,7 +490,10 @@ public sealed class SpawnComponent
     /// <summary>Reset the spawn timer using current delay values.</summary>
     public void ResetTimer()
     {
-        SetNextSpawnTime();
+        if (_spawnedUids.Count >= _maxCount)
+            PauseTimer();
+        else
+            SetNextSpawnTime();
     }
 
     /// <summary>Check if any spawned NPCs are still alive.</summary>
@@ -380,6 +502,20 @@ public sealed class SpawnComponent
         CleanupDead();
         return _spawnedUids.Count > 0;
     }
+
+    /// <summary>Access a spawned object by index (Source-X spawn.AT(n)).</summary>
+    public Character? GetSpawnedAt(int index)
+    {
+        if (index < 0 || index >= _spawnedUids.Count) return null;
+        return _world.FindChar(_spawnedUids[index]);
+    }
+}
+
+/// <summary>Trigger args specific to spawn events.</summary>
+public sealed class SpawnTriggerArgs
+{
+    public Character? SpawnedChar { get; set; }
+    public int SpawnDefIndex { get; set; }
 }
 
 /// <summary>
@@ -396,10 +532,21 @@ public sealed class ItemSpawnComponent
     private ushort _itemDefId;
     private int _maxCount = 1;
     private int _spawnRange = 2;
+    private int _pile = 1;
     private long _nextSpawnTick;
 
     public ushort ItemDefId { get => _itemDefId; set => _itemDefId = value; }
-    public int MaxCount { get => _maxCount; set => _maxCount = value; }
+    public int MaxCount
+    {
+        get => _maxCount;
+        set
+        {
+            _maxCount = value;
+            _spawnItem.Amount = (ushort)Math.Clamp(value, 1, ushort.MaxValue);
+        }
+    }
+    /// <summary>Source-X PILE: max items per spawn interval for stackable items.</summary>
+    public int Pile { get => _pile; set => _pile = Math.Max(1, value); }
 
     public ItemSpawnComponent(Item spawnItem, GameWorld world)
     {
@@ -417,7 +564,15 @@ public sealed class ItemSpawnComponent
 
         var item = _world.CreateItem();
         item.BaseId = _itemDefId;
-        item.Name = $"Spawned_{_itemDefId:X}";
+
+        var idef = DefinitionLoader.GetItemDef(_itemDefId);
+        if (idef != null && !string.IsNullOrEmpty(idef.Name))
+            item.Name = idef.Name;
+        else
+            item.Name = $"Spawned_{_itemDefId:X}";
+
+        if (_pile > 1)
+            item.Amount = (ushort)Math.Max(1, _rand.Next(1, _pile + 1));
 
         short dx = (short)_rand.Next(-_spawnRange, _spawnRange + 1);
         short dy = (short)_rand.Next(-_spawnRange, _spawnRange + 1);

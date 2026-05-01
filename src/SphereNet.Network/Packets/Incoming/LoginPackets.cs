@@ -1,3 +1,4 @@
+using SphereNet.Core.Types;
 using SphereNet.Network.Packets;
 
 namespace SphereNet.Network.Packets.Incoming;
@@ -39,19 +40,47 @@ public sealed class PacketCreateCharacterHS : PacketHandler
 
     public override void OnReceive(PacketBuffer buffer, State.NetState state)
     {
-        // Offset layout (after opcode byte, so buffer starts at byte 1):
-        // 0-3: pattern1 (4 bytes)
-        // 4-7: pattern2 (4 bytes)
-        // 8:   pattern3 (1 byte)
-        // 9-38: char name (30 bytes)
         buffer.ReadUInt32(); // pattern1
         buffer.ReadUInt32(); // pattern2
         buffer.ReadByte();   // pattern3
         string charName = buffer.ReadAsciiFixed(30);
 
-        // Rest of the packet has stats, skills, appearance etc.
-        // For now, just create with the name.
-        state.OnCharCreate(charName);
+        buffer.ReadBytes(2); // unknown
+        buffer.ReadUInt32(); // client flags
+        buffer.ReadBytes(8); // unknown
+        buffer.ReadByte();   // profession
+        buffer.ReadBytes(15); // unknown
+
+        byte genderRace = buffer.ReadByte();
+        byte str = buffer.ReadByte();
+        byte dex = buffer.ReadByte();
+        byte intl = buffer.ReadByte();
+
+        var skills = new (byte Id, byte Value)[4];
+        for (int i = 0; i < 4; i++)
+        {
+            skills[i].Id = buffer.ReadByte();
+            skills[i].Value = buffer.ReadByte();
+        }
+
+        ushort skinHue = buffer.ReadUInt16();
+        ushort hairStyle = buffer.ReadUInt16();
+        ushort hairHue = buffer.ReadUInt16();
+        ushort beardStyle = buffer.ReadUInt16();
+        ushort beardHue = buffer.ReadUInt16();
+
+        bool female = (genderRace % 2) != 0;
+
+        state.OnCharCreate(new CharCreateInfo
+        {
+            Name = charName,
+            Female = female,
+            Str = str, Dex = dex, Int = intl,
+            SkinHue = skinHue,
+            HairStyle = hairStyle, HairHue = hairHue,
+            BeardStyle = beardStyle, BeardHue = beardHue,
+            Skills = skills,
+        });
     }
 }
 
@@ -67,7 +96,42 @@ public sealed class PacketCreateCharacter : PacketHandler
         buffer.ReadByte();   // pattern3
         string charName = buffer.ReadAsciiFixed(30);
 
-        state.OnCharCreate(charName);
+        buffer.ReadBytes(2); // unknown
+        buffer.ReadUInt32(); // client flags
+        buffer.ReadBytes(8); // unknown
+        buffer.ReadByte();   // profession
+        buffer.ReadBytes(15); // unknown
+
+        byte genderRace = buffer.ReadByte();
+        byte str = buffer.ReadByte();
+        byte dex = buffer.ReadByte();
+        byte intl = buffer.ReadByte();
+
+        var skills = new (byte Id, byte Value)[3];
+        for (int i = 0; i < 3; i++)
+        {
+            skills[i].Id = buffer.ReadByte();
+            skills[i].Value = buffer.ReadByte();
+        }
+
+        ushort skinHue = buffer.ReadUInt16();
+        ushort hairStyle = buffer.ReadUInt16();
+        ushort hairHue = buffer.ReadUInt16();
+        ushort beardStyle = buffer.ReadUInt16();
+        ushort beardHue = buffer.ReadUInt16();
+
+        bool female = (genderRace % 2) != 0;
+
+        state.OnCharCreate(new CharCreateInfo
+        {
+            Name = charName,
+            Female = female,
+            Str = str, Dex = dex, Int = intl,
+            SkinHue = skinHue,
+            HairStyle = hairStyle, HairHue = hairHue,
+            BeardStyle = beardStyle, BeardHue = beardHue,
+            Skills = skills,
+        });
     }
 }
 

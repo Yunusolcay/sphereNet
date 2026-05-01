@@ -335,9 +335,11 @@ public sealed class NpcAI
             OnNpcSay?.Invoke(guard, "Halt, villain! Guards!");
         }
 
+        if (guard.MapIndex != target.MapIndex) return;
         int dist = guard.Position.GetDistanceTo(target.Position);
         if (_config.GuardsInstantKill)
         {
+            if (dist > 20) return;
             if (dist > 1)
             {
                 _world.MoveCharacter(guard, target.Position);
@@ -1321,6 +1323,11 @@ public sealed class NpcAI
             case PetAIMode.Come:
             {
                 Character followTarget = ResolvePetTargetCharacter(npc, "FOLLOW_TARGET") ?? master;
+                if (npc.MapIndex != followTarget.MapIndex)
+                {
+                    _world.MoveCharacter(npc, followTarget.Position);
+                    break;
+                }
                 int dist = npc.Position.GetDistanceTo(followTarget.Position);
                 if (dist > 2)
                     MoveToward(npc, followTarget.Position);

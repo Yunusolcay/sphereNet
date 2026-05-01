@@ -114,10 +114,60 @@ public sealed partial class GameClient
             _character = _world.CreateCharacter();
             _character.Name = string.IsNullOrWhiteSpace(name) ? _account.Name : name;
             _character.IsPlayer = true;
-            _character.BodyId = 0x0190;
-            _character.Str = 50; _character.Dex = 50; _character.Int = 50;
-            _character.MaxHits = 50; _character.MaxMana = 50; _character.MaxStam = 50;
-            _character.Hits = 50; _character.Mana = 50; _character.Stam = 50;
+
+            var info = PendingCharCreate;
+            PendingCharCreate = null;
+
+            if (info != null)
+            {
+                _character.BodyId = info.Female ? (ushort)0x0191 : (ushort)0x0190;
+                if (info.SkinHue != 0) _character.Hue = new Color(info.SkinHue);
+
+                int str = Math.Clamp((int)info.Str, 10, 60);
+                int dex = Math.Clamp((int)info.Dex, 10, 60);
+                int intl = Math.Clamp((int)info.Int, 10, 60);
+                int total = str + dex + intl;
+                if (total > 80) { double s = 80.0 / total; str = (int)(str * s); dex = (int)(dex * s); intl = 80 - str - dex; }
+                _character.Str = (short)str; _character.Dex = (short)dex; _character.Int = (short)intl;
+
+                if (info.HairStyle != 0 && IsValidHairGraphic(info.HairStyle))
+                {
+                    var hair = _world.CreateItem();
+                    hair.BaseId = info.HairStyle;
+                    if (info.HairHue != 0) hair.Hue = new Color(info.HairHue);
+                    _character.Equip(hair, Layer.Hair);
+                }
+                if (info.BeardStyle != 0 && !info.Female && IsValidBeardGraphic(info.BeardStyle))
+                {
+                    var beard = _world.CreateItem();
+                    beard.BaseId = info.BeardStyle;
+                    if (info.BeardHue != 0) beard.Hue = new Color(info.BeardHue);
+                    _character.Equip(beard, Layer.FacialHair);
+                }
+
+                // Enforce total skill points cap (UO standard: 120 for new characters)
+                const int MaxTotalSkillPoints = 120;
+                int totalSkill = 0;
+                foreach (var (_, sv) in info.Skills)
+                    totalSkill += sv;
+                double skillScale = totalSkill > MaxTotalSkillPoints ? (double)MaxTotalSkillPoints / totalSkill : 1.0;
+                foreach (var (id, val) in info.Skills)
+                {
+                    if (id < (int)SkillType.Qty && val > 0)
+                    {
+                        int scaled = skillScale < 1.0 ? (int)(val * skillScale) : val;
+                        _character.SetSkill((SkillType)id, (ushort)(scaled * 10));
+                    }
+                }
+            }
+            else
+            {
+                _character.BodyId = 0x0190;
+                _character.Str = 50; _character.Dex = 50; _character.Int = 50;
+            }
+
+            _character.MaxHits = _character.Str; _character.MaxMana = (short)_character.Int; _character.MaxStam = _character.Dex;
+            _character.Hits = _character.MaxHits; _character.Mana = _character.MaxMana; _character.Stam = _character.MaxStam;
 
             var startPos = BotSpawnLocationProvider?.Invoke(_account.Name)
                 ?? new Point3D(1495, 1629, 10, 0);
@@ -125,10 +175,14 @@ public sealed partial class GameClient
             int assignSlot = slot >= 0 ? slot : _account.FindFreeSlot();
             if (assignSlot >= 0)
                 _account.SetCharSlot(assignSlot, _character.Uid);
+
+            EquipPlayerNewbieItems(_character, info?.Female ?? false);
+
             _logger.LogInformation("Created char '{Name}' for account '{Acct}'", _character.Name, _account.Name);
         }
         else
         {
+            PendingCharCreate = null;
             var botPos = BotSpawnLocationProvider?.Invoke(_account.Name);
             if (botPos.HasValue)
                 _world.MoveCharacter(_character, botPos.Value);
@@ -497,6 +551,56 @@ public sealed partial class GameClient
     {
         if (_character == null || !IsPlaying) return;
         _netState.Send(new PacketPersonalLight(_character.Uid.Value, _character.LightLevel));
+    }
+
+    /// <summary>Valid human/elf/gargoyle hair graphic IDs.</summary>
+    private static bool IsValidHairGraphic(ushort id) =>
+        (id >= 0x203B && id <= 0x204A) || (id >= 0x2FBF && id <= 0x2FD1);
+
+    /// <summary>Valid human/elf/gargoyle beard graphic IDs.</summary>
+    private static bool IsValidBeardGraphic(ushort id) =>
+        (id >= 0x203E && id <= 0x2041) || (id >= 0x204B && id <= 0x204D);
+
+    private void EquipPlayerNewbieItems(Character ch, bool female)
+    {
+        if (_commands?.Resources == null) return;
+        var resources = _commands.Resources;
+
+        string sectionName = female ? "FEMALE_DEFAULT" : "MALE_DEFAULT";
+        var rid = resources.ResolveDefName(sectionName);
+        if (!rid.IsValid)
+            return;
+
+        var link = resources.GetResource(rid);
+        if (link?.StoredKeys == null || link.StoredKeys.Count == 0)
+            return;
+
+        var entries = new List<NewbieItemEntry>();
+        foreach (var sk in link.StoredKeys)
+        {
+            string key = sk.Key.ToUpperInvariant();
+            if (key is "ITEMNEWBIE" or "ITEM")
+            {
+                var parts = sk.Arg.Split(',', StringSplitOptions.TrimEntries);
+                var entry = new NewbieItemEntry
+                {
+                    DefName = parts.Length > 0 ? parts[0] : "",
+                    Newbie = key == "ITEMNEWBIE",
+                };
+                if (parts.Length >= 2 && int.TryParse(parts[1], out int amt) && amt > 0)
+                    entry.Amount = amt;
+                if (parts.Length >= 3 && !string.IsNullOrWhiteSpace(parts[2]))
+                    entry.Dice = parts[2];
+                entries.Add(entry);
+            }
+            else if (key == "COLOR" && entries.Count > 0)
+            {
+                entries[^1].Color = sk.Arg.Trim();
+            }
+        }
+
+        if (entries.Count > 0)
+            EquipNewbieItems(ch, entries);
     }
 
     // ==================== Movement ====================

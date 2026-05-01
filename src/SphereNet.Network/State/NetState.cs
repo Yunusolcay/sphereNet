@@ -298,7 +298,7 @@ public sealed class NetState : IDisposable
     public Action<NetState>? LogoutRequestHandler { get; set; }
     public Action<NetState>? HelpRequestHandler { get; set; }
     public Action<NetState, ushort>? ServerSelectHandler { get; set; }
-    public Action<NetState, string>? CharCreateHandler { get; set; }
+    public Action<NetState, Core.Types.CharCreateInfo>? CharCreateHandler { get; set; }
     public Action<NetState, byte, uint, uint>? SecureTradeHandler { get; set; }
     public Action<NetState, uint, string>? RenameHandler { get; set; }
 
@@ -446,9 +446,9 @@ public sealed class NetState : IDisposable
         ServerSelectHandler?.Invoke(this, serverIndex);
     }
 
-    internal void OnCharCreate(string name)
+    internal void OnCharCreate(Core.Types.CharCreateInfo info)
     {
-        CharCreateHandler?.Invoke(this, name);
+        CharCreateHandler?.Invoke(this, info);
     }
 
     // Phase 1: Critical Stability

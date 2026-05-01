@@ -93,6 +93,7 @@ public static class SkillEngine
     /// </summary>
     public static void GainExperience(Character ch, SkillType skill, int difficulty)
     {
+        if (ch.IsDead) return;
         if ((int)skill < 0 || (int)skill >= (int)SkillType.Qty)
             return;
 

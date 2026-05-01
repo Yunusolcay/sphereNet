@@ -106,7 +106,7 @@ public sealed partial class GameClient
         if (_character.PrivLevel < PrivLevel.GM)
         {
             int moveDelay = MovementEngine.GetMoveDelay(_character.IsMounted, running);
-            int tolerance = moveDelay * 5; // allow up to 5 predicted moves ahead
+            int tolerance = moveDelay * 3;
             if (_nextMoveTime > 0 && now < _nextMoveTime - tolerance)
             {
                 _logger.LogDebug("[move_reject] reason=throttle ahead={Ahead}ms delay={Delay}ms at {X},{Y},{Z}",
@@ -140,7 +140,7 @@ public sealed partial class GameClient
             if (_nextMoveTime <= 0 || now >= _nextMoveTime)
                 _nextMoveTime = now + moveDelay;
             else
-                _nextMoveTime = Math.Min(_nextMoveTime + moveDelay, now + moveDelay * 5);
+                _nextMoveTime = Math.Min(_nextMoveTime + moveDelay, now + moveDelay * 3);
 
             byte notoriety = GetNotoriety(_character);
             _netState.Send(new PacketMoveAck(seq, notoriety));
@@ -251,7 +251,7 @@ public sealed partial class GameClient
         }
 
         var target = _world.FindChar(new Serial(targetUid));
-        if (target == null) return;
+        if (target == null || target == _character) return;
         _character.FightTarget = target.Uid;
 
         // Region PvP enforcement

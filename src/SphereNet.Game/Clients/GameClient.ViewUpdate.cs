@@ -194,7 +194,7 @@ public sealed partial class GameClient
         foreach (var (item, hiddenAsAllShow) in delta.NewItems)
         {
             if (hiddenAsAllShow)
-                SendWorldItemWithHue(item, 0x4001);
+                SendWorldItemAllShow(item);
             else
                 SendWorldItem(item);
             _knownItems.Add(item.Uid.Value);

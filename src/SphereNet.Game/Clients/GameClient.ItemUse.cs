@@ -465,20 +465,13 @@ public sealed partial class GameClient
                 break;
             case ItemType.SpawnItem:
             case ItemType.SpawnChar:
+                // Source-X parity: DClick on spawn item kills children and resets timer.
                 if (item.SpawnChar != null)
                 {
                     var defName = item.SpawnChar.GetSpawnDefName();
-                    if (item.SpawnChar.HasAliveSpawns())
-                    {
-                        item.SpawnChar.KillAll();
-                        item.SpawnChar.ResetTimer();
-                        SysMessage($"Spawn cleared: {defName}. Timer reset.");
-                    }
-                    else
-                    {
-                        item.SpawnChar.ForceSpawn();
-                        SysMessage($"Spawn forced: {defName}. Spawning now.");
-                    }
+                    item.SpawnChar.KillAll();
+                    item.SpawnChar.ResetTimer();
+                    SysMessage($"Spawn reset: {defName}. {item.SpawnChar.CurrentCount}/{item.SpawnChar.MaxCount}");
                 }
                 else
                 {

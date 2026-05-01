@@ -835,6 +835,20 @@ public static class Program
             }
         };
 
+        // Wire spawn trigger dispatch (@PreSpawn, @Spawn, @AddObj, @DelObj)
+        SphereNet.Game.Components.SpawnComponent.OnSpawnTrigger = (item, trigger, args) =>
+        {
+            if (_triggerDispatcher == null) return TriggerResult.Default;
+            var targs = new SphereNet.Game.Scripting.TriggerArgs();
+            if (args.SpawnedChar != null)
+            {
+                targs.O1 = args.SpawnedChar;
+                targs.CharSrc = args.SpawnedChar;
+            }
+            targs.N1 = args.SpawnDefIndex;
+            return _triggerDispatcher.FireItemTrigger(item, trigger, targs);
+        };
+
         _partyManager = new PartyManager();
         _guildManager = new GuildManager();
         _guildManager.DeserializeFromWorld(_world);
@@ -1443,6 +1457,21 @@ public static class Program
             var healthPkt = new PacketUpdateHealth(target.Uid.Value, target.MaxHits, target.Hits);
             BroadcastNearby(target.Position, 18, healthPkt, 0);
 
+            // Source-X parity: fire @Hit/@GetHit triggers so script-based
+            // combat barks, emotes, and hit effects work for NPC attackers.
+            _triggerDispatcher?.FireCharTrigger(attacker, CharTrigger.Hit,
+                new TriggerArgs { CharSrc = attacker, O1 = target, N1 = damage });
+            _triggerDispatcher?.FireCharTrigger(target, CharTrigger.GetHit,
+                new TriggerArgs { CharSrc = attacker, N1 = damage });
+
+            var weapon = attacker.GetEquippedItem(Layer.OneHanded) ?? attacker.GetEquippedItem(Layer.TwoHanded);
+            if (weapon != null)
+                _triggerDispatcher?.FireItemTrigger(weapon, ItemTrigger.Hit,
+                    new TriggerArgs { CharSrc = attacker, ItemSrc = weapon, O1 = target, N1 = damage });
+            var shield = target.GetEquippedItem(Layer.TwoHanded);
+            if (shield != null)
+                _triggerDispatcher?.FireItemTrigger(shield, ItemTrigger.GetHit,
+                    new TriggerArgs { CharSrc = attacker, ItemSrc = shield, N1 = damage });
         };
         _npcAI.OnNpcKill = (killer, victim) =>
         {
@@ -2423,6 +2452,7 @@ public static class Program
             {
                 lastTickMs = now;
                 RunServerTick();
+                _network.ProcessAllOutput();
             }
 
             // Yield CPU between iterations. Mode set by sphere.ini TickSleepMode:
@@ -4645,8 +4675,8 @@ public static class Program
                 string? timeHi = item.Tags.Get("TIMEHI");
                 if (timeLo != null || timeHi != null)
                 {
-                    int.TryParse(timeLo ?? "5", out int lo);
-                    int.TryParse(timeHi ?? "10", out int hi);
+                    int.TryParse(timeLo ?? "15", out int lo);
+                    int.TryParse(timeHi ?? "30", out int hi);
                     item.SpawnChar.SetDelay(lo, hi);
                 }
 
@@ -5317,11 +5347,11 @@ public static class Program
         }
     }
 
-    private static void OnCharCreate(NetState state, string name)
+    private static void OnCharCreate(NetState state, CharCreateInfo info)
     {
         var client = GetOrCreateClient(state);
-        // Find a free slot and treat creation as selecting that slot
-        client.HandleCharSelect(-1, name);
+        client.PendingCharCreate = info;
+        client.HandleCharSelect(-1, info.Name);
     }
 
     private static void OnCharSelect(NetState state, int slot, string name)

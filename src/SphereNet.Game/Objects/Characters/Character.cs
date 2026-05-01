@@ -1278,7 +1278,8 @@ public class Character : ObjBase
 
     public void SetSkill(SkillType skill, ushort value)
     {
-        if ((int)skill < _skillValues.Length) _skillValues[(int)skill] = value;
+        if ((int)skill < _skillValues.Length)
+            _skillValues[(int)skill] = Math.Min(value, (ushort)1200);
     }
 
     public byte GetSkillLock(SkillType skill) =>

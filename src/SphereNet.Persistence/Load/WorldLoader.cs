@@ -393,8 +393,7 @@ public sealed class WorldLoader
                     item.BaseId = (ushort)id;
                 break;
             case "TYPE":
-                if (ushort.TryParse(val, out ushort t))
-                    item.ItemType = (ItemType)t;
+                item.TrySetProperty(key, val);
                 break;
             case "AMOUNT":
                 if (ushort.TryParse(val, out ushort a))
