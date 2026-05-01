@@ -298,14 +298,25 @@ public sealed class DeathEngine
     public bool RestoreFromCorpse(Character resurrected)
     {
         Item? corpse = null;
-        foreach (var item in _world.GetItemsInRange(resurrected.Position, 0))
+        foreach (var item in _world.GetItemsInRange(resurrected.Position, 2))
         {
             if (item.ItemType != ItemType.Corpse) continue;
-            if (!item.TryGetTag("OWNER_UID", out string? ownerStr)) continue;
-            if (!uint.TryParse(ownerStr, out uint ownerUid)) continue;
-            if (ownerUid != resurrected.Uid.Value) continue;
-            corpse = item;
-            break;
+
+            if (item.TryGetTag("OWNER_UUID", out string? uuidStr) &&
+                Guid.TryParse(uuidStr, out Guid uuid) &&
+                uuid == resurrected.Uuid)
+            {
+                corpse = item;
+                break;
+            }
+
+            if (item.TryGetTag("OWNER_UID", out string? ownerStr) &&
+                uint.TryParse(ownerStr, out uint ownerUid) &&
+                ownerUid == resurrected.Uid.Value)
+            {
+                corpse = item;
+                break;
+            }
         }
         if (corpse == null) return false;
 

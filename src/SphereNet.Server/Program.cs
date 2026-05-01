@@ -4601,10 +4601,22 @@ public static class Program
     {
         int spawns = 0;
         int fromTag = 0;
+        int typeInherited = 0;
         foreach (var obj in _world.GetAllObjects())
         {
             if (obj is not SphereNet.Game.Objects.Items.Item item)
                 continue;
+
+            if (item.BaseId != 0)
+            {
+                var idef = SphereNet.Game.Definitions.DefinitionLoader.GetItemDef(item.BaseId);
+                if (idef != null && idef.Type != ItemType.Normal)
+                {
+                    if (item.ItemType != idef.Type)
+                        typeInherited++;
+                    item.ItemType = idef.Type;
+                }
+            }
 
             // Sphere saves don't write TYPE — detect spawn items by SPAWNID tag
             string? spawnId = item.Tags.Get("SPAWNID");
@@ -4668,6 +4680,14 @@ public static class Program
                                     ch.SetTag("SPAWNITEM", $"0{item.Uid.Value:x8}");
                                 if (!ch.IsStatFlag(SphereNet.Core.Enums.StatFlag.Spawned))
                                     ch.SetStatFlag(SphereNet.Core.Enums.StatFlag.Spawned);
+                                if (ch.NpcBrain == SphereNet.Core.Enums.NpcBrainType.None)
+                                {
+                                    var cdef = SphereNet.Game.Definitions.DefinitionLoader.GetCharDef(ch.CharDefIndex);
+                                    if (cdef != null && cdef.NpcBrain != SphereNet.Core.Enums.NpcBrainType.None)
+                                        ch.NpcBrain = cdef.NpcBrain;
+                                    else
+                                        ch.NpcBrain = SphereNet.Core.Enums.NpcBrainType.Monster;
+                                }
                             }
                         }
                     }
@@ -4680,7 +4700,24 @@ public static class Program
             spawns++;
         }
         if (spawns > 0)
-            _log.LogInformation("Initialized {Count} spawn items ({FromTag} from SPAWNID tag)", spawns, fromTag);
+            _log.LogInformation("Initialized {Count} spawn items ({FromTag} from SPAWNID tag, {TypeInh} type inherited from ITEMDEF)",
+                spawns, fromTag, typeInherited);
+
+        int brainFixed = 0;
+        foreach (var obj in _world.GetAllObjects())
+        {
+            if (obj is not SphereNet.Game.Objects.Characters.Character ch) continue;
+            if (ch.IsPlayer || ch.NpcBrain != SphereNet.Core.Enums.NpcBrainType.None) continue;
+
+            var cdef = SphereNet.Game.Definitions.DefinitionLoader.GetCharDef(ch.CharDefIndex);
+            if (cdef != null && cdef.NpcBrain != SphereNet.Core.Enums.NpcBrainType.None)
+                ch.NpcBrain = cdef.NpcBrain;
+            else
+                ch.NpcBrain = SphereNet.Core.Enums.NpcBrainType.Monster;
+            brainFixed++;
+        }
+        if (brainFixed > 0)
+            _log.LogInformation("Inherited NpcBrain from CHARDEF for {Count} NPCs", brainFixed);
     }
 
     private static bool TryParseHexOrDecUInt(string val, out uint result)

@@ -1422,13 +1422,12 @@ public class Item : ObjBase
 
     private static ItemType ParseItemType(string arg)
     {
-        // Try "t_container" style name (strip t_ prefix, enum parse)
         var s = arg.Trim();
         if (s.StartsWith("T_", StringComparison.OrdinalIgnoreCase))
             s = s[2..];
+        s = s.Replace("_", "");
         if (Enum.TryParse<ItemType>(s, ignoreCase: true, out var it))
             return it;
-        // Try numeric
         if (ushort.TryParse(arg.Trim(), out ushort n))
             return (ItemType)n;
         return ItemType.Invalid;

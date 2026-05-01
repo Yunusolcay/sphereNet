@@ -26,10 +26,14 @@ public sealed class SpawnGroupDef : ResourceLink
             case "DEFNAME":
                 base.DefName = arg.Trim();
                 break;
-            default:
-                // Numeric ID lines are member entries: "ID weight,chardefname"
-                // Source-X format: each key line is "index weight,chardefname" or just "chardefname"
+            case "CATEGORY" or "SUBSECTION" or "DESCRIPTION":
+                break;
+            case "ID":
                 ParseMemberEntry(arg);
+                break;
+            default:
+                if (int.TryParse(key, out _))
+                    ParseMemberEntry(arg);
                 break;
         }
     }

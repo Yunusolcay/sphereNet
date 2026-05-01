@@ -105,7 +105,12 @@ public sealed class SpawnComponent
             ch.OBody = ch.BodyId;
 
             if (!string.IsNullOrWhiteSpace(charDef.Name))
-                ch.Name = DefinitionLoader.ResolveNames(charDef.Name);
+            {
+                if (charDef.Name.Contains("#NAMES_", StringComparison.OrdinalIgnoreCase))
+                    ch.Name = DefinitionLoader.ResolveNames(charDef.Name);
+                else
+                    ch.Name = charDef.Name;
+            }
             else
                 ch.Name = $"Spawn_{bodyId:X}";
 
@@ -223,6 +228,7 @@ public sealed class SpawnComponent
     {
         int delaySec = _rand.Next(_minDelaySec, _maxDelaySec + 1);
         _nextSpawnTick = Environment.TickCount64 + delaySec * 1000;
+        _spawnItem.SetTimeout(_nextSpawnTick);
     }
 
     /// <summary>Remove all spawned creatures from the world (for despawn/delete).</summary>
@@ -304,19 +310,32 @@ public sealed class SpawnComponent
             if (rid.Type == ResType.CharDef)
             {
                 _charDefId = (ushort)Math.Clamp(rid.Index, 0, ushort.MaxValue);
+                _spawnItem.More1 = _charDefId;
                 return;
             }
         }
 
         // Fallback: try as raw hex body ID
         if (uint.TryParse(spawnId, System.Globalization.NumberStyles.HexNumber, null, out uint raw))
+        {
             _charDefId = (ushort)(raw & 0xFFFF);
+            _spawnItem.More1 = _charDefId;
+        }
     }
 
     public void SetDelay(int minMinutes, int maxMinutes)
     {
         _minDelaySec = Math.Max(1, minMinutes) * 60;
         _maxDelaySec = Math.Max(_minDelaySec, maxMinutes * 60);
+        SyncMorePToItem();
+    }
+
+    private void SyncMorePToItem()
+    {
+        int minMin = _minDelaySec / 60;
+        int maxMin = _maxDelaySec / 60;
+        var mp = _spawnItem.MoreP;
+        _spawnItem.MoreP = new Core.Types.Point3D((short)minMin, (short)maxMin, (sbyte)Math.Clamp(_spawnRange, 0, 127), mp.Map);
     }
 
     public void RegisterExisting(Serial uid)
