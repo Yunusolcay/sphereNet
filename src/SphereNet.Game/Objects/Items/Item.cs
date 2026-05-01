@@ -300,7 +300,7 @@ public class Item : ObjBase
         var upper = key.ToUpperInvariant();
         switch (upper)
         {
-            case "TYPE": value = ((ushort)_type).ToString(); return true;
+            case "TYPE": value = FormatItemType(_type); return true;
             case "AMOUNT": value = _amount.ToString(); return true;
             case "CONT": value = _containedIn.IsValid ? $"0{_containedIn.Value:X}" : ""; return true;
             case "HITS": value = (TryGetTag("HITS", out string? hv) ? hv : "0")!; return true;
@@ -309,7 +309,7 @@ public class Item : ObjBase
             case "LAYER": value = ((byte)EquipLayer).ToString(); return true;
 
             // Faz 1: Core fields
-            case "MORE1": case "MORE": value = $"0{_more1:X}"; return true;
+            case "MORE1": case "MORE": value = FormatMore1(); return true;
             case "MORE2": value = $"0{_more2:X}"; return true;
             case "MORE1H": value = ((ushort)(_more1 >> 16)).ToString(); return true;
             case "MORE1L": value = ((ushort)(_more1 & 0xFFFF)).ToString(); return true;
@@ -340,7 +340,7 @@ public class Item : ObjBase
             // Identity
             case "ISITEM": value = "1"; return true;
             case "ISCHAR": value = "0"; return true;
-            case "BASEID": value = $"0{BaseId:X}"; return true;
+            case "BASEID": value = FormatBaseId(); return true;
             case "DISPIDDEC": value = BaseId.ToString(); return true;
             case "TOPOBJ":
             {
@@ -1431,6 +1431,44 @@ public class Item : ObjBase
         if (ushort.TryParse(arg.Trim(), out ushort n))
             return (ItemType)n;
         return ItemType.Invalid;
+    }
+
+    private static string FormatItemType(ItemType t)
+    {
+        if (t == ItemType.Invalid || t == ItemType.Normal)
+            return ((ushort)t).ToString();
+        var name = t.ToString();
+        var sb = new System.Text.StringBuilder("t_", name.Length + 4);
+        for (int i = 0; i < name.Length; i++)
+        {
+            char c = name[i];
+            if (i > 0 && char.IsUpper(c))
+                sb.Append('_');
+            sb.Append(char.ToLowerInvariant(c));
+        }
+        return sb.ToString();
+    }
+
+    private string FormatMore1()
+    {
+        if (_more1 == 0) return "0";
+        if (_type == ItemType.SpawnChar)
+        {
+            if (SpawnChar?.SpawnGroup != null && !string.IsNullOrEmpty(SpawnChar.SpawnGroup.DefName))
+                return SpawnChar.SpawnGroup.DefName;
+            var cdef = Definitions.DefinitionLoader.GetCharDef((int)(_more1 & 0xFFFF));
+            if (cdef != null && !string.IsNullOrEmpty(cdef.DefName))
+                return cdef.DefName;
+        }
+        return $"0{_more1:X}";
+    }
+
+    private string FormatBaseId()
+    {
+        var idef = Definitions.DefinitionLoader.GetItemDef(BaseId);
+        if (idef != null && !string.IsNullOrEmpty(idef.DefName))
+            return idef.DefName;
+        return $"0{BaseId:X}";
     }
 
     private Item? FindContentByBaseId(ushort baseId)
