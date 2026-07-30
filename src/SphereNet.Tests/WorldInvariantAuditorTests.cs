@@ -148,6 +148,42 @@ public sealed class WorldInvariantAuditorTests
         Assert.NotNull(memory);
     }
 
+    /// <summary>Source-X CItemContainer::DeletePrepare runs ContentDelete so a
+    /// container and its contents die on the same tick. Removing a worn backpack
+    /// (paperdoll .remove) must therefore take the items inside with it, not
+    /// leave them pointing at a freed uid.</summary>
+    [Fact]
+    public void RemovingAWornBackpack_DeletesItsContents()
+    {
+        var world = MakeWorld();
+        var ch = world.CreateCharacter();
+        ch.IsPlayer = true;
+        world.PlaceCharacter(ch, new Point3D(100, 100, 0, 0));
+
+        var pack = world.CreateItem();
+        pack.ItemType = ItemType.Container;
+        ch.Equip(pack, Layer.Pack);
+
+        var loose = world.CreateItem();
+        pack.AddItem(loose);
+        var nestedBag = world.CreateItem();
+        nestedBag.ItemType = ItemType.Container;
+        pack.AddItem(nestedBag);
+        var deep = world.CreateItem();
+        nestedBag.AddItem(deep);
+
+        pack.RemoveFromWorld();
+
+        Assert.True(pack.IsDeleted);
+        Assert.True(loose.IsDeleted);
+        Assert.True(nestedBag.IsDeleted);
+        Assert.True(deep.IsDeleted); // the whole subtree, not just the first level
+        Assert.Null(world.FindItem(loose.Uid));
+        Assert.Null(world.FindItem(deep.Uid));
+        Assert.Null(ch.Backpack);
+        Assert.Empty(WorldInvariantAuditor.Audit(world));
+    }
+
     [Fact]
     public void DetectsContainerParentMissing()
     {

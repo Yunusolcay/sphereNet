@@ -4,6 +4,32 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-07-31] - Backpack delete/recreate verified; the three skipped tests now run
+----------------------------------------
+
+CHANGE - Verified the paperdoll backpack lifecycle against Source-X, no defect found.
+        Removing a worn container takes its contents with it: GameWorld.DeleteObject
+        recurses through Contents before unregistering, which is the Source-X
+        CItemContainer::DeletePrepare -> ContentDelete("deleted on the same tick")
+        behaviour, and it covers the whole nested subtree rather than one level.
+        Dropping an item on a packless player then rebuilds one: EnsurePlayerBackpack
+        first recovers a pack still linked by containment (so no duplicate is
+        created), otherwise creates and equips a fresh one, and PlaceItemInPack
+        redraws the wearer so the client learns the new worn container before the
+        content update references it. Locked in by a regression test that deletes a
+        worn pack holding a nested bag and asserts the whole subtree died with no
+        auditor anomalies left behind.
+
+FIX - The three StairThrowDiagnosticTests were permanently skipped and could never
+        run: they carried a hard Skip attribute AND pointed at C:\mortechUO\mul,
+        which no longer exists. They now probe a candidate list (the live server
+        pack's own mul directory first) and are gated only on the data being
+        present, matching how the other real-data tests stay CI-safe. Two of them
+        run against the real client data on this box; the third still no-ops
+        because the map0x UOP variant it compares is absent. They also wrote their
+        dumps into wiki/ inside the repo, dirtying the working tree on every run;
+        the output now goes to the temp directory. The suite reports 0 skipped.
+
 [2026-07-31] - Container audit: two blind spots closed in the invariant sweep
 ----------------------------------------
 

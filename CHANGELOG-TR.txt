@@ -3,6 +3,31 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-07-31] - Canta silme/yeniden olusturma dogrulandi; atlanan uc test artik kosuyor
+----------------------------------------
+
+CHANGE - Paperdoll canta yasam dongusu Source-X'e karsi dogrulandi, hata bulunmadi.
+        Giyili bir konteyner silindiginde icindekiler de gider: GameWorld.DeleteObject
+        kaydi silmeden once Contents'e ozyinelemeli iniyor; bu Source-X'in
+        CItemContainer::DeletePrepare -> ContentDelete ("ayni tick'te silinmeli")
+        davranisi ve tek seviye degil tum ic agaci kapsiyor. Cantasiz bir oyuncunun
+        uzerine esya birakildiginda yenisi kuruluyor: EnsurePlayerBackpack once
+        containment ile hala bagli bir cantayi kurtariyor (kopya olusmuyor), yoksa
+        yenisini yaratip giydiriyor; PlaceItemInPack da giyeni yeniden ciziyor ki
+        client yeni konteyneri, icerik guncellemesi ona atif yapmadan once ogrensin.
+        Ic ice canta iceren giyili bir cantayi silip tum alt agacin oldugunu ve
+        denetciye anomali kalmadigini dogrulayan regresyon testiyle sabitlendi.
+
+FIX - Uc StairThrowDiagnosticTests kalici olarak atlanmisti ve hic kosamazdi: hem
+        sabit Skip niteligi tasiyorlardi hem de artik var olmayan C:\mortechUO\mul
+        yolunu gosteriyorlardi. Artik bir aday listesi tariyorlar (once canli sunucu
+        paketinin kendi mul klasoru) ve yalnizca verinin varligina bagli calisiyorlar
+        - diger gercek-veri testlerinin CI-guvenli kalma bicimiyle ayni. Ikisi bu
+        makinedeki gercek client verisine karsi kosuyor; ucuncusu karsilastirdigi
+        map0x UOP varyanti olmadigi icin temiz sekilde bos geciyor. Ayrica ciktilarini
+        repo icindeki wiki/ altina yaziyorlardi ve her kosuda calisma agacini
+        kirletiyorlardi; cikti artik temp klasorune gidiyor. Suite 0 atlanan bildiriyor.
+
 [2026-07-31] - Konteyner denetimi: invariant taramasindaki iki kor nokta kapatildi
 ----------------------------------------
 

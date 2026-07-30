@@ -16,23 +16,42 @@ namespace SphereNet.Tests;
 /// and walks the exact staircase path from the in-game "thrown left" report,
 /// printing the server WalkCheck's per-step Z decision and the full candidate
 /// analysis at the blocking tile. Used to locate the client/server divergence
-/// that snaps a climbing player onto the upper platform. Statically skipped (they
-/// need local mortechUO MUL data and are diagnostic, not parity assertions) so they
-/// report as Skipped, not a fake pass; remove the Skip to run one locally.
+/// that snaps a climbing player onto the upper platform. They assert nothing —
+/// they exercise the real walk-check against real data and print the decision —
+/// so they are gated on the data being present rather than statically skipped:
+/// they run on a box that has a client MUL set and no-op cleanly in CI.
 /// </summary>
 public class StairThrowDiagnosticTests
 {
-    private const string MulDir = @"C:\mortechUO\mul";
+    /// <summary>Client data directories to probe, first match wins. The live
+    /// server pack ships its own MUL set; the older standalone path is kept for
+    /// boxes that still have it.</summary>
+    private static readonly string[] MulCandidates =
+    [
+        @"C:\sphereNetServer\mul",
+        @"C:\mortechUO\mul",
+    ];
+
+    private static string? FindMulDir() =>
+        MulCandidates.FirstOrDefault(d =>
+            Directory.Exists(d) && File.Exists(Path.Combine(d, "tiledata.mul")));
+
+    /// <summary>Diagnostic dumps go to the temp dir, never into the repo — a test
+    /// run must not leave the working tree dirty.</summary>
+    private static string TraceOutputPath(string name) =>
+        Path.Combine(Path.GetTempPath(), name);
+
     private readonly ITestOutputHelper _out;
 
     public StairThrowDiagnosticTests(ITestOutputHelper output) => _out = output;
 
-    [Fact(Skip = "Diagnostic harness — needs local mortechUO MUL data. Remove Skip to run locally.")]
+    [Fact]
     public void TraceClimbAt_1460_1651_North()
     {
-        if (!Directory.Exists(MulDir) || !File.Exists(Path.Combine(MulDir, "tiledata.mul")))
+        string? MulDir = FindMulDir();
+        if (MulDir == null)
         {
-            _out.WriteLine($"SKIP: MUL data not found at {MulDir}");
+            _out.WriteLine($"SKIP: no MUL data found in {string.Join(", ", MulCandidates)}");
             return;
         }
 
@@ -103,15 +122,21 @@ public class StairThrowDiagnosticTests
             sb.AppendLine($"  fromZ={testZ}: ok={okz} newZ={(okz ? nzz : -999)} reason={dz.FwdReason}");
         }
 
-        string outPath = @"D:\Projeler\Yunus\sphereNet\wiki\walkcheck_trace.txt";
+        string outPath = TraceOutputPath("walkcheck_trace.txt");
         File.WriteAllText(outPath, sb.ToString());
         _out.WriteLine(sb.ToString());
         _out.WriteLine($"(written to {outPath})");
     }
 
-    [Fact(Skip = "Diagnostic harness — needs local mortechUO MUL/UOP data. Remove Skip to run locally.")]
+    [Fact]
     public void CompareMap0_vs_Map0x_Terrain_AroundBuilding()
     {
+        string? MulDir = FindMulDir();
+        if (MulDir == null)
+        {
+            _out.WriteLine("SKIP: no MUL data found");
+            return;
+        }
         string nonX = Path.Combine(MulDir, "map0LegacyMUL.uop");
         string xVar = Path.Combine(MulDir, "map0xLegacyMUL.uop");
         if (!File.Exists(nonX) || !File.Exists(xVar))
@@ -155,7 +180,7 @@ public class StairThrowDiagnosticTests
             sb.AppendLine($"  1460,{y}: map0 tile=0x{c0.TileId:X} z={c0.Z}  |  map0x tile=0x{cx.TileId:X} z={cx.Z}{flag}");
         }
 
-        string outPath = @"D:\Projeler\Yunus\sphereNet\wiki\map_compare.txt";
+        string outPath = TraceOutputPath("map_compare.txt");
         File.WriteAllText(outPath, sb.ToString());
         _out.WriteLine(sb.ToString());
         _out.WriteLine($"(written to {outPath})");
@@ -307,12 +332,13 @@ public class StairThrowDiagnosticTests
         return resultZ != -128;
     }
 
-    [Fact(Skip = "Diagnostic harness — needs local mortechUO MUL data. Remove Skip to run locally.")]
+    [Fact]
     public void Compare_ServerWalkCheck_vs_ClassicUOPort_AtBuilding()
     {
-        if (!Directory.Exists(MulDir) || !File.Exists(Path.Combine(MulDir, "tiledata.mul")))
+        string? MulDir = FindMulDir();
+        if (MulDir == null)
         {
-            _out.WriteLine($"SKIP: MUL data not found at {MulDir}");
+            _out.WriteLine($"SKIP: no MUL data found in {string.Join(", ", MulCandidates)}");
             return;
         }
         var lf = LoggerFactory.Create(b => { });
@@ -357,7 +383,7 @@ public class StairThrowDiagnosticTests
             sb.AppendLine($"        fwdLandTile=0x{ft.TileId:X} z={ft.Z} impassable={fl.IsImpassable} wet={fl.IsWet} texId={fl.TextureId} avgZ=({flo}/{favg}/{ftop})");
         }
 
-        string outPath = @"D:\Projeler\Yunus\sphereNet\wiki\parity_compare.txt";
+        string outPath = TraceOutputPath("parity_compare.txt");
         File.WriteAllText(outPath, sb.ToString());
         _out.WriteLine(sb.ToString());
         _out.WriteLine($"(written to {outPath})");
