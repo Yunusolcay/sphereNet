@@ -2748,7 +2748,7 @@ public static partial class Program
             };
 
             SphereNet.Game.Objects.Characters.Character.OnClientBuffChanged =
-                (target, icon, add, durationSeconds) =>
+                (target, icon, add, durationSeconds, buffArgs) =>
                 {
                     if (!GameClient.ServerOptionFlags.HasFlag(OptionFlags.Buffs) ||
                         !TryGetClientFor(target, out var c) || !c.NetState.SupportsBuffIcon)
@@ -2758,7 +2758,8 @@ public static partial class Program
                         return;
 
                     c.Send(new PacketBuffIcon(target.Uid.Value, icon, add, durationSeconds,
-                        definition.TitleCliloc, definition.DescriptionCliloc));
+                        definition.TitleCliloc, definition.DescriptionCliloc,
+                        buffArgs ?? []));
                 };
 
             SphereNet.Game.Objects.Characters.Character.SendOwnerMessage = (target, msg) =>

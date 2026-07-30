@@ -242,6 +242,14 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
         return ushort.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
     }
 
+    /// <summary>Range check the ADDBUFF/REMOVEBUFF icon argument the way
+    /// Source-X CClient.cpp does (BI_START..BI_QTY). Ids outside the enum are
+    /// rejected at the verb instead of being sent as a packet the client just
+    /// discards. The lower bound is Source-X's BI_START, which is the enum's
+    /// zero member, so only the upper bound can actually reject anything.</summary>
+    protected static bool IsValidBuffIcon(ushort icon)
+        => icon <= (ushort)SphereNet.Core.Enums.BuffIcon.Qty;
+
     protected static bool TryParseScriptUInt(string text, out uint value)
     {
         value = 0;

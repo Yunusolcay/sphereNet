@@ -115,8 +115,11 @@ public partial class Character : ObjBase
     public static Action<Character, SphereNet.Network.Packets.PacketWriter>? SendPacketToOwner;
 
     /// <summary>Notify the owning client that a native buff icon changed.
-    /// Args: character, icon, add/remove, remaining duration in seconds.</summary>
-    public static Action<Character, BuffIcon, bool, ushort>? OnClientBuffChanged;
+    /// Args: character, icon, add/remove, remaining duration in seconds, and the
+    /// cliloc formatter arguments (Source-X addBuff pptcArgs — the stat deltas a
+    /// buff tooltip interpolates). Null/empty means the icon's description cliloc
+    /// takes no arguments.</summary>
+    public static Action<Character, BuffIcon, bool, ushort, string[]?>? OnClientBuffChanged;
 
     /// <summary>Broadcast a health-bar colour update (Source-X PacketHealthBarUpdate,
     /// 0x17) to observers when the character's poisoned/frozen state changes — the
@@ -1654,9 +1657,13 @@ public partial class Character : ObjBase
         _statFlags |= flag;
         MarkDirty(DirtyFlag.StatFlags);
         if ((oldFlags & StatFlag.Hidden) == 0 && (_statFlags & StatFlag.Hidden) != 0)
-            OnClientBuffChanged?.Invoke(this, BuffIcon.Hidden, true, 0);
+            OnClientBuffChanged?.Invoke(this, BuffIcon.Hidden, true, 0, null);
         if ((oldFlags & StatFlag.Meditation) == 0 && (_statFlags & StatFlag.Meditation) != 0)
-            OnClientBuffChanged?.Invoke(this, BuffIcon.ActiveMeditation, true, 0);
+            OnClientBuffChanged?.Invoke(this, BuffIcon.ActiveMeditation, true, 0, null);
+        // Source-X raises the criminal-status icon alongside STATF_CRIMINAL
+        // (CCharAct.cpp:352, LAYER_FLAG_Criminal).
+        if ((oldFlags & StatFlag.Criminal) == 0 && (_statFlags & StatFlag.Criminal) != 0)
+            OnClientBuffChanged?.Invoke(this, BuffIcon.CriminalStatus, true, 0, null);
         if ((oldFlags & StatFlag.Ridden) == 0 && (_statFlags & StatFlag.Ridden) != 0)
             InvalidateOwnerFollowerCount();
     }
@@ -1667,9 +1674,12 @@ public partial class Character : ObjBase
         _statFlags &= ~flag;
         MarkDirty(DirtyFlag.StatFlags);
         if ((oldFlags & StatFlag.Hidden) != 0 && (_statFlags & StatFlag.Hidden) == 0)
-            OnClientBuffChanged?.Invoke(this, BuffIcon.Hidden, false, 0);
+            OnClientBuffChanged?.Invoke(this, BuffIcon.Hidden, false, 0, null);
         if ((oldFlags & StatFlag.Meditation) != 0 && (_statFlags & StatFlag.Meditation) == 0)
-            OnClientBuffChanged?.Invoke(this, BuffIcon.ActiveMeditation, false, 0);
+            OnClientBuffChanged?.Invoke(this, BuffIcon.ActiveMeditation, false, 0, null);
+        // Source-X CCharAct.cpp:460 — the icon clears with the criminal flag.
+        if ((oldFlags & StatFlag.Criminal) != 0 && (_statFlags & StatFlag.Criminal) == 0)
+            OnClientBuffChanged?.Invoke(this, BuffIcon.CriminalStatus, false, 0, null);
         if ((oldFlags & StatFlag.Ridden) != 0 && (_statFlags & StatFlag.Ridden) == 0)
             InvalidateOwnerFollowerCount();
     }
@@ -5032,6 +5042,8 @@ public partial class Character : ObjBase
                 var parts = args.Split(',', StringSplitOptions.TrimEntries);
                 if (parts.Length >= 1 && TryParseScriptUShort(parts[0], out ushort icon))
                 {
+                    if (!IsValidBuffIcon(icon))
+                        return true; // Source-X CClient.cpp:1071 "Invalid AddBuff icon ID"
                     uint titleCliloc = parts.Length >= 2 && TryParseScriptUInt(parts[1], out uint c1) ? c1 : 0;
                     uint descriptionCliloc = parts.Length >= 3 && TryParseScriptUInt(parts[2], out uint c2) ? c2 : 0;
                     ushort duration = 0;
@@ -5046,7 +5058,7 @@ public partial class Character : ObjBase
             case "REMOVEBUFF":
             {
                 // Source-X: REMOVEBUFF icon
-                if (TryParseScriptUShort(args.Trim(), out ushort icon))
+                if (TryParseScriptUShort(args.Trim(), out ushort icon) && IsValidBuffIcon(icon))
                 {
                     SendPacketToOwner?.Invoke(this, new SphereNet.Network.Packets.Outgoing.PacketBuffIcon(
                         Uid.Value, icon, false));

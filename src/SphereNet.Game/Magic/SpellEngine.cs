@@ -131,6 +131,12 @@ public sealed class SpellEngine
         public bool NameChanged { get; set; }
         public int CurseWeaponLevel { get; set; }
 
+        /// <summary>Effect magnitude reported to the client's buff tooltip —
+        /// the Source-X m_itSpell.m_spelllevel equivalent, fed to the cliloc
+        /// formatter arguments. Session state only; after a reload the resend
+        /// falls back to the persisted stat deltas.</summary>
+        public int BuffMagnitude { get; set; }
+
         // Periodic damage-over-time (reference SPELLFLAG_TICK spell memories:
         // Pain Spike, Strangle). Non-zero DotCharges marks an active DOT; the
         // tick pass in ProcessExpirations applies damage and decrements charges.
@@ -1696,25 +1702,25 @@ public sealed class SpellEngine
         {
             case SpellType.Strength:
             {
-                var eff = ScheduleEffectExpiry(caster, target, def.Id, def);
+                var eff = ScheduleEffectExpiry(caster, target, def.Id, def, bonus);
                 eff.StrDelta = bonus; target.Str += bonus;
                 break;
             }
             case SpellType.Agility:
             {
-                var eff = ScheduleEffectExpiry(caster, target, def.Id, def);
+                var eff = ScheduleEffectExpiry(caster, target, def.Id, def, bonus);
                 eff.DexDelta = bonus; target.Dex += bonus;
                 break;
             }
             case SpellType.Cunning:
             {
-                var eff = ScheduleEffectExpiry(caster, target, def.Id, def);
+                var eff = ScheduleEffectExpiry(caster, target, def.Id, def, bonus);
                 eff.IntDelta = bonus; target.Int += bonus;
                 break;
             }
             case SpellType.Bless:
             {
-                var eff = ScheduleEffectExpiry(caster, target, def.Id, def);
+                var eff = ScheduleEffectExpiry(caster, target, def.Id, def, bonus);
                 eff.StrDelta = bonus; eff.DexDelta = bonus; eff.IntDelta = bonus;
                 target.Str += bonus; target.Dex += bonus; target.Int += bonus;
                 break;
@@ -1745,7 +1751,7 @@ public sealed class SpellEngine
             {
                 short actual = (short)Math.Min(penalty, target.Str - 1);
                 if (actual <= 0) break;
-                var eff = ScheduleEffectExpiry(caster, target, def.Id, def);
+                var eff = ScheduleEffectExpiry(caster, target, def.Id, def, actual);
                 eff.StrDelta = (short)-actual; target.Str -= actual;
                 break;
             }
@@ -1753,7 +1759,7 @@ public sealed class SpellEngine
             {
                 short actual = (short)Math.Min(penalty, target.Dex - 1);
                 if (actual <= 0) break;
-                var eff = ScheduleEffectExpiry(caster, target, def.Id, def);
+                var eff = ScheduleEffectExpiry(caster, target, def.Id, def, actual);
                 eff.DexDelta = (short)-actual; target.Dex -= actual;
                 break;
             }
@@ -1761,7 +1767,7 @@ public sealed class SpellEngine
             {
                 short actual = (short)Math.Min(penalty, target.Int - 1);
                 if (actual <= 0) break;
-                var eff = ScheduleEffectExpiry(caster, target, def.Id, def);
+                var eff = ScheduleEffectExpiry(caster, target, def.Id, def, actual);
                 eff.IntDelta = (short)-actual; target.Int -= actual;
                 break;
             }
@@ -1773,7 +1779,8 @@ public sealed class SpellEngine
                 short strP = (short)Math.Min(penalty, target.Str - 1);
                 short dexP = (short)Math.Min(penalty, target.Dex - 1);
                 short intP = (short)Math.Min(penalty, target.Int - 1);
-                var eff = ScheduleEffectExpiry(caster, target, def.Id, def);
+                var eff = ScheduleEffectExpiry(caster, target, def.Id, def,
+                    Math.Max(0, Math.Max((int)strP, Math.Max((int)dexP, (int)intP))));
                 if (strP > 0) { eff.StrDelta = (short)-strP; target.Str -= strP; }
                 if (dexP > 0) { eff.DexDelta = (short)-dexP; target.Dex -= dexP; }
                 if (intP > 0) { eff.IntDelta = (short)-intP; target.Int -= intP; }
@@ -2772,10 +2779,42 @@ public sealed class SpellEngine
     private int? _durationOverrideTenths;
 
     private static void NotifySpellBuff(Character target, SpellType spell, bool add,
-        ushort durationSeconds = 0)
+        ushort durationSeconds = 0, int magnitude = 0)
     {
-        if (ClientBuffCatalog.TryGet(spell, out var definition))
-            Character.OnClientBuffChanged?.Invoke(target, definition.Icon, add, durationSeconds);
+        if (!ClientBuffCatalog.TryGet(spell, out var definition))
+            return;
+        Character.OnClientBuffChanged?.Invoke(target, definition.Icon, add, durationSeconds,
+            add ? BuildBuffArgs(definition.Icon, magnitude) : null);
+    }
+
+    /// <summary>Cliloc formatter arguments for a buff tooltip — Source-X
+    /// resendBuffs/Spell_Effect_Add fill a NumBuff array with the effect
+    /// magnitude before calling addBuff, and the client interpolates them into
+    /// the description cliloc. Without them the tooltip renders its ~1_VAL~
+    /// placeholders empty. Argument counts follow the reference exactly:
+    /// one per affected stat, plus the four fixed 10s Curse also sends.</summary>
+    private static string[]? BuildBuffArgs(BuffIcon icon, int magnitude)
+    {
+        if (magnitude <= 0)
+            return null;
+        string value = magnitude.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return icon switch
+        {
+            BuffIcon.Clumsy or BuffIcon.Feeblemind or BuffIcon.Weaken or
+            BuffIcon.Strength or BuffIcon.Agility or BuffIcon.Cunning or
+            BuffIcon.GiftOfRenewal or BuffIcon.AttuneWeapon or
+            BuffIcon.Thunderstorm or BuffIcon.EssenceOfWind or
+            BuffIcon.ArcaneEmpowerment or BuffIcon.CorpseSkin => [value],
+
+            // Bless and Mass Curse touch all three base stats (STAT_BASE_QTY).
+            BuffIcon.Bless or BuffIcon.MassCurse => [value, value, value],
+
+            // Curse: three stat penalties followed by the four fixed resist
+            // penalties Source-X hardcodes to 10.
+            BuffIcon.Curse => [value, value, value, "10", "10", "10", "10"],
+
+            _ => null
+        };
     }
 
     /// <summary>Equip the IT_SPELL memory item that represents this effect
@@ -2828,7 +2867,8 @@ public sealed class SpellEngine
         mem.Delete();
     }
 
-    private ActiveSpellEffect ScheduleEffectExpiry(Character caster, Character target, SpellType spell, SpellDef def)
+    private ActiveSpellEffect ScheduleEffectExpiry(Character caster, Character target,
+        SpellType spell, SpellDef def, int buffMagnitude = 0)
     {
         int casterSkill = caster.GetSkill(def.GetPrimarySkill());
         int durationTenths = _durationOverrideTenths ?? def.GetDuration(casterSkill);
@@ -2856,7 +2896,11 @@ public sealed class SpellEngine
             }
         }
 
-        var eff = new ActiveSpellEffect { Target = target, Spell = spell, ExpireTick = expireTick };
+        var eff = new ActiveSpellEffect
+        {
+            Target = target, Spell = spell, ExpireTick = expireTick,
+            BuffMagnitude = buffMagnitude
+        };
         _activeEffects.Add(eff);
         // Source-X Spell_Effect_Create: equip the IT_SPELL memory item for this
         // effect (visible to .edit, hidden from the client). Deleted on removal.
@@ -2869,7 +2913,7 @@ public sealed class SpellEngine
         FireSpellSectionStage(spell, "EffectAdd", target);
         NotifySpellBuff(target, spell, false);
         NotifySpellBuff(target, spell, true,
-            (ushort)Math.Clamp((durationTenths + 9) / 10, 1, ushort.MaxValue));
+            (ushort)Math.Clamp((durationTenths + 9) / 10, 1, ushort.MaxValue), buffMagnitude);
         return eff;
     }
 
@@ -3422,19 +3466,24 @@ public sealed class SpellEngine
     {
         if (ch.IsStatFlag(StatFlag.Hidden | StatFlag.Insubstantial))
         {
-            Character.OnClientBuffChanged?.Invoke(ch, BuffIcon.Hidden, false, 0);
-            Character.OnClientBuffChanged?.Invoke(ch, BuffIcon.Hidden, true, 0);
+            Character.OnClientBuffChanged?.Invoke(ch, BuffIcon.Hidden, false, 0, null);
+            Character.OnClientBuffChanged?.Invoke(ch, BuffIcon.Hidden, true, 0, null);
         }
         if (ch.IsStatFlag(StatFlag.Meditation))
         {
-            Character.OnClientBuffChanged?.Invoke(ch, BuffIcon.ActiveMeditation, false, 0);
-            Character.OnClientBuffChanged?.Invoke(ch, BuffIcon.ActiveMeditation, true, 0);
+            Character.OnClientBuffChanged?.Invoke(ch, BuffIcon.ActiveMeditation, false, 0, null);
+            Character.OnClientBuffChanged?.Invoke(ch, BuffIcon.ActiveMeditation, true, 0, null);
+        }
+        if (ch.IsStatFlag(StatFlag.Criminal))
+        {
+            Character.OnClientBuffChanged?.Invoke(ch, BuffIcon.CriminalStatus, false, 0, null);
+            Character.OnClientBuffChanged?.Invoke(ch, BuffIcon.CriminalStatus, true, 0, null);
         }
         if (ch.IsPoisoned)
         {
-            Character.OnClientBuffChanged?.Invoke(ch, BuffIcon.Poison, false, 0);
+            Character.OnClientBuffChanged?.Invoke(ch, BuffIcon.Poison, false, 0, null);
             Character.OnClientBuffChanged?.Invoke(ch, BuffIcon.Poison, true,
-                ch.Poison.RemainingDurationSeconds);
+                ch.Poison.RemainingDurationSeconds, null);
         }
 
         long now = Environment.TickCount64;
@@ -3445,8 +3494,22 @@ public sealed class SpellEngine
             NotifySpellBuff(ch, eff.Spell, false);
             long remainingMs = eff.ExpireTick - now;
             NotifySpellBuff(ch, eff.Spell, true,
-                (ushort)Math.Clamp((remainingMs + 999) / 1000, 1, ushort.MaxValue));
+                (ushort)Math.Clamp((remainingMs + 999) / 1000, 1, ushort.MaxValue),
+                GetBuffMagnitude(eff));
         }
+    }
+
+    /// <summary>Effect magnitude for the buff tooltip. Prefers the value the
+    /// cast recorded; after a world reload that field is gone, so fall back to
+    /// the persisted stat delta — the same number Source-X keeps in the spell
+    /// memory's m_spelllevel.</summary>
+    private static int GetBuffMagnitude(ActiveSpellEffect eff)
+    {
+        if (eff.BuffMagnitude > 0)
+            return eff.BuffMagnitude;
+        int delta = Math.Max(Math.Abs(eff.StrDelta),
+            Math.Max(Math.Abs(eff.DexDelta), Math.Abs(eff.IntDelta)));
+        return delta;
     }
 
     public int RestorePersistedEffectsFromWorld()

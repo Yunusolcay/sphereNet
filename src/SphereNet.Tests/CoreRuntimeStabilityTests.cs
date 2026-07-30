@@ -229,7 +229,7 @@ public class CoreRuntimeStabilityTests
         var schedule = typeof(SpellEngine).GetMethod("ScheduleEffectExpiry",
             BindingFlags.Instance | BindingFlags.NonPublic)!;
         var def = new SpellDef { Id = SpellType.Bless, DurationBase = 10, DurationScale = 10 };
-        schedule.Invoke(engine, [ch, ch, SpellType.Bless, def]);
+        schedule.Invoke(engine, [ch, ch, SpellType.Bless, def, 0]);
 
         ch.Delete();
         engine.ProcessExpirations(0);

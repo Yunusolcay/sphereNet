@@ -8,6 +8,11 @@ public readonly record struct ClientBuffDefinition(
 
 public static class ClientBuffCatalog
 {
+    // Cliloc pairs are taken verbatim from the Source-X addBuff call sites
+    // (CClientMsg.cpp resendBuffs, CCharSpell.cpp Spell_Effect_Add). A few of
+    // them reuse another spell's clilocs upstream (Arcane Empowerment and
+    // Corpse Skin both pass 1075805/1075804); that quirk is reproduced rather
+    // than "corrected", so the client shows the same text Source-X shows.
     private static readonly IReadOnlyDictionary<BuffIcon, ClientBuffDefinition> s_byIcon =
         new Dictionary<BuffIcon, ClientBuffDefinition>
         {
@@ -32,6 +37,32 @@ public static class ClientBuffCatalog
             [BuffIcon.MagicReflection] = new(BuffIcon.MagicReflection, 1075817, 1070722),
             [BuffIcon.Invisibility] = new(BuffIcon.Invisibility, 1075825, 1075826),
             [BuffIcon.Polymorph] = new(BuffIcon.Polymorph, 1075824, 1070722),
+
+            // Polymorph-layer forms — Source-X passes the shared polymorph
+            // clilocs with a per-form icon (CCharSpell.cpp:1130).
+            [BuffIcon.HorrificBeast] = new(BuffIcon.HorrificBeast, 1075824, 1070722),
+            [BuffIcon.LichForm] = new(BuffIcon.LichForm, 1075824, 1070722),
+            [BuffIcon.VampiricEmbrace] = new(BuffIcon.VampiricEmbrace, 1075824, 1070722),
+            [BuffIcon.WraithForm] = new(BuffIcon.WraithForm, 1075824, 1070722),
+            [BuffIcon.ReaperForm] = new(BuffIcon.ReaperForm, 1075824, 1070722),
+            [BuffIcon.StoneForm] = new(BuffIcon.StoneForm, 1075824, 1070722),
+
+            // Necromancy / Spellweaving effects with their own icons.
+            [BuffIcon.Strangle] = new(BuffIcon.Strangle, 1075794, 1075795),
+            [BuffIcon.CorpseSkin] = new(BuffIcon.CorpseSkin, 1075805, 1075804),
+            [BuffIcon.BloodOathCurse] = new(BuffIcon.BloodOathCurse, 1075659, 1075660),
+            [BuffIcon.BloodOathCaster] = new(BuffIcon.BloodOathCaster, 1075661, 1075662),
+            [BuffIcon.GiftOfRenewal] = new(BuffIcon.GiftOfRenewal, 1075796, 1075797),
+            [BuffIcon.AttuneWeapon] = new(BuffIcon.AttuneWeapon, 1075798, 1075799),
+            [BuffIcon.Thunderstorm] = new(BuffIcon.Thunderstorm, 1075800, 1075801),
+            [BuffIcon.EssenceOfWind] = new(BuffIcon.EssenceOfWind, 1075802, 1075803),
+            [BuffIcon.EtherealVoyage] = new(BuffIcon.EtherealVoyage, 1075804, 1075805),
+            [BuffIcon.GiftOfLife] = new(BuffIcon.GiftOfLife, 1075806, 1075807),
+            [BuffIcon.ArcaneEmpowerment] = new(BuffIcon.ArcaneEmpowerment, 1075805, 1075804),
+            [BuffIcon.MortalStrike] = new(BuffIcon.MortalStrike, 1075810, 1075811),
+            [BuffIcon.CriminalStatus] = new(BuffIcon.CriminalStatus, 1153802, 1153828),
+            // Source-X receive.cpp:3366 (gargoyle fly toggle, 0xBF.0x32).
+            [BuffIcon.GargoyleFly] = new(BuffIcon.GargoyleFly, 1112193, 1112567),
         };
 
     private static readonly IReadOnlyDictionary<SpellType, BuffIcon> s_spellIcons =
@@ -55,7 +86,29 @@ public static class ClientBuffCatalog
             [SpellType.Paralyze] = BuffIcon.Paralyze,
             [SpellType.MagicReflect] = BuffIcon.MagicReflection,
             [SpellType.Invisibility] = BuffIcon.Invisibility,
+
+            // Polymorph layer — Source-X CCharSpell.cpp:621-656 picks the icon
+            // per form and shares the polymorph clilocs.
             [SpellType.Polymorph] = BuffIcon.Polymorph,
+            [SpellType.BeastForm] = BuffIcon.Polymorph,
+            [SpellType.MonsterForm] = BuffIcon.Polymorph,
+            [SpellType.HorrificBeast] = BuffIcon.HorrificBeast,
+            [SpellType.LichForm] = BuffIcon.LichForm,
+            [SpellType.VampiricEmbrace] = BuffIcon.VampiricEmbrace,
+            [SpellType.WraithForm] = BuffIcon.WraithForm,
+            [SpellType.ReaperForm] = BuffIcon.ReaperForm,
+            [SpellType.StoneForm] = BuffIcon.StoneForm,
+
+            [SpellType.Strangle] = BuffIcon.Strangle,
+            [SpellType.CorpseSkin] = BuffIcon.CorpseSkin,
+            [SpellType.BloodOath] = BuffIcon.BloodOathCurse,
+            [SpellType.GiftOfRenewal] = BuffIcon.GiftOfRenewal,
+            [SpellType.Attunement] = BuffIcon.AttuneWeapon,
+            [SpellType.Thunderstorm] = BuffIcon.Thunderstorm,
+            [SpellType.EssenceOfWind] = BuffIcon.EssenceOfWind,
+            [SpellType.EtherealVoyage] = BuffIcon.EtherealVoyage,
+            [SpellType.GiftOfLife] = BuffIcon.GiftOfLife,
+            [SpellType.ArcaneEmpowerment] = BuffIcon.ArcaneEmpowerment,
         };
 
     public static bool TryGet(BuffIcon icon, out ClientBuffDefinition definition) =>

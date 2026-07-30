@@ -61,7 +61,7 @@ public sealed class SpellEffectReentrancyTests
         SpellType spell, short strDelta)
     {
         var def = new SpellDef { Id = spell };
-        var eff = s_schedule.Invoke(engine, [caster, target, spell, def])!;
+        var eff = s_schedule.Invoke(engine, [caster, target, spell, def, 0])!;
         eff.GetType().GetProperty("ExpireTick")!.SetValue(eff, 0L); // long past
         if (strDelta != 0)
         {

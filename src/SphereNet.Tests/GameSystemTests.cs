@@ -3655,7 +3655,7 @@ TAG.DIALOG_SUBJECT_TOUCHED=1
 
         Character.RacialFlags = (int)RacialFlags.GargoyleFly;
         var buffs = new List<(BuffIcon Icon, bool Add)>();
-        Character.OnClientBuffChanged = (_, icon, add, _) => buffs.Add((icon, add));
+        Character.OnClientBuffChanged = (_, icon, add, _, _) => buffs.Add((icon, add));
 
         AttachCharacter(client, player);
 

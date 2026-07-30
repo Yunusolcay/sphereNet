@@ -2370,7 +2370,7 @@ public sealed class ClientWorldFeaturesHandler
         else
             _character.ClearStatFlag(StatFlag.Hovering);
 
-        Character.OnClientBuffChanged?.Invoke(_character, BuffIcon.GargoyleFly, flying, 0);
+        Character.OnClientBuffChanged?.Invoke(_character, BuffIcon.GargoyleFly, flying, 0, null);
 
         _client.SendSelfRedraw();
         byte flags = BuildMobileFlags(_character);

@@ -226,6 +226,45 @@ public class SourceXGameplayParityTests
         Assert.True(state.SupportsBuffIcon);
     }
 
+    /// <summary>The game socket never carries a client version of its own —
+    /// the classic client sends the bare 4-byte seed there, so the server only
+    /// learns the version from the 0xBD reply it requests after 0x91. With a
+    /// non-Modern ClientEra that leaves SupportsBuffIcon false for the whole
+    /// login sequence, and every 0xDF sent in that window was dropped for good.
+    /// The buff bar must be rebuilt the moment the version reopens the gate.
+    /// </summary>
+    [Fact]
+    public void ClientVersionArrivingAfterLogin_RebuildsBuffBar()
+    {
+        using var loggerFactory = TestHarness.CreateLoggerFactory();
+        var world = TestHarness.CreateWorld();
+        var engine = new SpellEngine(world, new SpellRegistry());
+        var client = CreatePlayingClient(loggerFactory, world, out var state, out var player);
+        client.SetEngines(spellEngine: engine);
+
+        // A game connection before the 0xBD reply: no version, legacy era.
+        state.ClientEra = ClientEra.Sphere56x;
+        state.ClientVersionNumber = 0;
+        Assert.False(state.SupportsBuffIcon);
+
+        var schedule = typeof(SpellEngine).GetMethod("ScheduleEffectExpiry",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var def = new SpellDef { Id = SpellType.Bless, DurationBase = 300, DurationScale = 300 };
+        schedule.Invoke(engine, [player, player, SpellType.Bless, def, 8]);
+
+        var changes = new List<(BuffIcon Icon, bool Add)>();
+        Character.OnClientBuffChanged = (target, icon, add, _, _) =>
+        {
+            if (target == player)
+                changes.Add((icon, add));
+        };
+
+        client.HandleClientVersion("7.0.20.0");
+
+        Assert.True(state.SupportsBuffIcon);
+        Assert.Contains(changes, c => c.Icon == BuffIcon.Bless && c.Add);
+    }
+
     [Fact]
     public void BuffPacket_UsesSourceXIconAndClilocLayout()
     {
@@ -249,20 +288,23 @@ public class SourceXGameplayParityTests
         var ch = world.CreateCharacter();
         ch.IsPlayer = true;
         world.PlaceCharacter(ch, new Point3D(100, 100, 0, 0));
-        var changes = new List<(BuffIcon Icon, bool Add, ushort Duration)>();
-        Character.OnClientBuffChanged = (target, icon, add, duration) =>
+        var changes = new List<(BuffIcon Icon, bool Add, ushort Duration, string[]? Args)>();
+        Character.OnClientBuffChanged = (target, icon, add, duration, args) =>
         {
             if (target == ch)
-                changes.Add((icon, add, duration));
+                changes.Add((icon, add, duration, args));
         };
 
         var schedule = typeof(SpellEngine).GetMethod("ScheduleEffectExpiry",
             BindingFlags.Instance | BindingFlags.NonPublic)!;
         var def = new SpellDef { Id = SpellType.Bless, DurationBase = 300, DurationScale = 300 };
-        schedule.Invoke(engine, [ch, ch, SpellType.Bless, def]);
+        schedule.Invoke(engine, [ch, ch, SpellType.Bless, def, 8]);
 
-        Assert.Contains(changes, c => c == (BuffIcon.Bless, false, 0));
-        Assert.Contains(changes, c => c.Icon == BuffIcon.Bless && c.Add && c.Duration == 30);
+        Assert.Contains(changes, c => c.Icon == BuffIcon.Bless && !c.Add && c.Duration == 0);
+        var added = Assert.Single(changes, c => c.Icon == BuffIcon.Bless && c.Add);
+        Assert.Equal(30, added.Duration);
+        // Bless carries one cliloc argument per base stat (Source-X STAT_BASE_QTY).
+        Assert.Equal(["8", "8", "8"], added.Args!);
 
         changes.Clear();
         engine.ResendBuffs(ch);
@@ -270,10 +312,11 @@ public class SourceXGameplayParityTests
         Assert.False(changes[0].Add);
         Assert.True(changes[1].Add);
         Assert.InRange(changes[1].Duration, (ushort)1, (ushort)30);
+        Assert.Equal(["8", "8", "8"], changes[1].Args!);
 
         changes.Clear();
         engine.ProcessExpirations(long.MaxValue);
-        Assert.Contains(changes, c => c == (BuffIcon.Bless, false, 0));
+        Assert.Contains(changes, c => c.Icon == BuffIcon.Bless && !c.Add && c.Duration == 0);
     }
 
     [Fact]

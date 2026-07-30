@@ -873,12 +873,24 @@ public sealed class ClientSkillsHandler
         // Parse version string (e.g. "7.0.20.0") into the numeric format used by NetState
         if (!string.IsNullOrEmpty(version) && _netState.ClientVersionNumber == 0)
         {
+            bool couldSendBuffs = _netState.SupportsBuffIcon;
             if (TryParseClientVersionNumber(version, out uint parsedVersion))
             {
                 _netState.ClientVersionNumber = parsedVersion;
                 _logger.LogInformation("Client version detected from 0xBD: {Ver} -> {Num}", version, _netState.ClientVersionNumber);
                 if (GameClient.ServerAutoResDisp && _client.Account != null)
                     _ = _client.HandleResolvedClientVersion();
+
+                // The buff bar is gated on the client version (Source-X
+                // PacketBuff::CanSendTo / MINCLIVER_BUFFS), and the game socket
+                // only learns that version from this 0xBD reply — the classic
+                // client sends the bare 4-byte seed there, not the 0xEF seed
+                // that carries a version. Anything sent before the reply landed
+                // was therefore dropped, so rebuild the bar now that the gate
+                // opened. No-op when the character is not in world yet: the
+                // regular login resend covers that case.
+                if (!couldSendBuffs && _netState.SupportsBuffIcon && _client.Character != null)
+                    _client.Spells?.ResendBuffs(_client.Character);
             }
         }
     }

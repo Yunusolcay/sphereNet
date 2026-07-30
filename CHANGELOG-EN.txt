@@ -4,6 +4,49 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-07-30] - Buff/debuff bar: version-gate race, missing icons, empty tooltips
+----------------------------------------
+
+FIX - Buff icons could be suppressed for an entire session. Packet 0xDF is gated on
+        SupportsBuffIcon (Source-X PacketBuff::CanSendTo / MINCLIVER_BUFFS), and the
+        game socket has no version of its own: the classic client sends the bare
+        4-byte seed there, not the 0xEF seed that carries a version, so the server
+        only learns it from the 0xBD reply it requests after 0x91. With ClientEra set
+        to anything but Modern, every buff raised before that reply landed was dropped
+        and never re-sent - including the whole login resend. HandleClientVersion now
+        rebuilds the buff bar (SpellEngine.ResendBuffs) when a newly parsed version
+        flips SupportsBuffIcon from false to true.
+
+FIX - Buff tooltips rendered their cliloc placeholders empty. Source-X fills a NumBuff
+        array with the effect magnitude and passes it to addBuff; SphereNet always took
+        the no-argument branch of the packet. Character.OnClientBuffChanged now carries
+        the formatter arguments, ScheduleEffectExpiry records the effect magnitude, and
+        the argument counts follow the reference exactly: one per stat for
+        Clumsy/Feeblemind/Weaken/Strength/Agility/Cunning, three for Bless and Mass
+        Curse, and three plus four fixed 10s for Curse. After a world reload the resend
+        derives the magnitude from the persisted stat delta.
+
+FIX - The gargoyle fly toggle raised BuffIcon.GargoyleFly, but the icon had no catalog
+        entry, so the lookup failed and no packet was ever sent. Added with the
+        Source-X clilocs (receive.cpp:3366).
+
+FIX - The criminal-status icon was never raised. Source-X toggles it with
+        STATF_CRIMINAL (CCharAct.cpp:352 / :460); SphereNet now does the same from
+        SetStatFlag/ClearStatFlag and includes it in the login resend.
+
+CHANGE - BuffIcon completed to the full Source-X BUFF_ICONS table (was 51 of ~190
+        entries, stopping at GargoyleFly). ADDBUFF/REMOVEBUFF now range-check the icon
+        argument against BI_START..BI_QTY like Source-X CClient.cpp instead of emitting
+        a packet the client discards.
+
+CHANGE - ClientBuffCatalog extended from 21 to 36 icons: the polymorph-layer forms
+        (Horrific Beast, Lich Form, Vampiric Embrace, Wraith Form, Reaper Form, Stone
+        Form, Beast/Monster Form), Strangle, Corpse Skin, Blood Oath (both sides), Gift
+        of Renewal, Attune Weapon, Thunderstorm, Essence of Wind, Ethereal Voyage, Gift
+        of Life, Arcane Empowerment, Mortal Strike, Criminal Status and Gargoyle Fly.
+        Cliloc pairs are copied verbatim from the Source-X call sites, including the two
+        places upstream reuses another spell's clilocs.
+
 [2026-07-30] - Panel dependency audit is clean again (CI unblocked)
 ----------------------------------------
 

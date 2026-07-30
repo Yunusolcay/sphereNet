@@ -3,6 +3,50 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-07-30] - Buff/debuff cubugu: surum-kapisi yarisi, eksik ikonlar, bos tooltip'ler
+----------------------------------------
+
+FIX - Buff ikonlari bir oturum boyunca hic gorunmeyebiliyordu. 0xDF paketi
+        SupportsBuffIcon ile kapiliyor (Source-X PacketBuff::CanSendTo /
+        MINCLIVER_BUFFS) ve oyun soketinin kendine ait bir surumu yok: klasik client
+        oraya surum tasiyan 0xEF seed'ini degil, cıplak 4-byte seed'i gonderiyor;
+        sunucu surumu yalnizca 0x91'den sonra istedigi 0xBD yanitindan ogreniyor.
+        ClientEra Modern disinda bir degerdeyse, o yanit gelmeden once olusan her buff
+        dusuruluyor ve bir daha gonderilmiyordu - login'deki toplu yeniden gonderim
+        dahil. HandleClientVersion artik yeni cozulen surum SupportsBuffIcon'u false'tan
+        true'ya cevirdiginde buff cubugunu yeniden kuruyor (SpellEngine.ResendBuffs).
+
+FIX - Buff tooltip'leri cliloc yer tutucularini bos basiyordu. Source-X bir NumBuff
+        dizisini efekt buyuklugu ile doldurup addBuff'a veriyor; SphereNet ise her
+        zaman paketin argumansiz dalini kullaniyordu. Character.OnClientBuffChanged
+        artik formatlayici argumanlarini tasiyor, ScheduleEffectExpiry efekt
+        buyuklugunu kaydediyor ve arguman sayilari referansla birebir ayni:
+        Clumsy/Feeblemind/Weaken/Strength/Agility/Cunning icin stat basina bir, Bless
+        ve Mass Curse icin uc, Curse icin uc arti sabit dort adet 10. Dunya yeniden
+        yuklendikten sonra yeniden gonderim buyuklugu kalici stat delta'sindan turetir.
+
+FIX - Gargoyle ucus anahtari BuffIcon.GargoyleFly uretiyordu ama ikonun katalog kaydi
+        yoktu; arama basarisiz olup hic paket gonderilmiyordu. Source-X cliloc'lari ile
+        eklendi (receive.cpp:3366).
+
+FIX - Criminal-status ikonu hic gonderilmiyordu. Source-X bunu STATF_CRIMINAL ile
+        birlikte aciyor/kapatiyor (CCharAct.cpp:352 / :460); SphereNet artik ayni sekilde
+        SetStatFlag/ClearStatFlag uzerinden yapiyor ve login yeniden gonderimine dahil
+        ediyor.
+
+CHANGE - BuffIcon tam Source-X BUFF_ICONS tablosuna tamamlandi (GargoyleFly'da kesilen
+        ~190 kaydin 51'i vardi). ADDBUFF/REMOVEBUFF artik ikon argumanini Source-X
+        CClient.cpp gibi BI_START..BI_QTY araliginda dogruluyor; client'in atacagi bir
+        paketi uretmiyor.
+
+CHANGE - ClientBuffCatalog 21 ikondan 36'ya cikti: polymorph katmanindaki formlar
+        (Horrific Beast, Lich Form, Vampiric Embrace, Wraith Form, Reaper Form, Stone
+        Form, Beast/Monster Form), Strangle, Corpse Skin, Blood Oath (iki taraf), Gift
+        of Renewal, Attune Weapon, Thunderstorm, Essence of Wind, Ethereal Voyage, Gift
+        of Life, Arcane Empowerment, Mortal Strike, Criminal Status ve Gargoyle Fly.
+        Cliloc ciftleri Source-X cagri yerlerinden birebir alindi; ust kaynakta baska
+        bir buyunun cliloc'unu tekrar kullanan iki yer dahil.
+
 [2026-07-30] - Panel bagimlilik denetimi yeniden temiz (CI acildi)
 ----------------------------------------
 

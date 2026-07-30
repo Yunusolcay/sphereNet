@@ -112,8 +112,8 @@ public sealed class CharacterPoisonState
         _nextTick = Environment.TickCount64 + GetTickInterval();
         if (source.IsValid) _source = source;
         _owner.SetStatFlag(StatFlag.Poisoned);
-        Character.OnClientBuffChanged?.Invoke(_owner, BuffIcon.Poison, false, 0);
-        Character.OnClientBuffChanged?.Invoke(_owner, BuffIcon.Poison, true, RemainingDurationSeconds);
+        Character.OnClientBuffChanged?.Invoke(_owner, BuffIcon.Poison, false, 0, null);
+        Character.OnClientBuffChanged?.Invoke(_owner, BuffIcon.Poison, true, RemainingDurationSeconds, null);
         Character.OnHealthBarStatusChanged?.Invoke(_owner); // green health-bar tint
     }
 
@@ -127,7 +127,7 @@ public sealed class CharacterPoisonState
         _owner.ClearStatFlag(StatFlag.Poisoned);
         if (wasPoisoned)
         {
-            Character.OnClientBuffChanged?.Invoke(_owner, BuffIcon.Poison, false, 0);
+            Character.OnClientBuffChanged?.Invoke(_owner, BuffIcon.Poison, false, 0, null);
             Character.OnHealthBarStatusChanged?.Invoke(_owner); // clear the green tint
         }
     }
