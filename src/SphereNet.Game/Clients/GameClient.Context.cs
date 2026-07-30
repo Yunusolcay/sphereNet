@@ -206,6 +206,7 @@ public sealed partial class GameClient : IClientContext
     void IClientContext.HandleVendorInteraction(Character vendor) => HandleVendorInteraction(vendor);
     void IClientContext.HandleDoubleClick(uint uid) => HandleDoubleClick(uid);
     ResDisplayVersion IClientContext.HandleResolvedClientVersion() => HandleResolvedClientVersion();
+    void IClientContext.StoreReportedClientVersion() => StoreReportedClientVersion();
     void IClientContext.HandleCastSpell(SpellType spell, uint targetUid) => HandleCastSpell(spell, targetUid);
     void IClientContext.HandleChatOpen() => HandleChatOpen();
     void IClientContext.HandleQueryDesignDetails(byte[] data) => HandleQueryDesignDetails(data);

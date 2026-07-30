@@ -38,6 +38,53 @@ public sealed partial class GameClient
 {
     private static readonly LoginRateLimiter s_loginRateLimiter = new();
 
+    /// <summary>Source-X account tags that carry the detected client version
+    /// from the login socket to the game socket (CClientLog.cpp:916). The login
+    /// connection learns the version from the 0xEF seed; the game connection
+    /// gets only a bare 4-byte seed and would otherwise decide every
+    /// version-dependent packet format — 0xB9 feature-flag width, the buff bar,
+    /// AOS tooltips — with no version at all until the 0xBD reply lands.</summary>
+    private const string ClientVersionTag = "CLIENTVERSION";
+    private const string ReportedClientVersionTag = "REPORTEDCLIVER";
+
+    /// <summary>Remember the connection's client version on the account so the
+    /// next connection of the same account starts out knowing it.</summary>
+    private void StoreAccountClientVersion(string tag)
+    {
+        if (_account == null || _netState.ClientVersionNumber == 0)
+            return;
+        _account.SetTag(tag, _netState.ClientVersionNumber.ToString(
+            System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>Persist the version the client reported through 0xBD.</summary>
+    internal void StoreReportedClientVersion() =>
+        StoreAccountClientVersion(ReportedClientVersionTag);
+
+    /// <summary>Seed this connection's version from the account tags when the
+    /// socket has none of its own (Source-X send.cpp reads the same tags rather
+    /// than the live socket). Returns true when a version was adopted.</summary>
+    private bool RestoreAccountClientVersion()
+    {
+        if (_account == null || _netState.ClientVersionNumber != 0)
+            return false;
+
+        uint best = 0;
+        foreach (string tag in new[] { ClientVersionTag, ReportedClientVersionTag })
+        {
+            if (_account.TryGetTag(tag, out string raw) &&
+                uint.TryParse(raw, System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out uint parsed))
+                best = Math.Max(best, parsed);
+        }
+        if (best == 0)
+            return false;
+
+        _netState.ClientVersionNumber = best;
+        _logger.LogDebug("Client version restored from account tags: {Num}", best);
+        return true;
+    }
+
     public void HandleLoginRequest(string account, string password)
     {
         if (IsLoginLimited(account))
@@ -62,6 +109,10 @@ public sealed partial class GameClient
 
         RegisterLoginSuccess(account);
         _account.LastIp = _netState.RemoteEndPoint?.Address.ToString() ?? "";
+        // The login socket's 0xEF seed carries the version; hand it to the game
+        // socket through the account, exactly like Source-X does before the
+        // relay ("pass detected client version to the game server").
+        StoreAccountClientVersion(ClientVersionTag);
         if (_netState.ClientVersionNumber == 0)
             _netState.Send(new PacketClientVersionRequest());
         // Config-driven server list (self entry + any configured extra shards).
@@ -98,6 +149,10 @@ public sealed partial class GameClient
         }
 
         RegisterLoginSuccess(account);
+        // Adopt the version the login connection detected BEFORE any capability
+        // decision below: 0xB9 picks a 3- or 5-byte body from it, and a modern
+        // client whose packet table expects 5 desyncs on a 3-byte one.
+        RestoreAccountClientVersion();
         if (_netState.ClientVersionNumber == 0)
             _netState.Send(new PacketClientVersionRequest());
         // Feature enable (0xB9) — must come before char list.

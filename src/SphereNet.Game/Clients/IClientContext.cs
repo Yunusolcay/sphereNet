@@ -158,6 +158,7 @@ internal interface IClientContext : ITextConsole
     void HandleVendorInteraction(Character vendor);
     void HandleDoubleClick(uint uid);
     ResDisplayVersion HandleResolvedClientVersion();
+    void StoreReportedClientVersion();
     void HandleCastSpell(SpellType spell, uint targetUid);
     void HandleChatOpen();
     void HandleQueryDesignDetails(byte[] data);

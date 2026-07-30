@@ -3,6 +3,28 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-07-31] - Client surumu artik login-oyun sunucusu gecisinde kayboluyor degil
+----------------------------------------
+
+FIX - Oyun baglantisi, surume bagli her paket formatini hicbir client surumu
+        olmadan seciyordu. Klasik client surumunu yalnizca LOGIN baglantisindaki
+        0xEF seed'inde gonderir; oyun baglantisina cıplak 4-byte seed gider. Bu
+        yuzden sifreleme anahtarlari client'i tanimlamadikca sunucu 0x91'i
+        yanitlarken hala surum 0'daydi - orada gonderdigi 0xBD istegi de henuz
+        yanitlanmis olamaz. ClientEra Sphere56x kaldiginda bu, 0xB9'un 2 byte'lik
+        bayrak alaniyla gitmesi demekti; oysa 6.0.14.2+ herhangi bir client'in
+        paket tablosu 4 bekler, yani client bir sonraki paketin iki byte'ini bu
+        paketin parcasi sanarak okuyordu. Ayni bilinmeyen surum, login sekansi
+        boyunca buff cubugunu ve AOS tooltip'lerini de sessizce kapatiyordu.
+
+        Source-X bunu, tespit edilen surumu hesaba yazarak (CClientLog.cpp:916 -
+        "pass detected client version to the game server") ve canli soket yerine
+        hesaptan geri okuyarak cozer (send.cpp:3866). SphereNet artik ayni sekilde
+        yapiyor: login baglantisi CLIENTVERSION hesap etiketini yaziyor, 0xBD
+        REPORTEDCLIVER'i yaziyor, oyun baglantisi ise herhangi bir yetenek karari
+        vermeden once ikisinin buyugunu benimsiyor. Ikisi de duz hesap etiketi
+        oldugu icin hesap formati degismiyor.
+
 [2026-07-31] - Buff cubugu devami: buyukluk kaliciligi, Blood Oath, ag takilma ikonu
 ----------------------------------------
 

@@ -4,6 +4,28 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-07-31] - Client version now survives the login-to-game-server handoff
+----------------------------------------
+
+FIX - The game connection decided every version-dependent packet format with no
+        client version at all. The classic client sends its version only in the
+        0xEF seed on the LOGIN connection; the game connection gets a bare 4-byte
+        seed, so unless encryption keys happened to identify the client, the server
+        was still at version 0 when it answered 0x91 - the 0xBD request it sends
+        there cannot have been answered yet. With ClientEra left at Sphere56x that
+        meant 0xB9 went out with a 2-byte flag field while any 6.0.14.2+ client's
+        packet table expects 4, so the client read two bytes of the following packet
+        as part of it. The same unknown version silently disabled the buff bar and
+        AOS tooltips for the whole login sequence.
+
+        Source-X solves this by stashing the detected version on the account
+        (CClientLog.cpp:916 - "pass detected client version to the game server") and
+        reading it back from the account rather than the live socket
+        (send.cpp:3866). SphereNet now does the same: the login connection writes
+        the CLIENTVERSION account tag, 0xBD writes REPORTEDCLIVER, and the game
+        connection adopts the higher of the two before any capability decision.
+        Both are plain account tags, so no account format change.
+
 [2026-07-31] - Buff bar follow-up: magnitude persistence, Blood Oath, web stuck icon
 ----------------------------------------
 

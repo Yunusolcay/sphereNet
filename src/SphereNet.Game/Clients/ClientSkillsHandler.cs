@@ -878,6 +878,9 @@ public sealed class ClientSkillsHandler
             {
                 _netState.ClientVersionNumber = parsedVersion;
                 _logger.LogInformation("Client version detected from 0xBD: {Ver} -> {Num}", version, _netState.ClientVersionNumber);
+                // Source-X CClientLog.cpp:918 stores the reported version on the
+                // account so the next connection does not have to ask again.
+                _client.StoreReportedClientVersion();
                 if (GameClient.ServerAutoResDisp && _client.Account != null)
                     _ = _client.HandleResolvedClientVersion();
 

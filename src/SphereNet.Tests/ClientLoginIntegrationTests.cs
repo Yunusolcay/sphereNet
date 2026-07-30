@@ -206,6 +206,52 @@ public class ClientLoginIntegrationTests
         Assert.Contains((byte)0xA9, outgoing); // character list
     }
 
+    // 0xEF seed: opcode + seed(4) + major(4) + minor(4) + revision(4) + patch(4).
+    // The classic client sends this on the LOGIN connection only; the game
+    // connection gets the bare 4-byte seed with no version in it.
+    private static byte[] SeedPacketWithVersion(uint major, uint minor, uint rev, uint patch)
+    {
+        var b = new byte[21];
+        b[0] = 0xEF;
+        PutU32(b, 1, Seed);
+        PutU32(b, 5, major);
+        PutU32(b, 9, minor);
+        PutU32(b, 13, rev);
+        PutU32(b, 17, patch);
+        return b;
+    }
+
+    /// <summary>Source-X carries the login connection's detected client version
+    /// to the game connection through account tags (CClientLog.cpp:916, "pass
+    /// detected client version to the game server"). Without that handoff the
+    /// game socket decides every version-dependent format with no version:
+    /// 0xB9 would go out with a 2-byte flag field while a 6.0.14.2+ client's
+    /// packet table expects 4, and the client would read two bytes of the next
+    /// packet as part of it.</summary>
+    [Fact]
+    public void GameLogin_AdoptsLoginConnectionVersion_AndSendsWideFeaturePacket()
+    {
+        var (world, accounts, lf) = CreateEnv();
+        var nm = NewManager(lf);
+
+        var (_, login) = NewConnection(lf, world, accounts);
+        Pump(nm, login, SeedPacketWithVersion(7, 0, 20, 0));
+        Pump(nm, login, LoginPacket("hero", "secret"));
+        Assert.Equal(70_020_000u, login.ClientVersionNumber);
+        Pump(nm, login, ServerSelectPacket(0));
+
+        // Game connection: bare seed, no version of its own.
+        var (_, game) = NewConnection(lf, world, accounts);
+        Pump(nm, game, Concat(SeedBytes(), GameLoginPacket(RelayAuthId, "hero", "secret")));
+
+        Assert.Equal(70_020_000u, game.ClientVersionNumber);
+        Assert.True(game.SupportsBuffIcon);
+
+        var feature = Assert.Single(TestHarness.GetQueuedPackets(game),
+            p => p.Span.Length > 0 && p.Span[0] == 0xB9);
+        Assert.Equal(5, feature.Span.Length); // 4-byte flag field, not 2
+    }
+
     [Fact]
     public void CharSelect_AfterGameLogin_EntersWorld()
     {
