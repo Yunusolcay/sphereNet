@@ -4,6 +4,30 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-07-31] - Container audit: two blind spots closed in the invariant sweep
+----------------------------------------
+
+CHANGE - The backpack/container structure was audited end to end. The live pack and
+        save load clean: WorldInvariantAuditor reports 0 anomalies over the real
+        world, so on that data no item is lost between the server's Contents and
+        the client-facing container index. Item.TryAddItem was also reviewed: its
+        capacity and cycle guards run BEFORE the item is detached from its old
+        parent, so a refused add cannot orphan an item, and PlaceItemInPack drops
+        to the ground when the pack is full instead of dropping the item.
+
+FIX - The auditor itself had two blind spots, both on the "item vanished" side:
+
+        The index-vs-Contents comparison bailed out early on a container whose
+        server-side Contents were empty, so index entries under an empty bag - the
+        ghost items a client draws and nobody can pick up - were never reported.
+        Both directions are now checked regardless of content count.
+
+        Only items were walked, never characters, so an item whose ContainedIn
+        names a CHARACTER was never validated at all. Worn gear, memory items and
+        the item being dragged legitimately live there; anything else is in limbo
+        - invisible, unreachable, still saved and still counted. That is now
+        reported as CharacterLimboItem.
+
 [2026-07-31] - Four client packets Source-X answers were silently dropped
 ----------------------------------------
 

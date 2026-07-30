@@ -3,6 +3,33 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-07-31] - Konteyner denetimi: invariant taramasindaki iki kor nokta kapatildi
+----------------------------------------
+
+CHANGE - Canta/konteyner yapisi bastan sona denetlendi. Canli paket ve save temiz
+        yukleniyor: WorldInvariantAuditor gercek dunya uzerinde 0 anomali
+        bildiriyor, yani o veride sunucunun Contents'i ile client'in gordugu
+        konteyner indeksi arasinda kaybolan esya yok. Item.TryAddItem de gozden
+        gecirildi: kapasite ve dongu kontrolleri esya eski ebeveyninden
+        AYRILMADAN once calisiyor, dolayisiyla reddedilen bir ekleme esyayi
+        oksuz birakamiyor; PlaceItemInPack da canta doluysa esyayi dusurmek
+        yerine yere birakiyor.
+
+FIX - Denetcinin kendisinde iki kor nokta vardi, ikisi de "esya kayboldu" tarafinda:
+
+        Indeks-Contents karsilastirmasi, sunucu tarafinda Contents'i bos olan bir
+        konteynerde erken cikiyordu; boylece bos bir cantanin altindaki indeks
+        kayitlari - client'in cizdigi ama kimsenin alamadigi hayalet esyalar - hic
+        raporlanmiyordu. Artik icerik sayisindan bagimsiz olarak iki yon de
+        kontrol ediliyor.
+
+        Yalnizca esyalar geziliyordu, karakterler hic gezilmiyordu; bu yuzden
+        ContainedIn'i bir KARAKTERI gosteren esya hic dogrulanmiyordu. Giyili
+        esyalar, memory item'lar ve suruklenen esya orada mesru olarak durur;
+        bunlarin disindaki her sey limbodadir - gorunmez, ulasilamaz, yine de
+        kaydedilir ve yine de sayilir. Artik CharacterLimboItem olarak
+        raporlaniyor.
+
 [2026-07-31] - Source-X'in yanitladigi dort client paketi sessizce dusuyordu
 ----------------------------------------
 

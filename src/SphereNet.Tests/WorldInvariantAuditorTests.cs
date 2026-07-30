@@ -78,6 +78,76 @@ public sealed class WorldInvariantAuditorTests
             a => a.Kind == WorldInvariantAuditor.Kind.ContainerIndexMissing);
     }
 
+    /// <summary>The orphan direction must be checked even when the container is
+    /// server-side EMPTY: index entries under an empty bag are items the client
+    /// draws but nobody can pick up. The check used to bail out on
+    /// ContentCount == 0 and never saw them.</summary>
+    [Fact]
+    public void DetectsContainerIndexOrphan_InAServerSideEmptyBag()
+    {
+        var world = MakeWorld();
+        var pack = world.CreateItem();
+        pack.ItemType = ItemType.Container;
+        world.PlaceItem(pack, new Point3D(100, 100, 0, 0));
+        var ghost = world.CreateItem();
+        pack.AddItem(ghost);
+
+        // Drop it from the authoritative Contents only — the index keeps serving
+        // it to the client.
+        pack.RemoveItem(ghost);
+        world.ContainerIndexAdd(pack.Uid.Value, ghost);
+
+        Assert.Equal(0, pack.ContentCount);
+        Assert.Contains(WorldInvariantAuditor.Audit(world), a =>
+            a.Kind == WorldInvariantAuditor.Kind.ContainerIndexOrphan &&
+            a.Uid == ghost.Uid.Value);
+    }
+
+    /// <summary>An item parked on a character that is neither worn, remembered
+    /// nor dragged is unreachable — the server-side shape of "my item vanished".
+    /// </summary>
+    [Fact]
+    public void DetectsCharacterLimboItem_TheVanishedItem()
+    {
+        var world = MakeWorld();
+        var ch = world.CreateCharacter();
+        ch.IsPlayer = true;
+        ch.Name = "Tester";
+        world.PlaceCharacter(ch, new Point3D(100, 100, 0, 0));
+
+        var lost = world.CreateItem();
+        lost.ContainedIn = ch.Uid; // never equipped, never a memory
+
+        Assert.Contains(WorldInvariantAuditor.Audit(world), a =>
+            a.Kind == WorldInvariantAuditor.Kind.CharacterLimboItem &&
+            a.Uid == lost.Uid.Value);
+    }
+
+    /// <summary>Worn gear, memories and the item currently in hand are all
+    /// legitimately parked on the character and must not be flagged.</summary>
+    [Fact]
+    public void CharacterContainment_AcceptsWornMemoryAndDraggedItems()
+    {
+        var world = MakeWorld();
+        var ch = world.CreateCharacter();
+        ch.IsPlayer = true;
+        world.PlaceCharacter(ch, new Point3D(100, 100, 0, 0));
+
+        var worn = world.CreateItem();
+        worn.ItemType = ItemType.Container;
+        ch.Equip(worn, Layer.Pack);
+
+        var memory = ch.Memory_CreateSpellEffect(1, 0x2053, 5, Serial.Invalid, "bless");
+
+        var dragged = world.CreateItem();
+        dragged.ContainedIn = ch.Uid;
+        ch.SetTag("DRAGGING", dragged.Uid.Value.ToString());
+
+        Assert.DoesNotContain(WorldInvariantAuditor.Audit(world),
+            a => a.Kind == WorldInvariantAuditor.Kind.CharacterLimboItem);
+        Assert.NotNull(memory);
+    }
+
     [Fact]
     public void DetectsContainerParentMissing()
     {

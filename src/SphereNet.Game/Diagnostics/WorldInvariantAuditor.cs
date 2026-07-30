@@ -35,6 +35,11 @@ public static class WorldInvariantAuditor
         /// <summary>A char spawner tracks more live children than its cap allows —
         /// e.g. a reload that re-spawned a fresh quota without re-linking the old.</summary>
         SpawnerOverCount,
+        /// <summary>An item's ContainedIn points at a character, but the character
+        /// neither wears it, remembers it, nor is dragging it. The item is in
+        /// limbo: nobody can see or reach it, yet it is still saved and still
+        /// counts against weight — the "it just vanished" report.</summary>
+        CharacterLimboItem,
     }
 
     public readonly record struct Anomaly(Kind Kind, uint Uid, string Detail)
@@ -49,12 +54,49 @@ public static class WorldInvariantAuditor
         var anomalies = new List<Anomaly>();
         foreach (var obj in world.GetAllObjects())
         {
+            if (obj is Objects.Characters.Character ch)
+            {
+                if (!ch.IsDeleted)
+                    AuditCharacterContainment(world, ch, anomalies);
+                continue;
+            }
             if (obj is not Item item || item.IsDeleted) continue;
             AuditContainment(world, item, anomalies);
             AuditType(item, anomalies);
             AuditSpawner(item, anomalies);
         }
         return anomalies;
+    }
+
+    /// <summary>An item may name a CHARACTER as its container: worn gear, the
+    /// memory items the engine equips on the special layer, and the item
+    /// currently being dragged all live there. Anything else indexed under a
+    /// character is unreachable — not worn, not remembered, not in hand — and is
+    /// the server-side shape of an item that "disappeared".</summary>
+    private static void AuditCharacterContainment(
+        GameWorld world, Objects.Characters.Character ch, List<Anomaly> outList)
+    {
+        var legitimate = new HashSet<uint>();
+        for (int layer = 1; layer < (int)Layer.Qty; layer++)
+        {
+            var worn = ch.GetEquippedItem((Layer)layer);
+            if (worn != null)
+                legitimate.Add(worn.Uid.Value);
+        }
+        foreach (var mem in ch.Memories)
+            legitimate.Add(mem.Uid.Value);
+        // The lift/drop path parks the dragged item on the character until it
+        // lands somewhere, so it is legitimately in neither collection.
+        if (ch.TryGetTag("DRAGGING", out string? dragged) &&
+            uint.TryParse(dragged, out uint draggedUid))
+            legitimate.Add(draggedUid);
+
+        foreach (var child in world.GetContainerContents(ch.Uid))
+        {
+            if (!legitimate.Contains(child.Uid.Value))
+                outList.Add(new Anomaly(Kind.CharacterLimboItem, child.Uid.Value,
+                    $"ContainedIn=0x{ch.Uid.Value:X8} ({ch.GetName()}) but not worn, remembered or dragged"));
+        }
     }
 
     private static void AuditContainment(GameWorld world, Item item, List<Anomaly> outList)
@@ -68,9 +110,10 @@ public static class WorldInvariantAuditor
 
         // 2. The client view (container index) must equal the server's Contents.
         //    This is the exact class of the "bag empty on client, full in .edit" bug:
-        //    items entered Contents while the index was never updated.
-        if (item.ContentCount == 0) return;
-
+        //    items entered Contents while the index was never updated. Both
+        //    directions matter and an EMPTY container is not exempt: index
+        //    entries under a server-side empty bag are ghost items the client
+        //    draws and the player cannot pick up.
         var authoritative = new HashSet<uint>();
         foreach (var child in item.Contents)
             if (!child.IsDeleted)
