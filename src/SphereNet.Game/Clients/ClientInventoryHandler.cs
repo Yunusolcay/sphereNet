@@ -1475,6 +1475,60 @@ public sealed class ClientInventoryHandler
         return item.IsEquipped;
     }
 
+    /// <summary>0xEC equip-item macro (Source-X PacketEquipItemMacro). Each
+    /// serial must already be carried by the character and not worn; the item
+    /// is lifted and equipped on its own layer, so reach checks and the
+    /// @PickUp_*/@EquipTest/@Equip triggers all still run. Serials that fail
+    /// any step are skipped rather than aborting the batch, as upstream does.
+    /// </summary>
+    public void HandleEquipMacro(IReadOnlyList<uint> serials)
+    {
+        if (_character == null || _character.IsDead) return;
+
+        foreach (uint serial in serials)
+        {
+            var item = _world.FindItem(new Serial(serial));
+            if (item == null || item.IsEquipped)
+                continue;
+            // Source-X requires the item's top-level owner to be the character:
+            // the macro equips from your own pack, never off the ground.
+            if (item.ResolveTopObject() != _character)
+                continue;
+
+            Layer layer = _client.ItemUse.ResolveWearableLayer(item);
+            if (layer is Layer.None or Layer.Pack or Layer.Hair or Layer.FacialHair ||
+                (int)layer >= (int)Layer.Horse)
+                continue;
+
+            TryDClickEquip(item, layer);
+        }
+    }
+
+    /// <summary>0xED unequip-item macro (Source-X PacketUnEquipItemMacro):
+    /// strip the named layers back into the pack.</summary>
+    public void HandleUnequipMacro(IReadOnlyList<ushort> layers)
+    {
+        if (_character == null || _character.IsDead) return;
+
+        foreach (ushort raw in layers)
+        {
+            var layer = (Layer)raw;
+            if (layer is Layer.None or Layer.Pack or Layer.Hair or Layer.FacialHair ||
+                (int)layer >= (int)Layer.Horse)
+                continue;
+
+            var item = _character.GetEquippedItem(layer);
+            if (item == null || !ItemMoveRules.CanMove(_character, item, out _))
+                continue;
+
+            _character.Unequip(layer);
+            var removePkt = new PacketDeleteObject(item.Uid.Value);
+            _netState.Send(removePkt);
+            BroadcastNearby?.Invoke(_character.Position, UpdateRange, removePkt, _character.Uid.Value);
+            PlaceItemInPack(_character, item);
+        }
+    }
+
     public void HandleItemEquip(uint serial, byte layer, uint charSerial)
     {
         if (_character == null) return;

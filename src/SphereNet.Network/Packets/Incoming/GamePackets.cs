@@ -487,6 +487,86 @@ public sealed class PacketPromptResponse : PacketHandler
     }
 }
 
+/// <summary>0xC2 — Unicode prompt response, the counterpart of the 0x9A ASCII
+/// one (Source-X PacketPromptResponseUnicode). The client answers a prompt in
+/// the same encoding the server asked in, so this arrives only for a unicode
+/// prompt; it feeds the same handler as 0x9A.</summary>
+public sealed class PacketPromptResponseUnicode : PacketHandler
+{
+    public PacketPromptResponseUnicode() : base(0xC2, 0) { }
+
+    public override void OnReceive(PacketBuffer buffer, State.NetState state)
+    {
+        uint serial = buffer.ReadUInt32();
+        uint promptId = buffer.ReadUInt32();
+        uint type = buffer.ReadUInt32(); // 0=cancel, 1=ok
+        if (buffer.Remaining < 4) return;
+        for (int i = 0; i < 4; i++)
+            buffer.ReadByte(); // language tag ("ENU\0")
+
+        string text = "";
+        if (type != 0 && buffer.Remaining >= 2)
+        {
+            // The remaining body is the text; Source-X derives its length from
+            // the packet length rather than trusting a terminator.
+            int chars = buffer.Remaining / 2;
+            text = buffer.ReadUnicodeFixed(Math.Min(chars, 512)).TrimEnd('\0');
+        }
+        state.OnPromptResponse(serial, promptId, type, text);
+    }
+}
+
+/// <summary>0xEC — Equip item macro (Source-X PacketEquipItemMacro). Carries up
+/// to three item serials the client wants worn in one shot.</summary>
+public sealed class PacketEquipMacro : PacketHandler
+{
+    public PacketEquipMacro() : base(0xEC, 0) { }
+
+    public override void OnReceive(PacketBuffer buffer, State.NetState state)
+    {
+        if (buffer.Remaining < 1) return;
+        // Source-X caps the count at 3 "to prevent packet exploit sending fake
+        // values just to create heavy loops and overload server CPU".
+        int count = Math.Min((int)buffer.ReadByte(), 3);
+        var serials = new List<uint>(count);
+        for (int i = 0; i < count && buffer.Remaining >= 4; i++)
+            serials.Add(buffer.ReadUInt32());
+        if (serials.Count > 0)
+            state.OnEquipMacro(serials);
+    }
+}
+
+/// <summary>0xED — Unequip item macro (Source-X PacketUnEquipItemMacro).
+/// Carries up to three layers the client wants stripped to the pack.</summary>
+public sealed class PacketUnequipMacro : PacketHandler
+{
+    public PacketUnequipMacro() : base(0xED, 0) { }
+
+    public override void OnReceive(PacketBuffer buffer, State.NetState state)
+    {
+        if (buffer.Remaining < 1) return;
+        int count = Math.Min((int)buffer.ReadByte(), 3); // same exploit cap as 0xEC
+        var layers = new List<ushort>(count);
+        for (int i = 0; i < count && buffer.Remaining >= 2; i++)
+            layers.Add(buffer.ReadUInt16());
+        if (layers.Count > 0)
+            state.OnUnequipMacro(layers);
+    }
+}
+
+/// <summary>0xFB — Show public house content toggle (Source-X
+/// PacketPublicHouseContent).</summary>
+public sealed class PacketPublicHouseContent : PacketHandler
+{
+    public PacketPublicHouseContent() : base(0xFB, 2) { }
+
+    public override void OnReceive(PacketBuffer buffer, State.NetState state)
+    {
+        if (buffer.Remaining < 1) return;
+        state.OnPublicHouseContent(buffer.ReadByte() != 0);
+    }
+}
+
 /// <summary>0x7D — Menu choice response (old-style menus, crafting, etc.).</summary>
 public sealed class PacketMenuChoice : PacketHandler
 {

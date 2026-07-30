@@ -899,6 +899,20 @@ public sealed class NetState : IDisposable
     public Action<NetState, uint, ushort, byte, string>? GumpTextEntryHandler { get; set; }
     public Action<NetState, uint>? AllNamesRequestHandler { get; set; }
 
+    /// <summary>0xEC equip-item macro: the serials the client wants worn, in
+    /// order (Source-X PacketEquipItemMacro).</summary>
+    public Action<NetState, IReadOnlyList<uint>>? EquipMacroHandler { get; set; }
+    /// <summary>0xED unequip-item macro: the layers the client wants stripped
+    /// (Source-X PacketUnEquipItemMacro).</summary>
+    public Action<NetState, IReadOnlyList<ushort>>? UnequipMacroHandler { get; set; }
+    /// <summary>0xFB public-house-content toggle (Source-X
+    /// PacketPublicHouseContent, CClient::_fShowPublicHouseContent).</summary>
+    public Action<NetState, bool>? PublicHouseContentHandler { get; set; }
+
+    internal void OnEquipMacro(IReadOnlyList<uint> serials) => EquipMacroHandler?.Invoke(this, serials);
+    internal void OnUnequipMacro(IReadOnlyList<ushort> layers) => UnequipMacroHandler?.Invoke(this, layers);
+    internal void OnPublicHouseContent(bool show) => PublicHouseContentHandler?.Invoke(this, show);
+
     public string ClientVersion { get; set; } = "";
 
     /// <summary>Default map view range (tiles) for a new connection, from config

@@ -351,6 +351,76 @@ public class SourceXGameplayParityTests
         Assert.Contains(changes, c => c.Target == victim && c.Icon == BuffIcon.BloodOathCurse && !c.Add);
     }
 
+    /// <summary>0xED unequip macro (Source-X PacketUnEquipItemMacro): the named
+    /// layers are stripped and bounced into the pack.</summary>
+    [Fact]
+    public void UnequipMacro_StripsTheLayerIntoThePack()
+    {
+        using var loggerFactory = TestHarness.CreateLoggerFactory();
+        var world = TestHarness.CreateWorld();
+        var client = CreatePlayingClient(loggerFactory, world, out _, out var player);
+
+        var pack = world.CreateItem();
+        pack.BaseId = 0x0E75;
+        pack.ItemType = ItemType.Container;
+        player.Equip(pack, Layer.Pack);
+        player.Backpack = pack;
+
+        var weapon = world.CreateItem();
+        weapon.BaseId = 0x0F5E; // broadsword
+        weapon.ItemType = ItemType.WeaponSword;
+        player.Equip(weapon, Layer.OneHanded);
+        Assert.True(weapon.IsEquipped);
+
+        client.HandleUnequipMacro([(ushort)Layer.OneHanded]);
+
+        Assert.False(weapon.IsEquipped);
+        Assert.Equal(pack.Uid, weapon.ContainedIn);
+        Assert.Null(player.GetEquippedItem(Layer.OneHanded));
+    }
+
+    /// <summary>The macros must never touch the pack or hair layers, and the
+    /// batch is capped at three entries upstream so a forged count cannot spin
+    /// the server (Source-X "prevent packet exploit ... overload server CPU").
+    /// </summary>
+    [Fact]
+    public void UnequipMacro_RefusesThePackLayer()
+    {
+        using var loggerFactory = TestHarness.CreateLoggerFactory();
+        var world = TestHarness.CreateWorld();
+        var client = CreatePlayingClient(loggerFactory, world, out _, out var player);
+
+        var pack = world.CreateItem();
+        pack.BaseId = 0x0E75;
+        pack.ItemType = ItemType.Container;
+        player.Equip(pack, Layer.Pack);
+        player.Backpack = pack;
+
+        client.HandleUnequipMacro([(ushort)Layer.Pack]);
+
+        Assert.True(pack.IsEquipped);
+        Assert.Same(pack, player.GetEquippedItem(Layer.Pack));
+    }
+
+    /// <summary>An item that is not in the character's possession must not be
+    /// equippable through the macro (Source-X checks GetTopLevelObj).</summary>
+    [Fact]
+    public void EquipMacro_IgnoresItemsNotCarriedByTheCharacter()
+    {
+        using var loggerFactory = TestHarness.CreateLoggerFactory();
+        var world = TestHarness.CreateWorld();
+        var client = CreatePlayingClient(loggerFactory, world, out _, out var player);
+
+        var onGround = world.CreateItem();
+        onGround.BaseId = 0x0F5E;
+        onGround.ItemType = ItemType.WeaponSword;
+        world.PlaceItem(onGround, new Point3D((short)(player.X + 1), player.Y, 0, 0));
+
+        client.HandleEquipMacro([onGround.Uid.Value]);
+
+        Assert.False(onGround.IsEquipped);
+    }
+
     [Fact]
     public void BuffPacket_UsesSourceXIconAndClilocLayout()
     {

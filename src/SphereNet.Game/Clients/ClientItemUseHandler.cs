@@ -3108,7 +3108,7 @@ public sealed class ClientItemUseHandler
         }
     }
 
-    private Layer ResolveWearableLayer(Item item)
+    internal Layer ResolveWearableLayer(Item item)
     {
         var itemDef = DefinitionLoader.GetItemDef(item.BaseId);
         Layer layer = itemDef?.Layer ?? Layer.None;

@@ -3562,6 +3562,9 @@ public static partial class Program
                 charDelete: OnCharDelete,
                 dyeResponse: OnDyeResponse,
                 promptResponse: OnPromptResponse,
+                equipMacro: OnEquipMacro,
+                unequipMacro: OnUnequipMacro,
+                publicHouseContent: OnPublicHouseContent,
                 menuChoice: OnMenuChoice,
                 // Phase 2
                 bookPage: OnBookPage,

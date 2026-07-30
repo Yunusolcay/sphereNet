@@ -138,6 +138,10 @@ public sealed class NetworkManager : IDisposable
         _packetManager.Register(new PacketCharDelete());
         _packetManager.Register(new PacketDyeResponse());
         _packetManager.Register(new PacketPromptResponse());
+        _packetManager.Register(new PacketPromptResponseUnicode());
+        _packetManager.Register(new PacketEquipMacro());
+        _packetManager.Register(new PacketUnequipMacro());
+        _packetManager.Register(new PacketPublicHouseContent());
         _packetManager.Register(new PacketMenuChoice());
 
         // Phase 2: Content Features
@@ -916,7 +920,10 @@ public sealed class NetworkManager : IDisposable
         Action<NetState, ushort, uint, PacketBuffer>? encodedCommand = null,
         Action<NetState>? crashReport = null,
         Action<NetState, byte>? clientUiButton = null,
-        Action<NetState, ushort, string>? chatAction = null)
+        Action<NetState, ushort, string>? chatAction = null,
+        Action<NetState, IReadOnlyList<uint>>? equipMacro = null,
+        Action<NetState, IReadOnlyList<ushort>>? unequipMacro = null,
+        Action<NetState, bool>? publicHouseContent = null)
     {
         foreach (var state in _states)
         {
@@ -977,6 +984,9 @@ public sealed class NetworkManager : IDisposable
             // Phase 3
             state.GumpTextEntryHandler = gumpTextEntry;
             state.AllNamesRequestHandler = allNamesRequest;
+            state.EquipMacroHandler = equipMacro;
+            state.UnequipMacroHandler = unequipMacro;
+            state.PublicHouseContentHandler = publicHouseContent;
         }
     }
 

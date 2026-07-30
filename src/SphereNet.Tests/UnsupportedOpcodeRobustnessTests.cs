@@ -64,10 +64,12 @@ public class UnsupportedOpcodeRobustnessTests
         var seen = new List<(byte Op, int Len)>();
         mgr.OnUnknownPacket += (_, op, bytes) => seen.Add((op, bytes.Length));
 
-        // 0xFB (2) + 0xF1 (9), back to back.
+        // 0x33 (2) + 0xF1 (9), back to back. Both are fixed-length opcodes with
+        // no registered handler, so the framer must still consume exactly their
+        // declared size and hand the next packet over intact.
         var buffer = new byte[2 + 9];
-        buffer[0] = 0xFB;
-        // buffer[1] is 0xFB payload
+        buffer[0] = 0x33;
+        // buffer[1] is 0x33 payload
         buffer[2] = 0xF1;
         state.InjectReceived(buffer);
 
@@ -75,7 +77,7 @@ public class UnsupportedOpcodeRobustnessTests
 
         Assert.False(state.IsClosing);
         Assert.Equal(0, state.ReceivedData.Length); // fully consumed, no leftover
-        Assert.Equal(new[] { ((byte)0xFB, 2), ((byte)0xF1, 9) }, seen);
+        Assert.Equal(new[] { ((byte)0x33, 2), ((byte)0xF1, 9) }, seen);
     }
 
     [Fact]

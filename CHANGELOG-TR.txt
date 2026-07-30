@@ -3,6 +3,41 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-07-31] - Source-X'in yanitladigi dort client paketi sessizce dusuyordu
+----------------------------------------
+
+FIX - ClassicUO'nun gonderdigi her opcode ile kayitli gelen handler'lar
+        karsilastirildiginda hicbir handler'i olmayan alti paket cikti; bunlarin
+        dordunun Source-X karsiligi var ve artik uygulandi:
+
+        0xEC equip-item makrosu (PacketEquipItemMacro) - client'in "sunlari giy"
+        makrosu hicbir sey yapmiyordu. Esyalar mevcut alma ve giyme yolundan
+        gecirilerek giydiriliyor; boylece mesafe, sahiplik ve
+        @PickUp_*/@EquipTest/@Equip tetikleyicileri calismaya devam ediyor.
+        Yalnizca karakterin uzerindeki esyalar kabul ediliyor (ust kaynak
+        GetTopLevelObj kontrol eder) ve grup ust kaynaktaki ayni exploit
+        korumasiyla ucte siniritlanmis durumda.
+
+        0xED unequip-item makrosu (PacketUnEquipItemMacro) - belirtilen
+        katmanlari ayni sinirla cantaya geri indirir. Pack, sac ve binek
+        katmanlarina hic dokunulmaz.
+
+        0xC2 unicode prompt yaniti (PacketPromptResponseUnicode) - 0x9A ASCII
+        yanitinin esi; ayni handler'i besliyor.
+
+        0xFB public-house-content anahtari (PacketPublicHouseContent) -
+        referanstaki _fShowPublicHouseContent gibi baglanti basina tutuluyor.
+
+        Kalan ikisi 0xA7 (tip istegi; henuz olmayan bir tips/notice sistemi
+        gerektiriyor) ve 0x3F (UltimaLive static update, istege bagli harita
+        protokolu); ikisi de bilinmeyen-paket yoluna gitmeye devam ediyor.
+
+CHANGE - Ayrica mekanik olarak dogrulandi, hata bulunmadi: SphereNet'in gelen
+        paket uzunluk tablosu Source-X tablosuna karsi (yalnizca 0xD1 farkli;
+        orada SphereNet client'in gercekten gonderdigi degeri kullaniyor), giden
+        paket siniflari (biri disinda hepsi erisilebilir) ve motorun statik
+        hook'lari (hepsi atanmis).
+
 [2026-07-31] - Client surumu artik login-oyun sunucusu gecisinde kayboluyor degil
 ----------------------------------------
 

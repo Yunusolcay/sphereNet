@@ -4,6 +4,40 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-07-31] - Four client packets Source-X answers were silently dropped
+----------------------------------------
+
+FIX - A sweep of every opcode ClassicUO sends against the registered incoming
+        handlers turned up six with no handler at all; four of those have a
+        Source-X counterpart and are now implemented:
+
+        0xEC equip-item macro (PacketEquipItemMacro) - the client's "equip these"
+        macro did nothing. Items are lifted and worn through the existing pickup
+        and equip path, so reach, ownership and the @PickUp_*/@EquipTest/@Equip
+        triggers all still run. Only items the character already carries qualify
+        (upstream checks GetTopLevelObj) and the batch is capped at three, the
+        same exploit guard upstream documents.
+
+        0xED unequip-item macro (PacketUnEquipItemMacro) - strips the named
+        layers back into the pack, with the same cap. Pack, hair and mount layers
+        are never touched.
+
+        0xC2 unicode prompt response (PacketPromptResponseUnicode) - the
+        counterpart of the 0x9A ASCII reply, feeding the same handler.
+
+        0xFB show-public-house-content toggle (PacketPublicHouseContent) - stored
+        per connection like the reference _fShowPublicHouseContent.
+
+        The remaining two are 0xA7 (tip request, needs a tips/notice system that
+        does not exist yet) and 0x3F (UltimaLive static update, an opt-in map
+        protocol); both are still routed to the unknown-packet path.
+
+CHANGE - Also verified mechanically, with no defect found: SphereNet's incoming
+        packet length table against the Source-X table (only 0xD1 differs, where
+        SphereNet matches what the client actually sends), the outgoing packet
+        classes (all but one are reachable), and the engine's static hooks (all
+        assigned).
+
 [2026-07-31] - Client version now survives the login-to-game-server handoff
 ----------------------------------------
 

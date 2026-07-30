@@ -56,8 +56,12 @@ incoming handler below must be documented here, and tests fail if registry/docs 
 - `0xD9` Hardware info
 - `0xE1` Client type
 - `0xE3` KR encryption negotiation
+- `0xC2` Unicode prompt response (counterpart of the `0x9A` ASCII one)
+- `0xEC` Equip item macro (Source-X `PacketEquipItemMacro`, batch capped at 3)
+- `0xED` Unequip item macro (Source-X `PacketUnEquipItemMacro`, batch capped at 3)
 - `0xF4` Crash report (logs and fires @UserBugReport)
 - `0xFA` Ultima Store button (fires @UserUltimaStoreButton)
+- `0xFB` Show public house content toggle
 
 ## Known Ignored
 - `0x01` Disconnect notification

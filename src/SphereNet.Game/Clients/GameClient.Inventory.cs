@@ -23,6 +23,19 @@ public sealed partial class GameClient
     public void HandleItemEquip(uint serial, byte layer, uint charSerial) =>
         Inventory.HandleItemEquip(serial, layer, charSerial);
 
+    /// <summary>0xEC equip-item macro (Source-X PacketEquipItemMacro).</summary>
+    public void HandleEquipMacro(IReadOnlyList<uint> serials) =>
+        Inventory.HandleEquipMacro(serials);
+
+    /// <summary>0xED unequip-item macro (Source-X PacketUnEquipItemMacro).</summary>
+    public void HandleUnequipMacro(IReadOnlyList<ushort> layers) =>
+        Inventory.HandleUnequipMacro(layers);
+
+    /// <summary>0xFB toggle — the client asks to see the contents of public
+    /// houses (Source-X CClient::_fShowPublicHouseContent). Stored per
+    /// connection so housing checks can honour it.</summary>
+    public bool ShowPublicHouseContent { get; set; }
+
     public void HandleProfileRequest(byte mode, uint serial, string bioText = "") =>
         Inventory.HandleProfileRequest(mode, serial, bioText);
 

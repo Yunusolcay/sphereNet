@@ -1157,6 +1157,24 @@ public static partial class Program
             client.HandlePromptResponse(serial, promptId, type, text);
     }
 
+    private static void OnEquipMacro(NetState state, IReadOnlyList<uint> serials)
+    {
+        if (_clients.TryGetValue(state.Id, out var client))
+            client.HandleEquipMacro(serials);
+    }
+
+    private static void OnUnequipMacro(NetState state, IReadOnlyList<ushort> layers)
+    {
+        if (_clients.TryGetValue(state.Id, out var client))
+            client.HandleUnequipMacro(layers);
+    }
+
+    private static void OnPublicHouseContent(NetState state, bool show)
+    {
+        if (_clients.TryGetValue(state.Id, out var client))
+            client.ShowPublicHouseContent = show;
+    }
+
     private static void OnMenuChoice(NetState state, uint serial, ushort menuId, ushort index, ushort modelId)
     {
         if (_clients.TryGetValue(state.Id, out var client))
