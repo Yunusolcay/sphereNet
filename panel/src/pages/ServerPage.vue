@@ -64,7 +64,6 @@
         <div class="console-input-row">
           <span class="prompt-label">»</span>
           <input
-            ref="cmdInput"
             v-model="cmdText"
             class="console-input"
             placeholder="save / status / help …"
@@ -131,7 +130,6 @@ async function sendBroadcast() {
 interface ConsoleLine { type: 'cmd' | 'resp'; text: string }
 
 const consoleEl    = ref<HTMLElement | null>(null)
-const cmdInput     = ref<HTMLInputElement | null>(null)
 const cmdText      = ref('')
 const consoleLines = ref<ConsoleLine[]>([])
 const history      = ref<string[]>([])

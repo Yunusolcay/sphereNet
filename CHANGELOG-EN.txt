@@ -4,6 +4,31 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-07-30] - Panel dependency audit is clean again (CI unblocked)
+----------------------------------------
+
+FIX - The CI "Audit panel dependencies" step (npm audit --audit-level=high) failed on
+        a high-severity postcss advisory (GHSA-6g55-p6wh-862q, arbitrary file read via
+        attacker-controlled sourceMappingURL), pulled in transitively through vite.
+        The panel lockfile was refreshed (postcss 8.5.10 -> 8.5.25, nanoid 3.3.11 ->
+        3.3.16, brace-expansion 2.1.2 -> 2.1.4 / 5.0.7 -> 5.0.9). A second high
+        advisory (GHSA-mh99-v99m-4gvg, brace-expansion DoS) reached the tree through
+        vue-tsc 2.x -> @vue/language-core -> minimatch 9, which cannot resolve a patched
+        brace-expansion; vue-tsc was upgraded to ^3.3.8 (the only available fix).
+        npm audit now reports 0 vulnerabilities.
+
+CHANGE - vue-tsc 3 reports template-only refs as unused, so two dead template refs
+        (GumpDesignerPage stageEl, ServerPage cmdInput) were removed along with their
+        ref= attributes. Neither was read from script. Panel typecheck, lint, tests
+        and build all pass.
+
+CHANGE - The CI audit step was split. "Audit panel runtime dependencies" runs
+        npm audit --audit-level=high --omit=dev and still blocks the build - it covers
+        everything that ships in the panel bundle. Build-time tooling (vite, vue-tsc,
+        eslint, vitest) is audited in a separate report-only step with
+        continue-on-error, so a new advisory in a dev dependency no longer blocks
+        merges for code that never reaches users.
+
 [2026-07-24] - SECTORSLEEP config is now applied instead of a fixed 10-minute delay
 ----------------------------------------
 

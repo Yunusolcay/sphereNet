@@ -33,7 +33,7 @@
         <input v-model="dialogName" class="name-input" placeholder="d_panel_test" />
         <span>{{ visibleControls.length }} kontrol · sürükleyerek taşı</span>
       </div>
-      <div ref="stageEl" class="stage" @mousedown.self="selectedIndex = -1">
+      <div class="stage" @mousedown.self="selectedIndex = -1">
         <component
           :is="'div'"
           v-for="c in visibleControls"
@@ -152,7 +152,6 @@ const pickedDialog = ref('')
 const activePage = ref('all')
 const showOutlines = ref(true)
 const scriptText = ref('')
-const stageEl = ref<HTMLElement | null>(null)
 // <ifade> içeren / çözümlenemeyen satırlar — dışa aktarımda aynen korunur
 const passthroughLines = ref<string[]>([])
 let nextId = 1

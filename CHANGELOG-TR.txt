@@ -3,6 +3,32 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-07-30] - Panel bagimlilik denetimi yeniden temiz (CI acildi)
+----------------------------------------
+
+FIX - CI'daki "Audit panel dependencies" adimi (npm audit --audit-level=high) yuksek
+        onem dereceli bir postcss zafiyetinde (GHSA-6g55-p6wh-862q, saldirgan
+        kontrolundeki sourceMappingURL ile keyfi dosya okuma) hata veriyordu; paket
+        agaca vite uzerinden dolayli giriyordu. Panel lockfile yenilendi (postcss
+        8.5.10 -> 8.5.25, nanoid 3.3.11 -> 3.3.16, brace-expansion 2.1.2 -> 2.1.4 /
+        5.0.7 -> 5.0.9). Ikinci bir yuksek zafiyet (GHSA-mh99-v99m-4gvg,
+        brace-expansion DoS) agaca vue-tsc 2.x -> @vue/language-core -> minimatch 9
+        yolundan geliyordu ve bu zincir yamali brace-expansion'i cozemiyor; tek
+        mevcut cozum olarak vue-tsc ^3.3.8'e yukseltildi. npm audit artik 0 zafiyet
+        bildiriyor.
+
+CHANGE - vue-tsc 3, sadece template'te kullanilan ref'leri kullanilmamis sayiyor; bu
+        yuzden iki olu template ref (GumpDesignerPage stageEl, ServerPage cmdInput)
+        ref= nitelikleriyle birlikte kaldirildi. Ikisi de script tarafindan
+        okunmuyordu. Panel typecheck, lint, test ve build gecti.
+
+CHANGE - CI audit adimi ikiye ayrildi. "Audit panel runtime dependencies" adimi
+        npm audit --audit-level=high --omit=dev calistirir ve build'i kirmaya devam
+        eder; panel bundle'ina giren her seyi kapsar. Build-time araclar (vite,
+        vue-tsc, eslint, vitest) ayri bir sadece-rapor adiminda continue-on-error ile
+        denetlenir; boylece bir dev bagimliliginda cikan yeni zafiyet, kullaniciya hic
+        ulasmayan kod yuzunden merge'i engellemez.
+
 [2026-07-24] - SECTORSLEEP config'i artik uygulaniyor, sabit 10 dakika degil
 ----------------------------------------
 

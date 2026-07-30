@@ -47,8 +47,16 @@ jobs:
         working-directory: panel
         run: npm run test
 
-      - name: Audit panel dependencies
+      # Blocking: only what actually ships in the panel bundle.
+      - name: Audit panel runtime dependencies
         working-directory: panel
+        run: npm audit --audit-level=high --omit=dev
+
+      # Informational: build-time tooling (vite/vue-tsc/eslint/vitest). Advisories here
+      # do not reach users, so they are reported without failing the build.
+      - name: Audit panel dev dependencies (report only)
+        working-directory: panel
+        continue-on-error: true
         run: npm audit --audit-level=high
 
       - name: Build panel
