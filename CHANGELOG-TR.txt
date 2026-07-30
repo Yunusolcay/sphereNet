@@ -3,6 +3,33 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-07-31] - Buff cubugu devami: buyukluk kaliciligi, Blood Oath, ag takilma ikonu
+----------------------------------------
+
+FIX - Buff tooltip buyuklugu yalnizca oturum icinde tutuluyordu; yeniden baslatmadan
+        sonra stat buff tooltip'leri kaydin tuttugu sayi yerine stat delta'sindan
+        turetilen degeri gosteriyordu. Source-X bunu spell memory'sinin
+        m_itSpell.m_spelllevel alaninda tutar; bu alan MOREY'dir ve dunya kaydina
+        MOREP ile yazilir. SphereNet artik ayni sekilde aynaliyor:
+        AttachSpellMemory memory'nin MOREY'ini dolduruyor (sabit 0 gecmisti) ve
+        efekt kaydi degeri sondaki bir alanda tasiyor. Bu alani icermeyen eski
+        kayitlar stat-delta yedegini kullanmaya devam ediyor; mevcut save'ler
+        degismeden yukleniyor.
+
+FIX - Blood Oath yanlis karaktere yanlis ikonu koyuyordu. Efekt CASTER uzerinde
+        durdugu icin genel efekt-bildirimi caster'a kurbanin lanet ikonunu veriyor,
+        kurbana ise hicbir sey gitmiyordu. Source-X CCharSpell.cpp:1312 iki ikon
+        uretir: kurbanda caster'in adini iki kez tasiyan BloodOathCurse, caster'da
+        kurbanin adini tasiyan BloodOathCaster. Ikisi de artik acikca uretiliyor ve
+        bag koptugunda ikisi de dusuyor; buyu, bunu ifade edemeyen tek-ikon
+        eslemesinden cikarildi.
+
+FIX - Orumcek agina takilmak hicbir ikon gostermiyordu. Source-X LAYER_FLAG_Stuck
+        karakter tutuldugu surece paralize ikonunu gosterir (CCharAct.cpp:358) ve
+        katman kalkinca dusurur (:466). Aga basma artik ikonu uretiyor, agi yok etmek
+        de temizliyor. Geri sayim gonderilmiyor - agdan zamanlayiciyla degil
+        cabalayarak kurtuluyorsunuz.
+
 [2026-07-30] - Buff/debuff cubugu: surum-kapisi yarisi, eksik ikonlar, bos tooltip'ler
 ----------------------------------------
 

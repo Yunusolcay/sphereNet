@@ -265,6 +265,92 @@ public class SourceXGameplayParityTests
         Assert.Contains(changes, c => c.Icon == BuffIcon.Bless && c.Add);
     }
 
+    /// <summary>Source-X keeps the effect magnitude in the spell memory's
+    /// m_itSpell.m_spelllevel (MOREY), which the world save writes out with
+    /// MOREP — so a restart still shows the exact number in the buff tooltip.
+    /// SphereNet mirrors it into the memory item and the effect record.</summary>
+    [Fact]
+    public void BuffMagnitude_SurvivesSaveReloadAndReachesTheMemoryMoreY()
+    {
+        using var loggerFactory = TestHarness.CreateLoggerFactory();
+        var world = TestHarness.CreateWorld();
+        var engine = new SpellEngine(world, new SpellRegistry());
+        var ch = world.CreateCharacter();
+        ch.IsPlayer = true;
+        world.PlaceCharacter(ch, new Point3D(100, 100, 0, 0));
+
+        var schedule = typeof(SpellEngine).GetMethod("ScheduleEffectExpiry",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var def = new SpellDef { Id = SpellType.Strength, DurationBase = 300, DurationScale = 300 };
+        schedule.Invoke(engine, [ch, ch, SpellType.Strength, def, 12]);
+
+        // The spell memory carries the magnitude in MOREY, as Source-X does.
+        var memory = Assert.Single(ch.Memories, m => m.ItemType == ItemType.Spell);
+        Assert.Equal(12, memory.MoreP.Y);
+
+        // Round-trip the effect through the persisted record.
+        var record = Assert.Single(engine.GetPersistedEffectRecords(ch, Environment.TickCount64));
+        var reloaded = new SpellEngine(world, new SpellRegistry());
+        var target = world.CreateCharacter();
+        target.IsPlayer = true;
+        world.PlaceCharacter(target, new Point3D(101, 100, 0, 0));
+        target.AddPendingSpellEffectRecord(record);
+        Assert.Equal(1, reloaded.RestorePersistedEffects(target));
+
+        var changes = new List<(BuffIcon Icon, bool Add, string[]? Args)>();
+        Character.OnClientBuffChanged = (t, icon, add, _, args) =>
+        {
+            if (t == target)
+                changes.Add((icon, add, args));
+        };
+        reloaded.ResendBuffs(target);
+
+        var added = Assert.Single(changes, c => c.Icon == BuffIcon.Strength && c.Add);
+        Assert.Equal(["12"], added.Args!);
+    }
+
+    /// <summary>Blood Oath is the one spell that raises two different icons on
+    /// two characters (Source-X CCharSpell.cpp:1312): the victim gets the curse
+    /// named after the caster, the caster gets the bond named after the victim.
+    /// </summary>
+    [Fact]
+    public void BloodOath_RaisesCurseOnVictimAndBondOnCaster()
+    {
+        using var loggerFactory = TestHarness.CreateLoggerFactory();
+        var world = TestHarness.CreateWorld();
+        var registry = new SpellRegistry();
+        registry.Register(new SpellDef
+        {
+            Id = SpellType.BloodOath, DurationBase = 300, DurationScale = 300
+        });
+        var engine = new SpellEngine(world, registry);
+        var caster = world.CreateCharacter();
+        caster.IsPlayer = true;
+        caster.Name = "Necro";
+        world.PlaceCharacter(caster, new Point3D(100, 100, 0, 0));
+        var victim = world.CreateCharacter();
+        victim.Name = "Prey";
+        world.PlaceCharacter(victim, new Point3D(101, 100, 0, 0));
+
+        var changes = new List<(Character Target, BuffIcon Icon, bool Add, string[]? Args)>();
+        Character.OnClientBuffChanged = (t, icon, add, _, args) => changes.Add((t, icon, add, args));
+
+        engine.ApplyDirectEffect(caster, victim, SpellType.BloodOath, 300);
+
+        var curse = Assert.Single(changes,
+            c => c.Target == victim && c.Icon == BuffIcon.BloodOathCurse && c.Add);
+        Assert.Equal(["Necro", "Necro"], curse.Args!);
+        var bond = Assert.Single(changes,
+            c => c.Target == caster && c.Icon == BuffIcon.BloodOathCaster && c.Add);
+        Assert.Equal(["Prey"], bond.Args!);
+
+        // Breaking the bond drops both icons.
+        changes.Clear();
+        engine.ClearAllEffectsOnDeath(caster);
+        Assert.Contains(changes, c => c.Target == caster && c.Icon == BuffIcon.BloodOathCaster && !c.Add);
+        Assert.Contains(changes, c => c.Target == victim && c.Icon == BuffIcon.BloodOathCurse && !c.Add);
+    }
+
     [Fact]
     public void BuffPacket_UsesSourceXIconAndClilocLayout()
     {

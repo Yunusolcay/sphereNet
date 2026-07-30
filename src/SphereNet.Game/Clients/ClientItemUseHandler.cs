@@ -998,7 +998,13 @@ public sealed class ClientItemUseHandler
                     silk.Amount = 1;
                     _world.PlaceItemWithDecay(silk, webPos);
                     if (_character.IsStatFlag(StatFlag.Freeze))
+                    {
                         _character.ClearStatFlag(StatFlag.Freeze);
+                        // Source-X CCharAct.cpp:466 drops the paralyze icon when
+                        // the stuck layer goes away.
+                        Character.OnClientBuffChanged?.Invoke(
+                            _character, BuffIcon.Paralyze, false, 0, null);
+                    }
                     SysMessage("You destroy the web.");
                 }
                 else

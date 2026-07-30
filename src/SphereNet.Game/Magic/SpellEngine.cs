@@ -133,8 +133,10 @@ public sealed class SpellEngine
 
         /// <summary>Effect magnitude reported to the client's buff tooltip —
         /// the Source-X m_itSpell.m_spelllevel equivalent, fed to the cliloc
-        /// formatter arguments. Session state only; after a reload the resend
-        /// falls back to the persisted stat deltas.</summary>
+        /// formatter arguments. Persisted with the effect record and mirrored
+        /// into the spell memory's MOREY, so a reload keeps the exact value.
+        /// Records written before this field existed fall back to the stat
+        /// delta (see <see cref="GetBuffMagnitude"/>).</summary>
         public int BuffMagnitude { get; set; }
 
         // Periodic damage-over-time (reference SPELLFLAG_TICK spell memories:
@@ -2296,6 +2298,18 @@ public sealed class SpellEngine
                 eff.BloodOathLevel = level;
                 caster.BloodOathEnemy = target.Uid;
                 caster.BloodOathLevel = level;
+                // Blood Oath is the one spell that raises two different icons on
+                // two different characters (Source-X CCharSpell.cpp:1312): the
+                // victim carries the curse with the caster's name, the caster
+                // carries the bond with the victim's name. The per-effect notify
+                // cannot express that, so BloodOath is deliberately absent from
+                // the spell->icon map and both sides are raised here.
+                ushort oathSeconds = (ushort)Math.Clamp(
+                    (eff.ExpireTick - Environment.TickCount64 + 999) / 1000, 1, ushort.MaxValue);
+                RaiseBuffIcon(target, BuffIcon.BloodOathCurse, oathSeconds,
+                    [caster.GetName(), caster.GetName()]);
+                RaiseBuffIcon(caster, BuffIcon.BloodOathCaster, oathSeconds,
+                    [target.GetName()]);
                 break;
             }
             case SpellType.EvilOmen:
@@ -2787,6 +2801,17 @@ public sealed class SpellEngine
             add ? BuildBuffArgs(definition.Icon, magnitude) : null);
     }
 
+    /// <summary>Raise a buff icon directly, for the effects whose icon does not
+    /// follow the one-icon-per-spell-on-the-effect-target rule. Removes first,
+    /// like every Source-X addBuff site: a client that still holds the icon
+    /// would otherwise keep the old countdown instead of the new one.</summary>
+    private static void RaiseBuffIcon(Character target, BuffIcon icon,
+        ushort durationSeconds, string[]? args)
+    {
+        Character.OnClientBuffChanged?.Invoke(target, icon, false, 0, null);
+        Character.OnClientBuffChanged?.Invoke(target, icon, true, durationSeconds, args);
+    }
+
     /// <summary>Cliloc formatter arguments for a buff tooltip — Source-X
     /// resendBuffs/Spell_Effect_Add fill a NumBuff array with the effect
     /// magnitude before calling addBuff, and the client interpolates them into
@@ -2826,8 +2851,11 @@ public sealed class SpellEngine
     {
         ushort graphic = def?.RuneItemId ?? 0;
         Serial source = caster != null ? caster.Uid : Serial.Invalid;
+        // MOREY carries the effect magnitude, matching Source-X
+        // m_itSpell.m_spelllevel — the value resendBuffs reads back to fill the
+        // buff tooltip, and what a script reading the memory's MOREY expects.
         eff.Memory = eff.Target.Memory_CreateSpellEffect(
-            (int)eff.Spell, graphic, 0, source, eff.Spell.ToString());
+            (int)eff.Spell, graphic, eff.BuffMagnitude, source, eff.Spell.ToString());
     }
 
     /// <summary>Remove the active effect represented by this IT_SPELL memory
@@ -3318,6 +3346,11 @@ public sealed class SpellEngine
         }
         if (eff.Spell == SpellType.BloodOath)
         {
+            // Both ends of the bond drop their icon when it breaks — the caster
+            // holds the effect, the bonded enemy only ever got the curse icon.
+            Character.OnClientBuffChanged?.Invoke(t, BuffIcon.BloodOathCaster, false, 0, null);
+            if (eff.BloodOathEnemy.IsValid && _world.FindChar(eff.BloodOathEnemy) is { } bonded)
+                Character.OnClientBuffChanged?.Invoke(bonded, BuffIcon.BloodOathCurse, false, 0, null);
             t.BloodOathEnemy = Serial.Invalid;
             t.BloodOathLevel = 0;
         }
@@ -3569,14 +3602,15 @@ public sealed class SpellEngine
             eff.NameChanged ? "1" : "0",
             eff.ArmorDelta.ToString(CultureInfo.InvariantCulture),
             eff.CurseWeaponLevel.ToString(CultureInfo.InvariantCulture),
-            eff.MeditationDelta.ToString(CultureInfo.InvariantCulture));
+            eff.MeditationDelta.ToString(CultureInfo.InvariantCulture),
+            eff.BuffMagnitude.ToString(CultureInfo.InvariantCulture));
     }
 
     private static bool TryDeserializeEffect(Character target, string record, long now, out ActiveSpellEffect eff)
     {
         eff = null!;
         var parts = record.Split('|');
-        if (parts.Length is not (16 or 17 or 18 or 19))
+        if (parts.Length is not (16 or 17 or 18 or 19 or 20))
             return false;
 
         if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int version) ||
@@ -3626,6 +3660,12 @@ public sealed class SpellEngine
         if (parts.Length >= 19 &&
             !int.TryParse(parts[18], NumberStyles.Integer, CultureInfo.InvariantCulture, out meditationDelta))
             return false;
+        // Buff tooltip magnitude (Source-X m_spelllevel). Absent in records
+        // written before it was tracked; those fall back to the stat delta.
+        int buffMagnitude = 0;
+        if (parts.Length >= 20 &&
+            !int.TryParse(parts[19], NumberStyles.Integer, CultureInfo.InvariantCulture, out buffMagnitude))
+            return false;
 
         long expireTick = remainingMs > long.MaxValue - now ? long.MaxValue : now + remainingMs;
         eff = new ActiveSpellEffect
@@ -3649,6 +3689,7 @@ public sealed class SpellEngine
             NewName = newName,
             NameChanged = parts[15] == "1",
             CurseWeaponLevel = curseWeaponLevel,
+            BuffMagnitude = Math.Max(0, buffMagnitude),
         };
         return true;
     }

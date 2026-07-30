@@ -101,7 +101,9 @@ public static class ClientBuffCatalog
 
             [SpellType.Strangle] = BuffIcon.Strangle,
             [SpellType.CorpseSkin] = BuffIcon.CorpseSkin,
-            [SpellType.BloodOath] = BuffIcon.BloodOathCurse,
+            // BloodOath is intentionally absent: it raises BloodOathCurse on the
+            // victim and BloodOathCaster on the caster, which the one-icon-per-
+            // spell lookup cannot express. SpellEngine raises both sides itself.
             [SpellType.GiftOfRenewal] = BuffIcon.GiftOfRenewal,
             [SpellType.Attunement] = BuffIcon.AttuneWeapon,
             [SpellType.Thunderstorm] = BuffIcon.Thunderstorm,

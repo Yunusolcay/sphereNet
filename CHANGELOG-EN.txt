@@ -4,6 +4,32 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-07-31] - Buff bar follow-up: magnitude persistence, Blood Oath, web stuck icon
+----------------------------------------
+
+FIX - The buff tooltip magnitude was session state, so a restart left stat-buff
+        tooltips showing a value derived from the stat delta instead of the number
+        the cast recorded. Source-X keeps it in the spell memory's
+        m_itSpell.m_spelllevel, which is MOREY and therefore written to the world
+        save with MOREP. SphereNet now mirrors it the same way: AttachSpellMemory
+        fills the memory's MOREY (it was hardcoded to 0), and the effect record
+        carries the value as a trailing field. Older records without the field
+        keep the stat-delta fallback, so existing saves load unchanged.
+
+FIX - Blood Oath raised the wrong icon on the wrong character. Its effect lives on
+        the CASTER, so the generic per-effect notify gave the caster the victim's
+        curse icon and the victim nothing at all. Source-X CCharSpell.cpp:1312
+        raises two icons: BloodOathCurse on the victim carrying the caster's name
+        twice, and BloodOathCaster on the caster carrying the victim's name. Both
+        are now raised explicitly and both drop when the bond breaks; the spell was
+        removed from the one-icon-per-spell map that cannot express this.
+
+FIX - Being stuck in a spider web showed no icon. Source-X LAYER_FLAG_Stuck raises
+        the paralyze icon while a character is held (CCharAct.cpp:358) and drops it
+        when the layer goes (:466). The web step now raises it and destroying the
+        web clears it. No countdown is sent - the web is escaped by struggling, not
+        by a timer.
+
 [2026-07-30] - Buff/debuff bar: version-gate race, missing icons, empty tooltips
 ----------------------------------------
 

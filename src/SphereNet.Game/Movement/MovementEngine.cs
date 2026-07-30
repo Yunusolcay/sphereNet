@@ -302,6 +302,11 @@ public sealed class MovementEngine
                         if (item.HitsCur <= 0)
                             item.HitsCur = 60 + Random.Shared.Next(250); // Source-X CCharUse.cpp:638 web strength
                         ch.SetStatFlag(StatFlag.Freeze);
+                        // Source-X LAYER_FLAG_Stuck (CCharAct.cpp:358) shows the
+                        // paralyze icon while a char is held. No countdown here:
+                        // the web is escaped by struggling, not by a timer.
+                        Character.OnClientBuffChanged?.Invoke(
+                            ch, BuffIcon.Paralyze, true, 0, null);
                     }
                     break;
                 case ItemType.Trap:
