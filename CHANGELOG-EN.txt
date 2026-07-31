@@ -29,31 +29,12 @@ FIX - Repeating a one-tile order in the direction the ship already faces did not
         promote it to continuous sailing (Source-X CCMultiMovable.cpp:81), so a
         second click kept stepping one tile at a time instead of getting under way.
 
-CHANGE - The rigging sound Source-X plays on roughly one move order in ten (0x12 or
-        0x13, skipped on an ATTR_MAGIC vessel) was missing; added behind a new
-        OnShipSound hook the server broadcasts to nearby clients.
+CHANGE - Added the rigging sound Source-X plays on roughly one move order in ten
+        (0x12 or 0x13, skipped on an ATTR_MAGIC vessel), behind a new OnShipSound
+        hook the server broadcasts to nearby clients.
 
-CHANGE - Reviewed with no change needed: SHIPSPEED period/tiles parsing and its
-        tenths-of-a-second unit, the halved interval for the fast mode, the
-        movement-type clamp (SphereNet's enum has no value above Normal, so its
-        reject is equivalent to the reference clamp), and the ShipSpeedMode values
-        against the 0xF6 packet (1 one tile, 2 rowboat, 3 slow, 4 fast).
-
-[2026-07-31] - Backpack delete/recreate verified; the three skipped tests now run
+[2026-07-31] - The three permanently skipped tests now run
 ----------------------------------------
-
-CHANGE - Verified the paperdoll backpack lifecycle against Source-X, no defect found.
-        Removing a worn container takes its contents with it: GameWorld.DeleteObject
-        recurses through Contents before unregistering, which is the Source-X
-        CItemContainer::DeletePrepare -> ContentDelete("deleted on the same tick")
-        behaviour, and it covers the whole nested subtree rather than one level.
-        Dropping an item on a packless player then rebuilds one: EnsurePlayerBackpack
-        first recovers a pack still linked by containment (so no duplicate is
-        created), otherwise creates and equips a fresh one, and PlaceItemInPack
-        redraws the wearer so the client learns the new worn container before the
-        content update references it. Locked in by a regression test that deletes a
-        worn pack holding a nested bag and asserts the whole subtree died with no
-        auditor anomalies left behind.
 
 FIX - The three StairThrowDiagnosticTests were permanently skipped and could never
         run: they carried a hard Skip attribute AND pointed at C:\mortechUO\mul,
@@ -65,18 +46,14 @@ FIX - The three StairThrowDiagnosticTests were permanently skipped and could nev
         dumps into wiki/ inside the repo, dirtying the working tree on every run;
         the output now goes to the temp directory. The suite reports 0 skipped.
 
-[2026-07-31] - Container audit: two blind spots closed in the invariant sweep
+CHANGE - Added a regression test for the worn-container delete path: removing a
+        backpack that holds a nested bag must take the whole subtree with it and
+        leave no auditor anomaly behind.
+
+[2026-07-31] - Two blind spots closed in the world invariant auditor
 ----------------------------------------
 
-CHANGE - The backpack/container structure was audited end to end. The live pack and
-        save load clean: WorldInvariantAuditor reports 0 anomalies over the real
-        world, so on that data no item is lost between the server's Contents and
-        the client-facing container index. Item.TryAddItem was also reviewed: its
-        capacity and cycle guards run BEFORE the item is detached from its old
-        parent, so a refused add cannot orphan an item, and PlaceItemInPack drops
-        to the ground when the pack is full instead of dropping the item.
-
-FIX - The auditor itself had two blind spots, both on the "item vanished" side:
+FIX - The auditor had two blind spots, both on the "item vanished" side:
 
         The index-vs-Contents comparison bailed out early on a container whose
         server-side Contents were empty, so index entries under an empty bag - the
@@ -92,9 +69,7 @@ FIX - The auditor itself had two blind spots, both on the "item vanished" side:
 [2026-07-31] - Four client packets Source-X answers were silently dropped
 ----------------------------------------
 
-FIX - A sweep of every opcode ClassicUO sends against the registered incoming
-        handlers turned up six with no handler at all; four of those have a
-        Source-X counterpart and are now implemented:
+FIX - Four client packets that Source-X answers had no handler and were dropped:
 
         0xEC equip-item macro (PacketEquipItemMacro) - the client's "equip these"
         macro did nothing. Items are lifted and worn through the existing pickup
@@ -113,15 +88,13 @@ FIX - A sweep of every opcode ClassicUO sends against the registered incoming
         0xFB show-public-house-content toggle (PacketPublicHouseContent) - stored
         per connection like the reference _fShowPublicHouseContent.
 
-        The remaining two are 0xA7 (tip request, needs a tips/notice system that
-        does not exist yet) and 0x3F (UltimaLive static update, an opt-in map
-        protocol); both are still routed to the unknown-packet path.
+        Still unhandled and routed to the unknown-packet path: 0xA7 (tip request,
+        needs a tips/notice system that does not exist yet) and 0x3F (UltimaLive
+        static update, an opt-in map protocol).
 
-CHANGE - Also verified mechanically, with no defect found: SphereNet's incoming
-        packet length table against the Source-X table (only 0xD1 differs, where
-        SphereNet matches what the client actually sends), the outgoing packet
-        classes (all but one are reachable), and the engine's static hooks (all
-        assigned).
+CHANGE - PROTOCOL_MATRIX.md documents the new opcodes, and the fixed-length
+        unsupported-opcode framing test no longer uses 0xFB as its example since
+        that opcode is now handled.
 
 [2026-07-31] - Client version now survives the login-to-game-server handoff
 ----------------------------------------

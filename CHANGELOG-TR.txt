@@ -30,29 +30,11 @@ FIX - Geminin zaten baktigi yonde tek-kare komutunun tekrarlanmasi onu surekli
         cikmak yerine tek kare adimlamaya devam ediyordu.
 
 CHANGE - Source-X'in yaklasik her on hareket komutundan birinde caldigi armuz sesi
-        (0x12 veya 0x13, ATTR_MAGIC gemide atlanir) eksikti; sunucunun yakindaki
-        client'lara yayinladigi yeni OnShipSound hook'u ile eklendi.
+        (0x12 veya 0x13, ATTR_MAGIC gemide atlanir) eklendi; sunucunun yakindaki
+        client'lara yayinladigi yeni OnShipSound hook'u uzerinden.
 
-CHANGE - Incelendi, degisiklik gerekmedi: SHIPSPEED period/tiles ayristirmasi ve
-        onda-bir-saniye birimi, hizli moddaki yarilanmis aralik, hareket-tipi
-        clamp'i (SphereNet enum'unda Normal'in ustunde deger yok, dolayisiyla
-        reddi referanstaki clamp ile esdeger) ve ShipSpeedMode degerlerinin 0xF6
-        paketiyle uyumu (1 tek kare, 2 rowboat, 3 yavas, 4 hizli).
-
-[2026-07-31] - Canta silme/yeniden olusturma dogrulandi; atlanan uc test artik kosuyor
+[2026-07-31] - Kalici olarak atlanan uc test artik kosuyor
 ----------------------------------------
-
-CHANGE - Paperdoll canta yasam dongusu Source-X'e karsi dogrulandi, hata bulunmadi.
-        Giyili bir konteyner silindiginde icindekiler de gider: GameWorld.DeleteObject
-        kaydi silmeden once Contents'e ozyinelemeli iniyor; bu Source-X'in
-        CItemContainer::DeletePrepare -> ContentDelete ("ayni tick'te silinmeli")
-        davranisi ve tek seviye degil tum ic agaci kapsiyor. Cantasiz bir oyuncunun
-        uzerine esya birakildiginda yenisi kuruluyor: EnsurePlayerBackpack once
-        containment ile hala bagli bir cantayi kurtariyor (kopya olusmuyor), yoksa
-        yenisini yaratip giydiriyor; PlaceItemInPack da giyeni yeniden ciziyor ki
-        client yeni konteyneri, icerik guncellemesi ona atif yapmadan once ogrensin.
-        Ic ice canta iceren giyili bir cantayi silip tum alt agacin oldugunu ve
-        denetciye anomali kalmadigini dogrulayan regresyon testiyle sabitlendi.
 
 FIX - Uc StairThrowDiagnosticTests kalici olarak atlanmisti ve hic kosamazdi: hem
         sabit Skip niteligi tasiyorlardi hem de artik var olmayan C:\mortechUO\mul
@@ -64,19 +46,14 @@ FIX - Uc StairThrowDiagnosticTests kalici olarak atlanmisti ve hic kosamazdi: he
         repo icindeki wiki/ altina yaziyorlardi ve her kosuda calisma agacini
         kirletiyorlardi; cikti artik temp klasorune gidiyor. Suite 0 atlanan bildiriyor.
 
-[2026-07-31] - Konteyner denetimi: invariant taramasindaki iki kor nokta kapatildi
+CHANGE - Giyili konteyner silme yolu icin regresyon testi eklendi: ic ice canta
+        iceren bir cantanin kaldirilmasi tum alt agaci da goturmeli ve geride
+        denetci anomalisi birakmamali.
+
+[2026-07-31] - Dunya invariant denetcisinde iki kor nokta kapatildi
 ----------------------------------------
 
-CHANGE - Canta/konteyner yapisi bastan sona denetlendi. Canli paket ve save temiz
-        yukleniyor: WorldInvariantAuditor gercek dunya uzerinde 0 anomali
-        bildiriyor, yani o veride sunucunun Contents'i ile client'in gordugu
-        konteyner indeksi arasinda kaybolan esya yok. Item.TryAddItem de gozden
-        gecirildi: kapasite ve dongu kontrolleri esya eski ebeveyninden
-        AYRILMADAN once calisiyor, dolayisiyla reddedilen bir ekleme esyayi
-        oksuz birakamiyor; PlaceItemInPack da canta doluysa esyayi dusurmek
-        yerine yere birakiyor.
-
-FIX - Denetcinin kendisinde iki kor nokta vardi, ikisi de "esya kayboldu" tarafinda:
+FIX - Denetcide iki kor nokta vardi, ikisi de "esya kayboldu" tarafinda:
 
         Indeks-Contents karsilastirmasi, sunucu tarafinda Contents'i bos olan bir
         konteynerde erken cikiyordu; boylece bos bir cantanin altindaki indeks
@@ -94,9 +71,7 @@ FIX - Denetcinin kendisinde iki kor nokta vardi, ikisi de "esya kayboldu" tarafi
 [2026-07-31] - Source-X'in yanitladigi dort client paketi sessizce dusuyordu
 ----------------------------------------
 
-FIX - ClassicUO'nun gonderdigi her opcode ile kayitli gelen handler'lar
-        karsilastirildiginda hicbir handler'i olmayan alti paket cikti; bunlarin
-        dordunun Source-X karsiligi var ve artik uygulandi:
+FIX - Source-X'in yanitladigi dort client paketinin handler'i yoktu, dusuyorlardi:
 
         0xEC equip-item makrosu (PacketEquipItemMacro) - client'in "sunlari giy"
         makrosu hicbir sey yapmiyordu. Esyalar mevcut alma ve giyme yolundan
@@ -116,15 +91,13 @@ FIX - ClassicUO'nun gonderdigi her opcode ile kayitli gelen handler'lar
         0xFB public-house-content anahtari (PacketPublicHouseContent) -
         referanstaki _fShowPublicHouseContent gibi baglanti basina tutuluyor.
 
-        Kalan ikisi 0xA7 (tip istegi; henuz olmayan bir tips/notice sistemi
-        gerektiriyor) ve 0x3F (UltimaLive static update, istege bagli harita
-        protokolu); ikisi de bilinmeyen-paket yoluna gitmeye devam ediyor.
+        Hala karsilanmayan ve bilinmeyen-paket yoluna giden: 0xA7 (tip istegi;
+        henuz olmayan bir tips/notice sistemi gerektiriyor) ve 0x3F (UltimaLive
+        static update, istege bagli harita protokolu).
 
-CHANGE - Ayrica mekanik olarak dogrulandi, hata bulunmadi: SphereNet'in gelen
-        paket uzunluk tablosu Source-X tablosuna karsi (yalnizca 0xD1 farkli;
-        orada SphereNet client'in gercekten gonderdigi degeri kullaniyor), giden
-        paket siniflari (biri disinda hepsi erisilebilir) ve motorun statik
-        hook'lari (hepsi atanmis).
+CHANGE - PROTOCOL_MATRIX.md yeni opcode'lari belgeliyor ve sabit-uzunluk
+        desteklenmeyen-opcode framing testi artik ornek olarak 0xFB kullanmiyor,
+        cunku o opcode artik karsilaniyor.
 
 [2026-07-31] - Client surumu artik login-oyun sunucusu gecisinde kayboluyor degil
 ----------------------------------------
