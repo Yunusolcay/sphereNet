@@ -236,7 +236,11 @@ public sealed class SphereConfig
     public int CorpseNpcDecay { get; set; } = 7;
     public int CorpsePlayerDecay { get; set; } = 7;
     public int HitPointPercentOnRez { get; set; } = 10;
-    public bool DeadCannotSeeLiving { get; set; }
+    /// <summary>Source-X m_fDeadCannotSeeLiving is a MODE, not a flag: 0 off,
+    /// 1 hides living NPCs from a ghost, 2 additionally stops an NPC from seeing
+    /// living players that are not its owner. Stored as bool before, which could
+    /// never express mode 2.</summary>
+    public int DeadCannotSeeLiving { get; set; }
 
     // Stats
     public int MaxBaseSkill { get; set; } = 1200;
@@ -632,7 +636,10 @@ public sealed class SphereConfig
         CorpseNpcDecay = ini.GetInt(section, "CorpseNpcDecay", CorpseNpcDecay);
         CorpsePlayerDecay = ini.GetInt(section, "CorpsePlayerDecay", CorpsePlayerDecay);
         HitPointPercentOnRez = ini.GetInt(section, "HitPointPercentOnRez", HitPointPercentOnRez);
-        DeadCannotSeeLiving = ini.GetBool(section, "DeadCannotSeeLiving", DeadCannotSeeLiving);
+        // Numeric mode, but an ini that still writes true/yes keeps meaning "on".
+        DeadCannotSeeLiving = ini.GetBool(section, "DeadCannotSeeLiving", false)
+            ? Math.Max(1, ini.GetInt(section, "DeadCannotSeeLiving", 1))
+            : ini.GetInt(section, "DeadCannotSeeLiving", DeadCannotSeeLiving);
 
         MaxBaseSkill = ini.GetInt(section, "MaxBaseSkill", MaxBaseSkill);
         MaxFame = ini.GetInt(section, "MaxFame", MaxFame);

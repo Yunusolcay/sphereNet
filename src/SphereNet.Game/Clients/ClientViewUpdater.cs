@@ -103,6 +103,12 @@ public sealed class ClientViewUpdater
                     return;
             }
 
+            // The mirror rule (sphere.ini DEADCANNOTSEELIVING): a ghost loses
+            // sight of ordinary living NPCs, keeping its own pets and healers.
+            // AllShow still overrides, as it does for every other view gate.
+            if (me.IsDead && !me.AllShow && !me.CanSeeAsDead(ch))
+                return;
+
             uint uid = ch.Uid.Value;
             delta.CurrentChars.Add(uid);
 

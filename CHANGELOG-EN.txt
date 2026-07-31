@@ -4,6 +4,27 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-07-31] - DEADCANNOTSEELIVING implemented
+----------------------------------------
+
+FIX - DEADCANNOTSEELIVING was parsed and never used, so a ghost saw every living
+        NPC around it. The Source-X CanSeeAsDead rule now applies: a ghost keeps
+        seeing other ghosts, living players, its own pets and healers, but loses
+        sight of ordinary living NPCs. GMs and AllShow are exempt.
+
+        The setting is a mode, not a flag - upstream reads 0/1/2 where 2 also
+        stops an NPC from seeing living players that are not its owner. It was
+        typed as a bool here, which could never express mode 2; it is an int now
+        and an ini still written as true/yes keeps meaning mode 1.
+
+CHANGE - Upstream applies the rule once, as a screen wipe at the moment of death,
+        so the hidden NPCs drift back into view as the ghost walks. Here it is a
+        standing rule in the per-observer view delta, so they stay hidden while
+        the ghost moves and reappear the instant it is resurrected. Dying and
+        resurrecting now request a rebuild of the character's own view through a
+        new Character.OnOwnViewRefreshNeeded hook, since neither is a movement
+        and the view would otherwise not refresh until the next step.
+
 [2026-07-31] - NPCDISTANCEHEAR and MAPVIEWSIZEMAX were parsed but never used
 ----------------------------------------
 

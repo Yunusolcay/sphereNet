@@ -121,6 +121,13 @@ public partial class Character : ObjBase
     /// takes no arguments.</summary>
     public static Action<Character, BuffIcon, bool, ushort, string[]?>? OnClientBuffChanged;
 
+    /// <summary>Ask the character's own client to rebuild its view on the next
+    /// tick. Needed when a state change alters what THIS character may see
+    /// (dying or being resurrected under DEADCANNOTSEELIVING), which the
+    /// movement-driven refresh would otherwise not notice until the next step.
+    /// </summary>
+    public static Action<Character>? OnOwnViewRefreshNeeded;
+
     /// <summary>Broadcast a health-bar colour update (Source-X PacketHealthBarUpdate,
     /// 0x17) to observers when the character's poisoned/frozen state changes — the
     /// green/yellow health-bar tint on SA+/KR clients.</summary>
@@ -523,6 +530,35 @@ public partial class Character : ObjBase
 
     /// <summary>Seconds a character stays criminal (gray) after committing a crime. Set from sphere.ini CRIMINALTIMER.</summary>
     public static int CriminalTimerSeconds { get; set; } = 180;
+
+    /// <summary>sphere.ini DEADCANNOTSEELIVING (Source-X m_fDeadCannotSeeLiving).
+    /// 0 disables the rule; 1 hides living NPCs from a ghost; 2 additionally
+    /// stops an NPC from seeing living players it does not belong to.</summary>
+    public static int DeadCannotSeeLiving { get; set; }
+
+    /// <summary>Whether this (dead) character may see <paramref name="target"/>
+    /// (Source-X CChar::CanSeeAsDead). A ghost keeps seeing other ghosts, living
+    /// players, its own pets and healers, but loses sight of ordinary living
+    /// NPCs. Upstream applies this only as a one-shot screen wipe at the moment
+    /// of death; here it is a standing rule the per-observer view delta consults
+    /// every tick, so the NPCs stay hidden while the ghost walks around and
+    /// reappear the instant it is resurrected.</summary>
+    public bool CanSeeAsDead(Character target)
+    {
+        int mode = DeadCannotSeeLiving;
+        if (mode == 0 || target.IsDead || PrivLevel >= PrivLevel.GM)
+            return true;
+
+        if (target.IsPlayer)
+        {
+            // Only an NPC observer is restricted here, and only at mode 2 — a
+            // player ghost always keeps seeing the living players around it.
+            return IsPlayer || mode != 2 || HasOwner(target.Uid);
+        }
+
+        // A living NPC: visible only if it is my own pet or a healer.
+        return target.HasOwner(Uid) || target.NpcBrain == NpcBrainType.Healer;
+    }
     /// <summary>Murder count threshold that triggers the murderer (red) flag. sphere.ini MURDERMINCOUNT.</summary>
     public static int MurderMinCount { get; set; } = 5;
     /// <summary>Seconds between automatic murder-count decays (online time). sphere.ini MURDERDECAYTIME.</summary>
@@ -1664,6 +1700,10 @@ public partial class Character : ObjBase
         // (CCharAct.cpp:352, LAYER_FLAG_Criminal).
         if ((oldFlags & StatFlag.Criminal) == 0 && (_statFlags & StatFlag.Criminal) != 0)
             OnClientBuffChanged?.Invoke(this, BuffIcon.CriminalStatus, true, 0, null);
+        // Dying changes what this character is allowed to see, so its own view
+        // has to be rebuilt rather than waiting for the next step.
+        if ((oldFlags & StatFlag.Dead) == 0 && (_statFlags & StatFlag.Dead) != 0)
+            OnOwnViewRefreshNeeded?.Invoke(this);
         if ((oldFlags & StatFlag.Ridden) == 0 && (_statFlags & StatFlag.Ridden) != 0)
             InvalidateOwnerFollowerCount();
     }
@@ -1680,6 +1720,9 @@ public partial class Character : ObjBase
         // Source-X CCharAct.cpp:460 — the icon clears with the criminal flag.
         if ((oldFlags & StatFlag.Criminal) != 0 && (_statFlags & StatFlag.Criminal) == 0)
             OnClientBuffChanged?.Invoke(this, BuffIcon.CriminalStatus, false, 0, null);
+        // Resurrecting restores sight of everything hidden while dead.
+        if ((oldFlags & StatFlag.Dead) != 0 && (_statFlags & StatFlag.Dead) == 0)
+            OnOwnViewRefreshNeeded?.Invoke(this);
         if ((oldFlags & StatFlag.Ridden) != 0 && (_statFlags & StatFlag.Ridden) == 0)
             InvalidateOwnerFollowerCount();
     }

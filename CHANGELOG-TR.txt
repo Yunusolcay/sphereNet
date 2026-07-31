@@ -3,6 +3,29 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-07-31] - DEADCANNOTSEELIVING uygulandi
+----------------------------------------
+
+FIX - DEADCANNOTSEELIVING okunuyor ama hic kullanilmiyordu; hayalet etrafindaki
+        tum canli NPC'leri goruyordu. Artik Source-X CanSeeAsDead kurali
+        gecerli: hayalet diger hayaletleri, canli oyunculari, kendi evcil
+        hayvanlarini ve healer'lari gormeye devam eder, ama siradan canli
+        NPC'leri goremez. GM ve AllShow muaf.
+
+        Ayar bir bayrak degil moddur - ust kaynak 0/1/2 okur; 2 ayrica bir
+        NPC'nin sahibi olmayan canli oyunculari gormesini engeller. Bizde bool
+        olarak tanimliydi, yani mod 2 hic ifade edilemiyordu; artik int ve
+        true/yes yazilmis bir ini hala mod 1 anlamina geliyor.
+
+CHANGE - Ust kaynak kurali yalnizca bir kez, olum aninda ekran temizligi olarak
+        uygular; bu yuzden gizlenen NPC'ler hayalet yurudukce geri gorunur hale
+        gelir. Burada kural gozlemci basina view delta'sinda surekli calisiyor,
+        yani hayalet hareket ederken gizli kaliyorlar ve diriltildigi anda geri
+        geliyorlar. Olme ve dirilme artik yeni Character.OnOwnViewRefreshNeeded
+        hook'u uzerinden karakterin kendi goruntusunun yeniden kurulmasini
+        istiyor; ikisi de bir hareket olmadigi icin goruntu aksi halde bir
+        sonraki adima kadar tazelenmezdi.
+
 [2026-07-31] - NPCDISTANCEHEAR ve MAPVIEWSIZEMAX okunuyor ama hic kullanilmiyordu
 ----------------------------------------
 

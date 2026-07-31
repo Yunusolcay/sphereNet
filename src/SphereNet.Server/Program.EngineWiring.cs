@@ -2768,6 +2768,12 @@ public static partial class Program
                         buffArgs ?? []));
                 };
 
+            SphereNet.Game.Objects.Characters.Character.OnOwnViewRefreshNeeded = target =>
+            {
+                if (TryGetClientFor(target, out var c))
+                    c.ViewNeedsRefresh = true;
+            };
+
             SphereNet.Game.Objects.Characters.Character.SendOwnerMessage = (target, msg) =>
             {
                 if (_clientsByCharUid.TryGetValue(target.Uid, out var gc))

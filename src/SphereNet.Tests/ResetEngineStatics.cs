@@ -90,6 +90,8 @@ public sealed class ResetEngineStaticsAttribute : BeforeAfterTestAttribute
         SphereNet.Game.Objects.Characters.Character.OnSpellEffectAdd = null;
         SphereNet.Game.Objects.Characters.Character.OnSpellEffectRemove = null;
         SphereNet.Game.Objects.Characters.Character.OnClientBuffChanged = null;
+        SphereNet.Game.Objects.Characters.Character.OnOwnViewRefreshNeeded = null;
+        SphereNet.Game.Objects.Characters.Character.DeadCannotSeeLiving = 0;
         SphereNet.Game.Objects.Characters.Character.OnHiddenStateCleared = null;
         SphereNet.Game.Objects.Characters.Character.OnSpellEffectTick = null;
         SphereNet.Game.Objects.Characters.Character.OnPetDesert = null;

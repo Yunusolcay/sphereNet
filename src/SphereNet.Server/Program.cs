@@ -662,6 +662,7 @@ public static partial class Program
         // Upper bound for the client's 0xBF.0x1C view-size request; the cap was
         // hardcoded to the default so the ini key did nothing.
         SphereNet.Network.State.NetState.MapViewSizeMax = (byte)Math.Clamp(_config.MapViewSizeMax, 5, 255);
+        Character.DeadCannotSeeLiving = _config.DeadCannotSeeLiving;
 
         // Wire notoriety tuning from sphere.ini into Character statics so that
         // MakeCriminal() / TickNotorietyDecay() use the configured values.
