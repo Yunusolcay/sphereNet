@@ -4,6 +4,36 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-07-31] - House storage budget: vendor limit dropped, no bonus storage, unreadable access list
+----------------------------------------
+
+FIX - BASEVENDORS was read off the [MULTIDEF] into the definition and then never
+        reached the placed house, so every house had a vendor budget of zero and
+        MAXVENDORS could not be read at all. PlaceHouse now applies it, and the
+        value persists with the house.
+
+FIX - INCREASEDSTORAGE did not exist, so a house could not carry the percentage
+        storage bonus Source-X applies. Every cap now derives from it the way the
+        reference does: MaxStorage is the base budget plus that percentage,
+        MaxLockdowns is MaxStorage * LOCKDOWNSPERCENT / 100 (it used the base
+        budget before, ignoring the bonus), MaxSecure is the remainder, and
+        MaxVendors scales the vendor budget by the same percentage. The bonus
+        defaults to 0, so an existing house keeps its current caps.
+
+FIX - The house access list could be written but never read: ADDACCESS/DELACCESS
+        maintained it while the property surface had no entry for it, unlike every
+        other house list. HOUSE.ACCESSES (count) and HOUSE.ACCESS.n now read it.
+
+FIX - LOCKDOWNSPERCENT, BASESTORAGE, BASEVENDORS and INCREASEDSTORAGE written on a
+        multi that is already a registered house only ever set a tag, leaving the
+        running house on its defaults. They now reach the house as well as the tag,
+        so a script can retune a placed house's budget.
+
+CHANGE - Added the missing storage readouts: HOUSE.MAXSTORAGE, HOUSE.CURRENTSTORAGE
+        (lockdowns plus secured containers, the shared pool Source-X counts),
+        HOUSE.INCREASEDSTORAGE, HOUSE.LOCKDOWNSPERCENT, HOUSE.BASEVENDORS,
+        HOUSE.MAXVENDORS and the HOUSE.ISOWNER.<uid> predicate.
+
 [2026-07-31] - Ship steering: wheel spam stalled the ship, scripted sailing ran half speed
 ----------------------------------------
 

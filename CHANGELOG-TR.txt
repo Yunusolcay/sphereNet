@@ -3,6 +3,37 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-07-31] - Ev depolama butcesi: vendor limiti dusuyordu, bonus depolama yoktu, access listesi okunamiyordu
+----------------------------------------
+
+FIX - BASEVENDORS [MULTIDEF]'ten tanima okunuyor ama yerlestirilen eve hic
+        ulasmiyordu; bu yuzden her evin vendor butcesi sifirdi ve MAXVENDORS hic
+        okunamiyordu. PlaceHouse artik uyguluyor ve deger evle birlikte kalici.
+
+FIX - INCREASEDSTORAGE yoktu, yani bir ev Source-X'in uyguladigi yuzdelik depolama
+        bonusunu tasiyamiyordu. Artik tum limitler referanstaki gibi ondan
+        tureiyor: MaxStorage temel butce arti o yuzde, MaxLockdowns
+        MaxStorage * LOCKDOWNSPERCENT / 100 (onceden temel butceyi kullaniyor,
+        bonusu yok sayiyordu), MaxSecure kalan, MaxVendors da vendor butcesini
+        ayni yuzdeyle olcekliyor. Bonus varsayilan 0, dolayisiyla mevcut evlerin
+        limitleri degismiyor.
+
+FIX - Ev access listesi yazilabiliyor ama hic okunamiyordu: ADDACCESS/DELACCESS
+        listeyi tutuyordu, ancak diger tum ev listelerinin aksine property
+        yuzeyinde karsiligi yoktu. Artik HOUSE.ACCESSES (sayi) ve HOUSE.ACCESS.n
+        ile okunuyor.
+
+FIX - Zaten kayitli bir ev olan multi uzerine yazilan LOCKDOWNSPERCENT,
+        BASESTORAGE, BASEVENDORS ve INCREASEDSTORAGE yalnizca tag set ediyor,
+        calisan evi varsayilanlarinda birakiyordu. Artik tag'in yani sira eve de
+        ulasiyorlar; boylece bir script yerlestirilmis evin butcesini
+        ayarlayabiliyor.
+
+CHANGE - Eksik depolama okumalari eklendi: HOUSE.MAXSTORAGE, HOUSE.CURRENTSTORAGE
+        (lockdown arti secure container; Source-X'in saydigi ortak havuz),
+        HOUSE.INCREASEDSTORAGE, HOUSE.LOCKDOWNSPERCENT, HOUSE.BASEVENDORS,
+        HOUSE.MAXVENDORS ve HOUSE.ISOWNER.<uid> yuklemi.
+
 [2026-07-31] - Gemi dumeni: tekerlek spam'i gemiyi durduruyordu, betikle seyir yari hizdaydi
 ----------------------------------------
 

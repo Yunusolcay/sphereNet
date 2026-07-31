@@ -1832,9 +1832,29 @@ public class Item : ObjBase
             }
             // Multi/housing properties — round-trip as TAGs
             case "REGION.FLAGS": case "REGION.EVENTS": case "OWNER": case "HOUSETYPE":
-            case "LOCKDOWNSPERCENT": case "BASEVENDORS": case "BASESTORAGE":
                 SetTag(upper, value);
                 return true;
+            // Storage budget properties. The tag is still written so a template
+            // applied before the house is registered keeps working, but when the
+            // multi already IS a live house the value must reach it — writing
+            // only the tag left the running house on its defaults.
+            case "LOCKDOWNSPERCENT": case "BASEVENDORS": case "BASESTORAGE":
+            case "INCREASEDSTORAGE":
+            {
+                SetTag(upper, value);
+                var liveHouse = ResolveHouse?.Invoke(Uid);
+                if (liveHouse != null && int.TryParse(value.Trim(), out int storageVal))
+                {
+                    switch (upper)
+                    {
+                        case "LOCKDOWNSPERCENT": liveHouse.LockdownsPercent = storageVal; break;
+                        case "BASEVENDORS": liveHouse.BaseVendors = storageVal; break;
+                        case "BASESTORAGE": liveHouse.BaseStorage = storageVal; break;
+                        case "INCREASEDSTORAGE": liveHouse.IncreasedStorage = storageVal; break;
+                    }
+                }
+                return true;
+            }
             // Multi-valued housing properties — accumulate comma-separated
             case "ADDCOMP": case "SECURE": case "LOCKITEM":
             {
@@ -3661,8 +3681,14 @@ public class Item : ObjBase
             case "GUILDSTONE": value = FormatSerial(house.GuildStone); return true;
             case "STORAGE":
             case "BASESTORAGE": value = house.BaseStorage.ToString(); return true;
+            case "MAXSTORAGE": value = house.MaxStorage.ToString(); return true;
+            case "CURRENTSTORAGE": value = house.CurrentStorage.ToString(); return true;
+            case "INCREASEDSTORAGE": value = house.IncreasedStorage.ToString(); return true;
+            case "LOCKDOWNSPERCENT": value = house.LockdownsPercent.ToString(); return true;
             case "MAXLOCKDOWNS": value = house.MaxLockdowns.ToString(); return true;
             case "MAXSECURE": value = house.MaxSecure.ToString(); return true;
+            case "BASEVENDORS": value = house.BaseVendors.ToString(); return true;
+            case "MAXVENDORS": value = house.MaxVendors.ToString(); return true;
             case "DECAYSTAGE":
             case "DECAY_STAGE": value = ((byte)house.DecayStage).ToString(); return true;
         }
@@ -3670,6 +3696,9 @@ public class Item : ObjBase
         if (TryGetHouseSerialCollection(subKey, "COOWNER", "COOWNERS", house.CoOwners, out value) ||
             TryGetHouseSerialCollection(subKey, "FRIEND", "FRIENDS", house.Friends, out value) ||
             TryGetHouseSerialCollection(subKey, "BAN", "BANS", house.Bans, out value) ||
+            // The access list was maintained by ADDACCESS/DELACCESS but had no
+            // readout at all, so a script could never count or enumerate it.
+            TryGetHouseSerialCollection(subKey, "ACCESS", "ACCESSES", house.AccessList, out value) ||
             TryGetHouseSerialCollection(subKey, "LOCKDOWN", "LOCKDOWNS", house.Lockdowns, out value) ||
             TryGetHouseSerialCollection(subKey, "SECURE", "SECURE", house.SecureContainers, out value) ||
             TryGetHouseSerialCollection(subKey, "COMPONENT", "COMPONENTS", house.Components, out value) ||
@@ -3679,6 +3708,7 @@ public class Item : ObjBase
         }
 
         if (TryReadHouseSerialPredicate(subKey, "PRIV.", uid => ((byte)house.GetPriv(uid)).ToString(), out value) ||
+            TryReadHouseSerialPredicate(subKey, "ISOWNER.", uid => uid == house.Owner ? "1" : "0", out value) ||
             TryReadHouseSerialPredicate(subKey, "CANACCESS.", uid => house.CanAccess(uid) ? "1" : "0", out value) ||
             TryReadHouseSerialPredicate(subKey, "CANLOCKDOWN.", uid => house.CanLockdown(uid) ? "1" : "0", out value) ||
             TryReadHouseSerialPredicate(subKey, "ISLOCKEDDOWN.", uid => house.IsLockedDown(uid) ? "1" : "0", out value) ||

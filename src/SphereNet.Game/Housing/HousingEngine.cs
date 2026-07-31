@@ -149,6 +149,8 @@ public sealed class House
 
     private int _baseStorage = 400;
     private int _lockdownsPercent = 50;
+    private int _baseVendors;
+    private int _increasedStorage;
 
     // Decay tracking
     private long _lastRefreshTick;
@@ -162,10 +164,39 @@ public sealed class House
     public Serial Owner { get => _owner; set => _owner = value; }
     public HouseType Type { get => _houseType; set => _houseType = value; }
     public Serial GuildStone { get => _guildStone; set => _guildStone = value; }
-    public int MaxLockdowns => _baseStorage * _lockdownsPercent / 100;
-    public int MaxSecure => _baseStorage - MaxLockdowns;
+    /// <summary>Source-X CItemMulti::GetMaxStorage — the base budget plus the
+    /// percentage bonus an upgraded house carries.</summary>
+    public int MaxStorage => _baseStorage + _baseStorage * _increasedStorage / 100;
+
+    /// <summary>Source-X CItemMulti::GetCurrentStorage — lockdowns and secured
+    /// containers draw on the same budget.</summary>
+    public int CurrentStorage => _lockdowns.Count + _secureContainers.Count;
+
+    /// <summary>Source-X CItemMulti::GetMaxLockdowns, whose expression reduces to
+    /// maxStorage * lockdownsPercent / 100.</summary>
+    public int MaxLockdowns => MaxStorage * _lockdownsPercent / 100;
+    public int MaxSecure => MaxStorage - MaxLockdowns;
+
+    /// <summary>Source-X CItemMulti::GetMaxVendors.</summary>
+    public int MaxVendors => _baseVendors + _baseVendors * _increasedStorage / 100;
+
     public IReadOnlyList<Serial> Components => _components;
     public int BaseStorage { get => _baseStorage; set => _baseStorage = Math.Max(0, value); }
+
+    /// <summary>Script [MULTIDEF] BaseVendors / the BASEVENDORS property.</summary>
+    public int BaseVendors { get => _baseVendors; set => _baseVendors = Math.Max(0, value); }
+
+    /// <summary>Percentage bonus applied to storage and vendor caps (Source-X
+    /// INCREASEDSTORAGE). 0 = no bonus, so an unscripted house is unchanged.</summary>
+    public int IncreasedStorage { get => _increasedStorage; set => _increasedStorage = Math.Max(0, value); }
+
+    /// <summary>Share of the storage budget usable for lockdowns rather than
+    /// secured containers (Source-X LOCKDOWNSPERCENT).</summary>
+    public int LockdownsPercent
+    {
+        get => _lockdownsPercent;
+        set => _lockdownsPercent = Math.Clamp(value, 0, 100);
+    }
     public long LastRefreshTick { get => _lastRefreshTick; set => _lastRefreshTick = value; }
     public HouseDecayStage DecayStage { get => _decayStage; set => _decayStage = value; }
     public uint RegionUid { get => _regionUid; set => _regionUid = value; }
@@ -718,6 +749,10 @@ public sealed class HousingEngine
         // (small house 489, keep/castle larger, etc.).
         if (def.BaseStorage > 0)
             house.BaseStorage = def.BaseStorage;
+        // BaseVendors was parsed off the [MULTIDEF] but never reached the placed
+        // house, so the vendor budget was always zero and MAXVENDORS unreadable.
+        if (def.BaseVendors > 0)
+            house.BaseVendors = def.BaseVendors;
 
         if (customFoundation)
         {
@@ -1231,6 +1266,20 @@ public sealed class HousingEngine
                 item.RemoveTag("HOUSE.OWNER_UUID");
             item.SetTag("HOUSE.TYPE", ((byte)house.Type).ToString());
             item.SetTag("HOUSE.STORAGE", house.BaseStorage.ToString());
+            // Written only when set, so an untouched house adds no new tags and
+            // an older save keeps loading exactly as before.
+            if (house.BaseVendors > 0)
+                item.SetTag("HOUSE.BASEVENDORS", house.BaseVendors.ToString());
+            else
+                item.RemoveTag("HOUSE.BASEVENDORS");
+            if (house.IncreasedStorage > 0)
+                item.SetTag("HOUSE.INCREASEDSTORAGE", house.IncreasedStorage.ToString());
+            else
+                item.RemoveTag("HOUSE.INCREASEDSTORAGE");
+            if (house.LockdownsPercent != 50)
+                item.SetTag("HOUSE.LOCKDOWNSPERCENT", house.LockdownsPercent.ToString());
+            else
+                item.RemoveTag("HOUSE.LOCKDOWNSPERCENT");
             if (house.GuildStone.IsValid)
                 item.SetTag("HOUSE.GUILD", $"0{house.GuildStone.Value:X}");
             else
@@ -1311,6 +1360,12 @@ public sealed class HousingEngine
             house.Type = (HouseType)ht;
         if (item.TryGetTag("HOUSE.STORAGE", out string? storStr) && int.TryParse(storStr, out int stor) && stor > 0)
             house.BaseStorage = stor;
+        if (item.TryGetTag("HOUSE.BASEVENDORS", out string? bvStr) && int.TryParse(bvStr, out int bv))
+            house.BaseVendors = bv;
+        if (item.TryGetTag("HOUSE.INCREASEDSTORAGE", out string? incStr) && int.TryParse(incStr, out int inc))
+            house.IncreasedStorage = inc;
+        if (item.TryGetTag("HOUSE.LOCKDOWNSPERCENT", out string? lpStr) && int.TryParse(lpStr, out int lp))
+            house.LockdownsPercent = lp;
         if (item.TryGetTag("HOUSE.GUILD", out string? guildStr))
             house.GuildStone = new Serial(ParseHexSerial(guildStr));
         if (item.TryGetTag("HOUSE.DECAY_STAGE", out string? dsStr) && byte.TryParse(dsStr, out byte ds) &&

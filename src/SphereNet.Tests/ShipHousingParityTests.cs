@@ -24,6 +24,91 @@ public class ShipHousingParityTests
         return world;
     }
 
+    // ---- house storage budget (Source-X CItemMulti storage getters) ----
+
+    /// <summary>Source-X derives every cap from GetMaxStorage, which is the base
+    /// budget plus the INCREASEDSTORAGE percentage: MaxLockdowns is that total
+    /// times LOCKDOWNSPERCENT, MaxVendors scales the vendor budget by the same
+    /// percentage, and lockdowns plus secured containers share one pool.</summary>
+    [Fact]
+    public void HouseStorage_DerivesEveryCapFromMaxStorage()
+    {
+        var world = CreateWorld();
+        var multi = world.CreateItem();
+        multi.ItemType = ItemType.Multi;
+        world.PlaceItem(multi, new Point3D(300, 300, 0, 0));
+
+        var house = new House(multi)
+        {
+            BaseStorage = 400,
+            LockdownsPercent = 50,
+            BaseVendors = 10,
+        };
+
+        // No bonus: max storage is the base budget.
+        Assert.Equal(400, house.MaxStorage);
+        Assert.Equal(200, house.MaxLockdowns);
+        Assert.Equal(200, house.MaxSecure);
+        Assert.Equal(10, house.MaxVendors);
+
+        // A 50% storage increase lifts the total, the lockdown share and the
+        // vendor budget together.
+        house.IncreasedStorage = 50;
+        Assert.Equal(600, house.MaxStorage);
+        Assert.Equal(300, house.MaxLockdowns);
+        Assert.Equal(300, house.MaxSecure);
+        Assert.Equal(15, house.MaxVendors);
+    }
+
+    /// <summary>BASEVENDORS is read off the [MULTIDEF] but used to stop there:
+    /// the placed house never received it, so its vendor budget was always
+    /// zero.</summary>
+    [Fact]
+    public void PlacedHouse_InheritsBaseVendorsFromTheMultiDef()
+    {
+        var world = CreateWorld();
+        var registry = new MultiRegistry();
+        var def = new MultiDef { Id = 0x4001, BaseStorage = 500, BaseVendors = 6 };
+        registry.Register(def);
+
+        var engine = new HousingEngine(world, registry);
+        var owner = world.CreateCharacter();
+        owner.IsPlayer = true;
+        world.PlaceCharacter(owner, new Point3D(320, 320, 0, 0));
+
+        var house = engine.PlaceHouse(owner, 0x4001, new Point3D(330, 330, 0, 0));
+        Assert.NotNull(house);
+        Assert.Equal(500, house!.BaseStorage);
+        Assert.Equal(6, house.BaseVendors);
+        Assert.Equal(6, house.MaxVendors);
+    }
+
+    /// <summary>The access list was maintained by ADDACCESS/DELACCESS but had no
+    /// readout, so a script could add to it and never see it again.</summary>
+    [Fact]
+    public void HouseAccessList_IsReadableFromScript()
+    {
+        var world = CreateWorld();
+        var multi = world.CreateItem();
+        multi.ItemType = ItemType.Multi;
+        world.PlaceItem(multi, new Point3D(340, 340, 0, 0));
+
+        var guest = world.CreateCharacter();
+        world.PlaceCharacter(guest, new Point3D(341, 340, 0, 0));
+
+        var house = new House(multi);
+        house.AddAccess(guest.Uid);
+        Item.ResolveHouse = uid => uid == multi.Uid ? house : null;
+        try
+        {
+            Assert.True(multi.TryGetProperty("HOUSE.ACCESSES", out string? count));
+            Assert.Equal("1", count);
+            Assert.True(multi.TryGetProperty("HOUSE.ACCESS.0", out string? first));
+            Assert.Equal($"0{guest.Uid.Value:X8}", first);
+        }
+        finally { Item.ResolveHouse = null; }
+    }
+
     // ---- #9: ship movement keeps all 8 directions ----
 
     [Fact]
