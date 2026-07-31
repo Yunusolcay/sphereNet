@@ -249,6 +249,13 @@ public sealed class ClientViewUpdater
             }
             else
             {
+                // Known, but with no recorded state: we do not actually know what
+                // the client is showing for it. Recording the current state and
+                // staying silent made the item permanently invisible — every later
+                // tick then compared equal and sent nothing, so it only came back
+                // after a resync cleared KnownItems (walk to another sector and
+                // return). Re-send instead of assuming.
+                _client.SendWorldItem(item);
                 View.LastKnownItemState[uid] = (item.X, item.Y, item.Z, item.DispIdFull, item.Hue, item.Amount, item.Direction);
             }
         }

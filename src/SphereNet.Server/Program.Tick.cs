@@ -889,9 +889,14 @@ public static partial class Program
         bool hasRecordings = _recordingEngine.HasActiveRecordings;
         foreach (var client in refreshClients)
         {
-            client.ViewNeedsRefresh = false;
+            // Only consume the request when a delta was actually built for it.
+            // BuildViewDelta returns null while the character is mid-handoff
+            // (not attached yet, not playing, spectating a replay); clearing the
+            // flag there dropped the refresh on the floor and the client stayed
+            // on a stale view until something else happened to set it again.
             if (!clientDeltas.TryGetValue(client.NetState.Id, out var delta))
                 continue;
+            client.ViewNeedsRefresh = false;
 
             client.ApplyViewDelta(delta);
             client.SyncOpenMapStaticDoors();

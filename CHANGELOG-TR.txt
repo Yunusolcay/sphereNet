@@ -3,6 +3,35 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-07-31] - View delta: bir nesne resync'e kadar gorunmez kalabiliyordu
+----------------------------------------
+
+FIX - View delta her client icin iki yari tutar: KnownItems, client'a bildirilmis
+        olanlar; LastKnownItemState, en son ne bildirildigi. Birincide olup
+        ikincide karsiligi olmayan bir uid "zaten guncel" sayiliyordu: guncelleme
+        gecisi mevcut durumu kaydedip hicbir sey gondermiyordu. Bundan sonra her
+        tick esit karsilastiriyor, yani nesne hic cizilmiyordu - ancak bir resync
+        KnownItems'i temizleyince geri geliyordu; baska bir sektore gidip donmenin
+        sorunu duzeltmesinin sebebi buydu. Gecis artik kayitli durum yoksa
+        client'in senkron oldugunu varsaymak yerine yeniden gonderiyor.
+
+FIX - Olum yolu cesedi durumunu kaydetmeden KnownItems'e ekliyordu; o yarim
+        durumu ureten buydu. Iki yari artik birlikte hareket ediyor, boylece
+        cesetteki sonraki bir degisiklik (kesme, hue, curume gorseli) olduren
+        oyuncunun client'ina da ulasiyor.
+
+FIX - Tazeleme istegi dusebiliyordu. Tick, baktigi her client icin
+        ViewNeedsRefresh'i temizliyordu; BuildViewDelta'si null donenler dahil
+        (karakter henuz baglanmamis, oyunda degil, replay izliyor). Bayrak artik
+        yalnizca gercekten bir delta uretilip uygulandiginda tuketiliyor.
+
+FIX - MoveDoorLeaf, dunya yerlestirmeyi reddettiginde (harita disi mentese
+        karesi) kapinin yeni konumunu dogrudan yaziyordu; boylece kanat eski
+        sektorde kayitli kalirken yeni koordinatlari bildiriyordu. Goruntu
+        taramasi sektorleri gezdigi icin kapi, izleyicinin kapsadigi sektorlere
+        gore bulunuyor ya da kaciriliyordu. Dunya reddederse artik hareket
+        atlaniyor.
+
 [2026-07-31] - DEADCANNOTSEELIVING uygulandi
 ----------------------------------------
 

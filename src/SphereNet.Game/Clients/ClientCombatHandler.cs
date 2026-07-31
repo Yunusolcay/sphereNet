@@ -66,6 +66,18 @@ public sealed class ClientCombatHandler
     private ClientTargetState Targets => _client.Targets;
     private bool IsPlaying => _client.IsPlaying;
     private const int UpdateRange = GameClient.UpdateRange;
+
+    /// <summary>Record a corpse this client was just shown directly (outside the
+    /// view delta). Both halves of the view cache have to move together: an entry
+    /// in KnownItems with no LastKnownItemState makes the delta treat the corpse
+    /// as "already up to date" and never send it again, so a later change to its
+    /// look would never reach this client until a resync.</summary>
+    private void MarkCorpseKnown(Item corpse)
+    {
+        View.KnownItems.Add(corpse.Uid.Value);
+        View.LastKnownItemState[corpse.Uid.Value] =
+            (corpse.X, corpse.Y, corpse.Z, corpse.DispIdFull, corpse.Hue, corpse.Amount, corpse.Direction);
+    }
     private const int VitalsPacketIntervalMs = GameClient.VitalsPacketIntervalMs;
     private Action<Point3D, int, SphereNet.Network.Packets.PacketWriter, uint>? BroadcastNearby => _client.BroadcastNearby;
     private Action<Point3D, int, SphereNet.Network.Packets.PacketWriter, uint, Character>? BroadcastMoveNearby => _client.BroadcastMoveNearby;
@@ -1345,7 +1357,7 @@ public sealed class ClientCombatHandler
 
                     if (target.IsPlayer)
                     {
-                        View.KnownItems.Add(corpse.Uid.Value);
+                        MarkCorpseKnown(corpse);
                         var corpsePacket = new PacketWorldItem(
                             corpse.Uid.Value, corpse.DispIdFull, corpse.Amount,
                             corpse.X, corpse.Y, corpse.Z, corpse.Hue,
@@ -1414,7 +1426,7 @@ public sealed class ClientCombatHandler
                         // 0x89/0x3C (CorpseEquipment/ContainerContent) are
                         // only sent for human-body corpses; sending them for
                         // monster corpses corrupts the client's input state.
-                        View.KnownItems.Add(corpse.Uid.Value);
+                        MarkCorpseKnown(corpse);
                         var corpsePacket = new PacketWorldItem(
                             corpse.Uid.Value, corpse.DispIdFull, corpse.Amount,
                             corpse.X, corpse.Y, corpse.Z, corpse.Hue,

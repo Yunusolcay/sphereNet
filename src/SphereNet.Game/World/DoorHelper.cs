@@ -148,8 +148,19 @@ public static class DoorHelper
         var pos = new Core.Types.Point3D(
             (short)(door.X + dx), (short)(door.Y + dy), door.Z, door.MapIndex);
         var world = Objects.ObjBase.ResolveWorld?.Invoke();
-        if (world == null || !world.PlaceItem(door, pos))
+        if (world == null)
+        {
+            // No ambient world (unit tests): position only, there is no sector
+            // index to keep in step.
             door.Position = pos;
+            return;
+        }
+        // PlaceItem refuses an out-of-bounds tile. Writing Position anyway would
+        // leave the leaf registered in its OLD sector while reporting the new
+        // coordinates, and the view scan walks sectors — the door would then be
+        // found or missed depending on which sectors the viewer happens to
+        // cover, and reappear only after a resync. Leave it where it is.
+        world.PlaceItem(door, pos);
     }
 
     public static bool FindNearestStaticDoor(

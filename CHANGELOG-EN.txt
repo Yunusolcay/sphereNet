@@ -4,6 +4,35 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-07-31] - View delta: an object could stay invisible until a resync
+----------------------------------------
+
+FIX - The view delta keeps two halves per client: KnownItems, what the client has
+        been told about, and LastKnownItemState, what it was last told. A uid in
+        the first with no entry in the second was treated as already up to date:
+        the updated-items pass recorded the current state and sent nothing. From
+        then on every tick compared equal, so the object was never drawn - it only
+        reappeared once a resync cleared KnownItems, which is why walking to
+        another sector and back brought it back. The pass now re-sends when it has
+        no recorded state instead of assuming the client is in sync.
+
+FIX - The death path put a corpse into KnownItems without recording its state,
+        which is what produced that half-state. Both halves now move together, so
+        a later change to the corpse (carving, hue, decay art) still reaches the
+        killer's client.
+
+FIX - A refresh request could be dropped. The tick cleared ViewNeedsRefresh for
+        every client it looked at, including those whose BuildViewDelta returned
+        null because the character was mid-handoff (not attached yet, not playing,
+        spectating a replay). The flag is now consumed only when a delta was
+        actually built and applied.
+
+FIX - MoveDoorLeaf wrote the door's new position directly when the world refused
+        the placement (an out-of-bounds hinge tile), leaving the leaf registered in
+        its old sector while reporting new coordinates. Since the view scan walks
+        sectors, the door was then found or missed depending on which sectors the
+        viewer covered. The move is now skipped when the world refuses it.
+
 [2026-07-31] - DEADCANNOTSEELIVING implemented
 ----------------------------------------
 
