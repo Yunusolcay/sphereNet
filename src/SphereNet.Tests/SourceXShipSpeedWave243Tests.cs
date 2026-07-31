@@ -39,7 +39,8 @@ public sealed class SourceXShipSpeedWave243Tests
         var (engine, ship) = MakeShip();
 
         long before = Environment.TickCount64;
-        Assert.True(engine.SetMoveDir(ship, Direction.North, ShipMovementType.Normal));
+        Assert.True(engine.SetMoveDir(ship, Direction.North, ShipMovementType.Normal,
+            wheelMove: true));
 
         Assert.Equal(ShipSpeedMode.Fast, ship.SpeedMode);
         long delay = ship.NextMoveTick - before;
@@ -52,10 +53,83 @@ public sealed class SourceXShipSpeedWave243Tests
         var (engine, ship) = MakeShip();
 
         long before = Environment.TickCount64;
-        Assert.True(engine.SetMoveDir(ship, Direction.North, ShipMovementType.OneTile));
+        Assert.True(engine.SetMoveDir(ship, Direction.North, ShipMovementType.OneTile,
+            wheelMove: true));
 
         Assert.Equal(ShipSpeedMode.Slow, ship.SpeedMode);
         long delay = ship.NextMoveTick - before;
         Assert.InRange(delay, 1000, 1200); // full SpeedPeriod (+ scheduling slack)
+    }
+
+    /// <summary>Only a wheel order re-selects the speed mode (Source-X guards
+    /// that assignment with fWheelMove). A ship that has never been steered from
+    /// the wheel therefore keeps the constructor's mode, which upstream sets to
+    /// SMS_NORMAL — not the SLOW mode — so a tillerman/script command sails at
+    /// the halved interval, not the full period.</summary>
+    [Fact]
+    public void ScriptedCommand_KeepsTheDefaultMode_AndSailsAtTheHalvedInterval()
+    {
+        var (engine, ship) = MakeShip();
+        Assert.Equal(ShipSpeedMode.OneTile, ship.SpeedMode); // Source-X SMS_NORMAL
+
+        long before = Environment.TickCount64;
+        Assert.True(engine.SetMoveDir(ship, Direction.North, ShipMovementType.Normal));
+
+        Assert.Equal(ShipSpeedMode.OneTile, ship.SpeedMode); // untouched by a script order
+        long delay = ship.NextMoveTick - before;
+        Assert.InRange(delay, 500, 700);
+    }
+
+    /// <summary>Source-X CCMultiMovable.cpp:78 drops a wheel order that arrives
+    /// while the ship is still counting down to its next step — "otherwise for
+    /// each click with mouse it will do 1 move". Without it every extra click
+    /// pushes the next step a full period further out, so holding the wheel
+    /// stalls the ship instead of sailing it.</summary>
+    [Fact]
+    public void WheelOrder_DuringTheCountdown_IsDroppedInsteadOfDelayingTheShip()
+    {
+        var (engine, ship) = MakeShip();
+
+        Assert.True(engine.SetMoveDir(ship, Direction.North, ShipMovementType.Normal,
+            wheelMove: true));
+        long firstStep = ship.NextMoveTick;
+
+        // A second click a moment later must not move the goalposts.
+        Assert.False(engine.SetMoveDir(ship, Direction.North, ShipMovementType.Normal,
+            wheelMove: true));
+        Assert.Equal(firstStep, ship.NextMoveTick);
+
+        // A scripted order is not wheel-rate-limited (Source-X only guards the
+        // wheel path), so it still re-arms.
+        Assert.True(engine.SetMoveDir(ship, Direction.North, ShipMovementType.Normal));
+    }
+
+    /// <summary>Source-X CCMultiMovable.cpp:81 — repeating the order while the
+    /// ship still steps one tile at a time and faces that way promotes it to
+    /// continuous sailing.</summary>
+    [Fact]
+    public void RepeatingAOneTileOrder_WhileFacingIt_PromotesToContinuousSailing()
+    {
+        var (engine, ship) = MakeShip();
+        ship.DirFace = Direction.North;
+
+        Assert.True(engine.SetMoveDir(ship, Direction.North, ShipMovementType.OneTile));
+        Assert.Equal(ShipMovementType.OneTile, ship.MovementType);
+
+        Assert.True(engine.SetMoveDir(ship, Direction.North, ShipMovementType.OneTile));
+        Assert.Equal(ShipMovementType.Normal, ship.MovementType);
+    }
+
+    /// <summary>A repeat in a direction the ship is NOT facing stays one-tile.</summary>
+    [Fact]
+    public void RepeatingAOneTileOrder_FacingElsewhere_StaysOneTile()
+    {
+        var (engine, ship) = MakeShip();
+        ship.DirFace = Direction.North;
+
+        Assert.True(engine.SetMoveDir(ship, Direction.East, ShipMovementType.OneTile));
+        Assert.True(engine.SetMoveDir(ship, Direction.East, ShipMovementType.OneTile));
+
+        Assert.Equal(ShipMovementType.OneTile, ship.MovementType);
     }
 }

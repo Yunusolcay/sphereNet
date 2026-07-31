@@ -20,6 +20,7 @@ public sealed class ShipEngine
     private readonly MultiRegistry _multiDefs;
     private readonly MapDataManager? _mapData;
     private readonly Dictionary<Serial, Ship> _ships = [];
+    private readonly Random _rand = new();
 
     public ShipEngine(GameWorld world, MultiRegistry multiDefs, MapDataManager? mapData)
     {
@@ -75,6 +76,10 @@ public sealed class ShipEngine
 
     /// <summary>Called when a ship turns to a new facing (Source-X @ShipTurn).</summary>
     public Action<Ship>? OnShipTurned { get; set; }
+
+    /// <summary>Sailing sound (Source-X CCMultiMovable::SetMoveDir plays 0x12 or
+    /// 0x13 on roughly one move command in ten). Args: ship, sound id.</summary>
+    public Action<Ship, ushort>? OnShipSound { get; set; }
 
     /// <summary>Fired before a ship move crosses a region boundary (Source-X
     /// CCMultiMovable region check — item @RegionLeave/@RegionEnter live on
@@ -395,7 +400,13 @@ public sealed class ShipEngine
     /// Set movement direction and type.
     /// Source: CCMultiMovable.cpp:60-105
     /// </summary>
-    public bool SetMoveDir(Ship ship, Direction dir, ShipMovementType moveType)
+    /// <param name="wheelMove">True when the order came from the 0xBF.0x33
+    /// wheel/tiller packet rather than a script or tillerman command. Source-X
+    /// treats the two differently: a wheel click that arrives while the move
+    /// timer is still running is dropped, and only a wheel order re-selects the
+    /// speed mode.</param>
+    public bool SetMoveDir(Ship ship, Direction dir, ShipMovementType moveType,
+        bool wheelMove = false)
     {
         dir = (Direction)((byte)dir & 0x07);
         if (moveType == ShipMovementType.Stop)
@@ -407,6 +418,23 @@ public sealed class ShipEngine
         if (ship.Anchored || moveType is not (ShipMovementType.OneTile or ShipMovementType.Normal))
             return false;
 
+        // Source-X CCMultiMovable.cpp:78 — "otherwise for each click with mouse
+        // it will do 1 move". A wheel order that lands while the ship is still
+        // counting down to its next step is dropped outright; without this the
+        // click would push NextMoveTick a full period further out, so holding
+        // the wheel down stalls the ship instead of sailing it.
+        if (wheelMove && ship.MovementType != ShipMovementType.Stop &&
+            Environment.TickCount64 < ship.NextMoveTick)
+            return false;
+
+        // Source-X CCMultiMovable.cpp:81 — repeating the order the ship is
+        // already following, while it faces that way and is still stepping one
+        // tile at a time, promotes it to continuous sailing. (Upstream also
+        // compares the move direction there, but it assigned it a few lines
+        // earlier, so that half of the condition is always true.)
+        if (ship.MovementType == ShipMovementType.OneTile && ship.DirFace == dir)
+            moveType = ShipMovementType.Normal;
+
         // Ship MOVEMENT keeps all 8 directions (a ship sails diagonally for the
         // SHIPFORELEFT/BACKRIGHT/etc. commands); only the FACING is 4-direction.
         // Normalizing the move direction here collapsed every diagonal command to
@@ -414,11 +442,19 @@ public sealed class ShipEngine
         ship.DirMove = dir;
         ship.MovementType = moveType;
 
+        // Source-X CCMultiMovable.cpp:89 — the creak of the rigging, skipped on
+        // a magic (ATTR_MAGIC) vessel.
+        if (!ship.MultiItem.IsAttr(ObjAttributes.Magic) && _rand.Next(10) == 0)
+            OnShipSound?.Invoke(ship, _rand.Next(2) != 0 ? (ushort)0x12 : (ushort)0x13);
+
         // Source-X CCMultiMovable::SetMoveDir (CCMultiMovable.cpp:101): one-tile
         // steering (SMT_SLOW) keeps the slow speed mode, continuous ("normal")
         // sailing runs in the fast mode, which halves the tick interval below.
-        ship.SpeedMode = moveType == ShipMovementType.Normal
-            ? ShipSpeedMode.Fast : ShipSpeedMode.Slow;
+        // Only a wheel order re-selects it; a scripted command leaves the mode
+        // the pilot last chose alone.
+        if (wheelMove)
+            ship.SpeedMode = moveType == ShipMovementType.Normal
+                ? ShipSpeedMode.Fast : ShipSpeedMode.Slow;
 
         ship.NextMoveTick = Environment.TickCount64 + GetMoveDelay(ship);
         return true;

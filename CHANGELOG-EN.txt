@@ -4,6 +4,41 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-07-31] - Ship steering: wheel spam stalled the ship, scripted sailing ran half speed
+----------------------------------------
+
+FIX - Every wheel order re-armed the move timer, so a pilot clicking or holding the
+        wheel pushed the next step a full period further out each time and the ship
+        stalled instead of sailing. Source-X drops a wheel order that arrives while
+        the timer is still running (CCMultiMovable.cpp:78, "otherwise for each click
+        with mouse it will do 1 move"). SetMoveDir now knows whether the order came
+        from the 0xBF.0x33 wheel packet or from a script/tillerman command and
+        applies that guard to the wheel path only.
+
+FIX - Ships driven by a tillerman or script command sailed at half the reference
+        speed. The move delay only stretches to the full period in the SLOW speed
+        mode, and only a wheel order re-selects the mode (Source-X guards that
+        assignment with fWheelMove), so the starting mode decides how a scripted
+        ship sails. Upstream starts at SMS_NORMAL, the value its own comment labels
+        "one tile"; SphereNet started at SLOW instead, which is the one value that
+        doubles the interval. The default is now the reference one, so a scripted
+        SHIPFORE advances on the halved interval like Source-X. Ships steered from
+        the wheel are unaffected.
+
+FIX - Repeating a one-tile order in the direction the ship already faces did not
+        promote it to continuous sailing (Source-X CCMultiMovable.cpp:81), so a
+        second click kept stepping one tile at a time instead of getting under way.
+
+CHANGE - The rigging sound Source-X plays on roughly one move order in ten (0x12 or
+        0x13, skipped on an ATTR_MAGIC vessel) was missing; added behind a new
+        OnShipSound hook the server broadcasts to nearby clients.
+
+CHANGE - Reviewed with no change needed: SHIPSPEED period/tiles parsing and its
+        tenths-of-a-second unit, the halved interval for the fast mode, the
+        movement-type clamp (SphereNet's enum has no value above Normal, so its
+        reject is equivalent to the reference clamp), and the ShipSpeedMode values
+        against the 0xF6 packet (1 one tile, 2 rowboat, 3 slow, 4 fast).
+
 [2026-07-31] - Backpack delete/recreate verified; the three skipped tests now run
 ----------------------------------------
 

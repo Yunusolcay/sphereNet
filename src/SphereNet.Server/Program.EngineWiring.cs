@@ -2502,6 +2502,11 @@ public static partial class Program
             _shipEngine.OnShipStopped = ship =>
                 _triggerDispatcher?.FireItemTrigger(ship.MultiItem, ItemTrigger.ShipStop,
                     new TriggerArgs { ItemSrc = ship.MultiItem });
+            _shipEngine.OnShipSound = (ship, soundId) =>
+            {
+                var pos = ship.MultiItem.Position;
+                BroadcastNearby(pos, 18, new PacketSound(soundId, pos.X, pos.Y, pos.Z), 0);
+            };
             _shipEngine.OnShipTurned = ship =>
                 _triggerDispatcher?.FireItemTrigger(ship.MultiItem, ItemTrigger.ShipTurn,
                     new TriggerArgs { ItemSrc = ship.MultiItem });

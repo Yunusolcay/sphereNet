@@ -2214,7 +2214,8 @@ public sealed class ClientWorldFeaturesHandler
             engine.Stop(ship);
         else
             engine.SetMoveDir(ship, (Direction)dir,
-                speed >= 2 ? ShipMovementType.Normal : ShipMovementType.OneTile);
+                speed >= 2 ? ShipMovementType.Normal : ShipMovementType.OneTile,
+                wheelMove: true);
     }
 
     private static IReadOnlyDictionary<ushort, Action<ClientWorldFeaturesHandler, byte[]>> BuildExtendedCommandHandlers()

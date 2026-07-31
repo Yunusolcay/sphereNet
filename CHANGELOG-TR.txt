@@ -3,6 +3,42 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-07-31] - Gemi dumeni: tekerlek spam'i gemiyi durduruyordu, betikle seyir yari hizdaydi
+----------------------------------------
+
+FIX - Her tekerlek komutu hareket zamanlayicisini yeniden kuruyordu; bu yuzden
+        dumende tiklayan ya da basili tutan bir pilot her seferinde bir sonraki
+        adimi tam bir periyot ileri itiyor ve gemi seyretmek yerine duruyordu.
+        Source-X, zamanlayici hala calisirken gelen tekerlek komutunu dusurur
+        (CCMultiMovable.cpp:78, "aksi halde her fare tiklamasi 1 hareket yapar").
+        SetMoveDir artik komutun 0xBF.0x33 tekerlek paketinden mi yoksa
+        betik/dumenci komutundan mi geldigini biliyor ve bu korumayi yalnizca
+        tekerlek yoluna uyguluyor.
+
+FIX - Dumenci veya betik komutuyla surulen gemiler referansin yari hizinda
+        gidiyordu. Hareket gecikmesi yalnizca SLOW modunda tam periyoda uzuyor ve
+        modu yalnizca bir tekerlek komutu yeniden seciyor (Source-X o atamayi
+        fWheelMove ile kapatir); dolayisiyla baslangic modu, betikle surulen bir
+        geminin nasil seyredecegini belirliyor. Ust kaynak SMS_NORMAL ile basliyor
+        - kendi yorumunun "one tile" dedigi deger; SphereNet ise araligi ikiye
+        katlayan tek deger olan SLOW ile basliyordu. Varsayilan artik referansla
+        ayni, yani betikle verilen SHIPFORE Source-X gibi yarilanmis aralikta
+        ilerliyor. Dumenden surulen gemiler etkilenmiyor.
+
+FIX - Geminin zaten baktigi yonde tek-kare komutunun tekrarlanmasi onu surekli
+        seyre yukseltmiyordu (Source-X CCMultiMovable.cpp:81); ikinci tiklama yola
+        cikmak yerine tek kare adimlamaya devam ediyordu.
+
+CHANGE - Source-X'in yaklasik her on hareket komutundan birinde caldigi armuz sesi
+        (0x12 veya 0x13, ATTR_MAGIC gemide atlanir) eksikti; sunucunun yakindaki
+        client'lara yayinladigi yeni OnShipSound hook'u ile eklendi.
+
+CHANGE - Incelendi, degisiklik gerekmedi: SHIPSPEED period/tiles ayristirmasi ve
+        onda-bir-saniye birimi, hizli moddaki yarilanmis aralik, hareket-tipi
+        clamp'i (SphereNet enum'unda Normal'in ustunde deger yok, dolayisiyla
+        reddi referanstaki clamp ile esdeger) ve ShipSpeedMode degerlerinin 0xF6
+        paketiyle uyumu (1 tek kare, 2 rowboat, 3 yavas, 4 hizli).
+
 [2026-07-31] - Canta silme/yeniden olusturma dogrulandi; atlanan uc test artik kosuyor
 ----------------------------------------
 

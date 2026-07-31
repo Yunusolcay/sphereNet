@@ -22,7 +22,13 @@ public sealed class Ship
     private ShipMovementType _movementType = ShipMovementType.Stop;
     private ushort _speedPeriod = 500;
     private byte _speedTiles = 1;
-    private ShipSpeedMode _speedMode = ShipSpeedMode.Slow;
+    // Source-X CCMultiMovable's constructor starts a ship at SMS_NORMAL, which
+    // is the value 1 its own comment labels "one tile" (SphereNet spells that
+    // ShipSpeedMode.OneTile). The distinction matters because the move delay
+    // only stretches to the full period in the SLOW mode: starting at Slow made
+    // every ship driven by a tillerman/script command sail at half the reference
+    // speed, since only a wheel order ever re-selected the mode.
+    private ShipSpeedMode _speedMode = ShipSpeedMode.OneTile;
     private long _nextMoveTick;
     private readonly List<Serial> _components = [];
 
