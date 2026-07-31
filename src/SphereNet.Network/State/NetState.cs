@@ -1010,9 +1010,15 @@ public sealed class NetState : IDisposable
         ClientVersionHandler?.Invoke(this, version);
     }
 
+    /// <summary>Upper bound for a client-requested view range (sphere.ini
+    /// MAPVIEWSIZEMAX, Source-X m_iMapViewSizeMax, default 24). Was hardcoded,
+    /// so lowering the ini value had no effect.</summary>
+    public static byte MapViewSizeMax { get; set; } = 24;
+
     internal void OnViewRange(byte range)
     {
-        ViewRange = Math.Clamp(range, (byte)5, (byte)24);
+        byte max = Math.Max((byte)5, MapViewSizeMax);
+        ViewRange = Math.Clamp(range, (byte)5, max);
         ViewRangeHandler?.Invoke(this, ViewRange);
     }
 

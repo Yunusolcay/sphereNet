@@ -3,6 +3,22 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-07-31] - NPCDISTANCEHEAR ve MAPVIEWSIZEMAX okunuyor ama hic kullanilmiyordu
+----------------------------------------
+
+FIX - NPCDISTANCEHEAR hicbir sey yapmiyordu: NPC'ler konusanin talk-mode
+        yaricapiyla taraniyordu, yani ayar ne derse desin bir yell 48 kare
+        icindeki tum NPC'lere ulasiyordu. Source-X NPC gecisi icin ayri bir
+        yaricap tutar (CClientEvent.cpp:1892) ve yalnizca ona bakar. NPC'ler
+        artik kendi menzillerini referans semantigiyle kullaniyor - 0 varsayilan
+        18 kare gorus, pozitif deger o kadar kare, negatif deger ise o kadar kare
+        ve gorus-hatti kontrolu atlanir.
+
+FIX - MAPVIEWSIZEMAX hicbir sey yapmiyordu: client'in 0xBF.0x1C gorus boyutu
+        istegi icin ust sinir 24'e gomuluydu ve bu zaten varsayilan oldugu icin
+        anahtari dusurmek bir sey degistirmiyordu. Artik yapilandirilan deger
+        kullaniliyor.
+
 [2026-07-31] - Ev depolama butcesi: vendor limiti dusuyordu, bonus depolama yoktu, access listesi okunamiyordu
 ----------------------------------------
 

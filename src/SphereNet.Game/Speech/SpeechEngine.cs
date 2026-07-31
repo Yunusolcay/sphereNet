@@ -47,6 +47,23 @@ public sealed class SpeechEngine
     public int DistanceWhisper { get; set; } = 3;
     public int DistanceYell { get; set; } = 48;
 
+    /// <summary>How far an NPC can hear speech, independent of the talk mode
+    /// (sphere.ini NPCDISTANCEHEAR, Source-X m_iNPCDistanceHear). NPCs are
+    /// scanned on their own radius rather than the speaker's mode radius, so a
+    /// yell does not reach NPCs 48 tiles away. Source-X semantics:
+    /// 0 = the default sight range, a positive value = that many tiles, and a
+    /// NEGATIVE value = that many tiles with the line-of-sight check skipped.
+    /// </summary>
+    public int NpcDistanceHear { get; set; }
+
+    /// <summary>Range NPCs hear at when NPCDISTANCEHEAR is left at 0
+    /// (Source-X UO_MAP_VIEW_SIGHT).</summary>
+    private const int DefaultNpcHearSight = 18;
+
+    /// <summary>Tiles to scan for listening NPCs, from <see cref="NpcDistanceHear"/>.</summary>
+    private int NpcHearRange =>
+        NpcDistanceHear != 0 ? Math.Abs(NpcDistanceHear) : DefaultNpcHearSight;
+
     /// <summary>GM command prefix (configurable).</summary>
     public char CommandPrefix { get; set; } = '.';
 
@@ -163,8 +180,12 @@ public sealed class SpeechEngine
         // every NPC in the world an OnHear and swept every world item for @Hear
         // per GM yell, stalling the main loop long enough to drop connections.
 
-        // Send speech to all characters in range
-        var listeners = _world.GetCharsInRange(speaker.Position, hearRange);
+        // NPCs are scanned on the NPCDISTANCEHEAR radius, not the speaker's mode
+        // radius (Source-X CClientEvent.cpp:1892 keeps a separate iFullDist for
+        // the NPC pass and gates only on that distance). Sharing the mode radius
+        // let a yell reach NPCs 48 tiles away.
+        int npcRange = NpcHearRange;
+        var listeners = _world.GetCharsInRange(speaker.Position, npcRange);
 
         foreach (var listener in listeners)
         {

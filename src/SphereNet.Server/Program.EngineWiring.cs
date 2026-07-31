@@ -715,6 +715,7 @@ public static partial class Program
             _speech.DistanceSay = _config.DistanceTalk;
             _speech.DistanceWhisper = _config.DistanceWhisper;
             _speech.DistanceYell = _config.DistanceYell;
+            _speech.NpcDistanceHear = _config.NpcDistanceHear;
             _speech.PartyManager = _partyManager;
             _speech.GuildManager = _guildManager;
             _speech.OnNpcHear += OnNpcHearSpeech;

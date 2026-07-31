@@ -4,6 +4,21 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-07-31] - NPCDISTANCEHEAR and MAPVIEWSIZEMAX were parsed but never used
+----------------------------------------
+
+FIX - NPCDISTANCEHEAR did nothing: NPCs were scanned on the speaker's talk-mode
+        radius, so a yell reached every NPC within 48 tiles no matter what the
+        setting said. Source-X keeps a separate radius for the NPC pass
+        (CClientEvent.cpp:1892) and gates only on it. NPCs now use their own
+        range with the reference semantics - 0 is the 18-tile default sight, a
+        positive value is that many tiles, and a negative value is that many
+        tiles with the line-of-sight check skipped.
+
+FIX - MAPVIEWSIZEMAX did nothing: the upper bound on a client's 0xBF.0x1C view
+        size request was hardcoded to 24, which happens to be the default, so
+        lowering the key had no effect. It is now the configured value.
+
 [2026-07-31] - House storage budget: vendor limit dropped, no bonus storage, unreadable access list
 ----------------------------------------
 

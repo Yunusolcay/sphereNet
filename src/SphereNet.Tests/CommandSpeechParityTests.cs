@@ -34,6 +34,56 @@ public class CommandSpeechParityTests
         return ch;
     }
 
+    // ---- NPCDISTANCEHEAR: NPCs hear on their own radius, not the talk mode's ----
+
+    /// <summary>Source-X scans for listening NPCs on the NPCDISTANCEHEAR radius
+    /// (CClientEvent.cpp:1892) rather than the speaker's mode radius, so a yell
+    /// does not reach NPCs far beyond it. The setting used to be parsed and
+    /// ignored, leaving NPCs on the 48-tile yell range.</summary>
+    [Fact]
+    public void NpcDistanceHear_CapsHowFarAYellReachesNpcs()
+    {
+        var world = CreateWorld();
+        var speech = new SpeechEngine(world) { NpcDistanceHear = 16 };
+        var speaker = MakeChar(world, PrivLevel.Player);
+
+        var near = world.CreateCharacter();
+        near.IsPlayer = false;
+        world.PlaceCharacter(near, new Point3D(110, 100, 0, 0)); // 10 tiles
+        var far = world.CreateCharacter();
+        far.IsPlayer = false;
+        world.PlaceCharacter(far, new Point3D(130, 100, 0, 0));  // 30 tiles
+
+        var heard = new List<Character>();
+        speech.OnNpcHear += (_, listener, _, _) => heard.Add(listener);
+
+        speech.ProcessSpeech(speaker, "hello there", TalkMode.Yell, 0, 3);
+
+        Assert.Contains(near, heard);
+        Assert.DoesNotContain(far, heard); // inside the 48-tile yell, outside 16
+    }
+
+    /// <summary>Left at 0 the NPC scan falls back to the default sight range,
+    /// so an unconfigured server keeps hearing NPCs at 18 tiles.</summary>
+    [Fact]
+    public void NpcDistanceHear_Zero_UsesTheDefaultSightRange()
+    {
+        var world = CreateWorld();
+        var speech = new SpeechEngine(world); // NpcDistanceHear stays 0
+        var speaker = MakeChar(world, PrivLevel.Player);
+
+        var npc = world.CreateCharacter();
+        npc.IsPlayer = false;
+        world.PlaceCharacter(npc, new Point3D(117, 100, 0, 0)); // 17 tiles
+
+        var heard = new List<Character>();
+        speech.OnNpcHear += (_, listener, _, _) => heard.Add(listener);
+
+        speech.ProcessSpeech(speaker, "hello there", TalkMode.Say, 0, 3);
+
+        Assert.Contains(npc, heard);
+    }
+
     // ---- P0: players cannot set properties via the command prefix ----
 
     [Theory]
