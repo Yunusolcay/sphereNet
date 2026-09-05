@@ -29,6 +29,27 @@ public sealed class BotEngine : IDisposable
     public static bool BotModeActive { get; private set; }
     public static event Action<bool>? OnBotModeChanged;
 
+    /// <summary>Characters the server is currently driving as load-test bots.
+    /// Populated when a bot session starts and emptied when bots stop.</summary>
+    private static readonly ConcurrentDictionary<string, byte> _liveBotChars =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// True when <paramref name="charName"/> belongs to a bot session this server is
+    /// actually running. The gate for any diagnostic privilege: a name-prefix test
+    /// alone handed the vendor payment exemption to any player who happened to pick
+    /// a name starting with the bot prefix.
+    /// </summary>
+    public static bool IsLiveBotCharacter(string? charName) =>
+        BotModeActive && !string.IsNullOrEmpty(charName) && _liveBotChars.ContainsKey(charName);
+
+    internal static void RegisterBotCharacter(string charName)
+    {
+        if (!string.IsNullOrEmpty(charName)) _liveBotChars[charName] = 0;
+    }
+
+    internal static void ForgetAllBotCharacters() => _liveBotChars.Clear();
+
     // Anomaly tracking
     public readonly ConcurrentQueue<BotAnomaly> Anomalies = new();
     public int AnomalyCount => Anomalies.Count;
@@ -181,6 +202,7 @@ public sealed class BotEngine : IDisposable
                 var bot = new BotClient(botId, _logger);
                 bot.SetAnomalySink(Anomalies);
                 _bots[botId] = bot;
+                RegisterBotCharacter(bot.CharName);
                 
                 int localBotId = botId;
                 tasks.Add(Task.Run(async () =>
@@ -239,6 +261,7 @@ public sealed class BotEngine : IDisposable
             try { bot.Dispose(); } catch { }
         }
         _bots.Clear();
+        ForgetAllBotCharacters();
 
         if (BotModeActive)
         {

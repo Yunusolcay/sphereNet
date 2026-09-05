@@ -489,6 +489,11 @@ public sealed class ClientWorldFeaturesHandler
         List<SphereNet.Network.Packets.Incoming.VendorBuyEntry> buyItems)
     {
         if (_character == null) return;
+        // A vendor window outlives the player: they can die with it open, and the
+        // client can still send a queued confirmation afterwards. Source-X CanTouch
+        // refuses a dead character every item that is not death-immune, so the
+        // transaction must not reach the stock at all.
+        if (_character.IsDead) return;
         var vendor = _world.FindChar(new Serial(vendorSerial));
         if (vendor == null || !VendorEngine.IsVendorLike(vendor)) return;
         if (_character.MapIndex != vendor.MapIndex ||
@@ -549,6 +554,11 @@ public sealed class ClientWorldFeaturesHandler
         List<SphereNet.Network.Packets.Incoming.VendorSellEntry> sellItems)
     {
         if (_character == null) return;
+        // A vendor window outlives the player: they can die with it open, and the
+        // client can still send a queued confirmation afterwards. Source-X CanTouch
+        // refuses a dead character every item that is not death-immune, so the
+        // transaction must not reach the stock at all.
+        if (_character.IsDead) return;
         var vendor = _world.FindChar(new Serial(vendorSerial));
         if (vendor == null || !VendorEngine.IsVendorLike(vendor)) return;
         if (_character.MapIndex != vendor.MapIndex ||

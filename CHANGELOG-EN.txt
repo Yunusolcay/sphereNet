@@ -4,6 +4,84 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-05] - Pet storage, death inventory, spell costs and vendor authorization
+----------------------------------------
+
+FIX - Stabling and shrinking deleted the pet and rebuilt it from a hand-listed
+        snapshot, so anything the snapshot did not name was lost: every TAG (BONDED
+        and the bonding timer among them), the follower-slot override, the live
+        mana/stamina pools, and the pet's whole inventory - a loaded pack animal
+        lost its cargo outright. Source-X CChar::Make_Figurine parks the creature
+        instead (STATF_RIDDEN + disconnected) and links the figurine to its UID, so
+        the same CChar comes back. Both paths now share that model through
+        PetStorage, the way MountEngine already did. Stable entries and figurines
+        written by an older build still restore through the legacy snapshot path.
+
+FIX - The world loader placed every character into a sector, so a parked pet or a
+        mount came back from a save visible, ticking and attackable. A Ridden
+        creature is now hidden from its sector on load.
+
+FIX - An item held on the cursor is parented to the character but is neither
+        equipped nor in the pack, so the death loot walk never saw it: it stayed
+        attached to its owner and the ghost could drop it back into its own pack.
+        Source-X reaches it because a dragged item sits on LAYER_DRAGGING and
+        UnEquipAllItems walks that layer. Death now settles the held item into the
+        pack first, and the drop handler refuses a dead character like the pickup
+        handler already did.
+
+FIX - Death used the equipment protected set for pack contents too. Source-X
+        CContainer::ContentsTransfer keeps only NEWBIE / MOVE_NEVER / CURSED2 /
+        BLESSED2 there, while UnEquipAllItems additionally keeps BLESSED, INSURED,
+        NODROP, NOTRADE and QUESTITEM. Plain blessed and no-trade now protect what
+        is worn rather than what is loose in the pack. (Both engines transfer the
+        pack one level deep, so a protected item inside a plain bag still travels
+        with the bag - that part was already parity.)
+
+FIX - A scroll cast was exempt from the reagent check at cast start but not from
+        the consumption at completion, so carrying reagents made the same scroll
+        cost more than casting it empty-handed. Source-X gates
+        Calc_SpellReagentsConsume on the cast source being the caster, on the
+        success, fizzle and abort paths alike.
+
+FIX - Cast completion consumed reagents without re-checking them, so moving them
+        out of the pack mid-cast produced the spell for free. Source-X re-runs
+        Spell_CanCast with fTest=false at Spell_CastDone and fails the whole cast
+        when it cannot pay. Consumption is now all-or-nothing and reports failure,
+        which fizzles the cast instead of granting it.
+
+FIX - The reagent search only looked at the top level of the backpack, so reagents
+        tidied into a pouch read as missing while gold and crafting materials were
+        already counted recursively. Resource searches now descend through
+        sub-containers, skipping the bank box, a vendor box, an open trade window
+        and locked containers (Source-X CItemContainer::IsSearchable).
+
+FIX - Vendor buy and sell checked the vendor, the map and the distance but not
+        whether the player was alive, so a queued confirmation from a window left
+        open at death still moved gold and stock. Source-X CanTouch refuses a dead
+        character every item that is not death-immune.
+
+FIX - The load-test bot's vendor payment exemption keyed on the character name,
+        which the player chooses: an ordinary character called "SphereBotanist"
+        bought for free, with bot mode switched off. The exemption now requires the
+        server to actually be driving that character as a bot.
+
+FIX - Host shutdown measured silence from the child's last log line rather than
+        from the shutdown request. A quiet shard logs nothing for minutes, so the
+        first evaluation already exceeded the quiet limit and killed the server
+        after 250ms - worse than the flat timeout it replaced.
+
+FIX - With Md5Passwords=0 the password is stored verbatim, but verification still
+        guessed the comparison from the shape of the stored string: a password that
+        happened to be 32 hex characters, or to start with the versioned prefix, was
+        compared as a digest and could never be entered again. The comparison now
+        follows the setting, as Source-X CAccount::CheckPassword does.
+
+FIX - The account manifest and the removal of the files it supersedes are two
+        halves of one commit. When the manifest could not be written the save still
+        reported success, leaving the extension probe free to pick the stale
+        snapshot; a failed manifest now removes any manifest left naming the
+        previous file, and the save reports failure if superseded files also survive.
+
 [2026-09-05] - Account name validation, panel authorization, save and scheduler fixes
 ----------------------------------------
 

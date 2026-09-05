@@ -112,7 +112,7 @@ public sealed class Account : IScriptObj
     public bool CheckPassword(string password)
     {
         if (string.IsNullOrEmpty(_passwordHash)) return false;
-        return Core.Configuration.PasswordHelper.Verify(password, _passwordHash);
+        return Core.Configuration.PasswordHelper.Verify(password, _passwordHash, UseMd5Passwords);
     }
 
     public void SetPassword(string password)

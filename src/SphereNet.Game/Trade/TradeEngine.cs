@@ -138,6 +138,10 @@ public static class VendorEngine
     {
         if (!IsVendorLike(vendor))
             return -1;
+        // Also checked in the packet handler; repeated here so no other caller can
+        // commit a transaction for a ghost.
+        if (player.IsDead)
+            return -1;
         if (World == null)
             return -1;
 
@@ -190,7 +194,11 @@ public static class VendorEngine
             return -1;
 
         bool isStaff = player.PrivLevel >= Core.Enums.PrivLevel.GM;
-        bool isBot = Diagnostics.BotClient.IsBotCharName(player.Name ?? "");
+        // A character name is chosen by the player, so it can never be an economic
+        // privilege: "SphereBotanist" is a perfectly ordinary name, and it used to buy
+        // for free. The exemption now requires the server to actually be driving this
+        // character as a load-test bot.
+        bool isBot = Diagnostics.BotEngine.IsLiveBotCharacter(player.Name);
         bool isOwner = vendor.HasOwner(player.Uid);
         if (!isStaff && !isBot && !isOwner)
         {
@@ -267,6 +275,8 @@ public static class VendorEngine
     public static int ProcessSell(Character player, Character vendor, IReadOnlyList<TradeEntry> items, out bool shortfall)
     {
         shortfall = false;
+        if (player.IsDead)
+            return -1;
         if (!IsVendorLike(vendor))
             return 0;
 

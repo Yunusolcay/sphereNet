@@ -267,6 +267,15 @@ public sealed class DeathEngine
             corpse.SetTag("KILLER_UUID", effectiveKiller.Uuid.ToString("D"));
         }
 
+        // An item held on the cursor is parented to the character but is neither
+        // equipped nor in the pack, so the loot walk below never saw it: it stayed
+        // attached to the corpse's owner and the ghost could simply drop it back
+        // into its own pack. Source-X reaches it because a dragged item sits on
+        // LAYER_DRAGGING and UnEquipAllItems walks that layer (CCharAct.cpp:636).
+        // Settling it into the pack first puts it back under the normal rules,
+        // protected-item handling included.
+        ReleaseDraggedItem(victim);
+
         // Drop equipped items and backpack contents to corpse — unless DEATH_NOLOOTDROP
         // keeps everything on the (now-dead) body. (DEATH_NOLOOTDROP = 0x04.)
         if ((deathFlags & 0x04) == 0)
@@ -523,6 +532,39 @@ public sealed class DeathEngine
         return corpse;
     }
 
+    /// <summary>
+    /// Settle whatever the character is holding on the cursor back into the pack
+    /// before the corpse is filled, and cancel the client-side drag.
+    /// </summary>
+    private void ReleaseDraggedItem(Character victim)
+    {
+        if (!victim.TryGetTag("DRAGGING", out string? raw) ||
+            !uint.TryParse(raw, out uint uid) || uid == 0)
+            return;
+
+        // Preferred path: the client bridge also cancels the drag cursor (0x27).
+        Character.OnDragRelease?.Invoke(victim, false);
+        if (!victim.TryGetTag("DRAGGING", out _))
+            return;
+
+        // No client attached (an NPC, a replay, a headless run): make the same move
+        // here so the item still reaches the normal death flow.
+        victim.RemoveTag("DRAGGING");
+
+        var item = _world.FindItem(new Serial(uid));
+        if (item == null || item.IsDeleted)
+            return;
+
+        var pack = victim.Backpack;
+        if (pack != null && pack.TryAddItem(item))
+            return;
+
+        // Nowhere to put it: the ground at the victim's feet is the defined
+        // fallback, the same one the drag-release bridge uses.
+        item.ContainedIn = Serial.Invalid;
+        _world.PlaceItemWithDecay(item, victim.Position);
+    }
+
     /// <summary>Drop player equipment and backpack to corpse.</summary>
     private void DropLootToCorpse(Character victim, Item corpse)
     {
@@ -556,7 +598,7 @@ public sealed class DeathEngine
             var contents = new List<Item>(pack.Contents);
             foreach (var item in contents)
             {
-                if (StaysWithOwnerOnDeath(item))
+                if (StaysInPackOnDeath(item))
                     continue;
 
                 pack.RemoveItem(item);
@@ -594,6 +636,21 @@ public sealed class DeathEngine
         item.IsAttr(ObjAttributes.Newbie) || item.IsAttr(ObjAttributes.Nodropt) ||
         item.IsAttr(ObjAttributes.Move_Never) || item.IsAttr(ObjAttributes.NotRading) ||
         item.IsAttr(ObjAttributes.Cursed2);
+
+    /// <summary>Items that stay in the pack rather than moving to the corpse.
+    ///
+    /// Source-X uses a NARROWER set here than for equipment: CContainer::ContentsTransfer
+    /// keeps only ATTR_NEWBIE / ATTR_MOVE_NEVER / ATTR_CURSED2 / ATTR_BLESSED2
+    /// (CContainer.cpp:528), while UnEquipAllItems additionally keeps ATTR_BLESSED,
+    /// ATTR_INSURED, ATTR_NODROP, ATTR_NOTRADE and ATTR_QUESTITEM. Plain "blessed"
+    /// therefore protects an item you are WEARING, not one loose in your pack.
+    ///
+    /// Note both engines transfer the pack one level deep: a protected item inside a
+    /// plain bag travels with the bag in Source-X too. That is parity, not an
+    /// oversight — the protection is a property of what you carry directly.</summary>
+    private static bool StaysInPackOnDeath(Item item) =>
+        item.IsAttr(ObjAttributes.Newbie) || item.IsAttr(ObjAttributes.Move_Never) ||
+        item.IsAttr(ObjAttributes.Cursed2) || item.IsAttr(ObjAttributes.Blessed2);
 
     /// <summary>Drop NPC loot to corpse (all inventory + level-based loot).</summary>
     private void DropNpcLootToCorpse(Character victim, Item corpse)

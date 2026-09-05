@@ -208,17 +208,30 @@ public class DeathCorpseParityTests
 
         var victim = MakePlayer(world, 100);
 
-        // A move-never ring stays equipped; a no-trade item in the pack is kept;
-        // a plain item drops to the corpse.
+        // Equipment and pack contents use DIFFERENT protected sets in Source-X.
+        // UnEquipAllItems keeps NEWBIE/MOVE_NEVER/BLESSED/INSURED/NODROP/NOTRADE/
+        // QUESTITEM (CCharAct.cpp:651), while ContentsTransfer keeps only
+        // NEWBIE/MOVE_NEVER/CURSED2/BLESSED2 (CContainer.cpp:528). A no-trade item
+        // therefore protects what you wear, not what is loose in your pack.
         var ring = world.CreateItem();
         ring.BaseId = 0x108A;
         ring.SetAttr(ObjAttributes.Move_Never);
         victim.Equip(ring, Layer.Ring);
 
-        var bound = world.CreateItem();
-        bound.BaseId = 0x1F03;
-        bound.SetAttr(ObjAttributes.NotRading);
-        victim.Backpack!.AddItem(bound);
+        var wornBound = world.CreateItem();
+        wornBound.BaseId = 0x1F02;
+        wornBound.SetAttr(ObjAttributes.NotRading);
+        victim.Equip(wornBound, Layer.Cape);
+
+        var packMoveNever = world.CreateItem();
+        packMoveNever.BaseId = 0x1F03;
+        packMoveNever.SetAttr(ObjAttributes.Move_Never);
+        victim.Backpack!.AddItem(packMoveNever);
+
+        var packBound = world.CreateItem();
+        packBound.BaseId = 0x1F05;
+        packBound.SetAttr(ObjAttributes.NotRading);
+        victim.Backpack!.AddItem(packBound);
 
         var loose = world.CreateItem();
         loose.BaseId = 0x1F04;
@@ -229,7 +242,9 @@ public class DeathCorpseParityTests
 
         Assert.Equal(Layer.Ring, victim.GetEquippedItem(Layer.Ring)?.EquipLayer); // ring kept on owner
         Assert.DoesNotContain(corpse!.Contents, i => i.Uid == ring.Uid);
-        Assert.DoesNotContain(corpse.Contents, i => i.Uid == bound.Uid);
+        Assert.DoesNotContain(corpse.Contents, i => i.Uid == wornBound.Uid);
+        Assert.DoesNotContain(corpse.Contents, i => i.Uid == packMoveNever.Uid);
+        Assert.Contains(corpse.Contents, i => i.Uid == packBound.Uid);
         Assert.Contains(corpse.Contents, i => i.Uid == loose.Uid);
     }
 }

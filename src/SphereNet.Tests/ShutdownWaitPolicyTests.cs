@@ -49,4 +49,24 @@ public sealed class ShutdownWaitPolicyTests
         Assert.Equal(ShutdownWaitPolicy.Decision.KeepWaiting,
             ShutdownWaitPolicy.Evaluate(elapsedMs: 0, silentMs: 0, Quiet, Ceiling));
     }
+
+    [Fact]
+    public void AnIdleShardIsNotDeclaredHungTheMomentShutdownIsRequested()
+    {
+        // A quiet shard legitimately logs nothing for minutes. Silence must be
+        // measured from the shutdown request, not from the child's last log line -
+        // otherwise the very first evaluation exceeded the quiet limit and the
+        // process was killed after 250ms, worse than the flat timeout this
+        // replaced. ServerProcess supplies max(lastOutput, requestedAt); this locks
+        // in that a just-started wait is never immediately fatal.
+        Assert.Equal(ShutdownWaitPolicy.Decision.KeepWaiting,
+            ShutdownWaitPolicy.Evaluate(elapsedMs: 250, silentMs: 250, Quiet, Ceiling));
+    }
+
+    [Fact]
+    public void SilenceIsStillFatalOnceItOutlastsTheQuietLimitFromTheRequest()
+    {
+        Assert.Equal(ShutdownWaitPolicy.Decision.Hung,
+            ShutdownWaitPolicy.Evaluate(elapsedMs: Quiet + 500, silentMs: Quiet + 500, Quiet, Ceiling));
+    }
 }

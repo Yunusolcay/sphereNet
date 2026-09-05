@@ -17,25 +17,21 @@ public static class PetFigurine
 {
     private const string SnapshotTag = "PET_FIGURINE";
 
-    /// <summary>True when an item carries a pet snapshot (a shrunk pet).</summary>
+    /// <summary>True when an item carries a pet reference (a shrunk pet). Covers
+    /// both the current link form and the legacy snapshot written before shrinking
+    /// stopped destroying the pet.</summary>
     public static bool IsPetFigurine(Item item) => item.TryGetTag(SnapshotTag, out _);
 
-    /// <summary>Shrink a controlled pet into the figurine item: stamp the snapshot,
-    /// mark the item a figurine, and remove the pet from the world. Validates
+    /// <summary>Shrink a controlled pet into the figurine item. Source-X
+    /// Make_Figurine parks the creature rather than destroying it, so the figurine
+    /// stores a reference and the pet keeps its tags, pools and pack. Validates
     /// ownership and rejects summoned creatures (like stabling).</summary>
     public static bool Shrink(Character owner, Character pet, Item figurine, GameWorld world)
     {
         if (pet.IsPlayer || !pet.HasOwner(owner.Uid) || pet.IsSummoned)
             return false;
 
-        figurine.ItemType = ItemType.Figurine;
-        figurine.SetTag(SnapshotTag, Serialize(pet));
-        if (string.IsNullOrEmpty(figurine.Name))
-            figurine.Name = $"{pet.Name} (figurine)";
-
-        world.DeleteObject(pet);
-        pet.Delete();
-        return true;
+        return Store(pet, figurine, world);
     }
 
     /// <summary>Shrink for the custom s_Shrink spell (Source-X SPELL_Shrink /
@@ -48,13 +44,20 @@ public static class PetFigurine
         if (npc.OwnerSerial.IsValid && !npc.HasOwner(caster.Uid))
             return false;
 
-        figurine.ItemType = ItemType.Figurine;
-        figurine.SetTag(SnapshotTag, Serialize(npc));
-        if (string.IsNullOrEmpty(figurine.Name))
-            figurine.Name = $"{npc.Name} (figurine)";
+        return Store(npc, figurine, world);
+    }
 
-        world.DeleteObject(npc);
-        npc.Delete();
+    /// <summary>Park the creature and stamp the figurine that refers to it.</summary>
+    private static bool Store(Character pet, Item figurine, GameWorld world)
+    {
+        string name = pet.Name ?? "";
+        if (!PetStorage.Park(pet, world))
+            return false;
+
+        figurine.ItemType = ItemType.Figurine;
+        figurine.SetTag(SnapshotTag, PetStorage.MakeLink(pet));
+        if (string.IsNullOrEmpty(figurine.Name))
+            figurine.Name = $"{name} (figurine)";
         return true;
     }
 
@@ -64,7 +67,26 @@ public static class PetFigurine
     /// invalid or the owner's follower cap is full.</summary>
     public static Character? Restore(Character owner, Item figurine, GameWorld world, Point3D pos)
     {
-        if (!figurine.TryGetTag(SnapshotTag, out string? raw) || !TryDeserialize(raw, out var snap))
+        if (!figurine.TryGetTag(SnapshotTag, out string? raw))
+            return null;
+
+        // Current form: the pet is parked, not gone. Wake the same creature so its
+        // tags, bonded state, mana/stamina and pack come back with it.
+        if (PetStorage.IsLink(raw))
+        {
+            var parked = PetStorage.Resolve(raw, world);
+            if (parked == null || !PetStorage.Unpark(parked, owner, world, pos))
+                return null;
+
+            world.DeleteObject(figurine);
+            figurine.Delete();
+            return parked;
+        }
+
+        // Legacy form: a figurine written before shrinking stopped destroying the
+        // pet. The creature really is gone, so it can only be rebuilt from what the
+        // old snapshot happened to carry.
+        if (!TryDeserialize(raw, out var snap))
             return null;
 
         var pet = world.CreateCharacter();

@@ -62,40 +62,15 @@ public sealed class StableEngine
         if (list.Count >= GetMaxStabledPets(owner))
             return false;
 
-        var skillSnap = new Dictionary<int, ushort>();
-        foreach (SkillType st in Enum.GetValues<SkillType>())
-        {
-            if (st == SkillType.None || st >= SkillType.Qty) continue;
-            ushort sv = pet.GetSkill(st);
-            // Snapshot the FULL skill value (the engine supports up to 1200 / 120.0);
-            // the old 1000 clip silently dropped GM+ pet skills on stabling.
-            if (sv > 0) skillSnap[(int)st] = sv;
-        }
+        // Source-X CClientTarg stables by Make_Figurine: the creature is parked,
+        // not destroyed, so the stable entry only has to remember which pet it is.
+        // Rebuilding from a field list dropped every tag (BONDED included), the
+        // follower-slot override and the live mana/stamina pools.
+        if (!PetStorage.Park(pet, world))
+            return false;
 
-        list.Add(new StabledPet
-        {
-            Name = pet.Name,
-            BodyId = pet.BodyId,
-            BaseId = pet.BaseId,
-            Hue = pet.Hue.Value,
-            Str = pet.Str,
-            Dex = pet.Dex,
-            Int = pet.Int,
-            Hits = pet.MaxHits,
-            NpcBrain = pet.NpcBrain,
-            OriginalUuid = pet.Uuid,
-            OwnerUid = pet.OwnerSerial.Value,
-            ControllerUid = pet.ControllerSerial.Value,
-            NpcFood = pet.NpcFood,
-            PetAIMode = pet.PetAIMode,
-            CharDefIndex = pet.CharDefIndex,
-            FriendUids = GetFriendUids(pet),
-            Skills = skillSnap,
-        });
+        list.Add(new StabledPet { Link = PetStorage.MakeLink(pet), Name = pet.Name ?? "" });
         PersistOwnerStableList(owner, list);
-
-        world.DeleteObject(pet);
-        pet.Delete();
 
         return true;
     }
@@ -112,6 +87,19 @@ public sealed class StableEngine
 
         var data = list[index];
 
+        // Current form: wake the parked creature itself.
+        if (PetStorage.IsLink(data.Link))
+        {
+            var parked = PetStorage.Resolve(data.Link, world);
+            if (parked == null || !PetStorage.Unpark(parked, owner, world, pos))
+                return null;
+
+            list.RemoveAt(index);
+            PersistOwnerStableList(owner, list);
+            return parked;
+        }
+
+        // Legacy form: an entry written before stabling stopped destroying the pet.
         var pet = world.CreateCharacter();
         pet.Name = data.Name;
         pet.BodyId = data.BodyId;
@@ -245,6 +233,10 @@ public sealed class StableEngine
 
     private sealed class StabledPet
     {
+        /// <summary>Reference to the parked pet (PetStorage link form). Empty on a
+        /// legacy entry, which carries the snapshot fields below instead.</summary>
+        public string Link { get; set; } = "";
+
         public string Name { get; set; } = "";
         public ushort BodyId { get; set; }
         public ushort BaseId { get; set; }
@@ -265,6 +257,11 @@ public sealed class StableEngine
 
         public string Serialize()
         {
+            // A parked pet needs nothing but its identity; the creature itself still
+            // holds everything else.
+            if (PetStorage.IsLink(Link))
+                return Link + "|" + Convert.ToBase64String(Encoding.UTF8.GetBytes(Name ?? ""));
+
             string name64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(Name ?? ""));
             string friends = string.Join(',', FriendUids);
             string skills = string.Join(',', Skills.Select(kv => $"{kv.Key}:{kv.Value}"));
@@ -295,6 +292,20 @@ public sealed class StableEngine
                 return false;
 
             var parts = raw.Split('|');
+
+            if (PetStorage.IsLink(raw))
+            {
+                // "@link|<uid>|<uuid>|<nameBase64>"
+                if (parts.Length < 3) return false;
+                pet.Link = string.Join('|', parts[0], parts[1], parts[2]);
+                if (parts.Length > 3)
+                {
+                    try { pet.Name = Encoding.UTF8.GetString(Convert.FromBase64String(parts[3])); }
+                    catch (FormatException) { pet.Name = ""; }
+                }
+                return true;
+            }
+
             if (parts.Length < 15)
                 return false;
 

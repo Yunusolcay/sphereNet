@@ -60,19 +60,24 @@ public static class AccountPersistence
         // between these two steps the manifest still points at a file that exists,
         // and a stale file that survives deletion can no longer shadow the current
         // one on the next load.
-        WriteManifest(dir, Path.GetFileName(finalPath), fmt, log);
+        bool manifestOk = WriteManifest(dir, Path.GetFileName(finalPath), fmt, log);
 
         // Drop stale files in other formats so the directory shows only one
         // canonical account snapshot. Also cleans up any ancient .bak left
         // by pre-refactor code.
         string[] knownExts = { ".scp", ".scp.gz", ".sbin", ".sbin.gz" };
+        var staleLeftBehind = new List<string>();
         foreach (string otherExt in knownExts)
         {
             string candidate = Path.Combine(dir, BaseName + otherExt);
             if (!candidate.Equals(finalPath, StringComparison.OrdinalIgnoreCase) && File.Exists(candidate))
             {
                 try { File.Delete(candidate); }
-                catch (Exception ex) { log?.LogWarning(ex, "Could not remove stale account file {File}", candidate); }
+                catch (Exception ex)
+                {
+                    log?.LogWarning(ex, "Could not remove stale account file {File}", candidate);
+                    staleLeftBehind.Add(candidate);
+                }
             }
 
             string stale = Path.Combine(dir, BaseName + otherExt + ".bak");
@@ -80,6 +85,19 @@ public static class AccountPersistence
             {
                 try { File.Delete(stale); } catch { /* best effort */ }
             }
+        }
+
+        // Naming the active snapshot and removing the ones it supersedes are two
+        // halves of one commit. If BOTH fail, the next load has no way to tell the
+        // new file from the stale one and the extension probe can pick the old
+        // snapshot - silently rolling back every account change. Report that rather
+        // than returning a success count.
+        if (!manifestOk && staleLeftBehind.Count > 0)
+        {
+            throw new IOException(
+                $"Account snapshot committed to '{finalPath}', but the manifest could not be " +
+                $"written and {staleLeftBehind.Count} superseded file(s) could not be removed. " +
+                "The next load could select the stale snapshot.");
         }
 
         if (skipped > 0)
@@ -120,8 +138,10 @@ public static class AccountPersistence
     }
 
     /// <summary>Record which file is the live account snapshot. Written through a
-    /// .tmp + rename so a torn write cannot leave an unreadable manifest.</summary>
-    private static void WriteManifest(string dir, string fileName, SaveFormat fmt, ILogger? log)
+    /// .tmp + rename so a torn write cannot leave an unreadable manifest. Returns
+    /// false when the manifest could not be updated; the caller decides whether the
+    /// extension probe alone is still enough to pick the right file.</summary>
+    private static bool WriteManifest(string dir, string fileName, SaveFormat fmt, ILogger? log)
     {
         string path = ShardManifest.PathFor(dir, BaseName);
         string tmp = path + ".tmp";
@@ -131,12 +151,17 @@ public static class AccountPersistence
             manifest.Files.Add(fileName);
             manifest.Save(tmp);
             File.Move(tmp, path, overwrite: true);
+            return true;
         }
         catch (Exception ex)
         {
-            // Not fatal: the loader still falls back to the extension probe.
             log?.LogWarning(ex, "Could not write the account manifest {Path}", path);
             try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best effort */ }
+
+            // A manifest left naming the PREVIOUS file is worse than none at all:
+            // the loader would trust it over the snapshot just committed.
+            try { if (File.Exists(path)) File.Delete(path); } catch { /* best effort */ }
+            return false;
         }
     }
 

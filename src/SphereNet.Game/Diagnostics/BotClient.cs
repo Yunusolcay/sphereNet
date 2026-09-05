@@ -73,8 +73,15 @@ public sealed class BotClient : IDisposable
     public static bool IsBotAccountName(string name) => 
         name.StartsWith(AccountPrefix, StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>Name-shape test only. NEVER use this to grant a privilege: the
+    /// character name is chosen by the player, so an ordinary "SphereBotanist"
+    /// matches. Ask <see cref="BotEngine.IsLiveBotCharacter"/> instead, which knows
+    /// which characters the server itself is driving.</summary>
     public static bool IsBotCharName(string name) => 
         name.StartsWith(CharPrefix, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The character name this bot session logs in as.</summary>
+    public string CharName => _charName;
 
     public async Task<bool> ConnectAndLoginAsync(string host, int port, CancellationToken ct)
     {

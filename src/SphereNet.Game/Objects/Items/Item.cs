@@ -825,6 +825,16 @@ public class Item : ObjBase
     /// CItemBase::IsStackableType: CAN_I_PILE or the tiledata Generic flag). The
     /// itemdef flag is seeded from tiledata at load, but packs rarely script it,
     /// so the tiledata fallback keeps ore/ingot/log piles merging.</summary>
+    /// <summary>
+    /// Whether a resource search may descend into this container. Source-X
+    /// CItemContainer::IsSearchable (CItemContainer.cpp:760) excludes the bank box,
+    /// a vendor box, the trade window and a locked container - so reagents in your
+    /// bank or in a trade you have open are not spent on a spell.
+    /// </summary>
+    public bool IsSearchableContainer =>
+        _type is not (ItemType.ContainerLocked or ItemType.EqBankBox or
+                      ItemType.EqVendorBox or ItemType.EqTradeWindow);
+
     public bool IsStackable
     {
         get

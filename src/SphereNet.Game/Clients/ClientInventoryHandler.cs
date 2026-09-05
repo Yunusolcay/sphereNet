@@ -848,6 +848,18 @@ public sealed class ClientInventoryHandler
             return;
         }
 
+        // Symmetric with HandleItemPickup, and with Source-X CanTouch, which refuses
+        // a dead character every item that is not death-immune. Death now settles any
+        // held item into the pack before the corpse is filled, so a ghost arriving
+        // here is a stale client-side drag rather than a legitimate move.
+        if (_character.IsDead)
+        {
+            _character.RemoveTag("DRAGGING");
+            RestoreToOrigin(item);
+            _netState.Send(new PacketDropReject());
+            return;
+        }
+
         _character.RemoveTag("DRAGGING");
 
         if (containerUid != 0 && containerUid != 0xFFFFFFFF)

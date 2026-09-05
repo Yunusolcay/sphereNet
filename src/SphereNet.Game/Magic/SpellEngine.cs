@@ -353,7 +353,13 @@ public sealed class SpellEngine
         if (caster.PrivLevel >= PrivLevel.GM)
             return;
 
-        bool takeReagents = !wand && Character.ReagentsRequiredEnabled && HasRequiredReagents(caster, def);
+        // A scroll cast owes no reagents whether it succeeds, fizzles or is aborted:
+        // Source-X gates Calc_SpellReagentsConsume on the cast source being the
+        // caster themselves, and calls it with that same source on every path
+        // (CCharSpell.cpp:3380/3398).
+        bool scroll = caster.TryGetTag("SCROLL_UID", out _);
+        bool takeReagents = !wand && !scroll &&
+            Character.ReagentsRequiredEnabled && HasRequiredReagents(caster, def);
         if (fizzle && !Character.ReagentLossFail) takeReagents = false;
         if (abort && !Character.ReagentLossAbort) takeReagents = false;
 
@@ -743,10 +749,21 @@ public sealed class SpellEngine
             return false;
         }
 
-        if (caster.IsPlayer && !castWithWand && caster.PrivLevel < PrivLevel.GM &&
-            Character.ReagentsRequiredEnabled)
+        // Reagents are owed only by a player casting from their own power. Source-X
+        // Calc_SpellReagentsConsume is gated on (pObj == pCharCaster), so a wand or
+        // scroll cast pays none - the start check already exempted the scroll while
+        // this consumption did not, so carrying reagents made the same scroll cost
+        // more than casting it empty-handed.
+        if (caster.IsPlayer && !castWithWand && !castFromScroll &&
+            caster.PrivLevel < PrivLevel.GM && Character.ReagentsRequiredEnabled &&
+            !ConsumeReagents(caster, def))
         {
-            ConsumeReagents(caster, def);
+            // The reagents were there when the cast began and are not there now:
+            // the spell cannot be paid for, so it does not happen. Source-X fails the
+            // whole cast the same way when its re-check at CastDone cannot pay.
+            ClearCastState(caster);
+            OnSysMessage?.Invoke(caster, "You lack the reagents to cast that spell.");
+            return false;
         }
 
         caster.Mana -= (short)manaCost;
@@ -1076,37 +1093,66 @@ public sealed class SpellEngine
         }
     }
 
+    /// <summary>Whether the caster can pay the spell's reagent cost right now.
+    /// Searches the whole reachable pack, sub-bags included: Source-X
+    /// CContainer::ContentConsume recurses through every searchable container, and
+    /// SphereNet's own gold and crafting counts already do. Looking only at the top
+    /// level meant a player who tidied their reagents into a pouch was told they
+    /// lacked them.</summary>
     private bool HasRequiredReagents(Character caster, SpellDef def)
     {
         if (def.Reagents.Count == 0) return true;
         if (caster.Backpack == null) return false;
         foreach (var (regBaseId, needed) in def.Reagents)
         {
-            int have = 0;
-            foreach (var item in _world.GetContainerContents(caster.Backpack.Uid))
-            {
-                if (item.IsDeleted) continue;
-                if (item.BaseId != regBaseId) continue;
-                have += Math.Max(1, (int)item.Amount);
-                if (have >= needed) break;
-            }
-            if (have < needed) return false;
+            if (CountReagent(caster, regBaseId, needed) < needed)
+                return false;
         }
         return true;
     }
 
-    /// <summary>Deduct the spell's reagent cost from the caster's backpack.
-    /// Removes stacks that hit zero. Caller must have already verified
-    /// availability with HasRequiredReagents.</summary>
-    private void ConsumeReagents(Character caster, SpellDef def)
+    private int CountReagent(Character caster, ushort regBaseId, int stopAt)
     {
-        if (def.Reagents.Count == 0) return;
-        if (caster.Backpack == null) return;
+        int have = 0;
+        foreach (var item in _world.GetContainerContentsRecursive(caster.Backpack!.Uid))
+        {
+            if (item.IsDeleted) continue;
+            if (item.BaseId != regBaseId) continue;
+            have += Math.Max(1, (int)item.Amount);
+            if (have >= stopAt) break;
+        }
+        return have;
+    }
+
+    /// <summary>
+    /// Deduct the spell's reagent cost. Returns false and consumes NOTHING when any
+    /// reagent is short.
+    ///
+    /// This used to return void and trust a check made when the cast started. A cast
+    /// takes time, and inventory moves during it: taking the reagents out of the pack
+    /// mid-cast produced the spell for free. Source-X re-runs Spell_CanCast with
+    /// fTest=false at Spell_CastDone (CCharSpell.cpp:3009) and fails the whole cast
+    /// if it cannot pay, which is what this reproduces - the availability pass runs
+    /// over every reagent before a single one is taken.
+    /// </summary>
+    private bool ConsumeReagents(Character caster, SpellDef def)
+    {
+        if (def.Reagents.Count == 0) return true;
+        if (caster.Backpack == null) return false;
+
+        // All-or-nothing: verify the full bill first so a partial spend cannot be
+        // left behind when a later reagent turns out to be missing.
+        foreach (var (regBaseId, needed) in def.Reagents)
+        {
+            if (CountReagent(caster, regBaseId, needed) < needed)
+                return false;
+        }
+
         foreach (var (regBaseId, needed) in def.Reagents)
         {
             int remaining = needed;
             // Snapshot — we mutate items/delete, can't iterate live collection.
-            var stacks = _world.GetContainerContents(caster.Backpack.Uid).ToList();
+            var stacks = _world.GetContainerContentsRecursive(caster.Backpack.Uid).ToList();
             foreach (var item in stacks)
             {
                 if (remaining <= 0) break;
@@ -1124,6 +1170,7 @@ public sealed class SpellEngine
                 }
             }
         }
+        return true;
     }
 
     /// <summary>AOS on-hit weapon proc (Source-X Fight_Hit → OnSpellEffect,

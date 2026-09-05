@@ -1233,6 +1233,15 @@ public sealed class WorldLoader
                 _migratedUuids++;
 
             world.PlaceCharacter(ch, ch.Position);
+
+            // A Ridden creature is out of play: a mount under its rider, or a pet
+            // parked by the stable master or a figurine (Source-X STATF_RIDDEN +
+            // disconnected). Placement puts every character into a sector, so
+            // without this it would come back from the save visible, tickable and
+            // attackable while its owner still believes it is stabled.
+            if (ch.IsStatFlag(SphereNet.Core.Enums.StatFlag.Ridden))
+                world.HideFromSector(ch);
+
             if (!string.IsNullOrEmpty(accountName))
                 accountLinks.Add((ch, accountName));
             count++;

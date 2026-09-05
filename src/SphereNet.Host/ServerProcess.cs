@@ -171,9 +171,16 @@ public sealed class ServerProcess : IDisposable
                 return true;
 
             long now = Environment.TickCount64;
+            // Measure silence from the shutdown request, not from the child's last
+            // log line. A quiet shard legitimately logs nothing for minutes, so
+            // using the raw last-output stamp declared it hung on the very first
+            // evaluation and killed it after 250ms - worse than the flat timeout
+            // this replaced.
+            long silenceSince = Math.Max(Interlocked.Read(ref _lastOutputTicks), start);
+
             var decision = ShutdownWaitPolicy.Evaluate(
                 elapsedMs:      now - start,
-                silentMs:       now - Interlocked.Read(ref _lastOutputTicks),
+                silentMs:       now - silenceSince,
                 quietLimitMs:   ShutdownQuietMs,
                 timeoutMs:      ShutdownTimeoutMs);
 

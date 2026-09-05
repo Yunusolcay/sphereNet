@@ -3,6 +3,85 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-05] - Pet saklama, olum envanteri, buyu maliyetleri ve vendor yetkilendirmesi
+----------------------------------------
+
+FIX - Ahira birakma ve kucultme peti silip elle listelenmis bir snapshot'tan
+        yeniden yaratiyordu; snapshot'in adini anmadigi her sey kayboluyordu: tum
+        TAG'ler (BONDED ve bonding sayaci dahil), takipci slot override'i, canli
+        mana/stamina havuzlari ve petin tum envanteri - yuklu bir pack hayvani
+        yukunu tamamen kaybediyordu. Source-X CChar::Make_Figurine yaratigi silmez,
+        park eder (STATF_RIDDEN + disconnected) ve figurini onun UID'sine baglar;
+        boylece ayni CChar geri gelir. Iki yol da artik PetStorage uzerinden bu
+        modeli paylasiyor - MountEngine zaten boyle calisiyordu. Eski surumle
+        yazilmis ahir kayitlari ve figurinler legacy snapshot yolundan yuklenmeye
+        devam ediyor.
+
+FIX - Dunya yukleyicisi her karakteri bir sektore yerlestiriyordu; park edilmis bir
+        pet veya binek kayittan gorunur, tick alan ve saldirilabilir halde
+        donuyordu. Ridden bir yaratik artik yuklemede sektorden gizleniyor.
+
+FIX - Farede tutulan bir esya karaktere bagli olur ama ne giyilidir ne de cantada;
+        olumdeki loot taramasi bu yuzden onu hic gormuyordu: esya sahibine bagli
+        kaliyor ve hayalet onu kendi cantasina geri birakabiliyordu. Source-X'te
+        surulen esya LAYER_DRAGGING'de durdugu ve UnEquipAllItems o katmani gezdigi
+        icin sorun yok. Olum artik tutulan esyayi once cantaya yerlestiriyor; birakma
+        isleyicisi de alma isleyicisi gibi olu karakteri reddediyor.
+
+FIX - Olum, canta icerigi icin de ekipman koruma kumesini kullaniyordu. Source-X
+        CContainer::ContentsTransfer orada yalnizca NEWBIE / MOVE_NEVER / CURSED2 /
+        BLESSED2 korur; UnEquipAllItems ise ek olarak BLESSED, INSURED, NODROP,
+        NOTRADE ve QUESTITEM korur. Duz blessed ve no-trade artik giyileni koruyor,
+        cantada duran esyayi degil. (Iki motor da cantayi tek seviye aktarir, yani
+        sirali kese icindeki korumali esya kesesiyle birlikte gider - o kisim zaten
+        pariteydi.)
+
+FIX - Scroll ile buyu, cast baslangicindaki reagent kontrolunden muaftu ama
+        tamamlanmadaki tuketimden degildi; bu yuzden reagent tasimak ayni scroll'u
+        elin bosken kullanmaktan daha pahali hale getiriyordu. Source-X
+        Calc_SpellReagentsConsume'u cast kaynaginin caster'in kendisi olmasina
+        baglar; basari, fizzle ve iptal yollarinin hepsinde.
+
+FIX - Cast tamamlanmasi reagent'i yeniden kontrol etmeden tuketiyordu; cast
+        surerken reagent'i cantadan cikarmak buyuyu bedavaya getiriyordu. Source-X
+        Spell_CastDone'da Spell_CanCast'i fTest=false ile yeniden calistirir ve
+        odenemiyorsa tum cast'i dusurur. Tuketim artik ya hep ya hic ve basarisizligi
+        bildiriyor; bu da buyuyu vermek yerine fizzle ettiriyor.
+
+FIX - Reagent aramasi yalnizca cantanin ust seviyesine bakiyordu; kesede duzenlenen
+        reagent'ler eksik goruluyordu - oysa altin ve crafting malzemeleri zaten
+        ozyinelemeli sayiliyordu. Kaynak aramalari artik alt containerlara iniyor;
+        banka kutusu, vendor kutusu, acik takas penceresi ve kilitli container'lar
+        disarida birakiliyor (Source-X CItemContainer::IsSearchable).
+
+FIX - Vendor alis ve satisi vendor'u, haritayi ve mesafeyi kontrol ediyor ama
+        oyuncunun hayatta olup olmadigini kontrol etmiyordu; olurken acik kalan bir
+        pencereden gelen gecikmis onay hala altin ve stok hareket ettiriyordu.
+        Source-X CanTouch olu bir karaktere olume-bagisik olmayan her esyayi
+        reddeder.
+
+FIX - Yuk testi botunun vendor odeme muafiyeti karakter adina bakiyordu; adi oyuncu
+        seciyor. "SphereBotanist" adli siradan bir karakter, bot modu kapaliyken bile
+        bedava aliyordu. Muafiyet artik sunucunun o karakteri gercekten bot olarak
+        surdugunu gerektiriyor.
+
+FIX - Host kapanisi sessizligi kapanma isteginden degil, cocuk surecin son log
+        satirindan olcuyordu. Sessiz bir shard dakikalarca log yazmaz; ilk
+        degerlendirme sessizlik sinirini zaten asiyor ve sunucuyu 250ms sonra
+        olduruyordu - yerini aldigi duz zaman asimindan da kotu.
+
+FIX - Md5Passwords=0 iken parola oldugu gibi saklanir, ama dogrulama karsilastirma
+        bicimini saklanan dizginin seklinden tahmin etmeye devam ediyordu: 32 hex
+        karakterli veya surumlu onekle baslayan bir parola ozet gibi karsilastiriliyor
+        ve bir daha girilemiyordu. Karsilastirma artik ayara uyuyor; Source-X
+        CAccount::CheckPassword de boyle yapar.
+
+FIX - Hesap manifesti ile onun gecersiz kildigi dosyalarin silinmesi tek bir commit'in
+        iki yarisidir. Manifest yazilamadiginda kayit yine basarili donuyordu ve uzanti
+        taramasi eski snapshot'i secebiliyordu. Basarisiz bir manifest artik onceki
+        dosyayi gosteren manifesti kaldiriyor; gecersiz dosyalar da silinemediyse kayit
+        basarisizligi bildiriyor.
+
 [2026-09-05] - Hesap adi dogrulamasi, panel yetkilendirmesi, kayit ve zamanlayici duzeltmeleri
 ----------------------------------------
 

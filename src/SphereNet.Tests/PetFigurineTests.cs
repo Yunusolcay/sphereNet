@@ -59,11 +59,18 @@ public class PetFigurineTests
         Assert.True(PetFigurine.Shrink(owner, pet, figurine, world));
         Assert.True(PetFigurine.IsPetFigurine(figurine));
         Assert.Equal(ItemType.Figurine, figurine.ItemType);
-        Assert.Null(world.FindChar(petUid)); // pet removed from the world
+        // Source-X Make_Figurine parks the creature (STATF_RIDDEN + disconnected)
+        // instead of destroying it, so the same object is still there - out of its
+        // sector, out of the follower count, and not ticking.
+        var parked = world.FindChar(petUid);
+        Assert.NotNull(parked);
+        Assert.True(parked!.IsStatFlag(SphereNet.Core.Enums.StatFlag.Ridden));
 
         var restored = PetFigurine.Restore(owner, figurine, world, new Point3D(100, 100, 0, 0));
         Assert.NotNull(restored);
-        Assert.Equal("Rex", restored!.Name);
+        Assert.Same(pet, restored); // the same creature, not a rebuilt copy
+        Assert.False(restored!.IsStatFlag(SphereNet.Core.Enums.StatFlag.Ridden));
+        Assert.Equal("Rex", restored.Name);
         Assert.Equal(0xC9, restored.BodyId);
         Assert.Equal(200, restored.Str);
         Assert.Equal(150, restored.MaxHits);

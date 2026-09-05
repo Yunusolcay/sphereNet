@@ -1632,6 +1632,45 @@ public sealed class GameWorld
         }
     }
 
+    /// <summary>
+    /// Every item reachable inside <paramref name="containerUid"/>, descending into
+    /// sub-containers the way Source-X CContainer::ContentConsume does
+    /// (CContainer.cpp:441) - it recurses through anything
+    /// <see cref="Item.IsSearchableContainer"/> allows.
+    ///
+    /// Resource searches that only looked at the top level made a player's own
+    /// organisation break the game: reagents tidied into a pouch inside the backpack
+    /// read as "you lack the reagents", while gold and crafting materials were
+    /// already counted recursively.
+    ///
+    /// Depth-bounded (16) like the other containment walks, and cycle-safe: a
+    /// container that somehow contains itself cannot spin here.
+    /// </summary>
+    public IEnumerable<Item> GetContainerContentsRecursive(Serial containerUid, int maxDepth = 16)
+    {
+        var seen = new HashSet<uint>();
+        var pending = new Stack<(Serial Uid, int Depth)>();
+        pending.Push((containerUid, 0));
+
+        while (pending.Count > 0)
+        {
+            var (uid, depth) = pending.Pop();
+            if (!seen.Add(uid.Value))
+                continue;
+
+            foreach (var item in GetContainerContents(uid))
+            {
+                yield return item;
+
+                // Anything actually holding items is worth descending into; a
+                // non-container reports zero. The searchable gate is what keeps the
+                // bank, a vendor box, an open trade and locked chests out.
+                if (depth + 1 < maxDepth && item.ContentCount > 0 && item.IsSearchableContainer)
+                    pending.Push((item.Uid, depth + 1));
+            }
+        }
+    }
+
     /// <summary>Total item count in a container's whole subtree (nested
     /// containers included). Source-X counts a bank's deep contents against its
     /// cap so a player can't nest bags to bypass the limit. Depth-bounded (16)
