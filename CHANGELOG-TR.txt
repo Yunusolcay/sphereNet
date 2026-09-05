@@ -3,6 +3,51 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Vendor nesne aktarimi ve olumde aktarim sirasi (Source-X 01A)
+----------------------------------------
+
+FIX - Oyuncu satiicisi kendi deposundan GERCEK nesne satar; NPC satici sanal bir
+        sablon listesinden satar. Alim ikisini ayni sayip her zaman klonluyordu;
+        oyuncu saticisindan dolu bir canta almak, yeni UID'li ve ici bos bir kopya
+        teslim ederken ozgun nesneyi ve icerigini yok ediyordu. Source-X
+        Event_VendorBuy tam olarak bu noktada ayriliyor (CClientEvent.cpp:1352);
+        oyuncu saticisindan tam alim artik nesnenin kendisini tasiyor.
+
+FIX - Istiflenemeyen coklu alim TEK nesnede Amount=3 olarak teslim ediliyordu.
+        Source-X ayri Amount=1 nesneler yaratir (CClientEvent.cpp:1328); kusanma,
+        dayaniklilik, yeniden satis ve canta kapasitesi bu nesne sayisi uzerinden
+        calisir.
+
+FIX - Oyuncu saticisina satis, malin parasini oderken mali yok ediyordu; sahipli
+        saticinin ticaret dongusu boylece calisamiyordu. Source-X tam satisi
+        saticinin extra kabina tasir, kismi satista o miktarin kopyasini oraya koyar
+        (CClientEvent.cpp:1521); sahipsiz NPC satici silmeye devam eder.
+
+FIX - Dunya kaydi LAYER 27'yi (VendorExtra) LAYER 26'daki sanal SELL stoguyla
+        birlikte haric tutuyordu; oyuncu saticisinin satin aldigi her sey bir sonraki
+        yeniden baslatmada kaybolacakti. Artik yalnizca yeniden uretilebilen SELL
+        stogu haric tutuluyor.
+
+FIX - Olum, ekipmani cantadan once aktariyor ve korunan ekipmani cantaya koymak
+        yerine karakterin UZERINE geri takiyordu. Source-X DropAll once cantayi,
+        sonra ekipmani aktarir (CCharAct.cpp:564); UnEquipAllItems korunan parcayi
+        cantaya koyar (:664) - orada kalmasini saglayan sey bu siradir. Hayalet artik
+        blessed techizatini uzerinde tasimaya devam etmiyor.
+
+FIX - Imlecteki esya, ceset doldurulmadan once cantaya yerlestiriliyordu; bu da onu
+        cantanin dar koruma kumesine tabi kiliyordu: tasinan duz Blessed esya cesede
+        gidiyordu. Source-X surulen esyayi UnEquipAllItems icinde cozer
+        (CCharAct.cpp:636), yani EKIPMAN kumesiyle degerlendirir. Esya artik ekipmanla
+        birlikte tasiniyor; Character.OnDragCancel istemci imlecini esyayi
+        oynatmadan iptal ediyor.
+
+FIX - @Buy/@Sell ARGN2'de BIRIM fiyati veriyordu; Source-X satir toplamini
+        (miktar x fiyat) verir ve @Buy hicbir LOCAL.TOTALCOST tasimiyordu. Komisyon
+        hesaplayan veya belirli tutarin ustundeki satiri reddeden script her coklu
+        alimda yanlis degeri okuyordu. Veto edilen satir, referanstaki gibi kosan
+        toplamdan dusuluyor. Bilincli sapma: satir toplami istemci paketindeki
+        fiyattan degil, sunucunun cozdugu fiyattan uretiliyor.
+
 [2026-09-05] - Pet saklama, olum envanteri, buyu maliyetleri ve vendor yetkilendirmesi
 ----------------------------------------
 

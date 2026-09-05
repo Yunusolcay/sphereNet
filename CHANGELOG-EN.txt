@@ -4,6 +4,50 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Vendor object transfer and death transfer order (Source-X 01A)
+----------------------------------------
+
+FIX - A player vendor sells REAL objects out of its own store; an NPC vendor sells
+        from a virtual template list. Buying treated both the same and always
+        cloned, so buying a full bag from a player vendor handed over a copy with a
+        new uid and nothing inside while the original and its contents were
+        destroyed. Source-X Event_VendorBuy splits on exactly this
+        (CClientEvent.cpp:1352); a whole-item buy from a player vendor now moves the
+        object itself.
+
+FIX - A non-stackable multi-buy was delivered as ONE object carrying Amount=3.
+        Source-X creates separate Amount=1 objects (CClientEvent.cpp:1328), which is
+        what equipping, durability, resale and container capacity all count.
+
+FIX - Selling to a player vendor destroyed the goods while paying for them, so an
+        owned vendor's trade loop could not work. Source-X moves a whole sale into
+        the vendor's extra container and puts a dupe of a partial sale there
+        (CClientEvent.cpp:1521); an ownerless NPC vendor still destroys it.
+
+FIX - The world save excluded LAYER 27 (VendorExtra) along with the virtual SELL
+        stock at LAYER 26, so anything a player vendor bought would have vanished on
+        the next restart. Only the regenerable SELL stock is excluded now.
+
+FIX - Death transferred equipment before the pack, and put protected equipment back
+        ON the character instead of into the pack. Source-X DropAll transfers the
+        pack first and equipment second (CCharAct.cpp:564), and UnEquipAllItems packs
+        a protected piece (:664) - the order is what lets it stay there. A ghost no
+        longer walks away still wearing its blessed gear.
+
+FIX - An item on the cursor was settled into the pack before the corpse was filled,
+        which judged it by the pack's narrower protected set: a plain Blessed item
+        being carried went to the corpse. Source-X resolves a dragged item inside
+        UnEquipAllItems (CCharAct.cpp:636), so it is judged by the EQUIPMENT set. It
+        now travels with equipment, and Character.OnDragCancel cancels the client
+        cursor without moving the item.
+
+FIX - @Buy/@Sell passed the UNIT price in ARGN2 where Source-X passes the line total
+        (amount x price), and @Buy carried no LOCAL.TOTALCOST at all, so a script
+        charging commission or refusing a line above a value read the wrong figure on
+        every multi-buy. A vetoed line is subtracted from the running total, as in
+        the reference. Deliberate deviation: the line total is built from the
+        server-resolved price rather than the price in the client packet.
+
 [2026-09-05] - Pet storage, death inventory, spell costs and vendor authorization
 ----------------------------------------
 

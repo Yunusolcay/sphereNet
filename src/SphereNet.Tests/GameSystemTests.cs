@@ -1,4 +1,4 @@
-﻿using SphereNet.Core.Enums;
+using SphereNet.Core.Enums;
 using SphereNet.Core.Types;
 using SphereNet.Game.Objects.Characters;
 using SphereNet.Game.Objects.Items;
@@ -2930,6 +2930,147 @@ TAG.DIALOG_SUBJECT_TOUCHED=1
 
             Assert.Equal(1, buyCount);
             Assert.Equal(1, sellCount);
+        }
+        finally
+        {
+            VendorEngine.World = oldVendorWorld;
+        }
+    }
+
+    /// <summary>
+    /// Source-X passes the LINE TOTAL in @Buy/@Sell ARGN2 (amount x price), not the
+    /// unit price (CClientEvent.cpp:1288 / :1504), and @Buy also carries
+    /// LOCAL.TOTALCOST — the running total of the lines still standing. A script
+    /// that charges commission or refuses a line above a value saw the unit price
+    /// and behaved differently on every multi-buy.
+    /// </summary>
+    [Fact]
+    public void GameClient_VendorBuyTrigger_PassesLineTotalAndTotalCost()
+    {
+        var loggerFactory = LoggerFactory.Create(_ => { });
+        var world = CreateWorld();
+        var oldVendorWorld = VendorEngine.World;
+        VendorEngine.World = world;
+        try
+        {
+            var accountManager = new AccountManager(loggerFactory);
+            var netState = new NetState(loggerFactory.CreateLogger<NetState>()) { Id = 902 };
+            SetNetStateInUse(netState, true);
+            var client = new SphereNet.Game.Clients.GameClient(netState, world, accountManager,
+                loggerFactory.CreateLogger<SphereNet.Game.Clients.GameClient>());
+
+            var player = world.CreateCharacter();
+            player.IsPlayer = true;
+            player.PrivLevel = PrivLevel.GM;   // this test is about the argument contract
+            world.PlaceCharacter(player, new Point3D(100, 100, 0, 0));
+            var pack = world.CreateItem();
+            pack.ItemType = ItemType.Container;
+            player.Equip(pack, Layer.Pack);
+
+            var vendor = world.CreateCharacter();
+            vendor.NpcBrain = NpcBrainType.Vendor;
+            world.PlaceCharacter(vendor, new Point3D(101, 100, 0, 0));
+            var vendorStock = world.CreateItem();
+            vendorStock.ItemType = ItemType.Container;
+            vendor.Equip(vendorStock, Layer.VendorStock);
+
+            var rowA = world.CreateItem();
+            rowA.BaseId = 0x0F7A; rowA.Amount = 10; rowA.SetTag("PRICE", "10");
+            vendorStock.AddItem(rowA);
+            var rowB = world.CreateItem();
+            rowB.BaseId = 0x0F7B; rowB.Amount = 10; rowB.SetTag("PRICE", "7");
+            vendorStock.AddItem(rowB);
+
+            var dispatcher = new TriggerDispatcher();
+            var seenN2 = new List<int>();
+            var seenTotalCost = new List<long>();
+            dispatcher.RegisterItemEvent("EVENTSITEM", "Buy", (_, args) =>
+            {
+                seenN2.Add(args.N2);
+                seenTotalCost.Add(args.Locals?.GetInt("TOTALCOST") ?? -1);
+                return TriggerResult.Default;
+            });
+
+            client.SetEngines(triggerDispatcher: dispatcher);
+            AttachCharacter(client, player);
+
+            client.HandleVendorBuy(vendor.Uid.Value, 1,
+            [
+                new SphereNet.Network.Packets.Incoming.VendorBuyEntry { ItemSerial = rowA.Uid.Value, Amount = 3 },
+                new SphereNet.Network.Packets.Incoming.VendorBuyEntry { ItemSerial = rowB.Uid.Value, Amount = 2 },
+            ]);
+
+            // 3 x 10 and 2 x 7 — the line total, not 10 and 7.
+            Assert.Equal([30, 14], seenN2);
+            // Both lines still standing, so both see the full 44.
+            Assert.Equal([44L, 44L], seenTotalCost);
+        }
+        finally
+        {
+            VendorEngine.World = oldVendorWorld;
+        }
+    }
+
+    [Fact]
+    public void GameClient_VendorBuyTrigger_VetoedLineLeavesTheRunningTotal()
+    {
+        var loggerFactory = LoggerFactory.Create(_ => { });
+        var world = CreateWorld();
+        var oldVendorWorld = VendorEngine.World;
+        VendorEngine.World = world;
+        try
+        {
+            var accountManager = new AccountManager(loggerFactory);
+            var netState = new NetState(loggerFactory.CreateLogger<NetState>()) { Id = 903 };
+            SetNetStateInUse(netState, true);
+            var client = new SphereNet.Game.Clients.GameClient(netState, world, accountManager,
+                loggerFactory.CreateLogger<SphereNet.Game.Clients.GameClient>());
+
+            var player = world.CreateCharacter();
+            player.IsPlayer = true;
+            player.PrivLevel = PrivLevel.GM;
+            world.PlaceCharacter(player, new Point3D(100, 100, 0, 0));
+            var pack = world.CreateItem();
+            pack.ItemType = ItemType.Container;
+            player.Equip(pack, Layer.Pack);
+
+            var vendor = world.CreateCharacter();
+            vendor.NpcBrain = NpcBrainType.Vendor;
+            world.PlaceCharacter(vendor, new Point3D(101, 100, 0, 0));
+            var vendorStock = world.CreateItem();
+            vendorStock.ItemType = ItemType.Container;
+            vendor.Equip(vendorStock, Layer.VendorStock);
+
+            var rowA = world.CreateItem();
+            rowA.BaseId = 0x0F7A; rowA.Amount = 10; rowA.SetTag("PRICE", "10");
+            vendorStock.AddItem(rowA);
+            var rowB = world.CreateItem();
+            rowB.BaseId = 0x0F7B; rowB.Amount = 10; rowB.SetTag("PRICE", "7");
+            vendorStock.AddItem(rowB);
+
+            var dispatcher = new TriggerDispatcher();
+            var seenTotalCost = new List<long>();
+            dispatcher.RegisterItemEvent("EVENTSITEM", "Buy", (obj, args) =>
+            {
+                seenTotalCost.Add(args.Locals?.GetInt("TOTALCOST") ?? -1);
+                // Veto the first line only.
+                return seenTotalCost.Count == 1 ? TriggerResult.True : TriggerResult.Default;
+            });
+
+            client.SetEngines(triggerDispatcher: dispatcher);
+            AttachCharacter(client, player);
+
+            client.HandleVendorBuy(vendor.Uid.Value, 1,
+            [
+                new SphereNet.Network.Packets.Incoming.VendorBuyEntry { ItemSerial = rowA.Uid.Value, Amount = 3 },
+                new SphereNet.Network.Packets.Incoming.VendorBuyEntry { ItemSerial = rowB.Uid.Value, Amount = 2 },
+            ]);
+
+            // Source-X subtracts a vetoed line so the next line sees what is still
+            // being bought: 44 then 44-30=14.
+            Assert.Equal([44L, 14L], seenTotalCost);
+            Assert.Equal(10, rowA.Amount);   // vetoed line untouched
+            Assert.Equal(8, rowB.Amount);
         }
         finally
         {

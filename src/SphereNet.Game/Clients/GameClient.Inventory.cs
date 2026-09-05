@@ -20,6 +20,9 @@ public sealed partial class GameClient
     /// <summary>Script BOUNCE/DROP verb bridge (Character.OnDragRelease).</summary>
     public bool ReleaseDraggedItem(bool toGround) => Inventory.ReleaseDraggedItem(toGround);
 
+    /// <summary>Cancel the drag cursor only (Character.OnDragCancel).</summary>
+    public void CancelDragCursor() => Inventory.CancelDragCursor();
+
     public void HandleItemEquip(uint serial, byte layer, uint charSerial) =>
         Inventory.HandleItemEquip(serial, layer, charSerial);
 

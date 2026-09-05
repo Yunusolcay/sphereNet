@@ -240,7 +240,11 @@ public class DeathCorpseParityTests
         var corpse = death.ProcessDeath(victim);
         Assert.NotNull(corpse);
 
-        Assert.Equal(Layer.Ring, victim.GetEquippedItem(Layer.Ring)?.EquipLayer); // ring kept on owner
+        // Source-X UnEquipAllItems moves protected equipment into the pack rather
+        // than leaving it worn (CCharAct.cpp:664), so the layer is empty afterwards.
+        Assert.Null(victim.GetEquippedItem(Layer.Ring));
+        Assert.Contains(victim.Backpack!.Contents, i => i.Uid == ring.Uid);
+        Assert.Contains(victim.Backpack!.Contents, i => i.Uid == wornBound.Uid);
         Assert.DoesNotContain(corpse!.Contents, i => i.Uid == ring.Uid);
         Assert.DoesNotContain(corpse.Contents, i => i.Uid == wornBound.Uid);
         Assert.DoesNotContain(corpse.Contents, i => i.Uid == packMoveNever.Uid);

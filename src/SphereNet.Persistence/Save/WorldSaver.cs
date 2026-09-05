@@ -290,18 +290,21 @@ public sealed class WorldSaver
         var chars = new List<SaveRecord>();
         long now = Environment.TickCount64;
 
-        // Vendor stock is virtual: the container equipped at LAYER 26/27
-        // and every item inside it are rebuilt on demand from the SELL
-        // template when a player opens the vendor (PopulateVendorStock).
-        // Persisting them bloats every save with transient stock items
-        // (~20 per vendor), so collect those container UIDs and skip both
-        // the containers and their contents below.
+        // Vendor SELL stock is virtual: the container equipped at LAYER 26 and
+        // every item inside it are rebuilt on demand from the SELL template when a
+        // player opens the vendor (PopulateVendorStock). Persisting them bloats
+        // every save with transient stock items (~20 per vendor), so collect that
+        // container's UID and skip it and its contents below.
+        //
+        // LAYER 27 (VendorExtra) is NOT virtual and must persist: it is where a
+        // player vendor keeps the goods it bought from players (Source-X
+        // pContExtra in Event_VendorSell). Excluding it too meant anything sold to
+        // a player vendor would vanish on the next save.
         var vendorStock = new HashSet<uint>();
         foreach (var obj in allObjects)
         {
             if (obj is Item it && !it.IsDeleted &&
-                (it.EquipLayer == Core.Enums.Layer.VendorStock ||
-                 it.EquipLayer == Core.Enums.Layer.VendorExtra))
+                it.EquipLayer == Core.Enums.Layer.VendorStock)
                 vendorStock.Add(it.Uid.Value);
         }
 
@@ -980,12 +983,11 @@ public sealed class WorldSaver
 
         for (int layer = 0; layer <= (int)SphereNet.Core.Enums.Layer.Horse; layer++)
         {
-            // Skip the virtual vendor stock containers (LAYER 26/27); they
-            // and their contents are excluded from CaptureSnapshot and are
-            // rebuilt on demand, so persisting the EQUIP reference would
-            // dangle to a non-existent item on load.
-            if (layer == (int)SphereNet.Core.Enums.Layer.VendorStock ||
-                layer == (int)SphereNet.Core.Enums.Layer.VendorExtra)
+            // Skip the virtual vendor SELL stock container (LAYER 26); it and its
+            // contents are excluded from CaptureSnapshot and rebuilt on demand, so
+            // persisting the EQUIP reference would dangle on load. LAYER 27
+            // (VendorExtra) holds real goods bought from players and is persisted.
+            if (layer == (int)SphereNet.Core.Enums.Layer.VendorStock)
                 continue;
             var equip = ch.GetEquippedItem((SphereNet.Core.Enums.Layer)layer);
             if (equip != null)

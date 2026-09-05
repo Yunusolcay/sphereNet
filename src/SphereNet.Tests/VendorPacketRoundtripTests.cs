@@ -146,8 +146,10 @@ public class VendorPacketRoundtripTests
 
         Assert.Equal(10 - 3, stockItem.Amount);          // virtual stock decremented
         Assert.Equal(1000 - 15, VendorEngine.CountGold(player)); // 3 * 5 charged
-        Assert.Contains(player.Backpack!.Contents,
-            i => i.BaseId == 0x0F0E && i.Amount == 3);    // purchased item materialised
+        // A non-stackable multi-buy materialises as separate Amount=1 objects
+        // (Source-X Event_VendorBuy, CClientEvent.cpp:1328).
+        Assert.Equal(3, player.Backpack!.Contents.Count(
+            i => i.BaseId == 0x0F0E && i.Amount == 1));
     }
 
     [Fact]

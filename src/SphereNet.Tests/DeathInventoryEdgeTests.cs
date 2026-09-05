@@ -84,15 +84,23 @@ public sealed class DeathInventoryEdgeTests
         Assert.False(victim.TryGetTag("DRAGGING", out _), "the drag was left open");
     }
 
-    [Fact]
-    public void AProtectedItemOnTheCursorStaysWithTheOwner()
+    [Theory]
+    [InlineData(ObjAttributes.Newbie)]
+    [InlineData(ObjAttributes.Blessed)]      // equipment-only protection
+    [InlineData(ObjAttributes.Nodropt)]
+    [InlineData(ObjAttributes.NotRading)]
+    public void AProtectedItemOnTheCursorStaysWithTheOwner(ObjAttributes attr)
     {
+        // Source-X judges a dragged item by the EQUIPMENT set (LAYER_DRAGGING is
+        // resolved inside UnEquipAllItems), which is wider than the pack set. Only
+        // Newbie was covered before, and it is in both sets, so it could not tell
+        // the two apart - plain Blessed on the cursor went to the corpse.
         var world = CreateWorld();
         var death = new DeathEngine(world);
         var victim = MakePlayer(world);
 
         var relic = MakeItem(world);
-        relic.SetAttr(ObjAttributes.Newbie);
+        relic.SetAttr(attr);
         Assert.True(victim.Backpack!.TryAddItem(relic));
         StartDragging(victim, relic);
 
@@ -176,8 +184,54 @@ public sealed class DeathInventoryEdgeTests
         var corpse = death.ProcessDeath(victim);
 
         Assert.NotNull(corpse);
-        Assert.Equal(worn, victim.GetEquippedItem(Layer.Cape));
-        Assert.Contains(carried, corpse!.Contents);
+        Assert.DoesNotContain(worn, corpse!.Contents);
+        Assert.Contains(carried, corpse.Contents);
+    }
+
+    [Fact]
+    public void ProtectedEquipmentIsPackedRatherThanLeftWorn()
+    {
+        // Source-X UnEquipAllItems moves protected equipment into the pack
+        // (CCharAct.cpp:664); it does not leave the ghost wearing it.
+        var world = CreateWorld();
+        var death = new DeathEngine(world);
+        var victim = MakePlayer(world);
+
+        var worn = MakeItem(world);
+        worn.SetAttr(ObjAttributes.Blessed);
+        victim.Equip(worn, Layer.Cape);
+
+        var corpse = death.ProcessDeath(victim);
+
+        Assert.NotNull(corpse);
+        Assert.Null(victim.GetEquippedItem(Layer.Cape));
+        Assert.Contains(worn, victim.Backpack!.Contents);
+        Assert.DoesNotContain(worn, corpse!.Contents);
+    }
+
+    [Fact]
+    public void ProtectedEquipmentSurvivesTheEmptiedPack()
+    {
+        // The order is what makes this work: Source-X DropAll transfers the PACK
+        // first and equipment second (CCharAct.cpp:564), so a protected piece moved
+        // into the pack is not judged again by the narrower pack rules. Running
+        // equipment first would send this plain-Blessed cape to the corpse.
+        var world = CreateWorld();
+        var death = new DeathEngine(world);
+        var victim = MakePlayer(world);
+
+        var worn = MakeItem(world);
+        worn.SetAttr(ObjAttributes.Blessed);
+        victim.Equip(worn, Layer.Cape);
+
+        var loose = MakeItem(world);
+        Assert.True(victim.Backpack!.TryAddItem(loose));
+
+        var corpse = death.ProcessDeath(victim);
+
+        Assert.NotNull(corpse);
+        Assert.Contains(loose, corpse!.Contents);          // pack emptied
+        Assert.Contains(worn, victim.Backpack.Contents);   // then equipment packed
     }
 
     [Fact]

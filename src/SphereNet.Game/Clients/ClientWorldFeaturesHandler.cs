@@ -633,11 +633,26 @@ public sealed class ClientWorldFeaturesHandler
     /// <summary>Fire the per-item @Buy / @Sell trigger BEFORE the transfer and
     /// return the entries that were NOT cancelled. Source-X runs @Buy/@Sell ahead
     /// of moving the item so RETURN 1 can veto that line (it used to fire after
-    /// the trade had already completed, with its return value ignored).</summary>
+    /// the trade had already completed, with its return value ignored).
+    ///
+    /// Argument contract (Source-X CClientEvent.cpp:1288 / :1504):
+    /// <c>ARGN1</c> = amount, <c>ARGN2</c> = the LINE TOTAL (amount x price), not
+    /// the unit price, and <c>ARGO</c> = the vendor. @Buy additionally carries
+    /// <c>LOCAL.TOTALCOST</c>, the running total of the lines still standing, which
+    /// a vetoed line is subtracted from.
+    ///
+    /// Deliberate deviation: Source-X builds ARGN2 from the price in the CLIENT
+    /// packet. SphereNet uses the server-resolved price the transaction will
+    /// actually charge, so a script cannot be shown a figure the engine disagrees
+    /// with. Do not "restore parity" here by reading the client value.</summary>
     private List<TradeEntry> FilterVendorEntriesByTrigger(Character vendor, IReadOnlyList<TradeEntry> entries, ItemTrigger trigger)
     {
         if (_triggerDispatcher == null || _character == null)
             return entries.ToList();
+
+        long runningTotal = 0;
+        foreach (var entry in entries)
+            runningTotal += (long)entry.Price * entry.Amount;
 
         var kept = new List<TradeEntry>(entries.Count);
         foreach (var entry in entries)
@@ -645,16 +660,30 @@ public sealed class ClientWorldFeaturesHandler
             var item = _world.FindItem(entry.ItemUid);
             if (item == null) { kept.Add(entry); continue; }
 
+            long lineTotal = (long)entry.Price * entry.Amount;
+
+            var locals = new SphereNet.Scripting.Variables.VarMap();
+            if (trigger == ItemTrigger.Buy)
+                locals.SetInt("TOTALCOST", (int)Math.Clamp(runningTotal, int.MinValue, int.MaxValue));
+
             var result = _triggerDispatcher.FireItemTrigger(item, trigger, new TriggerArgs
             {
                 CharSrc = _character,
                 ItemSrc = item,
                 O1 = vendor,
                 N1 = entry.Amount,
-                N2 = entry.Price
+                N2 = (int)Math.Clamp(lineTotal, int.MinValue, int.MaxValue),
+                Locals = locals
             });
-            if (result != TriggerResult.True) // RETURN 1 vetoes this line
-                kept.Add(entry);
+
+            if (result == TriggerResult.True)
+            {
+                // Source-X subtracts a vetoed line from the running total so a later
+                // line's LOCAL.TOTALCOST reflects what is still being bought.
+                runningTotal -= lineTotal;
+                continue;
+            }
+            kept.Add(entry);
         }
         return kept;
     }

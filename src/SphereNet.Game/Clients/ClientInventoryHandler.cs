@@ -1401,6 +1401,10 @@ public sealed class ClientInventoryHandler
     /// their feet or back into the backpack, and cancel the client-side drag
     /// cursor with 0x27. Returns false when nothing is being dragged.
     /// </summary>
+    /// <summary>Tell the client to put the drag cursor down. The item itself is the
+    /// caller's business — death takes it and applies the equipment rules.</summary>
+    public void CancelDragCursor() => _netState.Send(new PacketPickupFailed(0));
+
     public bool ReleaseDraggedItem(bool toGround)
     {
         if (_character == null)

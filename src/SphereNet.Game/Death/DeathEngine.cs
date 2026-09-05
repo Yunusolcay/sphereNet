@@ -267,15 +267,6 @@ public sealed class DeathEngine
             corpse.SetTag("KILLER_UUID", effectiveKiller.Uuid.ToString("D"));
         }
 
-        // An item held on the cursor is parented to the character but is neither
-        // equipped nor in the pack, so the loot walk below never saw it: it stayed
-        // attached to the corpse's owner and the ghost could simply drop it back
-        // into its own pack. Source-X reaches it because a dragged item sits on
-        // LAYER_DRAGGING and UnEquipAllItems walks that layer (CCharAct.cpp:636).
-        // Settling it into the pack first puts it back under the normal rules,
-        // protected-item handling included.
-        ReleaseDraggedItem(victim);
-
         // Drop equipped items and backpack contents to corpse — unless DEATH_NOLOOTDROP
         // keeps everything on the (now-dead) body. (DEATH_NOLOOTDROP = 0x04.)
         if ((deathFlags & 0x04) == 0)
@@ -533,65 +524,46 @@ public sealed class DeathEngine
     }
 
     /// <summary>
-    /// Settle whatever the character is holding on the cursor back into the pack
-    /// before the corpse is filled, and cancel the client-side drag.
+    /// Take whatever the character is holding on the cursor off the cursor and hand
+    /// it back as an object, cancelling the client-side drag. Returns null when
+    /// nothing was held.
+    ///
+    /// The item is NOT settled into the pack here. Source-X carries a dragged item
+    /// on LAYER_DRAGGING and resolves it inside UnEquipAllItems (CCharAct.cpp:636),
+    /// so it is judged by the EQUIPMENT protected set and lands in the pack when it
+    /// is protected. Dropping it into the pack first instead subjected it to the
+    /// narrower pack set, which sends a plain Blessed item to the corpse.
     /// </summary>
-    private void ReleaseDraggedItem(Character victim)
+    private Item? TakeDraggedItem(Character victim)
     {
         if (!victim.TryGetTag("DRAGGING", out string? raw) ||
             !uint.TryParse(raw, out uint uid) || uid == 0)
-            return;
+            return null;
 
-        // Preferred path: the client bridge also cancels the drag cursor (0x27).
-        Character.OnDragRelease?.Invoke(victim, false);
-        if (!victim.TryGetTag("DRAGGING", out _))
-            return;
-
-        // No client attached (an NPC, a replay, a headless run): make the same move
-        // here so the item still reaches the normal death flow.
         victim.RemoveTag("DRAGGING");
 
+        // Cancel the drag cursor client-side. The bridge also moves the item, so it
+        // is told to bounce into the pack; whichever parent it ends up with, the
+        // caller takes it from there and applies the equipment rules.
+        Character.OnDragCancel?.Invoke(victim);
+
         var item = _world.FindItem(new Serial(uid));
-        if (item == null || item.IsDeleted)
-            return;
-
-        var pack = victim.Backpack;
-        if (pack != null && pack.TryAddItem(item))
-            return;
-
-        // Nowhere to put it: the ground at the victim's feet is the defined
-        // fallback, the same one the drag-release bridge uses.
-        item.ContainedIn = Serial.Invalid;
-        _world.PlaceItemWithDecay(item, victim.Position);
+        return item is { IsDeleted: false } ? item : null;
     }
 
-    /// <summary>Drop player equipment and backpack to corpse.</summary>
+    /// <summary>
+    /// Move the victim's belongings to the corpse.
+    ///
+    /// Order matters and follows Source-X CChar::DropAll (CCharAct.cpp:564): the
+    /// PACK is transferred first, then equipment. Protected equipment goes into the
+    /// pack, and because the pack has already been emptied it stays there. Running
+    /// equipment first — and re-equipping protected pieces instead of packing them —
+    /// left the ghost still wearing them, and anything moved to the pack would then
+    /// have been judged again by the narrower pack rules.
+    /// </summary>
     private void DropLootToCorpse(Character victim, Item corpse)
     {
-        // Unequip all items (except hair, beard, etc.)
-        Layer[] dropLayers = [
-            Layer.OneHanded, Layer.TwoHanded, Layer.Shoes, Layer.Pants, Layer.Shirt,
-            Layer.Helm, Layer.Gloves, Layer.Ring, Layer.Talisman, Layer.Neck,
-            Layer.Waist, Layer.Chest, Layer.Bracelet, Layer.Tunic, Layer.Earrings,
-            Layer.Arms, Layer.Cape, Layer.Robe, Layer.Skirt, Layer.Legs
-        ];
-
-        foreach (var layer in dropLayers)
-        {
-            var item = victim.Unequip(layer);
-            if (item != null)
-            {
-                if (StaysWithOwnerOnDeath(item))
-                {
-                    victim.Equip(item, layer);
-                    continue;
-                }
-
-                item.SetTag("EQUIPLAYER", ((byte)layer).ToString());
-                AddToCorpseOrGround(corpse, item);
-            }
-        }
-
+        // 1) Pack contents (Source-X CContainer::ContentsTransfer).
         var pack = victim.Backpack;
         if (pack != null)
         {
@@ -604,6 +576,40 @@ public sealed class DeathEngine
                 pack.RemoveItem(item);
                 AddToCorpseOrGround(corpse, item);
             }
+        }
+
+        // 2) Equipment, and the item on the cursor with it — Source-X treats
+        //    LAYER_DRAGGING as one more layer in the same pass.
+        Layer[] dropLayers = [
+            Layer.OneHanded, Layer.TwoHanded, Layer.Shoes, Layer.Pants, Layer.Shirt,
+            Layer.Helm, Layer.Gloves, Layer.Ring, Layer.Talisman, Layer.Neck,
+            Layer.Waist, Layer.Chest, Layer.Bracelet, Layer.Tunic, Layer.Earrings,
+            Layer.Arms, Layer.Cape, Layer.Robe, Layer.Skirt, Layer.Legs
+        ];
+
+        foreach (var layer in dropLayers)
+        {
+            var item = victim.Unequip(layer);
+            if (item == null)
+                continue;
+
+            if (StaysWithOwnerOnDeath(item))
+            {
+                KeepWithOwner(victim, item);
+                continue;
+            }
+
+            item.SetTag("EQUIPLAYER", ((byte)layer).ToString());
+            AddToCorpseOrGround(corpse, item);
+        }
+
+        var dragged = TakeDraggedItem(victim);
+        if (dragged != null)
+        {
+            if (StaysWithOwnerOnDeath(dragged))
+                KeepWithOwner(victim, dragged);
+            else
+                AddToCorpseOrGround(corpse, dragged);
         }
 
         // Source-X UnEquipAllItems: hair and beard are COPIED onto the corpse
@@ -623,6 +629,20 @@ public sealed class DeathEngine
             dupe.SetTag("CORPSE_HAIR", "1"); // a render copy, never loot/restore
             AddToCorpseOrGround(corpse, dupe);
         }
+    }
+
+    /// <summary>Put a protected item back with its owner. Source-X UnEquipAllItems
+    /// moves it into the pack (CCharAct.cpp:664) rather than leaving it worn, so a
+    /// ghost is not still wearing its blessed gear.</summary>
+    private void KeepWithOwner(Character victim, Item item)
+    {
+        var pack = victim.Backpack;
+        if (pack != null && pack.TryAddItem(item))
+            return;
+
+        // No pack, or it would not take it: the ground at the victim's feet.
+        item.ContainedIn = Serial.Invalid;
+        _world.PlaceItemWithDecay(item, victim.Position);
     }
 
     /// <summary>Items that are NOT transferred to the corpse on death and remain

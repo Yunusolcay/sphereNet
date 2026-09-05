@@ -3219,6 +3219,14 @@ public static partial class Program
             // Script BOUNCE/DROP verbs — release the dragged item through the
             // owning client (drag-cursor cancel + view updates); headless
             // fallback re-packs the item silently.
+            // Cursor-only cancel: the caller has already taken the item and decides
+            // where it goes (death applies the equipment protection rules to it).
+            SphereNet.Game.Objects.Characters.Character.OnDragCancel = ch =>
+            {
+                if (TryGetClientFor(ch, out var c))
+                    c.CancelDragCursor();
+            };
+
             SphereNet.Game.Objects.Characters.Character.OnDragRelease = (ch, toGround) =>
             {
                 if (TryGetClientFor(ch, out var c))

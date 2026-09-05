@@ -377,7 +377,10 @@ gecikmeleri); aşağıdakiler onu **büyüten** kesin kod borçları.
 
 ## KAPANIŞ (2026-07-18, dalga 3)
 
-Plan TAMAMEN kapandı: A(5/5) + B(13/13) + C(8/8) + D(2/2) + E(8/8) + F(5/5) + G(2/2).
+Plan kapandı: A(5/5) + B(13/13) + C(8/8) + D(2/2) + E(8/8) + F(5/5) + G(2/2).
+Dört madde `[~]`: F1/F2/F5 bilinçli olarak tutuldu (aksiyon yok), **B3'ün ise kalan
+işi var** (COMPONENT dinamik fixture, MULTIREGION/REGIONFLAGS, TSPEECH) — Aşama 4
+ile ortak, bu satır onu kapalı saymaz.
 Son dalga (13 madde, 3 fazda): E7/E8/B10/C5/D2 → B8/B9/B11/B12/D1 → E2/E6/A5.
 Her madde: Source-X recon → en küçük kök-neden fixi → build + tam suite (1875 yeşil / 3 skip)
 → çift changelog → commit. A5'in boot doğrulaması gerçek sunucu açılışında teyit edildi
@@ -397,3 +400,68 @@ client'ta görünmesi, ışık kaynaklarının 20 dakikada sönmesi.
 6. **D1** ışık yaşam döngüsü; **B10–B13** house/ship P2.
 7. **F/G** atıl altyapı temizliği + test/doküman düzeltmeleri.
 8. **D2** spell school'ları — ayrı büyük proje (PARITY_BACKLOG ile ortak).
+
+## SX — Kategorili Source-X incelemesi (6 Eylül 2026)
+
+Bu ek bölüm yukarıdaki tarihsel incelemeden ayrıdır; burada üç ajanla doğrulama
+yapılmadı. SphereNet `da5972ca`, yerel Source-X `92ced0ba` üzerinde kaynak
+karşılaştırması ve izole çalışma senaryoları kullanıldı. Çözüm testleri: 2333/2333.
+[Kategori planı](D:/Projeler/Yunus/sphereNet/SOURCE_X_KARSILASTIRMA_PLANI.md) ve
+[01A kanıt raporu](D:/Projeler/Yunus/sphereNet/SOURCE_X_BOLUM_01A_TICARET_OLUM.md)
+tarihli kapsam/kanıt kayıtlarıdır; aşağıdaki kutular yaşayan düzeltme durumudur.
+
+- [x] **SX-01A-02 (P1)** — Sahipli satıcıdan dolu çanta tam alımında özgün nesne
+  aktarılmalı. (YAPILDI: `ProcessBuy` artık `vendor.OwnerSerial.IsValid` ile Source-X'in
+  oyuncu/NPC satıcı dallarını ayırıyor; oyuncu satıcısında tam alım stok nesnesini
+  kabından çıkarıp alıcıya veriyor — UID, çocuk nesneler ve tag'ler korunuyor. NPC
+  satıcı sanal şablon kolu klonlamaya devam ediyor. Test:
+  VendorTransferParityTests.BuyingAFullBagFromAPlayerVendorKeepsItsContentsAndUid,
+  APartialBuyFromAPlayerVendorStillLeavesTheRemainder,
+  AnNpcVendorStillSellsFromItsVirtualTemplate.)
+- [x] **SX-01A-05 (P1)** — İmleçteki düz Blessed eşya. (YAPILDI: SX-01A-04 ile tek
+  düzeltme — aşağıya bakın. NOT: bu fark `da5972c` ile açıldı; öncesinde sürüklenen
+  eşya hiç aktarılmıyordu ve düz Blessed yanlışlıkla korunuyordu.)
+- [x] **SX-01A-01 (P2)** — NPC satıcısında istiflenemeyen çoklu alım. (YAPILDI:
+  teslim `stock.IsStackable`'a bakıyor; istiflenemeyen miktar ayrı Amount=1
+  nesnelere bölünüyor, her biri aynı taşıma/bırakma yolundan geçiyor. Test:
+  VendorTransferParityTests.BuyingThreeNonStackableItemsDeliversThreeObjects,
+  BuyingThreeStackableItemsStillDeliversOnePile.)
+- [x] **SX-01A-03 (P2)** — Sahipli satıcının aldığı malı VendorExtra'ya aktar.
+  (YAPILDI: `ProcessSell` sahipli satıcıda tam satışı özgün nesne olarak
+  `Layer.VendorExtra`'ya taşıyor, kısmi satışta satılan miktarın kopyasını koyuyor;
+  sahipsiz NPC silmeye devam ediyor. **Raporda olmayan bloklayıcı da giderildi:**
+  `WorldSaver` LAYER 27'yi de sanal stok sayıp kayıttan hariç tutuyordu, yani
+  transfer tek başına eklenseydi mal her restart'ta buharlaşacaktı — hariç tutma
+  yalnız LAYER 26'ya daraltıldı. Test:
+  VendorTransferParityTests.SellingToAPlayerVendorMovesTheObjectIntoItsExtraStore,
+  SellingToAnOwnerlessNpcVendorStillDestroysTheGoods,
+  APlayerVendorsBoughtGoodsSurviveASaveAndLoad.)
+- [x] **SX-01A-04 (P2)** — Ölümde korunan ekipmanı çantaya taşı; aktarım sırasını
+  eşleştir. (YAPILDI: `DropLootToCorpse` artık Source-X `DropAll` sırasını izliyor —
+  **önce çanta, sonra ekipman**; korunan ekipman `KeepWithOwner` ile çantaya
+  gidiyor ve çanta zaten boşaltıldığı için orada kalıyor. Sürüklenen eşya da aynı
+  geçişte ekipman maskesiyle değerlendiriliyor, bu SX-01A-05'i kapatıyor. Cursor-only
+  iptal için `Character.OnDragCancel` eklendi. Test: DeathInventoryEdgeTests
+  (AProtectedItemOnTheCursorStaysWithTheOwner artık Newbie/Blessed/Nodropt/NotRading
+  teorisi, ProtectedEquipmentIsPackedRatherThanLeftWorn,
+  ProtectedEquipmentSurvivesTheEmptiedPack).)
+- [x] **SX-01A-06 (P2)** — @Buy/@Sell N2 satır toplamı + @Buy LOCAL.TOTALCOST.
+  (YAPILDI: `FilterVendorEntriesByTrigger` N2'ye `amount * price` koyuyor, @Buy'da
+  `LOCAL.TOTALCOST` ayakta kalan satırların toplamını taşıyor ve veto edilen satır
+  toplamdan düşülüyor. **Bilinçli sapma:** Source-X ARGN2'yi İSTEMCİNİN gönderdiği
+  fiyattan kurar; SphereNet işlemin gerçekten tahsil edeceği sunucu fiyatını
+  kullanır — parite turunda geri "düzeltilmemeli", kod yorumunda da yazılı. Test:
+  GameSystemTests.GameClient_VendorBuyTrigger_PassesLineTotalAndTotalCost,
+  GameClient_VendorBuyTrigger_VetoedLineLeavesTheRunningTotal.)
+
+**01A kapanışı (6 Eylül 2026):** altı bulgunun tamamı uygulandı; tam suite
+**2.348 başarılı / 0 başarısız**. Sözleşme değişikliği nedeniyle güncellenen mevcut
+testler: DeathCorpseParityTests (korunan ekipman artık çantada, giyili değil),
+VendorStableParityTests + VendorPacketRoundtripTests (istiflenemeyen çoklu alım
+artık ayrı Amount=1 nesneler).
+
+**Elenen varsayım:** `OYUN_ICI_ANALIZ_RAPORU.md` G04'teki normal çanta içindeki
+korumalı eşyanın ayrıca kurtarılması beklentisi Source-X kuralı değil.
+`CContainer::ContentsTransfer` yalnızca doğrudan çocukları değerlendirir; güncel
+SphereNet'in çantayla birlikte taşıması bu açıdan uyumlu. Bu nedenle G04 için
+recursive ölüm koruması uygulanmamalı; shard kuralı istenirse ayrı tasarım kararıdır.

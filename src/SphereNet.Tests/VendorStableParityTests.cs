@@ -228,14 +228,19 @@ public class VendorStableParityTests
             new[] { new TradeEntry { ItemUid = entry.Uid, ItemId = entry.BaseId, Amount = 3 } });
         Assert.Equal(30, cost);
 
-        // The bought item is a full clone: it carries the per-instance tag, not just
-        // id/hue/name (the old shallow copy silently dropped it).
+        // Each bought item is a full clone: it carries the per-instance tag, not
+        // just id/hue/name (the old shallow copy silently dropped it). A
+        // non-stackable multi-buy arrives as separate Amount=1 objects, matching
+        // Source-X Event_VendorBuy (CClientEvent.cpp:1328).
         var bought = world.GetContainerContents(pack.Uid)
-            .FirstOrDefault(i => i.BaseId == 0x0F52);
-        Assert.NotNull(bought);
-        Assert.Equal(3, bought!.Amount);
-        Assert.True(bought.TryGetTag("CUSTOM_STATE", out string? v));
-        Assert.Equal("kept", v);
+            .Where(i => i.BaseId == 0x0F52).ToList();
+        Assert.Equal(3, bought.Count);
+        Assert.All(bought, i =>
+        {
+            Assert.Equal(1, i.Amount);
+            Assert.True(i.TryGetTag("CUSTOM_STATE", out string? v));
+            Assert.Equal("kept", v);
+        });
     }
 
     // ---- #1: a vendor with no BUY list buys anything (legacy behaviour kept) ----

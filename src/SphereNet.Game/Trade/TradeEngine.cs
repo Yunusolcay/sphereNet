@@ -223,28 +223,40 @@ public static class VendorEngine
                 : currentPurse + totalCost);
         }
 
+        // A player vendor sells REAL objects out of its own store; an NPC vendor
+        // sells from a virtual template list. Source-X Event_VendorBuy splits on
+        // exactly this (CClientEvent.cpp:1352) and the two halves are not
+        // interchangeable: cloning a player vendor's item hands the buyer a copy
+        // with a new uid and an empty inside, and destroys the original.
+        bool playerVendor = vendor.OwnerSerial.IsValid;
+
         foreach (var (stock, amount, _) in resolved)
         {
-            // Materialise the purchased item only now, on buy. Full-clone the stock
-            // entry (Source-X CreateDupeItem) so per-instance state — tags, durability,
-            // price, more-fields — travels with it, not just id/hue/name.
-            var newItem = World.CreateItem();
-            newItem.CopyStackInstanceStateFrom(stock);
-            newItem.Amount = (ushort)Math.Max(1, Math.Min(amount, ushort.MaxValue));
-            Item? delivered = player.PrivLevel < Core.Enums.PrivLevel.GM && !player.CanCarry(newItem)
-                ? null
-                : backpack.TryAddItemWithStack(newItem);
-            if (delivered == null)
+            if (playerVendor && stock.Amount <= amount)
             {
-                // Source-X ItemBounce drops at the buyer's feet when the pack is
-                // full or the purchase would overload them; never orphan a paid item.
-                World.PlaceItemWithDecay(newItem, player.Position);
+                // Whole item bought: hand over the object itself, so its contents,
+                // uid and everything hanging off it survive the sale.
+                World.FindItem(stock.ContainedIn)?.RemoveItem(stock);
+                DeliverToBuyer(player, backpack, stock, allowStackMerge: false);
+                continue;
             }
-            else if (delivered != newItem)
+
+            // Materialise the purchased item. Full-clone the stock entry (Source-X
+            // CreateDupeItem) so per-instance state — tags, durability, price,
+            // more-fields — travels with it, not just id/hue/name.
+            //
+            // Source-X delivers a non-stackable multi-buy as separate objects with
+            // Amount=1 (CClientEvent.cpp:1328); one object carrying Amount=3 is not
+            // three swords to anything downstream that counts objects.
+            int perObject = stock.IsStackable ? amount : 1;
+            int objects = stock.IsStackable ? 1 : amount;
+
+            for (int n = 0; n < objects; n++)
             {
-                // The clone merged into an existing pile. Remove the transient
-                // world object that supplied the amount.
-                World.RemoveItem(newItem);
+                var newItem = World.CreateItem();
+                newItem.CopyStackInstanceStateFrom(stock);
+                newItem.Amount = (ushort)Math.Max(1, Math.Min(perObject, ushort.MaxValue));
+                DeliverToBuyer(player, backpack, newItem, allowStackMerge: true);
             }
 
             // Decrement the virtual stock; a depleted entry is removed.
@@ -257,6 +269,54 @@ public static class VendorEngine
         }
 
         return (int)totalCost;
+    }
+
+    /// <summary>Hand a bought object to the buyer: into the pack when it fits and
+    /// they can carry it, otherwise at their feet (Source-X ItemBounce). A paid item
+    /// is never orphaned.</summary>
+    private static void DeliverToBuyer(Character player, Item backpack, Item item, bool allowStackMerge)
+    {
+        if (World == null) return;
+
+        bool overloaded = player.PrivLevel < Core.Enums.PrivLevel.GM && !player.CanCarry(item);
+        Item? delivered = overloaded
+            ? null
+            : (allowStackMerge ? backpack.TryAddItemWithStack(item) : (backpack.TryAddItem(item) ? item : null));
+
+        if (delivered == null)
+        {
+            item.ContainedIn = Serial.Invalid;
+            World.PlaceItemWithDecay(item, player.Position);
+        }
+        else if (delivered != item)
+        {
+            // The clone merged into an existing pile. Remove the transient world
+            // object that supplied the amount.
+            World.RemoveItem(item);
+        }
+    }
+
+    /// <summary>The container a player vendor keeps bought goods in (Source-X
+    /// LAYER_VENDOR_EXTRA). Null when the vendor has none.</summary>
+    private static Item? GetVendorExtraContainer(Character vendor) =>
+        vendor.GetEquippedItem(Core.Enums.Layer.VendorExtra);
+
+    /// <summary>Move <paramref name="item"/> out of wherever it is and into the
+    /// vendor's extra container. False when the container will not take it, in which
+    /// case the caller falls back to Source-X's ownerless behaviour.</summary>
+    private static bool MoveIntoVendorExtra(Item extra, Item item)
+    {
+        if (World == null) return false;
+
+        var previous = World.FindItem(item.ContainedIn);
+        previous?.RemoveItem(item);
+
+        if (extra.TryAddItem(item))
+            return true;
+
+        // Put it back where it was rather than orphaning it mid-transfer.
+        previous?.TryAddItem(item);
+        return false;
     }
 
     /// <summary>
@@ -345,12 +405,35 @@ public static class VendorEngine
             if (backpack == null)
                 return 0;
 
+            // Source-X Event_VendorSell (CClientEvent.cpp:1521): a PLAYER vendor
+            // keeps what it buys so it can resell it - the whole item moves into the
+            // vendor's extra container, and a partial sale puts a dupe of the sold
+            // amount there. Only an ownerless NPC vendor destroys the goods.
+            // Deleting it for every vendor left an owned vendor paying out gold and
+            // ending up with nothing to sell.
+            // Source-X tests STATF_PET; a player vendor is its owner's pet.
+            var extra = vendor.OwnerSerial.IsValid ? GetVendorExtraContainer(vendor) : null;
+
             foreach (var (entry, found, _) in affordable)
             {
                 if (found.Amount <= entry.Amount)
+                {
+                    if (extra != null && MoveIntoVendorExtra(extra, found))
+                        continue;
                     World.RemoveItem(found);
+                }
                 else
+                {
+                    if (extra != null)
+                    {
+                        var kept = World.CreateItem();
+                        kept.CopyStackInstanceStateFrom(found);
+                        kept.Amount = (ushort)entry.Amount;
+                        if (!MoveIntoVendorExtra(extra, kept))
+                            World.RemoveItem(kept);
+                    }
                     found.Amount -= (ushort)entry.Amount;
+                }
             }
 
             // Debit the vendor's purse by what was actually paid out.

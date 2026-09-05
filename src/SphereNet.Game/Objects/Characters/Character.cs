@@ -50,6 +50,11 @@ public partial class Character : ObjBase
     /// cursor is cancelled (0x27) and the item view updated.</summary>
     public static Action<Character, bool>? OnDragRelease;
 
+    /// <summary>Cancel the client's drag cursor (0x27) WITHOUT moving the item.
+    /// Death needs this: it takes the held item and applies the equipment rules to
+    /// it itself, so a hook that also re-packs the item would place it twice.</summary>
+    public static Action<Character>? OnDragCancel;
+
     /// <summary>Fired before a severely lost NPC (far past its home leash)
     /// teleports home (Source-X @NPCLostTeleport). Return true to cancel the
     /// teleport — the NPC walks back instead.</summary>
