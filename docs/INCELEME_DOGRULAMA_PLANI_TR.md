@@ -460,8 +460,80 @@ testler: DeathCorpseParityTests (korunan ekipman artık çantada, giyili değil)
 VendorStableParityTests + VendorPacketRoundtripTests (istiflenemeyen çoklu alım
 artık ayrı Amount=1 nesneler).
 
+### 01B — kaldirma, birakma, kaplar ve kusanma (6 Eylül 2026)
+
+[01B kanit raporu](D:/Projeler/Yunus/sphereNet/SOURCE_X_BOLUM_01B_ENVANTER.md).
+Alti bulgunun tamami kodda dogrulandi ve uygulandi.
+
+- [x] **SX-01B-01 (P1)** — Tek surukleme kurali. (YAPILDI: `ResolvePreviousDrag`
+  yeni pickup'tan once imlectekini lift-origin'ine geri birakiyor; ayni UID'nin
+  tekrar kaldirilmasi Source-X ItemPickup gibi erken donuyor ve ilk origin
+  korunuyor. Test: InventoryTransferParityTests.ASecondPickupSettlesTheFirstItem...,
+  PickingUpTheSameItemTwiceKeepsTheOriginalDrag.)
+- [x] **SX-01B-02 (P1)** — Kap olmayan hedef. (YAPILDI: `IsDropTargetContainer` +
+  `RedirectNonContainerTarget`; duz bir esyaya birakma, Source-X
+  CClientEvent.cpp:504 gibi o esyanin bulundugu kaba veya zemin karesine
+  yonlendiriliyor. Stack birlesmesi ve gercek kap yollari degismedi. Test:
+  DroppingOntoAPlainItemDoesNotMakeItAContainer, DroppingOntoARealContainerStillInserts.)
+- [x] **SX-01B-03 (P2)** — Bankaya giren cantanin cocuklari. (YAPILDI: kapasite
+  kontrolu gelen kabin derin sayisini ekliyor. **Rapordan sapma:** Source-X'te bu
+  sayim yalnizca IT_EQ_BANK_BOX koluna ozgu (CItemContainer.cpp:941), bu yuzden
+  normal kaplara uygulanmadi — yoksa dolu bir canta bos bir cantaya konamazdi.
+  Test: AFullBagCannotWalkPastTheBankItemLimit, AnEmptyBagStillFitsInABankWithRoom.)
+- [x] **SX-01B-04 (P1)** — Baska oyuncunun ic cantasi. (YAPILDI: layer'a gore parcali
+  kontrol yerine hedef zincirinin KOKU cozuluyor; kok baska bir karakterse ve o
+  karakter oyuncunun peti degilse birakma reddediliyor. Test:
+  AnItemCannotBePushedIntoAnotherPlayersNestedBag, AnItemCanStillBePutIntoYourOwnPetsPack.)
+- [x] **SX-01B-05 (P1)** — Acilmamis kaptan pickup. (YAPILDI: `OpenedContainerRegistry`
+  eklendi — Source-X CClient::m_openedContainers karsiligi; SendOpenContainer kaydi
+  aciyor, pickup dogruluyor. Kayit kabin acildigi andaki ust-nesnesini ve konumunu
+  tutuyor, boylece yer/sahip degistiren kap artik acik sayilmiyor. Oyuncunun kendi
+  cantasi/bankasi acik kayit gerektirmiyor (Source-X'te de ust-nesne karakterse
+  gecerli). Test: AnItemCannotBeLiftedFromAContainerThatWasNeverOpened,
+  AnItemCanBeLiftedOnceTheContainerHasBeenOpened, TheOwnBackpackNeverNeedsAnExplicitOpen,
+  AnOpenedContainerThatMovesAwayStopsCounting.)
+- [x] **SX-01B-06 (P2)** — Kusanma catismasi lanetli esyayi cikariyor. (YAPILDI:
+  `Character.CanEquip` artik dolu layer'daki mevcut esyanin tasinabilirligini
+  `ItemMoveRules.CanMove` ile denetliyor ve hicbir mutasyon yapmadan reddediyor
+  (Source-X CanEquipLayer, CCharStatus.cpp:470); yeni `EquipDenial.LayerBlocked`.
+  Script/loader Equip cagrilarinin zorunlu aktarim semantigi degismedi. Test:
+  EquippingOverACursedItemIsRefused, SwappingTwoOrdinaryWeaponsStillWorks.)
+
+**01B kapanisi:** tam suite **2.362 basarili / 0 basarisiz** (+14). Mevcut testlerde
+sozlesme degisikligi gerekmedi.
+
+**Kalan (rapor "Devam edecek kontroller"):** pickup miktar normalizasyonu ve trigger
+argumanlari, imlec origin bilgisinin harita/teleport sonrasi gecerliligi, nested bank
+weight/override kurallari, stack overflow parent limitleri, equip layer'in gercek
+itemdef ile eslesmesi. Bunlar 01B'de dogrulanmadi.
+
 **Elenen varsayım:** `OYUN_ICI_ANALIZ_RAPORU.md` G04'teki normal çanta içindeki
 korumalı eşyanın ayrıca kurtarılması beklentisi Source-X kuralı değil.
 `CContainer::ContentsTransfer` yalnızca doğrudan çocukları değerlendirir; güncel
 SphereNet'in çantayla birlikte taşıması bu açıdan uyumlu. Bu nedenle G04 için
 recursive ölüm koruması uygulanmamalı; shard kuralı istenirse ayrı tasarım kararıdır.
+
+### SX-01B — Envanter ilk tarama (6 Eylül 2026)
+
+SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.
+[Ayrıntılı kanıt raporu](D:/Projeler/Yunus/sphereNet/SOURCE_X_BOLUM_01B_ENVANTER.md).
+Altı yeni bulgu izole GameClient handler senaryolarıyla çalıştırıldı; Source-X
+tarafı kaynak karşılaştırmasıdır. Üretim kodu değiştirilmedi. Tam test sonucu
+2348/2348 başarılı. 01A'nın beş eski çalışma senaryosu da düzeltmeleri doğruladı.
+
+- [ ] **SX-01B-01 (P1)** — İkinci pickup önceki sürüklemeyi çözmeden DRAGGING ve
+  origin bilgisini eziyor; ilk eşya layer'sız karakter çocuğu kalıyor.
+- [ ] **SX-01B-02 (P1)** — Kap olmayan hedefi gerçek kaptan ayır; gem kılıca
+  bırakıldığında kılıcın çocuk nesnesi oluyor.
+- [ ] **SX-01B-03 (P2)** — Banka sayımına gelen dolu çantanın alt ağacını dahil et;
+  sınırı 3 olan boş bankaya 5 çocuklu çanta girip derin sayı 6 oluyor.
+- [ ] **SX-01B-04 (P1)** — Drop hedefinin kök karakter sahipliğini bütün iç
+  çantalarda doğrula; yabancı oyuncunun iç çantasına doğrudan aktarım kabul ediliyor.
+- [ ] **SX-01B-05 (P1)** — Pickup için geçerli açılmış kap bağlamını doğrula;
+  çocuk UID biliniyorsa açılmamış kilitli kaptan eşya kaldırılabiliyor.
+- [ ] **SX-01B-06 (P2)** — Kuşanma öncesi yerinden çıkarılacak ekipmanın hareket
+  iznini kontrol et; yeni silah kuşanarak Cursed silah çantaya gönderilebiliyor.
+
+01B-04/05 eski veya özel hazırlanmış istek/UID bilgisi gerektiren erişim sınırı
+senaryolarıdır; normal istemcinin bunları kendiliğinden ürettiği iddia edilmiyor.
+Ek envanter varyantları rapor sonunda ayrıldı; sıradaki ana bölüm 02 güvenli ticaret.

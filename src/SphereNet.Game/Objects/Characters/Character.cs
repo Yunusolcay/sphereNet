@@ -2358,6 +2358,7 @@ public partial class Character : ObjBase
     {
         None = 0,
         InvalidLayer, // not a real wearable slot (0, Dragging/31+, out of range)
+        LayerBlocked, // the layer is worn by something that cannot be moved (cursed)
         TooWeak,      // wearer below the item's REQSTR
     }
 
@@ -2384,6 +2385,18 @@ public partial class Character : ObjBase
         if (reqStr > 0 && CombatEngine.EffectiveStr(this) < reqStr)
         {
             denial = EquipDenial.TooWeak;
+            return false;
+        }
+
+        // Source-X CanEquipLayer (CCharStatus.cpp:470): a busy layer is only freed
+        // if what is on it can actually be moved. Without this, equipping a plain
+        // weapon displaced a CURSED one into the pack - the very move the cursed
+        // flag exists to refuse.
+        var occupant = _equipment[idx];
+        if (occupant != null && !ReferenceEquals(occupant, item) &&
+            !Items.ItemMoveRules.CanMove(this, occupant, out _))
+        {
+            denial = EquipDenial.LayerBlocked;
             return false;
         }
 

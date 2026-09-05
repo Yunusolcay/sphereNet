@@ -162,6 +162,7 @@ public sealed partial class GameClient : IClientContext
     void IClientContext.SendSelfRedraw() => SendSelfRedraw();
     void IClientContext.SendPaperdoll(Character ch) => SendPaperdoll(ch);
     void IClientContext.SendOpenContainer(Item container) => SendOpenContainer(container);
+    OpenedContainerRegistry IClientContext.OpenedContainers => OpenedContainers;
     void IClientContext.SendAosTooltip(ObjBase obj, bool requested, bool invalidate) =>
         SendAosTooltip(obj, requested, invalidate);
     void IClientContext.SendSkillList() => SendSkillList();

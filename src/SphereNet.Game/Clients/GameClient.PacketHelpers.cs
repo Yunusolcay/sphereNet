@@ -920,6 +920,14 @@ public sealed partial class GameClient
         //      that have no itemdef render correctly.
         //   4) Generic bag fallback 0x003C.
         ushort gumpId = ResolveContainerGump(container);
+
+        // Remember the view we are handing out: the pickup path only lets an item
+        // leave a container this client has actually been shown, and only while the
+        // container still hangs off what it did here (Source-X m_openedContainers).
+        var topMost = container.ResolveTopObject();
+        OpenedContainers.MarkOpened(container, topMost,
+            (topMost as Item)?.Position ?? _character?.Position ?? container.Position);
+
         _netState.Send(new PacketOpenContainer(container.Uid.Value, gumpId, _netState.IsClientPost7090));
         SendAosTooltip(container, requested: false);
         if (_character != null)

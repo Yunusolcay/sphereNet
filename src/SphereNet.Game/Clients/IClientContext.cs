@@ -126,6 +126,11 @@ internal interface IClientContext : ITextConsole
     void SendSelfRedraw();
     void SendPaperdoll(Character ch);
     void SendOpenContainer(Item container);
+
+    /// <summary>Containers this client has actually been shown (Source-X
+    /// CClient::m_openedContainers). The pickup path consults it before letting an
+    /// item leave a container.</summary>
+    OpenedContainerRegistry OpenedContainers { get; }
     void SendAosTooltip(ObjBase obj, bool requested, bool invalidate = false);
     void SendSkillList();
     void SendPickupFailed(byte reason);

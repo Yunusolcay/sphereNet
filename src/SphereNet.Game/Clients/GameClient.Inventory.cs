@@ -10,6 +10,11 @@ public sealed partial class GameClient
     internal ClientInventoryHandler Inventory => _inventory ??= new ClientInventoryHandler(this);
     private ClientInventoryHandler? _inventory;
 
+    /// <summary>Containers this client has actually been shown. Source-X
+    /// CClient::m_openedContainers; the pickup path will not take an item out of a
+    /// container that was never opened.</summary>
+    internal OpenedContainerRegistry OpenedContainers { get; } = new();
+
     public void HandleSingleClick(uint uid) => Inventory.HandleSingleClick(uid);
 
     public void HandleItemPickup(uint serial, ushort amount) => Inventory.HandleItemPickup(serial, amount);

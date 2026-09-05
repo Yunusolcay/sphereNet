@@ -3,6 +3,50 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Envanter aktarim kurallari: imlec, kap hedefleri ve erisim (01B)
+----------------------------------------
+
+FIX - Ikinci pickup, ilkini cozmeden DRAGGING tag'ini ve lift origin'i eziyordu;
+        onceki esya karaktere bagli, layer'siz ve suruklemesi bitmis halde kaliyordu:
+        dunyada var ama cantada, ekipmanda ve imlecte yok. Source-X yeni esya
+        LAYER_DRAGGING'i almadan once oradakini geri birakir (CCharStatus.cpp:459).
+        Tutulan esya artik kaldirildigi yere donuyor; AYNI esyanin tekrar kaldirilmasi
+        suruklemeyi bastan baslatmak yerine mevcut olani koruyor.
+
+FIX - Duz bir esyaya yapilan birakma dogrudan TryAddItem'a gidiyordu; bu da hedefin
+        gercekten kap olup olmadigini hic sormuyordu. Boylece bir kilic kaba
+        donusuyor ve icindeki tas hicbir kap arayuzunden erisilemez hale geliyordu.
+        Source-X birakmayi hedef esyanin bulundugu yere yonlendirir
+        (CClientEvent.cpp:489/504); stack birlesmesi ve gercek kap hedefleri
+        degismedi.
+
+FIX - Istemcinin hic acmadigi bir kaptan - kilitli sandik dahil - esya
+        kaldirilabiliyordu; pickup yolunda kaba hic bakilmiyordu. Source-X
+        m_openedContainers kaydini kontrol eder (CCharAct.cpp:2895). Istemci artik
+        acilis gonderilen her kabi, o anda neye bagli oldugu bilgisiyle kaydediyor;
+        yer degistiren, el degistiren veya baska yere yerlestirilen kap artik acik
+        sayilmiyor. Oyuncunun kendi cantasi ve bankasi acik kayit gerektirmiyor.
+
+FIX - Birakma hedefinin sahiplik kontrolu yalnizca DOGRUDAN Pack/BankBox layer'ina
+        bakiyordu; baska bir oyuncunun cantasi icindeki kese, karakterde duran bir kap
+        icin gecerli olmayan mesafe koluna dusuyordu. Esya bu yolla dogrudan baskasinin
+        envanterine itilebiliyor ve Source-X'in yonlendirdigi guvenli ticaret akisi
+        atlaniyordu (CClientEvent.cpp:338). Artik hedef zincirinin KOKU karar veriyor;
+        kendi petinizin cantasi esyayi kabul etmeye devam ediyor.
+
+FIX - Banka esya siniri yalnizca bankada zaten bulunanlari sayiyordu; oyuncu esyalari
+        once bir cantaya doldurup cantayla sinirin otesine gecebiliyordu. Source-X
+        gelen kabin cocuklarini bankanin kendi sayisina ekler (CItemContainer.cpp:941).
+        Kontrol referansta bankaya ozgudur ve oyle kaldi: normal bir kap kendi
+        slotlarini sinirlar, icine konanin derinligini degil.
+
+FIX - LANETLI bir silahin uzerine yeni silah kusanmak, laneli olani cantaya
+        cikariyordu - oysa lanet bayraginin varlik sebebi tam olarak bu hareketi
+        reddetmek. Source-X CanEquipLayer dolu bir layer'i ancak uzerindeki esya
+        gercekten tasinabiliyorsa bosaltir (CCharStatus.cpp:470); kusanma artik hicbir
+        mutasyon yapilmadan reddediliyor. Script ve loader Equip cagrilarinin zorunlu
+        aktarim semantigi degismedi.
+
 [2026-09-06] - Vendor nesne aktarimi ve olumde aktarim sirasi (Source-X 01A)
 ----------------------------------------
 

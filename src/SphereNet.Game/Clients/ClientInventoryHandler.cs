@@ -543,6 +543,25 @@ public sealed class ClientInventoryHandler
             return;
         }
 
+        // Snoop guard: an item may only leave a container this client has actually
+        // been shown. Source-X ItemPickup rejects a pickup whose container is not in
+        // m_openedContainers (CCharAct.cpp:2895). Without it, knowing a child's uid
+        // was enough to reach into a locked chest that had never been opened.
+        if (!CanReachInsideContainer(item))
+        {
+            SendPickupFailed(1);
+            return;
+        }
+
+        // A client may only hold ONE item on the cursor. Source-X resolves the
+        // conflict in CanEquipLayer, which bounces whatever is on LAYER_DRAGGING
+        // before the new item takes the layer (CCharStatus.cpp:459). Overwriting the
+        // DRAGGING tag and the lift origin instead left the previous item parented
+        // to the character with no layer and no drag - present in the world but
+        // absent from the pack, the equipment and the cursor alike.
+        if (!ResolvePreviousDrag(item))
+            return;
+
         // Stamp the lift origin BEFORE any reparent so a failed drop can bounce the
         // item back where it came from (Source-X). Overwritten on every pickup.
         CaptureDragOrigin(item);
@@ -738,7 +757,97 @@ public sealed class ClientInventoryHandler
     /// tags would pollute the item's tag set and break stack-merge equality.</summary>
     private enum DragOriginKind : byte { Pack = 0, Container = 1, Ground = 2 }
     private readonly record struct DragOrigin(DragOriginKind Kind, uint Parent, short X, short Y, sbyte Z);
+    /// <summary>
+    /// Whether a drop target can legitimately hold children. Anything that is not a
+    /// container is a plain item, however the client addressed it.
+    /// </summary>
+    private static bool IsDropTargetContainer(Item target) =>
+        target.ItemType is ItemType.Container or ItemType.ContainerLocked or
+            ItemType.Corpse or ItemType.EqBankBox or ItemType.EqVendorBox or
+            ItemType.EqTradeWindow or ItemType.Spellbook or ItemType.EqMemoryObj ||
+        target.EquipLayer == Layer.Pack || target.EquipLayer == Layer.BankBox ||
+        target.EquipLayer == Layer.VendorStock || target.EquipLayer == Layer.VendorExtra;
+
+    /// <summary>
+    /// Resolve a drop aimed at a plain item to the place that item actually lives
+    /// (Source-X CClientEvent.cpp:504) - the container holding it, or its ground
+    /// tile. Returns null to mean "put it on the ground", with the coordinates
+    /// updated to the target's tile.
+    /// </summary>
+    private Item? RedirectNonContainerTarget(Item target, Item item, ref short x, ref short y)
+    {
+        var parent = target.ContainedIn.IsValid ? _world.FindItem(target.ContainedIn) : null;
+        if (parent != null && !ReferenceEquals(parent, item))
+        {
+            // Land next to the target inside its own container.
+            x = target.X;
+            y = target.Y;
+            return parent;
+        }
+
+        var pos = target.GetTopLevelPosition();
+        x = pos.X;
+        y = pos.Y;
+        return null;   // ground drop at the target's tile
+    }
+
+    /// <summary>
+    /// Whether this client is allowed to take <paramref name="item"/> out of
+    /// whatever holds it. Items on the ground, worn, or held by the character
+    /// itself are not container pickups and pass straight through.
+    /// </summary>
+    private bool CanReachInsideContainer(Item item)
+    {
+        if (_character == null) return false;
+        if (_character.PrivLevel >= PrivLevel.GM) return true;
+        if (item.IsEquipped || !item.ContainedIn.IsValid) return true;
+
+        var container = _world.FindItem(item.ContainedIn);
+        if (container == null) return true;   // held by a character, not a container
+
+        var topMost = container.ResolveTopObject();
+        bool topIsCharacter = topMost is Character;
+
+        // The character's own pack and bank are always reachable: the client is
+        // never sent an "open" for its own backpack on every login, and Source-X
+        // treats a pickup whose top-level object is a character as legitimate.
+        if (topIsCharacter && ReferenceEquals(topMost, _character))
+            return true;
+
+        return _client.OpenedContainers.IsOpen(container, topMost, topIsCharacter);
+    }
+
     private DragOrigin? _dragOrigin;
+
+    /// <summary>
+    /// Settle whatever is already on the cursor before a new pickup takes it over.
+    /// Returns false when the new request should be dropped entirely (it is a repeat
+    /// of the item already being dragged, so there is nothing left to do).
+    /// </summary>
+    private bool ResolvePreviousDrag(Item incoming)
+    {
+        if (_character == null) return true;
+        if (!_character.TryGetTag("DRAGGING", out string? raw) ||
+            !uint.TryParse(raw, out uint heldUid) || heldUid == 0)
+            return true;
+
+        // Same item twice: Source-X ItemPickup returns early rather than restarting
+        // the drag, so the origin captured by the first pickup survives.
+        if (heldUid == incoming.Uid.Value)
+        {
+            SendPickupFailed(0);
+            return false;
+        }
+
+        _character.RemoveTag("DRAGGING");
+
+        var held = _world.FindItem(new Serial(heldUid));
+        if (held is { IsDeleted: false })
+            RestoreToOrigin(held);   // consumes and clears _dragOrigin
+
+        _dragOrigin = null;
+        return true;
+    }
 
     /// <summary>
     /// Snapshot where an item is being lifted FROM so a failed drop can bounce it
@@ -865,7 +974,20 @@ public sealed class ClientInventoryHandler
         if (containerUid != 0 && containerUid != 0xFFFFFFFF)
         {
             var container = _world.FindItem(new Serial(containerUid));
-            if (container != null && _tradeManager?.FindByContainer(containerUid) is { } dropTrade)
+
+            // Source-X Event_Item_Drop (CClientEvent.cpp:489) branches on whether the
+            // target really is a container. A plain item is NOT one: the drop is
+            // redirected to wherever that item lives, after the stack-merge and
+            // special-target cases below have had their chance. Passing it to
+            // TryAddItem instead turned a sword into a container, and the gem inside
+            // it could not be reached through any container view again.
+            if (container != null && !IsDropTargetContainer(container) &&
+                !container.CanStackWith(item))
+            {
+                container = RedirectNonContainerTarget(container, item, ref x, ref y);
+            }
+
+            if (container != null && _tradeManager?.FindByContainer(container.Uid.Value) is { } dropTrade)
             {
                 if (!dropTrade.IsParticipant(_character))
                 {
@@ -927,20 +1049,33 @@ public sealed class ClientInventoryHandler
                             return;
                         }
                     }
-                    else if (container.EquipLayer == Layer.BankBox || container.EquipLayer == Layer.Pack)
-                    {
-                        var owner = _world.FindChar(container.ContainedIn);
-                        if (owner != null && owner != _character)
-                        {
-                            RestoreToOrigin(item);
-                            _netState.Send(new PacketDropReject());
-                            return;
-                        }
-                    }
                     else
                     {
-                        var topContainer = GetTopContainer(container);
-                        if (topContainer != null && !topContainer.ContainedIn.IsValid)
+                        // Resolve the ROOT of the target chain, not just the layer of
+                        // the container the client named. Checking only a direct
+                        // Pack/BankBox layer meant a bag nested inside another
+                        // player's backpack fell through to the distance branch,
+                        // which does not apply to a character-held container - so an
+                        // item could be pushed straight into someone else's
+                        // inventory, bypassing the secure-trade flow Source-X routes
+                        // it to (CClientEvent.cpp:338).
+                        var topContainer = GetTopContainer(container) ?? container;
+                        var rootOwner = topContainer.ContainedIn.IsValid
+                            ? _world.FindChar(topContainer.ContainedIn)
+                            : null;
+
+                        if (rootOwner != null && rootOwner != _character)
+                        {
+                            // Someone else's inventory (or their pet's). Handing an
+                            // item over needs their consent.
+                            if (!rootOwner.HasOwner(_character.Uid))
+                            {
+                                RestoreToOrigin(item);
+                                _netState.Send(new PacketDropReject());
+                                return;
+                            }
+                        }
+                        else if (rootOwner == null && !topContainer.ContainedIn.IsValid)
                         {
                             int cDist = _character.Position.GetDistanceTo(topContainer.Position);
                             if (cDist > 3)
@@ -999,7 +1134,18 @@ public sealed class ClientInventoryHandler
                     if (container.TryGetTag("OVERRIDE.MAXITEMS", out string? maxItemsRaw) &&
                         int.TryParse(maxItemsRaw, out int overrideMax) && overrideMax >= 0)
                         maxItems = overrideMax;
-                    if (currentCount >= maxItems)
+                    // Source-X CItemContainer::CanContainerHold adds the INCOMING
+                    // container's children to the bank's own count
+                    // (CItemContainer.cpp:941: ContentCountAll() + iItemsInContainer).
+                    // Counting only what was already in the bank let a player pack
+                    // items into a bag first and walk the bag past the item limit.
+                    // The check is bank-specific in the reference: a normal container
+                    // caps its own slots, not the depth of what goes into one.
+                    int incomingChildren = isBank && item.ContentCount > 0
+                        ? _world.GetContainerItemCountDeep(item.Uid)
+                        : 0;
+
+                    if (currentCount + incomingChildren >= maxItems)
                     {
                         SysMessage(ServerMessages.Get(isBank ? Msg.BvboxFullItems : Msg.ContFullItems));
                         RestoreToOrigin(item);

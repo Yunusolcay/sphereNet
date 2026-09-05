@@ -4,6 +4,51 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Inventory transfer rules: cursor, container targets and reach (01B)
+----------------------------------------
+
+FIX - A second pickup overwrote the DRAGGING tag and the lift origin without
+        resolving the first one, leaving the previous item parented to the character
+        with no layer and no drag: present in the world but absent from the pack, the
+        equipment and the cursor alike. Source-X bounces the occupant of
+        LAYER_DRAGGING before the new item takes it (CCharStatus.cpp:459). The held
+        item now returns to where it was lifted from, and re-picking up the SAME item
+        keeps the original drag instead of restarting it.
+
+FIX - A drop aimed at a plain item passed it to TryAddItem, which never asked whether
+        the target was a container - so a sword became one, and the gem inside it
+        could not be reached through any container view again. Source-X redirects the
+        drop to wherever the target item lives (CClientEvent.cpp:489/504); stack
+        merges and real container targets are unchanged.
+
+FIX - An item could be lifted out of a container the client had never been shown,
+        a locked chest included, because nothing in the pickup path looked at the
+        container at all. Source-X consults m_openedContainers (CCharAct.cpp:2895).
+        The client now records each container it is sent an open for, along with what
+        that container hung off at the time, so one that has since moved, changed
+        hands or been nested elsewhere no longer counts as open. The character's own
+        pack and bank need no explicit open.
+
+FIX - The drop-target ownership check only looked at a DIRECT Pack/BankBox layer, so
+        a bag nested inside another player's backpack fell through to a distance
+        branch that does not apply to a character-held container - an item could be
+        pushed straight into someone else's inventory, bypassing the secure-trade
+        flow Source-X routes it to (CClientEvent.cpp:338). The ROOT of the target
+        chain now decides; your own pet's pack still accepts items.
+
+FIX - The bank item cap counted only what was already in the bank, so a player could
+        pack items into a bag and walk the bag past the limit. Source-X adds the
+        incoming container's children to the bank's own count
+        (CItemContainer.cpp:941). The check is bank-specific in the reference and
+        stays that way: a normal container caps its own slots, not the depth of what
+        goes into one.
+
+FIX - Equipping a weapon over a CURSED one displaced the cursed item into the pack -
+        the very move the cursed flag exists to refuse. Source-X CanEquipLayer only
+        frees a busy layer when its occupant can actually be moved
+        (CCharStatus.cpp:470); the equip is now refused before anything is mutated.
+        Script and loader Equip calls keep their forced-transfer semantics.
+
 [2026-09-06] - Vendor object transfer and death transfer order (Source-X 01A)
 ----------------------------------------
 
