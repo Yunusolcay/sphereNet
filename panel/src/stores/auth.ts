@@ -8,13 +8,20 @@ export const useAuthStore = defineStore('auth', () => {
   const serverName = ref<string>(localStorage.getItem('sn_server') ?? 'SphereNet')
   const loggedIn   = ref(!!token.value)
 
-  async function login(password: string): Promise<void> {
+  /** Exchange the password for a token without leaving the current page.
+   *  The setup wizard needs a session before its remaining steps can call
+   *  protected endpoints, but must stay on the wizard while it does. */
+  async function establishSession(password: string): Promise<void> {
     const { data } = await authApi.login(password)
     token.value      = data.token
     serverName.value = data.serverName
     loggedIn.value   = true
     localStorage.setItem('sn_token',  data.token)
     localStorage.setItem('sn_server', data.serverName)
+  }
+
+  async function login(password: string): Promise<void> {
+    await establishSession(password)
     await router.push('/dashboard')
   }
 
@@ -34,5 +41,5 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  return { token, serverName, loggedIn, login, logout, clearSession }
+  return { token, serverName, loggedIn, establishSession, login, logout, clearSession }
 })

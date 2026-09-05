@@ -1372,7 +1372,7 @@ public class SaveFormatTests
             var src = new AccountManager(lf);
             src.CreateAccount("alice", "secret1");
             src.CreateAccount("bob", "secret2");
-            src.CreateAccount("with space", "secret3"); // section name boundary test
+            src.CreateAccount("with space", "secret3"); // normalised to "withspace" on admission
 
             var alice = src.FindAccount("alice")!;
             alice.SetTag("RANK", "gold");
@@ -1434,7 +1434,9 @@ public class SaveFormatTests
             Assert.NotNull(acc);
             Assert.True(acc!.CheckPassword("1"));
             Assert.False(acc.CheckPassword("2"));
-            Assert.Equal(32, acc.PasswordHash.Length);
+            // Md5Passwords=0 is Source-X plaintext storage, so the classic file's
+            // value is kept as-is rather than converted on load.
+            Assert.Equal("1", acc.PasswordHash);
         }
         finally
         {

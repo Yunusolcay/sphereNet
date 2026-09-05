@@ -28,13 +28,26 @@ public static class AccountPersistence
         string finalPath = Path.Combine(dir, BaseName + ext);
         string tmpPath = finalPath + ".tmp";
 
-        int count = 0;
+        int count = 0, skipped = 0;
         using (var w = SaveIO.OpenWriter(tmpPath, fmt))
         {
             w.WriteHeaderComment("SphereNet Account File");
             w.WriteHeaderComment($"Saved at {DateTime.UtcNow:u}");
             foreach (var acc in accounts.GetAllAccounts())
             {
+                // Last line of defence. CreateAccount rejects names that cannot
+                // round-trip, but a file written before that gate existed could
+                // still hold one. Skipping the single bad record keeps every other
+                // account (and every password/ban change) reaching disk instead of
+                // aborting the whole write on a section-name exception.
+                if (!AccountNameValidator.IsWritable(acc.Name))
+                {
+                    log?.LogError(
+                        "An account name cannot be written as a save section and was skipped; " +
+                        "rename it to persist that account again.");
+                    skipped++;
+                    continue;
+                }
                 WriteAccount(w, acc);
                 count++;
             }
@@ -42,6 +55,12 @@ public static class AccountPersistence
 
         // Atomic promote: .tmp → final (overwrite).
         File.Move(tmpPath, finalPath, overwrite: true);
+
+        // Name the active snapshot before removing anything. If the process dies
+        // between these two steps the manifest still points at a file that exists,
+        // and a stale file that survives deletion can no longer shadow the current
+        // one on the next load.
+        WriteManifest(dir, Path.GetFileName(finalPath), fmt, log);
 
         // Drop stale files in other formats so the directory shows only one
         // canonical account snapshot. Also cleans up any ancient .bak left
@@ -63,14 +82,30 @@ public static class AccountPersistence
             }
         }
 
+        if (skipped > 0)
+            log?.LogWarning("{Skipped} account(s) skipped on save: unwritable name", skipped);
         log?.LogInformation("Saved {Count} accounts to {Path}", count, finalPath);
         return count;
     }
 
-    /// <summary>Load accounts from <paramref name="dir"/>. Probes all known
-    /// extensions; returns 0 if no account file is present (first-run).</summary>
+    /// <summary>Load accounts from <paramref name="dir"/>. The manifest names the
+    /// active snapshot; without one (first run, or a directory written by an older
+    /// build) the known extensions are probed as before.</summary>
     public static int Load(AccountManager accounts, string dir, ILogger? log = null)
     {
+        string? active = ReadManifestTarget(dir);
+        if (active != null)
+        {
+            string path = Path.Combine(dir, active);
+            if (File.Exists(path))
+                return LoadFile(accounts, path, log);
+
+            // A restored backup can leave the manifest pointing at a file that is
+            // gone. Probing is still better than loading nothing.
+            log?.LogWarning(
+                "Account manifest names {File}, which is missing; falling back to a format probe", active);
+        }
+
         // Priority order: prefer compressed binary (most-specific) when two
         // snapshots somehow co-exist, fall back to classic .scp last.
         string[] exts = { ".sbin.gz", ".sbin", ".scp.gz", ".scp" };
@@ -82,6 +117,44 @@ public static class AccountPersistence
         }
         log?.LogWarning("No account file found in {Dir}", dir);
         return 0;
+    }
+
+    /// <summary>Record which file is the live account snapshot. Written through a
+    /// .tmp + rename so a torn write cannot leave an unreadable manifest.</summary>
+    private static void WriteManifest(string dir, string fileName, SaveFormat fmt, ILogger? log)
+    {
+        string path = ShardManifest.PathFor(dir, BaseName);
+        string tmp = path + ".tmp";
+        try
+        {
+            var manifest = new ShardManifest { Format = fmt, ShardCount = 1 };
+            manifest.Files.Add(fileName);
+            manifest.Save(tmp);
+            File.Move(tmp, path, overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            // Not fatal: the loader still falls back to the extension probe.
+            log?.LogWarning(ex, "Could not write the account manifest {Path}", path);
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best effort */ }
+        }
+    }
+
+    /// <summary>The file name the manifest declares active, or null when there is
+    /// no usable manifest.</summary>
+    private static string? ReadManifestTarget(string dir)
+    {
+        var manifest = ShardManifest.TryLoad(ShardManifest.PathFor(dir, BaseName));
+        if (manifest == null || manifest.Files.Count == 0) return null;
+
+        // The manifest is hand-editable by design, so treat it as untrusted: it may
+        // only name an account file sitting directly in this directory.
+        string name = manifest.Files[0];
+        if (!name.StartsWith(BaseName, StringComparison.OrdinalIgnoreCase) ||
+            !Path.GetFileName(name).Equals(name, StringComparison.Ordinal))
+            return null;
+
+        return name;
     }
 
     private static int LoadFile(AccountManager accounts, string path, ILogger? log)
@@ -120,12 +193,10 @@ public static class AccountPersistence
             return section[8..].Trim();
         if (section.Equals("EOF", StringComparison.OrdinalIgnoreCase))
             return null;
-        // Sphere/Source-X bare format: [username] — accept any non-keyword section
-        if (section.Length > 0 &&
-            !section.StartsWith("WORLD", StringComparison.OrdinalIgnoreCase) &&
-            !section.StartsWith("SPHERE", StringComparison.OrdinalIgnoreCase) &&
-            !section.StartsWith("LIST ", StringComparison.OrdinalIgnoreCase) &&
-            !section.StartsWith("GLOBALS", StringComparison.OrdinalIgnoreCase))
+        // Sphere/Source-X bare format: [username] — accept any non-keyword section.
+        // The reserved set lives in AccountNameValidator so the writer's admission
+        // check and this reader's skip list cannot drift apart.
+        if (section.Length > 0 && !AccountNameValidator.IsReservedSection(section))
             return section;
         return null;
     }

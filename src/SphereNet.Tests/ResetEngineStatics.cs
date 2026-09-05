@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using Xunit.Sdk;
 
 [assembly: SphereNet.Tests.ResetEngineStatics]
@@ -163,6 +163,7 @@ public sealed class ResetEngineStaticsAttribute : BeforeAfterTestAttribute
              SphereNet.Scripting.Definitions.ValueCurve.Empty,
              SphereNet.Scripting.Definitions.ValueCurve.Empty];
         SphereNet.Scripting.Expressions.ExpressionParser.ObsceneChecker = null;
+        SphereNet.Core.Configuration.AccountNameValidator.ObsceneChecker = null;
         SphereNet.Game.Magic.SpellDef.RuneWordResolver = null;
         SphereNet.Game.Objects.ObjBase.DiagnosticLog = null;
         SphereNet.Game.Objects.Characters.Character.OnHearRouted = null;

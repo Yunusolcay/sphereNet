@@ -24,6 +24,11 @@ public sealed class TokenStore
         return token;
     }
 
+    /// <summary>Raised whenever a token stops being usable — logout or expiry.
+    /// Consumers use it to tear down anything the token is still holding open,
+    /// such as a live SignalR connection.</summary>
+    public event Action<string>? TokenInvalidated;
+
     public bool Validate(string token)
     {
         if (string.IsNullOrEmpty(token)) return false;
@@ -32,17 +37,25 @@ public sealed class TokenStore
         if (expiry > _clock())
             return true;
 
-        _tokens.TryRemove(token, out _);
+        Drop(token);
         return false;
     }
 
-    public void Revoke(string token) => _tokens.TryRemove(token, out _);
+    public void Revoke(string token) => Drop(token);
 
     public void PurgeExpired()
     {
         var now = _clock();
         foreach (var pair in _tokens)
             if (pair.Value <= now)
-                _tokens.TryRemove(pair.Key, out _);
+                Drop(pair.Key);
+    }
+
+    /// <summary>Remove the token and announce it exactly once — the removal is the
+    /// gate, so a racing caller cannot fire the event a second time.</summary>
+    private void Drop(string token)
+    {
+        if (_tokens.TryRemove(token, out _))
+            TokenInvalidated?.Invoke(token);
     }
 }

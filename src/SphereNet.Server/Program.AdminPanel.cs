@@ -59,15 +59,24 @@ public static partial class Program
 {
     private static IPBlockList? _ipBlockList;
     private static ConnectionRateLimiter? _connRateLimiter;
-    private readonly record struct ConnectionAttempt(long PreviousMs, long CurrentMs, int Count);
-    private static readonly ConcurrentDictionary<string, ConnectionAttempt> _connectionAttempts =
-        new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Per-IP connect attempt history feeding the connectreq_ex and
+    /// connection_acquired hooks. Bounded and TTL-expired (Source-X NETTTL); the raw
+    /// dictionary it replaces never removed anything.</summary>
+    private static IpAttemptHistory _connectionAttempts = new();
+
+    /// <summary>CPU/thread sampler for THIS process. The panel used to sample its
+    /// own process instead, which under the Host reported the Host's numbers beside
+    /// the game server's world counts.</summary>
+    private static readonly SphereNet.Core.Diagnostics.ProcessCpuSampler _processMetrics = new();
 
     private static void InitializeAdminSurfaces()
     {
             // --- Security: shared IP block list & connection rate limiter ---
             _ipBlockList = new IPBlockList();
             _connRateLimiter = new ConnectionRateLimiter();
+            // Source-X forgets an IP once its NETTTL lapses (CIPHistoryManager::tick);
+            // the attempt count rides along and is forgotten with the entry.
+            _connectionAttempts = new IpAttemptHistory(_config.NetTTL);
             _ipBlockList.Blocked += ip =>
                 _systemHooks.DispatchServer("blockip", _serverHookContext, ip, 0);
             _network.ConnectionAcceptFilter = ip =>
@@ -78,10 +87,7 @@ public static partial class Program
                 string ipStr = ip.ToString();
                 if (_ipBlockList.IsBlocked(ipStr))
                     return true;
-                long currentMs = Environment.TickCount64;
-                var attempt = _connectionAttempts.AddOrUpdate(ipStr,
-                    _ => new ConnectionAttempt(currentMs, currentMs, 1),
-                    (_, old) => new ConnectionAttempt(old.CurrentMs, currentMs, old.Count + 1));
+                var attempt = _connectionAttempts.Register(ipStr);
                 _connRateLimiter.RegisterAttempt(ipStr);
                 if (!_connRateLimiter.ShouldThrottle(ipStr))
                     return false;
@@ -233,6 +239,8 @@ public static partial class Program
                         _world.TickCount,
                         GC.GetTotalMemory(false) / 1024 / 1024,
                         _accounts.Count,
+                        CpuPercent: _processMetrics.SamplePercent(),
+                        ThreadCount: _processMetrics.ThreadCount,
                         AvgTickMs: runtime.AvgMs,
                         MaxTickMs: runtime.MaxMs,
                         P50TickMs: runtime.P50Ms,

@@ -36,9 +36,6 @@ public sealed class PanelHost : IDisposable
     private Task? _statsTask;
     private Task? _updateCheckTask;
 
-    // CPU tracking
-    private TimeSpan _lastCpuTime = TimeSpan.Zero;
-    private DateTime _lastCpuMeasure = DateTime.MinValue;
     private readonly LoginRateLimiter _authLimiter = new();
 
     public PanelHost(PanelContext ctx, int port, PanelLogSink logSink, ILogger logger)
@@ -76,8 +73,18 @@ public sealed class PanelHost : IDisposable
             builder.Logging.AddProvider(new ForwardingLoggerProvider(_logger));
 
             var tokens = new TokenStore();
+            var hubConnections = new HubConnectionRegistry();
+            // Logout and expiry must reach the open WebSocket, not just the token
+            // table; aborting also drops it out of the Clients.All broadcasts.
+            tokens.TokenInvalidated += token =>
+            {
+                int aborted = hubConnections.AbortToken(token);
+                if (aborted > 0)
+                    _logger.LogInformation("Panel token invalidated; closed {Count} live connection(s)", aborted);
+            };
             builder.Services.AddSingleton(_ctx);
             builder.Services.AddSingleton(tokens);
+            builder.Services.AddSingleton(hubConnections);
             builder.Services.AddSingleton(_logSink);
             builder.Services.AddSignalR(o => o.EnableDetailedErrors = false);
 
@@ -155,21 +162,25 @@ public sealed class PanelHost : IDisposable
                 });
             }
 
-            // Auth middleware — protects /api/* routes
+            // Auth middleware — protects /api/* routes.
+            //
+            // Endpoint routing is case-insensitive, so every comparison here must be
+            // too. A case-sensitive scope test let "/API/server/running" reach the
+            // very same route handler as "/api/server/running" while the middleware
+            // classified it as non-API and waved it through unauthenticated.
             _app.Use(async (ctx, next) =>
             {
                 var path = ctx.Request.Path.Value ?? "";
 
                 bool isSetupPhase = string.IsNullOrEmpty(_ctx.AdminPassword);
 
-                if (path == "/api/auth/login" ||
-                    path == "/api/auth/local-hint" ||
-                    path == "/api/setup/needed" ||
-                    (isSetupPhase && path == "/api/setup/config") ||
-                    (isSetupPhase && path == "/api/setup/apply") ||
-                    path == "/health" ||
-                    path.StartsWith("/hubs/") ||
-                    !path.StartsWith("/api/"))
+                if (PathIs(path, "/api/auth/login") ||
+                    PathIs(path, "/api/auth/local-hint") ||
+                    PathIs(path, "/api/setup/needed") ||
+                    (isSetupPhase && IsSetupPhaseEndpoint(path)) ||
+                    PathIs(path, "/health") ||
+                    PathStartsWith(path, "/hubs/") ||
+                    !PathStartsWith(path, "/api/"))
                 {
                     await next();
                     return;
@@ -248,12 +259,10 @@ public sealed class PanelHost : IDisposable
             {
                 if (_ctx.GetStats != null)
                 {
-                    var stats = _ctx.GetStats() with
-                    {
-                        CpuPercent = GetCpuPercent(),
-                        ThreadCount = Process.GetCurrentProcess().Threads.Count
-                    };
-                    await hub.Clients.All.SendAsync("StatsUpdate", stats, ct);
+                    // CpuPercent and ThreadCount arrive already filled in by the game
+                    // server. Overwriting them here measured whichever process the
+                    // panel happens to live in, which under the Host is the Host.
+                    await hub.Clients.All.SendAsync("StatsUpdate", _ctx.GetStats(), ct);
                 }
                 tokens.PurgeExpired();
             }
@@ -340,21 +349,72 @@ public sealed class PanelHost : IDisposable
         }
     }
 
-    private double GetCpuPercent()
+    /// <summary>Stand-in returned by /api/setup/config so the real admin password
+    /// never reaches the browser. Posting it back to /api/setup/apply means
+    /// "leave the password alone".</summary>
+    internal const string PasswordMask = "********";
+
+    /// <summary>Backend-side validation for the setup wizard. The frontend checks
+    /// the same rules, but a 200 on an unusable configuration left the UI claiming
+    /// success while /api/setup/needed still reported the server unconfigured.</summary>
+    internal static bool TryValidateSetup(SetupConfig req, out string? error)
     {
-        var proc = Process.GetCurrentProcess();
-        proc.Refresh();
-        var now = DateTime.UtcNow;
-        var elapsed = (now - _lastCpuMeasure).TotalSeconds;
-        if (elapsed < 0.5)
-            return 0;
-        var cpuTime = proc.TotalProcessorTime;
-        var delta = (cpuTime - _lastCpuTime).TotalSeconds;
-        _lastCpuTime = cpuTime;
-        _lastCpuMeasure = now;
-        if (elapsed <= 0) return 0;
-        return Math.Round(delta / elapsed / Environment.ProcessorCount * 100, 1);
+        if (string.IsNullOrWhiteSpace(req.ServerName))
+        {
+            error = "Server name is required";
+            return false;
+        }
+        if (req.ServPort is < 1 or > 65535)
+        {
+            error = "Server port must be between 1 and 65535";
+            return false;
+        }
+        if (req.AdminPanelPort is not 0 && req.AdminPanelPort is < 1 or > 65535)
+        {
+            error = "Admin panel port must be 0 (disabled) or between 1 and 65535";
+            return false;
+        }
+        if (req.AdminPanelPort != 0 && req.AdminPanelPort == req.ServPort)
+        {
+            error = "Admin panel port must differ from the server port";
+            return false;
+        }
+        if (req.TickSleepMode is < 0 or > 2)
+        {
+            error = "Tick sleep mode must be 0 (spin), 1 (sleep) or 2 (hybrid)";
+            return false;
+        }
+        if (string.IsNullOrWhiteSpace(req.AdminPassword))
+        {
+            error = "Admin password is required";
+            return false;
+        }
+
+        error = null;
+        return true;
     }
+
+    /// <summary>Ordinal, case-insensitive path equality. Routing matches paths this
+    /// way, so the authorization scope must agree with it exactly — a culture-aware
+    /// or case-sensitive comparison here is an auth bypass, not a cosmetic detail.
+    /// Trailing slashes are ignored for the same reason.</summary>
+    internal static bool PathIs(string path, string expected) =>
+        string.Equals(TrimTrailingSlash(path), expected, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Ordinal, case-insensitive prefix test. See <see cref="PathIs"/>.</summary>
+    internal static bool PathStartsWith(string path, string prefix) =>
+        path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The endpoints the first-run wizard may reach before an admin
+    /// password exists. Deliberately a closed list: everything else stays behind
+    /// the bearer token even during setup.</summary>
+    internal static bool IsSetupPhaseEndpoint(string path) =>
+        PathIs(path, "/api/setup/config") ||
+        PathIs(path, "/api/setup/apply") ||
+        PathIs(path, "/api/setup/status");
+
+    private static string TrimTrailingSlash(string path) =>
+        path.Length > 1 && path[^1] == '/' ? path[..^1] : path;
 
     private void MapRoutes(WebApplication app, TokenStore tokens)
     {
@@ -429,7 +489,7 @@ public sealed class PanelHost : IDisposable
             var cfg = new SetupConfig(
                 ServerName    : p.GetValue("SPHERE", "ServName")      ?? _ctx.ServerName,
                 ServPort      : p.GetInt  ("SPHERE", "ServPort",       2593),
-                AdminPassword : string.IsNullOrEmpty(rawPassword) ? "" : "********",
+                AdminPassword : string.IsNullOrEmpty(rawPassword) ? "" : PasswordMask,
                 AdminPanelPort: p.GetInt  ("SPHERE", "AdminPanelPort", 0),
                 TickSleepMode : p.GetInt  ("SPHERE", "TickSleepMode",  2),
                 DebugPackets  : p.GetBool ("SPHERE", "DebugPackets",   false),
@@ -443,17 +503,35 @@ public sealed class PanelHost : IDisposable
             if (_ctx.IniPath is null || !File.Exists(_ctx.IniPath))
                 return Results.Problem("sphere.ini not found");
 
-            PatchIniSection(_ctx.IniPath, "SPHERE", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            if (!TryValidateSetup(req, out string? invalid))
+                return Results.BadRequest(new { error = invalid });
+
+            // /api/setup/config hands back the password as a fixed mask so the real
+            // one never leaves the box. Re-running the wizard posts the form back
+            // unchanged, so the mask must mean "keep the current password" — stored
+            // literally it would silently reset panel access to the mask string.
+            bool keepPassword = req.AdminPassword == PasswordMask;
+            string passwordHash = keepPassword
+                ? _ctx.AdminPassword ?? ""
+                : Core.Configuration.PasswordHelper.Hash(req.AdminPassword);
+
+            if (string.IsNullOrEmpty(passwordHash))
+                return Results.BadRequest(new { error = "Admin password is required" });
+
+            var patch = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
                 ["ServName"]       = req.ServerName,
                 ["ServPort"]       = req.ServPort.ToString(),
-                ["AdminPassword"]  = Core.Configuration.PasswordHelper.Hash(req.AdminPassword),
                 ["AdminPanelPort"] = req.AdminPanelPort.ToString(),
                 ["TickSleepMode"]  = req.TickSleepMode.ToString(),
                 ["DebugPackets"]   = req.DebugPackets ? "1" : "0",
                 ["ScriptDebug"]    = req.ScriptDebug  ? "1" : "0",
-            });
-            _ctx.AdminPassword = Core.Configuration.PasswordHelper.Hash(req.AdminPassword);
+            };
+            if (!keepPassword)
+                patch["AdminPassword"] = passwordHash;
+
+            PatchIniSection(_ctx.IniPath, "SPHERE", patch);
+            _ctx.AdminPassword = passwordHash;
             _ctx.ServerName    = req.ServerName;
 
             // Mark setup as complete
@@ -482,7 +560,9 @@ public sealed class PanelHost : IDisposable
         {
             var stats = _ctx.GetStats?.Invoke() ?? new ServerStats(
                 _ctx.ServerName, "0:00:00:00", 0, 0, 0, 0, 0, 0, 0, 0);
-            return Results.Ok(stats with { CpuPercent = GetCpuPercent() });
+            // Same snapshot the SignalR push sends — no second, differently-sourced
+            // CPU reading for the same moment.
+            return Results.Ok(stats);
         });
 
         app.MapGet("/api/server/running", () =>

@@ -4,6 +4,106 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-05] - Account name validation, panel authorization, save and scheduler fixes
+----------------------------------------
+
+FIX - Account names were accepted without validation and then written as bare save
+        sections, so a name the reader skips ("EOF", "WORLDx") created an account
+        that vanished on the next start, and a name carrying a line break made
+        every later account write throw - silently, since SaveAccountsToDisk logs
+        and continues. The 0x80 login packet reads its 30-byte name field without
+        filtering, so with AccApp auto-creation a crafted client could reach both.
+        Source-X CAccount::NameStrip is now ported: printable-ASCII stripping with
+        the ACCOUNT_NAME_VALID_CHAR set, the EOF/ACCOUNT reserved prefixes, the
+        account verb keys and the [OBSCENE] list. Lookup stays lenient so names
+        already in a legacy file keep working, and the writer skips a single
+        unwritable name instead of aborting the whole file.
+
+FIX - The admin panel decided whether a request was in scope for the bearer token
+        with a case-sensitive path test, while endpoint routing matches paths
+        case-insensitively. "/API/server/running" therefore reached the same route
+        handler as "/api/server/running" with no token at all, including the
+        mutating endpoints. Every path comparison in the middleware is now ordinal
+        and case-insensitive.
+
+FIX - The panel hub validated its token only during the WebSocket handshake, and
+        logout removed the token without touching connections already open, so a
+        connection established before logout kept executing admin commands and kept
+        receiving broadcasts. Hub calls re-validate, and token revocation or expiry
+        now closes the connections opened with that token.
+
+FIX - /api/setup/apply accepted an empty admin password and reported success, which
+        left the UI claiming setup was complete while /api/setup/needed still said
+        otherwise. It now validates the server name, port range, panel port and
+        tick mode as well.
+
+FIX - /api/setup/config returns the admin password as a fixed mask so the real one
+        never reaches the browser, but /api/setup/apply stored whatever it was
+        given. Re-running the wizard without retyping the password therefore reset
+        panel access to the mask string. The mask is now understood as "keep the
+        current password".
+
+FIX - The setup wizard offered its script-install step before the admin password
+        existed, so the step had no token and returned 401. Scripts now come after
+        Apply, which establishes the panel session first; only the setup endpoints
+        the wizard needs before that point are reachable anonymously.
+
+FIX - spheredata.scp was assembled by hand instead of through the shared save
+        writer, so global variables, list elements and GM page reasons skipped the
+        value encoding every other save file uses and were truncated at their first
+        line break on reload. They now round-trip verbatim, and the file stays
+        byte-order-mark free for classic readers.
+
+FIX - Changing SaveFormat writes the account file in the new format and deletes the
+        old ones, but a failed delete only logged a warning and the loader picked by
+        a fixed extension priority - so a surviving older file outranked the current
+        one, hiding new accounts and rolling back password and ban changes. The save
+        now records the active snapshot in sphereaccu.manifest; a directory without
+        one still loads by extension probe.
+
+FIX - The Host gave the game server a flat eight seconds to shut down and then
+        killed its process tree. A clean shutdown drains an in-flight background
+        save, runs a final save and waits for that too, so a large world on slow
+        storage was killed while working correctly. The wait now follows the child's
+        log output as a progress signal: it gets as long as it needs while it is
+        reporting progress, up to a ceiling. HostShutdownQuietMs (20s) and
+        HostShutdownTimeoutMs (180s) configure it.
+
+FIX - TimerWheel.Remove could only clear the scheduled set, leaving the cancelled
+        entry in its slot; rescheduling the same NPC then had the new scheduling
+        consumed by that leftover, firing at the old time and never at the new one.
+        Program.Tick.WakeNpc does exactly Remove+Schedule. Slot entries now carry a
+        scheduling generation, so a leftover is dropped.
+
+FIX - A TimerWheel slot index aliases every 25.6 seconds, so anything scheduled
+        beyond one revolution fired on the aliased slot instead. NpcAI parks idle
+        NPCs 30-60 seconds out, which meant every idle NPC woke roughly 2.3 times
+        more often than intended. Entries now carry their deadline and are re-parked
+        for another revolution when they are not due; the slot for a deadline is
+        also rounded up rather than down, so a deadline between slot boundaries no
+        longer misses its slot by a full revolution.
+
+FIX - The per-IP connect attempt history had no removal, expiry or capacity limit,
+        and ConnectionRateLimiter.Cleanup had no production caller at all, so both
+        collections grew one entry per distinct source address for the lifetime of
+        the process. Both now expire idle entries on the Source-X NETTTL schedule
+        and enforce a capacity ceiling, driven from the write path so expiry cannot
+        be left unwired.
+
+FIX - The panel sampled CPU and thread count from its own process. Under the Host
+        that is the Host process, so the dashboard showed the Host's load beside the
+        game server's object and player counts. The sampler now runs in the game
+        process and travels with the stats snapshot. It also returned 0 whenever two
+        callers arrived inside the same half-second, so the HTTP endpoint and the
+        SignalR push disagreed about the same moment; both now read one snapshot.
+
+FIX - Md5Passwords was read from sphere.ini, copied onto every account and never
+        consulted, because SetPassword hashed unconditionally. It now behaves as
+        Source-X MD5PASSWORDS does: 1 stores an MD5 digest, 0 stores the password
+        verbatim, and the login-time upgrade of a legacy plaintext password only
+        runs when hashing is on. The default is 1, which is what SphereNet has
+        always actually done (Source-X defaults to 0).
+
 [2026-07-31] - View delta: an object could stay invisible until a resync
 ----------------------------------------
 

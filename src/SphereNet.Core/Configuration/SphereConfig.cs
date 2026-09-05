@@ -88,7 +88,12 @@ public sealed class SphereConfig
 
     // Accounts
     public int AccApp { get; set; } = 2;
-    public bool Md5Passwords { get; set; }
+    /// <summary>Source-X MD5PASSWORDS: 1 stores account passwords as an MD5 digest,
+    /// 0 stores them verbatim. Source-X defaults this to 0; SphereNet defaults it to
+    /// 1 because that is what it has always actually done — the setting used to be
+    /// read and then ignored. Set it to 0 only for byte-level parity with a classic
+    /// shard's plaintext account file.</summary>
+    public bool Md5Passwords { get; set; } = true;
     public int MaxCharsPerAccount { get; set; } = 5;
     /// <summary>Days a character must exist before it can be deleted from the
     /// char-select screen (classic 7-day rule). 0 disables the gate.</summary>
@@ -915,7 +920,7 @@ public sealed class SphereConfig
         if (AccApp != 0) warnings.Add($"AccApp={AccApp} — public shards should disable automatic account creation");
         if (DefaultCommandLevel > 0) warnings.Add($"DefaultCommandLevel={DefaultCommandLevel} — auto-created accounts may receive elevated commands");
         if (string.IsNullOrWhiteSpace(AdminPassword)) warnings.Add("AdminPassword is empty — admin panel/telnet must remain disabled");
-        if (Md5Passwords) warnings.Add("Md5Passwords=1 — MD5 is legacy-only and weak for public shards");
+        if (!Md5Passwords) warnings.Add("Md5Passwords=0 — account passwords are stored in plain text (Source-X default)");
         if (FloodDetectionCount <= 0) warnings.Add($"FloodDetectionCount={FloodDetectionCount} — flood detection disabled");
         if (FloodDetectionWindowMs < 1000) warnings.Add($"FloodDetectionWindowMs={FloodDetectionWindowMs} — too small, may cause false positives");
         if (ScriptEncoding.ToUpperInvariant() is not ("AUTO" or "UTF8" or "UTF-8" or "LEGACY" or "ANSI"))

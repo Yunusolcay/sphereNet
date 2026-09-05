@@ -7,6 +7,15 @@ public static class PasswordHelper
 {
     private const string Sha256Prefix = "SHA256:";
 
+    /// <summary>
+    /// The value to persist for <paramref name="plaintext"/> under the shard's
+    /// MD5PASSWORDS setting: an MD5 digest when hashing is on, the password verbatim
+    /// when it is off. Mirrors Source-X CAccount::SetPassword, where MD5PASSWORDS=0
+    /// really does mean plaintext storage.
+    /// </summary>
+    public static string StoreForm(string plaintext, bool useMd5) =>
+        useMd5 ? Hash(plaintext) : plaintext;
+
     /// <summary>Hash using MD5 (bare uppercase hex) for Sphere account file compatibility.</summary>
     public static string Hash(string plaintext)
     {

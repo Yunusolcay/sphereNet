@@ -91,8 +91,8 @@
         </div>
       </div>
 
-      <!-- ── Step 3: Scripts ─────────────────────────────────────────── -->
-      <div v-if="step === 3" class="step-body">
+      <!-- ── Step 4: Scripts (runs with the session created by Apply) ── -->
+      <div v-if="step === 4" class="step-body">
         <h2 class="step-title">Scripts</h2>
 
         <div v-if="scriptsLoading" class="loading">Checking scripts folder…</div>
@@ -157,19 +157,22 @@
         </template>
       </div>
 
-      <!-- ── Step 4: Review ──────────────────────────────────────────── -->
-      <div v-if="step === 4" class="step-body">
+      <!-- ── Step 3: Review ──────────────────────────────────────────── -->
+      <div v-if="step === 3" class="step-body">
         <h2 class="step-title">Review</h2>
         <div class="review-grid">
           <div class="review-row"><span>Server Name</span><strong>{{ form.serverName }}</strong></div>
           <div class="review-row"><span>Game Port</span><strong>{{ form.servPort }}</strong></div>
-          <div class="review-row"><span>Admin Password</span><strong>{{ form.adminPassword ? '••••••••' : '(not set)' }}</strong></div>
+          <div class="review-row"><span>Admin Password</span><strong>{{ passwordSummary }}</strong></div>
           <div class="review-row"><span>Panel Port</span><strong>{{ form.adminPanelPort || 'auto' }}</strong></div>
           <div class="review-row"><span>Tick Mode</span><strong>{{ tickModeLabel }}</strong></div>
           <div class="review-row"><span>Packet Debug</span><strong>{{ form.debugPackets ? 'ON' : 'OFF' }}</strong></div>
           <div class="review-row"><span>Script Debug</span><strong>{{ form.scriptDebug ? 'ON' : 'OFF' }}</strong></div>
         </div>
         <p v-if="!form.adminPassword" class="warn">⚠ Admin password is empty. You won't be able to log in after save.</p>
+        <p class="step-desc" style="margin-top:10px">
+          Saving creates your panel session, then continues to the scripts step.
+        </p>
       </div>
 
       <!-- ── Step 5: Done ────────────────────────────────────────────── -->
@@ -182,19 +185,21 @@
 
       <!-- Actions -->
       <div v-if="step < 5" class="step-actions">
-        <button v-if="step > 0" class="btn-ghost" @click="step--">Back</button>
+        <!-- No going back past Apply: the settings are already written. -->
+        <button v-if="step > 0 && step < 3" class="btn-ghost" @click="step--">Back</button>
         <span class="flex-1" />
         <button
-          v-if="step < 4"
+          v-if="step < 3"
           class="btn-primary"
           @click="next"
           :disabled="!canNext"
         >
-          {{ step === 3 ? 'Continue' : 'Next' }}
+          Next
         </button>
-        <button v-if="step === 4" class="btn-primary" @click="apply" :disabled="saving">
+        <button v-if="step === 3" class="btn-primary" @click="apply" :disabled="saving">
           {{ saving ? 'Saving…' : 'Apply & Save' }}
         </button>
+        <button v-if="step === 4" class="btn-primary" @click="step++">Continue</button>
       </div>
 
       <p v-if="error" class="error-msg">{{ error }}</p>
@@ -212,7 +217,14 @@ import { useAuthStore } from '@/stores/auth'
 const router = useRouter()
 const auth   = useAuthStore()
 
-const steps = ['Server Identity', 'Admin', 'Server Config', 'Scripts', 'Review', 'Done']
+// Scripts comes AFTER Apply on purpose: downloading a script pack writes to disk
+// and stays behind the bearer token, so the wizard must own a session first. With
+// Scripts before Apply there was no password yet, no token, and the step 401'd.
+const steps = ['Server Identity', 'Admin', 'Server Config', 'Review', 'Scripts', 'Done']
+
+/** Mirrors PanelHost.PasswordMask — /api/setup/config returns this instead of the
+ *  real password, and posting it back means "keep the current one". */
+const PASSWORD_MASK = '********'
 const step  = ref(0)
 const saving = ref(false)
 const error  = ref('')
@@ -252,22 +264,39 @@ onMounted(async () => {
     }
   } catch { /* server may not be configured yet */ }
 
-  // Check scripts status
+  await refreshScriptsStatus()
+})
+
+async function refreshScriptsStatus() {
+  scriptsLoading.value = true
   try {
     const { data } = await setupApi.status()
     scriptsStatus.value = data as { hasScripts: boolean }
-  } catch { /* ignore */ }
+  } catch { /* leave the last known state; the step still offers a download */ }
   scriptsLoading.value = false
-})
+}
 
 const tickModeLabel = computed(() => {
   const labels: Record<number, string> = { 0: 'Spin', 1: 'Sleep', 2: 'Hybrid' }
   return labels[form.value.tickSleepMode] ?? '?'
 })
 
+// Mirrors PanelHost.TryValidateSetup so the wizard reports the problem on the step
+// that caused it instead of failing at Apply.
 const canNext = computed(() => {
-  if (step.value === 0) return !!form.value.serverName && form.value.servPort > 0
+  if (step.value === 0)
+    return !!form.value.serverName.trim() &&
+           form.value.servPort > 0 && form.value.servPort <= 65535
+  if (step.value === 1)
+    return !!form.value.adminPassword &&
+           form.value.adminPanelPort >= 0 && form.value.adminPanelPort <= 65535 &&
+           (form.value.adminPanelPort === 0 || form.value.adminPanelPort !== form.value.servPort)
   return true
+})
+
+const passwordSummary = computed(() => {
+  if (!form.value.adminPassword) return '(not set)'
+  return form.value.adminPassword === PASSWORD_MASK ? '(unchanged)' : '••••••••'
 })
 
 function next() {
@@ -313,7 +342,21 @@ async function apply() {
       debugPackets:   form.value.debugPackets,
       scriptDebug:    form.value.scriptDebug,
     })
-    step.value = 5
+
+    // The password now exists, so trade it for a token before the scripts step
+    // needs one. The mask means the password was left alone, in which case the
+    // operator already had a session to reach this page at all.
+    if (form.value.adminPassword !== PASSWORD_MASK) {
+      try {
+        await auth.establishSession(form.value.adminPassword)
+      } catch {
+        error.value = 'Settings saved, but automatic sign-in failed. ' +
+                      'Log in with your new password to install scripts.'
+      }
+    }
+
+    await refreshScriptsStatus()
+    step.value = 4
   } catch (e: unknown) {
     const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
     error.value = msg ?? 'Save failed'

@@ -1092,38 +1092,41 @@ public sealed class WorldSaver
         => CommitFile(Path.Combine(savePath, "spheredata.scp"));
 
     /// <summary>Render the spheredata.scp payload from live world state
-    /// (globals, lists, GM pages, doors, sector env). MAIN-THREAD only.</summary>
+    /// (globals, lists, GM pages, doors, sector env). MAIN-THREAD only.
+    ///
+    /// Goes through <see cref="TextSaveWriter"/> like every other save file. Hand
+    /// rolling the KEY=VALUE lines here meant globals, list elements and GM page
+    /// reasons skipped the shared value encoding, so anything holding a line break
+    /// was silently truncated at the first one on reload.</summary>
     private string BuildServerData(GameWorld world)
     {
-        using var sw = new StringWriter();
+        using var buffer = new MemoryStream();
+        using (var w = new TextSaveWriter(buffer, ownsStream: false))
         {
-            sw.WriteLine("// SphereNet Server Data Save");
-            sw.WriteLine($"// Save #{_saveIndex} at {DateTime.UtcNow:u}");
-            sw.WriteLine();
-            sw.WriteLine("[SPHERE]");
-            sw.WriteLine("VERSION=1");
-            sw.WriteLine($"SAVECOUNT={_saveIndex}");
-            sw.WriteLine($"TIME={DateTimeOffset.UtcNow.ToUnixTimeSeconds()}");
-            sw.WriteLine();
+            w.WriteHeaderComment("SphereNet Server Data Save");
+            w.WriteHeaderComment($"Save #{_saveIndex} at {DateTime.UtcNow:u}");
+
+            w.BeginRecord("SPHERE");
+            w.WriteProperty("VERSION", "1");
+            w.WriteProperty("SAVECOUNT", _saveIndex.ToString());
+            w.WriteProperty("TIME", DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString());
 
             // GLOBALS
             var globals = world.GetAllGlobalVars().ToList();
             if (globals.Count > 0)
             {
-                sw.WriteLine("[GLOBALS]");
+                w.BeginRecord("GLOBALS");
                 foreach (var (key, val) in globals)
-                    sw.WriteLine($"{key}={val}");
-                sw.WriteLine();
+                    w.WriteProperty(key, val);
             }
 
             // LISTs
             foreach (var (name, list) in world.GetAllGlobalLists())
             {
                 if (list.Count == 0) continue;
-                sw.WriteLine($"[LIST {name}]");
+                w.BeginRecord($"LIST {name}");
                 foreach (var elem in list)
-                    sw.WriteLine($"ELEM={elem}");
-                sw.WriteLine();
+                    w.WriteProperty("ELEM", elem);
             }
 
             // GM page queue (help requests). Source-X CGMPage::r_Write persists
@@ -1133,24 +1136,22 @@ public sealed class WorldSaver
             for (int gp = 0; gp < gmPages.Count; gp++)
             {
                 var page = gmPages[gp];
-                sw.WriteLine($"[GMPAGE {gp}]");
-                sw.WriteLine($"ACCOUNT={page.Account}");
-                sw.WriteLine($"REASON={page.Reason}");
+                w.BeginRecord($"GMPAGE {gp}");
+                w.WriteProperty("ACCOUNT", page.Account);
+                w.WriteProperty("REASON", page.Reason);
                 if (!string.IsNullOrEmpty(page.Handler))
-                    sw.WriteLine($"HANDLER={page.Handler}");
-                sw.WriteLine($"STATUS={page.Status}");
-                sw.WriteLine($"TIME={page.Created}");
-                sw.WriteLine();
+                    w.WriteProperty("HANDLER", page.Handler);
+                w.WriteProperty("STATUS", page.Status.ToString());
+                w.WriteProperty("TIME", page.Created.ToString());
             }
 
             // Open static doors
             var openDoors = world.OpenMapStaticDoors;
             if (openDoors.Count > 0)
             {
-                sw.WriteLine("[DOORS]");
+                w.BeginRecord("DOORS");
                 foreach (var (map, x, y, z) in openDoors)
-                    sw.WriteLine($"OPEN={map},{x},{y},{z}");
-                sw.WriteLine();
+                    w.WriteProperty("OPEN", $"{map},{x},{y},{z}");
             }
 
             // Per-sector environment overrides (Source-X CSector::r_Write saves
@@ -1165,18 +1166,22 @@ public sealed class WorldSaver
                     continue;
                 if (!wroteSectorHeader)
                 {
-                    sw.WriteLine("[SECTORS]");
+                    w.BeginRecord("SECTORS");
                     wroteSectorHeader = true;
                 }
-                sw.WriteLine($"ENV={mapId},{sector.SectorX},{sector.SectorY}," +
+                w.WriteProperty("ENV",
+                    $"{mapId},{sector.SectorX},{sector.SectorY}," +
                     $"{sector.Weather},{sector.Season},{sector.Light},{sector.RainChance},{sector.ColdChance}");
             }
-            if (wroteSectorHeader)
-                sw.WriteLine();
-
-            sw.WriteLine("[EOF]");
+            // TextSaveWriter closes the file with its own [EOF] marker.
         }
-        return sw.ToString();
+
+        // spheredata.scp has always been written without a byte-order mark and a
+        // classic server may still read it, so drop the preamble StreamWriter emits.
+        byte[] bytes = buffer.ToArray();
+        byte[] preamble = System.Text.Encoding.UTF8.GetPreamble();
+        int offset = bytes.AsSpan().StartsWith(preamble) ? preamble.Length : 0;
+        return System.Text.Encoding.UTF8.GetString(bytes, offset, bytes.Length - offset);
     }
 
     /// <summary>Atomic commit: rotate existing final to .bak1..N, then .tmp → final.</summary>

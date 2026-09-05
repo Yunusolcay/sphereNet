@@ -3,6 +3,110 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-05] - Hesap adi dogrulamasi, panel yetkilendirmesi, kayit ve zamanlayici duzeltmeleri
+----------------------------------------
+
+FIX - Hesap adlari dogrulanmadan kabul edilip ciplak save bolumu olarak
+        yaziliyordu; boylece okuyucunun atladigi bir ad ("EOF", "WORLDx") bir
+        sonraki aciliste kaybolan bir hesap uretiyor, satir sonu tasiyan bir ad ise
+        sonraki her hesap yazimini istisnaya dusuruyordu - sessizce, cunku
+        SaveAccountsToDisk logluyup devam ediyor. 0x80 login paketi 30 baytlik ad
+        alanini filtrelemeden okudugu icin, AccApp otomatik olusturma acikken
+        hazirlanmis bir istemci ikisine de ulasabiliyordu. Source-X
+        CAccount::NameStrip portlandi: ACCOUNT_NAME_VALID_CHAR kumesiyle basilabilir
+        ASCII ayiklamasi, EOF/ACCOUNT ayrilmis onekleri, hesap verb anahtarlari ve
+        [OBSCENE] listesi. Arama hosgorulu kaldi, boylece eski dosyadaki adlar
+        calismaya devam ediyor; yazici da tum dosyayi dusurmek yerine yazilamayan
+        tek adi atliyor.
+
+FIX - Yonetim paneli bir istegin bearer token kapsaminda olup olmadigini harfe
+        duyarli bir yol karsilastirmasiyla belirliyordu; endpoint yonlendirmesi ise
+        yollari harfe duyarsiz esletiriyor. "/API/server/running" bu yuzden hicbir
+        token olmadan "/api/server/running" ile ayni isleyiciye ulasiyordu, veri
+        degistiren endpoint'ler dahil. Middleware'deki tum yol karsilastirmalari
+        artik ordinal ve harfe duyarsiz.
+
+FIX - Panel hub'i token'i yalnizca WebSocket el sikismasinda dogruluyordu ve logout
+        token'i silerken acik baglantilara dokunmuyordu; logout oncesi kurulmus bir
+        baglanti yonetim komutu calistirmaya ve yayin almaya devam ediyordu. Hub
+        cagrilari artik yeniden dogruluyor, token iptali veya suresi dolmasi o
+        token'la acilmis baglantilari kapatiyor.
+
+FIX - /api/setup/apply bos yonetici parolasini kabul edip basarili donuyordu; arayuz
+        kurulum tamamlandi derken /api/setup/needed hala aksini bildiriyordu. Artik
+        sunucu adi, port araligi, panel portu ve tick modu da dogrulaniyor.
+
+FIX - /api/setup/config yonetici parolasini sabit bir maske olarak donuyor, boylece
+        gercek parola tarayiciya hic ulasmiyor; ancak /api/setup/apply kendisine ne
+        verilirse onu kaydediyordu. Sihirbazi parolayi yeniden yazmadan calistirmak
+        bu yuzden panel erisimini maske metnine sifirliyordu. Maske artik "mevcut
+        parolayi koru" anlamina geliyor.
+
+FIX - Kurulum sihirbazi script kurma adimini yonetici parolasi olusmadan once
+        sunuyordu; adimin token'i olmadigi icin 401 donuyordu. Scriptler artik panel
+        oturumunu kuran Apply adimindan sonra geliyor; o noktadan once yalnizca
+        sihirbazin ihtiyac duydugu kurulum endpoint'lerine kimlik dogrulamasiz
+        erisilebiliyor.
+
+FIX - spheredata.scp ortak save yazicisi yerine elle olusturuluyordu; global
+        degiskenler, liste elemanlari ve GM page gerekceleri diger tum save
+        dosyalarinin kullandigi deger kodlamasini atliyor ve yeniden yuklemede ilk
+        satir sonunda kesiliyordu. Artik birebir round-trip ediyorlar ve dosya
+        klasik okuyucular icin BOM'suz kaliyor.
+
+FIX - SaveFormat degistirmek hesap dosyasini yeni formatta yazip eskileri siliyor;
+        ancak basarisiz bir silme yalnizca uyari logluyordu ve yukleyici sabit bir
+        uzanti onceligiyle seciyordu - hayatta kalan eski dosya gunceli geride
+        birakiyor, yeni hesaplari gizliyor, parola ve ban degisikliklerini geri
+        alinmis gosteriyordu. Kayit artik aktif snapshot'i sphereaccu.manifest
+        dosyasina yaziyor; manifest'i olmayan bir dizin yine uzanti taramasiyla
+        yukleniyor.
+
+FIX - Host, oyun sunucusuna kapanmasi icin duz sekiz saniye verip ardindan surec
+        agacini olduruyordu. Temiz kapanis devam eden arka plan kaydini bekliyor,
+        son bir kayit calistirip onu da bekliyor; yavas depolamadaki buyuk bir dunya
+        bu yuzden dogru calisirken olduruluyordu. Bekleme artik cocuk surecin log
+        ciktisini ilerleme sinyali olarak izliyor: ilerleme bildirdigi surece bir
+        tavana kadar ihtiyaci olan sureyi aliyor. HostShutdownQuietMs (20sn) ve
+        HostShutdownTimeoutMs (180sn) ile ayarlaniyor.
+
+FIX - TimerWheel.Remove yalnizca planlama kumesini temizleyebiliyor, iptal edilen
+        kaydi slotta birakiyordu; ayni NPC yeniden planlandiginda yeni planlamayi bu
+        artik kayit tuketiyor, NPC eski zamanda tetikleniyor ve yeni zamanda hic
+        tetiklenmiyordu. Program.Tick.WakeNpc tam olarak Remove+Schedule yapiyor.
+        Slot kayitlari artik bir planlama nesli tasiyor, artik kayitlar dusuruluyor.
+
+FIX - TimerWheel slot indeksi her 25,6 saniyede bir kendini tekrar ediyor; bir turdan
+        uzaga planlanan her sey bu yuzden ortusen slotta tetikleniyordu. NpcAI bosta
+        duran NPC'leri 30-60 saniye ileriye park ettigi icin, her bosta NPC
+        amaclanandan yaklasik 2,3 kat sik uyaniyordu. Kayitlar artik kendi
+        deadline'ini tasiyor ve zamani gelmediyse bir tur daha park ediliyor; bir
+        deadline'in slotu da asagi degil yukari yuvarlaniyor, boylece slot
+        sinirlarinin arasina dusen bir deadline artik slotunu tam bir tur
+        kacirmiyor.
+
+FIX - IP basina baglanti girisim gecmisinin silme, sure asimi veya kapasite siniri
+        yoktu; ConnectionRateLimiter.Cleanup'in ise hic uretim cagricisi yoktu.
+        Boylece iki koleksiyon da surec omru boyunca her farkli kaynak adresi icin
+        bir kayit biriktiriyordu. Ikisi de artik Source-X NETTTL takvimine gore
+        bosta kayitlari dusuruyor ve bir kapasite tavani uyguluyor; temizlik yazma
+        yolundan surulduyu icin baglanmadan birakilamiyor.
+
+FIX - Panel CPU ve thread sayisini kendi surecinden olcuyordu. Host altinda bu Host
+        surecidir; kontrol paneli oyun sunucusunun nesne ve oyuncu sayilarinin
+        yaninda Host'un yukunu gosteriyordu. Olcum artik oyun surecinde yapiliyor ve
+        istatistik anlik goruntusuyle birlikte tasiniyor. Ayrica iki cagirici ayni
+        yarim saniye icinde geldiginde 0 donuyordu, yani HTTP endpoint'i ile SignalR
+        yayini ayni ani farkli bildiriyordu; ikisi de artik tek bir anlik goruntuyu
+        okuyor.
+
+FIX - Md5Passwords sphere.ini'den okunup her hesaba kopyalaniyor ama hic
+        kullanilmiyordu, cunku SetPassword kosulsuz hash'liyordu. Artik Source-X
+        MD5PASSWORDS gibi davraniyor: 1 MD5 ozeti saklar, 0 parolayi oldugu gibi
+        saklar; eski duz metin parolanin login aninda yukseltilmesi de yalnizca
+        hash'leme acikken calisiyor. Varsayilan 1, yani SphereNet'in zaten hep
+        yaptigi sey (Source-X varsayilani 0'dir).
+
 [2026-07-31] - View delta: bir nesne resync'e kadar gorunmez kalabiliyordu
 ----------------------------------------
 

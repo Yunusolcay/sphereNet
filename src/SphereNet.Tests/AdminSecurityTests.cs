@@ -53,13 +53,15 @@ public class AdminSecurityTests
             AccApp = 2,
             DefaultCommandLevel = 1,
             AdminPassword = "",
-            Md5Passwords = true
+            // Source-X MD5PASSWORDS=0 means plaintext storage, which is what
+            // deserves the warning; the setting is honoured now rather than ignored.
+            Md5Passwords = false
         }.Validate();
 
         Assert.Contains(warnings, w => w.Contains("AccApp=2"));
         Assert.Contains(warnings, w => w.Contains("DefaultCommandLevel=1"));
         Assert.Contains(warnings, w => w.Contains("AdminPassword is empty"));
-        Assert.Contains(warnings, w => w.Contains("Md5Passwords=1"));
+        Assert.Contains(warnings, w => w.Contains("Md5Passwords=0"));
     }
 
     [Fact]

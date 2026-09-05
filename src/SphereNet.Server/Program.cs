@@ -574,6 +574,9 @@ public static partial class Program
 
             // ISOBSCENE intrinsic → [OBSCENE] word list (Source-X g_Cfg.IsObscene)
             SphereNet.Scripting.Expressions.ExpressionParser.ObsceneChecker = _resources.IsObscene;
+            // Source-X CAccount::NameStrip runs the same [OBSCENE] list over a new
+            // account name before the account is allowed to exist.
+            SphereNet.Core.Configuration.AccountNameValidator.ObsceneChecker = _resources.IsObscene;
             // Spell power-word letter decode → [RUNES] table (Source-X g_Cfg.GetRune)
             SphereNet.Game.Magic.SpellDef.RuneWordResolver =
                 ch => _resources.Runes.Count > 0 ? _resources.GetRune(ch) : null;

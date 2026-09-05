@@ -3613,7 +3613,7 @@ public static partial class Program
             {
                 string ip = state.RemoteEndPoint?.Address.ToString() ?? "";
                 long currentMs = Environment.TickCount64;
-                _connectionAttempts.TryGetValue(ip, out var attempt);
+                var attempt = _connectionAttempts.Get(ip);
                 long previousMs = attempt.CurrentMs == 0 ? currentMs : attempt.PreviousMs;
                 _systemHooks.DispatchServer("connection_acquired", _serverHookContext, ip,
                     (int)Math.Clamp(currentMs - previousMs, 0, int.MaxValue), unchecked((int)currentMs));

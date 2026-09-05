@@ -15,7 +15,9 @@ public sealed class AccountManager
 
     public int Count => _accounts.Count;
     public bool AutoCreateAccounts { get => _autoCreateAccounts; set => _autoCreateAccounts = value; }
-    public bool Md5Passwords { get; set; }
+    /// <summary>Source-X MD5PASSWORDS. Defaults to on, matching SphereConfig — a
+    /// manager built without a config must not silently start storing plaintext.</summary>
+    public bool Md5Passwords { get; set; } = true;
     public int DefaultMaxChars { get; set; } = 7;
 
     /// <summary>Default PrivLevel for auto-created accounts. Maps to DEFAULTCOMMANDLEVEL in sphere.ini.</summary>
@@ -34,8 +36,22 @@ public sealed class AccountManager
         _logger = loggerFactory.CreateLogger<AccountManager>();
     }
 
-    public Account? FindAccount(string name) =>
-        _accounts.GetValueOrDefault(name);
+    /// <summary>Look up an account by name. An exact hit wins so every name already
+    /// in a legacy file stays reachable; only when that misses is the name stripped
+    /// to its bare form and retried, which is what Source-X CAccounts::Account_Find
+    /// does before its lookup. The strict creation rules are deliberately NOT
+    /// applied here — they would lock out accounts that predate them.</summary>
+    public Account? FindAccount(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return null;
+        if (_accounts.TryGetValue(name, out var exact))
+            return exact;
+
+        string stripped = AccountNameValidator.Strip(name);
+        if (stripped.Length == 0 || stripped.Equals(name, StringComparison.Ordinal))
+            return null;
+        return _accounts.GetValueOrDefault(stripped);
+    }
 
     /// <summary>Return the account at a zero-based index in a STABLE (name-ordered)
     /// sequence, or null when out of range. Source-X <c>SERV.ACCOUNT.n</c> indexed
@@ -89,9 +105,13 @@ public sealed class AccountManager
             return null;
         }
 
-        if (PasswordHelper.NeedsUpgrade(account.PasswordHash))
+        // A classic account file may hold the password verbatim. With hashing on,
+        // convert it once the correct password has actually been presented — this is
+        // the migration path Source-X performs at load time. With hashing off,
+        // plaintext IS the storage form, so there is nothing to upgrade.
+        if (account.UseMd5Passwords && PasswordHelper.NeedsUpgrade(account.PasswordHash))
         {
-            account.PasswordHash = PasswordHelper.Hash(password);
+            account.PasswordHash = PasswordHelper.StoreForm(password, useMd5: true);
             _logger.LogInformation("Password hash upgraded for account '{Name}'", name);
             NotifyAccountsChanged();
         }
@@ -103,7 +123,18 @@ public sealed class AccountManager
 
     public Account? CreateAccount(string name, string password)
     {
-        if (string.IsNullOrWhiteSpace(name)) return null;
+        // Source-X CAccount::CAccount runs NameStrip before the account exists.
+        // A name that survives creation but not the save file (a control character,
+        // or a reserved section prefix) silently drops the account on the next
+        // restart, or aborts the whole account write, so it is rejected here.
+        if (!AccountNameValidator.TryNormalize(name, out string normalized, out string? reason))
+        {
+            _logger.LogWarning("Rejected account name '{Name}': {Reason}",
+                Sanitize(name), reason);
+            return null;
+        }
+        name = normalized;
+
         if (_accounts.ContainsKey(name))
         {
             _logger.LogWarning("Account '{Name}' already exists", name);
@@ -123,6 +154,17 @@ public sealed class AccountManager
         AccountCreated?.Invoke(account);
         NotifyAccountsChanged();
         return account;
+    }
+
+    /// <summary>Render a rejected name safely for the log — control characters in
+    /// a name coming off the wire must not be able to forge log lines.</summary>
+    private static string Sanitize(string? raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return "<empty>";
+        var sb = new System.Text.StringBuilder(raw.Length);
+        foreach (char c in raw)
+            sb.Append(c < ' ' || c >= (char)127 ? '?' : c);
+        return sb.ToString();
     }
 
     public bool DeleteAccount(string name)

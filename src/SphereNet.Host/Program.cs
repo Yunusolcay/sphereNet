@@ -64,6 +64,8 @@ string? scriptsPath = null;
 int     panelPort   = 2599;
 string  adminPass   = "";
 string  serverName  = "SphereNet";
+int     shutdownQuietMs   = 20_000;
+int     shutdownTimeoutMs = 180_000;
 UpdateSettings? updateSettings = null;
 
 if (iniPath != null)
@@ -73,6 +75,12 @@ if (iniPath != null)
     panelPort   = parser.GetInt ("SPHERE", "AdminPanelPort", 0);
     adminPass   = parser.GetValue("SPHERE", "AdminPassword") ?? "";
     serverName  = parser.GetValue("SPHERE", "ServName") ?? "SphereNet";
+
+    // How patient the Host is with a shutting-down server. The default lets a
+    // large world finish its shutdown save on slow storage; a kill there loses
+    // everything since the last periodic save.
+    shutdownQuietMs   = parser.GetInt("SPHERE", "HostShutdownQuietMs",   20_000);
+    shutdownTimeoutMs = parser.GetInt("SPHERE", "HostShutdownTimeoutMs", 180_000);
 
     // Panel'in "check for update" akisi. AppUpdateRepo bos ise updater hic
     // kurulmaz ve /api/update/* 404 doner — panel de sayfayi gizler.
@@ -123,7 +131,11 @@ else
 
 var logSink = new PanelLogSink();
 var ipc     = new IpcBridge();
-var proc    = new ServerProcess(serverExe, ipc, logSink);
+var proc    = new ServerProcess(serverExe, ipc, logSink)
+{
+    ShutdownQuietMs   = Math.Clamp(shutdownQuietMs,   1_000, 600_000),
+    ShutdownTimeoutMs = Math.Clamp(shutdownTimeoutMs, 1_000, 3_600_000),
+};
 
 var panelCtx = HostPanelContext.Build(proc, ipc, iniPath, scriptsPath);
 panelCtx.AdminPassword  = adminPass;

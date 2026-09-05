@@ -18,6 +18,21 @@ public sealed class ServerProcess : IDisposable
     private readonly object _lock = new();
     private volatile bool _intentionalStop;
 
+    /// <summary>Ticks of the last line the child wrote. A shutting-down server keeps
+    /// logging while it drains its background save and writes the final one, so this
+    /// is the progress signal that separates "slow" from "hung".</summary>
+    private long _lastOutputTicks = Environment.TickCount64;
+
+    /// <summary>How long a silent, still-running child may stay unresponsive before
+    /// it is treated as hung. Resets on every line it logs.</summary>
+    public int ShutdownQuietMs { get; set; } = 20_000;
+
+    /// <summary>Absolute ceiling on a graceful shutdown, however chatty the child is.
+    /// Generous on purpose: a large world on slow storage can legitimately spend
+    /// minutes finishing its shutdown save, and killing it there loses every change
+    /// since the last periodic save.</summary>
+    public int ShutdownTimeoutMs { get; set; } = 180_000;
+
     public bool IsRunning => _process is { HasExited: false };
 
     /// <summary>Fired when the running state changes. True = started, False = stopped.</summary>
@@ -58,6 +73,7 @@ public sealed class ServerProcess : IDisposable
             _process.ErrorDataReceived  += OnOutput;
             _process.Exited             += OnExited;
 
+            Interlocked.Exchange(ref _lastOutputTicks, Environment.TickCount64);
             _process.Start();
             _process.BeginOutputReadLine();
             _process.BeginErrorReadLine();
@@ -113,8 +129,14 @@ public sealed class ServerProcess : IDisposable
                     _logSink.AddEntry(new LogEntry(DateTime.UtcNow, "Warning",
                         $"IPC shutdown request failed: {ex.GetBaseException().Message}", "Host"));
                 }
-                if (!_process.WaitForExit(8_000))
+                if (!WaitForGracefulExit(_process))
+                {
+                    _logSink.AddEntry(new LogEntry(DateTime.UtcNow, "Error",
+                        "Server did not exit; terminating it. World changes since the last " +
+                        "save may be lost.", "Host"));
                     _process.Kill(entireProcessTree: true);
+                    _process.WaitForExit(5_000);
+                }
             }
             _ipc.Disconnect();
             RunningChanged?.Invoke(false);
@@ -131,9 +153,47 @@ public sealed class ServerProcess : IDisposable
         });
     }
 
+    /// <summary>
+    /// Wait for the child to finish on its own. A shutdown save is allowed to take
+    /// as long as it needs as long as the child keeps reporting progress; only
+    /// silence past <see cref="ShutdownQuietMs"/>, or the absolute
+    /// <see cref="ShutdownTimeoutMs"/> ceiling, counts as stuck.
+    /// Returns false when the caller has to escalate to a kill.
+    /// </summary>
+    private bool WaitForGracefulExit(Process process)
+    {
+        long start = Environment.TickCount64;
+        bool announced = false;
+
+        while (true)
+        {
+            if (process.WaitForExit(250))
+                return true;
+
+            long now = Environment.TickCount64;
+            var decision = ShutdownWaitPolicy.Evaluate(
+                elapsedMs:      now - start,
+                silentMs:       now - Interlocked.Read(ref _lastOutputTicks),
+                quietLimitMs:   ShutdownQuietMs,
+                timeoutMs:      ShutdownTimeoutMs);
+
+            if (decision == ShutdownWaitPolicy.Decision.Hung)
+                return false;
+
+            // Tell the operator why the panel is still spinning, once.
+            if (!announced && now - start >= 5_000)
+            {
+                announced = true;
+                _logSink.AddEntry(new LogEntry(DateTime.UtcNow, "Information",
+                    "Waiting for the server to finish its shutdown save...", "Host"));
+            }
+        }
+    }
+
     private void OnOutput(object _, DataReceivedEventArgs e)
     {
         if (e.Data is null) return;
+        Interlocked.Exchange(ref _lastOutputTicks, Environment.TickCount64);
         var entry = ParseLine(e.Data);
         _logSink.AddEntry(entry);
         WriteToConsole(e.Data, entry.Level);

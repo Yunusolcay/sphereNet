@@ -105,7 +105,9 @@ public sealed class Account : IScriptObj
     }
     public bool RemoveTag(string key) => _tags.Remove(key);
 
-    public bool UseMd5Passwords { get; set; }
+    /// <summary>Source-X MD5PASSWORDS for this account's shard. Set from
+    /// AccountManager on create and on load; decides how SetPassword stores.</summary>
+    public bool UseMd5Passwords { get; set; } = true;
 
     public bool CheckPassword(string password)
     {
@@ -115,7 +117,9 @@ public sealed class Account : IScriptObj
 
     public void SetPassword(string password)
     {
-        _passwordHash = Core.Configuration.PasswordHelper.Hash(password);
+        // The flag used to be stored and never read, so MD5PASSWORDS=0 silently did
+        // nothing. Source-X CAccount::SetPassword branches on it.
+        _passwordHash = Core.Configuration.PasswordHelper.StoreForm(password, UseMd5Passwords);
     }
 
     public string GetName() => _name;
