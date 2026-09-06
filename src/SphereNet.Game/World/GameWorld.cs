@@ -1186,6 +1186,10 @@ public sealed class GameWorld
                     if (ch.IsDeleted || pos.GetDistanceTo(ch.Position) > 0) continue;
                     if (ch == self || ch.IsDead || ch.IsStatFlag(StatFlag.Invisible) || ch.IsStatFlag(StatFlag.Hidden))
                         continue;
+                    // GetDistanceTo is an X/Y distance, so this had found everyone in
+                    // the whole vertical column. The search has to agree with the step
+                    // it is planning for; see AI.NpcAI.SharesHeightWith.
+                    if (!AI.NpcAI.SharesHeightWith(ch, pos.Z)) continue;
                     return true;
                 }
             }
@@ -1196,7 +1200,7 @@ public sealed class GameWorld
                 if (i >= items.Count) continue;
                 var item = items[i];
                 if (item.IsDeleted || !item.IsOnGround || pos.GetDistanceTo(item.Position) > 0) continue;
-                if (item.IsStaticBlock) return true;
+                if (item.IsStaticBlock && AI.NpcAI.BlocksAtHeight(item, pos.Z)) return true;
                 if ((canFlags & CanFlags.C_FireImmune) == 0 && item.TryGetTag("FIELD_DAMAGE", out _))
                     return true;
             }

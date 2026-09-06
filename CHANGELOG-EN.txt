@@ -4,6 +4,48 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - NPC movement: what is really in the way, and leave to move (07H-07K)
+----------------------------------------
+
+FIX - A character standing on the storey above blocked the ground beneath them. The
+        collision test compared X and Y only, in both the direct step and the A* search,
+        so anyone on an upper floor closed the tile under their feet. Source-X skips a
+        character more than five Z from the step's destination (ShoveCharAtPosition,
+        CCharAct.cpp:4622); the same reach now applies on both paths.
+
+FIX - A wall or door on another storey did the same. Blocking was decided from the
+        item's TYPE alone - Wall, Door or DoorLocked - with no regard for where the item
+        sat or how tall it was, so it closed the whole vertical column. Source-X hands
+        the item's Z and height to CheckTile_Item, which tells a floor below from a
+        ceiling overhead (CServerMap.cpp:178). An item now blocks only where its own
+        extent reaches the creature standing there.
+
+FIX - The direct step never ran the real walk geometry. Because it answered from item
+        TYPE, an impassable object that happened not to be a Wall or Door was walked
+        straight into, and a ceiling too low to fit under was walked beneath; the height
+        it moved to was whatever a separate resolver guessed, and a failure to find a
+        surface was silently answered with the NPC's current Z. The step now goes
+        through the shared walk check - the same one a player's step uses, which knows
+        tile heights, ceilings, climb limits, the diagonal double-edge rule and the
+        surface to land on - and takes its landing height from it. Source-X routes the
+        real NPC step through CanMoveWalkTo -> CheckValidMove for the same reason
+        (NPC_WalkToPoint, CCharNPCAct.cpp:493). A world with no map data has no geometry
+        to consult, so the older tile checks still stand in there.
+
+FIX - A frozen, stoned or exhausted NPC still walked. Source-X asks CanMove at the real
+        step (CCharAct.cpp:4716/4571): a GM is exempt, freeze and stone refuse it
+        (OnFreezeCheck, :4525), and a living creature out of stamina refuses it too -
+        the reference reads the CURRENT stamina pool there, not the base dexterity. The
+        test sits where the step is applied rather than where the decision was made, so
+        a freeze landing between the two now stops the walk. NpcAI.OnTickAction's own
+        comment claimed "living, non-frozen NPC" while nothing checked it; combat had
+        the test and movement did not.
+
+        The stamina half applies only where a stamina pool exists. A creature with no
+        MaxStam has no stamina model at all - the Dex setter raises the ceiling but
+        never fills the pool - and reading its empty pool as exhaustion would have left
+        such creatures standing still forever.
+
 [2026-09-06] - NPC movement: the corner, the stale route and the landing height (07E-07G)
 ----------------------------------------
 

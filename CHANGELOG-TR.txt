@@ -3,6 +3,48 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - NPC hareketi: gercekten yolda olan sey ve yurume izni (07H-07K)
+----------------------------------------
+
+FIX - Ust katta duran karakter altindaki zemini kapatiyordu. Carpisma testi hem
+        dogrudan adimda hem A* aramasinda yalnizca X ve Y karsilastiriyordu; yani ust
+        kattaki biri ayaginin altindaki kareyi kapatiyordu. Source-X adimin hedefinden
+        bes Z'den fazla uzaktaki karakteri atlar (ShoveCharAtPosition,
+        CCharAct.cpp:4622); ayni erisim artik iki yolda da gecerli.
+
+FIX - Baska kattaki duvar veya kapi da ayni seyi yapiyordu. Engelleme salt esyanin
+        TURUNDEN karara baglaniyordu - Wall, Door, DoorLocked - esyanin nerede
+        durdugunu veya ne kadar yuksek oldugunu hesaba katmadan; yani butun dikey
+        sutunu kapatiyordu. Source-X esyanin Z'sini ve yuksekligini CheckTile_Item'a
+        verir; o da alttaki zemini ustteki tavandan ayirir (CServerMap.cpp:178). Esya
+        artik yalnizca kendi hacmi orada duran yaratiga ulastiginda engelliyor.
+
+FIX - Dogrudan adim gercek yurume geometrisini hic calistirmiyordu. Esya turunden
+        karar verdigi icin, Wall veya Door olmayan gecilmez bir nesnenin icine
+        yuruyordu ve altina sigmayacagi tavanin altindan geciyordu; tasindigi yukseklik
+        ayri bir cozucunun tahminiydi ve yuzey bulunamamasi sessizce NPC'nin mevcut
+        Z'siyle yanitlaniyordu. Adim artik paylasilan yurume denetiminden geciyor -
+        oyuncunun adiminin da kullandigi, tile yuksekliklerini, tavanlari, tirmanma
+        sinirlarini, capraz cift-kenar kuralini ve inilecek yuzeyi bilen denetim - ve
+        inilen yuksekligi ondan aliyor. Source-X gercek NPC adimini ayni nedenle
+        CanMoveWalkTo -> CheckValidMove uzerinden gecirir (NPC_WalkToPoint,
+        CCharNPCAct.cpp:493). Harita verisi olmayan bir dunyada danisilacak geometri
+        yoktur; orada eski tile kontrolleri devrede kaliyor.
+
+FIX - Donmus, taslasmis veya bitkin NPC yine de yuruyordu. Source-X CanMove'u gercek
+        adimda sorar (CCharAct.cpp:4716/4571): GM muaftir, freeze ve stone reddeder
+        (OnFreezeCheck, :4525) ve stamina'si biten canli yaratik da reddedilir -
+        referans orada MEVCUT stamina havuzunu okur, temel dexterity'yi degil. Denetim
+        kararin verildigi yerde degil adimin uygulandigi yerde; boylece ikisinin
+        arasinda gelen bir freeze artik yurumeyi durduruyor. NpcAI.OnTickAction'in kendi
+        yorumu "living, non-frozen NPC" diyordu ama hicbir yer bunu kontrol etmiyordu;
+        dovuste test vardi, harekette yoktu.
+
+        Stamina yarisi yalnizca stamina havuzu olan yaratiklara uygulaniyor. MaxStam'i
+        olmayan bir yaratigin stamina modeli hic yoktur - Dex setter'i tavani yukseltir
+        ama havuzu doldurmaz - ve onun bos havuzunu bitkinlik saymak boyle yaratiklari
+        sonsuza kadar yerinde birakirdi.
+
 [2026-09-06] - NPC hareketi: kose, eskimis rota ve inilen yukseklik (07E-07G)
 ----------------------------------------
 

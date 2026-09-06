@@ -269,7 +269,7 @@ public sealed partial class NpcAI
 
             foreach (var item in _world.GetItemsInRange(pos, 0))
             {
-                if (item.IsStaticBlock)
+                if (item.IsStaticBlock && BlocksAtHeight(item, pos.Z))
                     return false;
             }
 
@@ -282,12 +282,37 @@ public sealed partial class NpcAI
                 if ((other.IsStatFlag(StatFlag.Hidden) || other.IsStatFlag(StatFlag.Invisible))
                     && other.PrivLevel >= PrivLevel.Counsel)
                     continue;
+                if (!SharesHeightWith(other, pos.Z))
+                    continue;
                 return false;
             }
         }
 
         return true;
     }
+
+    /// <summary>Roughly a character's own height, as the shared walk check measures
+    /// it (WalkCheck.PersonHeight). Used to decide whether something occupies the same
+    /// vertical space as a creature standing on a tile.</summary>
+    private const int NpcPersonHeight = 16;
+
+    /// <summary>Whether a blocking item's own vertical extent reaches a creature
+    /// standing at <paramref name="standZ"/>. Source-X hands the item's Z and height to
+    /// CheckTile_Item, which separates what lies below the floor from what is a ceiling
+    /// overhead (CServerMap.cpp:178). SphereNet decided from the item's TYPE alone, so a
+    /// wall or a door on another storey closed off the ground underneath it.</summary>
+    internal static bool BlocksAtHeight(Item item, int standZ)
+    {
+        int top = item.Z + Math.Max(1, (int)item.DefHeight);
+        return top > standZ && item.Z < standZ + NpcPersonHeight;
+    }
+
+    /// <summary>Whether another character stands close enough in Z to be in the way.
+    /// Source-X skips anyone more than five Z from the step's destination
+    /// (ShoveCharAtPosition, CCharAct.cpp:4622) - someone on the floor above is not
+    /// blocking the floor below. SphereNet compared X and Y only.</summary>
+    internal static bool SharesHeightWith(Character other, int standZ) =>
+        Math.Abs(other.Z - standZ) <= 5;
 
     private void Wander(Character npc)
     {
@@ -429,6 +454,71 @@ public sealed partial class NpcAI
     /// walls meet. The reference skips that test while pathfinding (fPathFinding) and
     /// applies it to the real step, which is why the search alone was never the place
     /// for it - the direct step never runs A* at all.</summary>
+    /// <summary>Whether the NPC is physically able to walk at all right now.
+    ///
+    /// Source-X asks this at the real step, through CanMoveWalkTo -> CanMove
+    /// (CCharAct.cpp:4716/4571): a GM is exempt, a frozen or stoned creature cannot
+    /// move (OnFreezeCheck, :4525), and a living one out of stamina cannot either. The
+    /// reference reads the CURRENT stamina pool there - Stat_GetVal(STAT_DEX) - not the
+    /// base dexterity.
+    ///
+    /// It belongs at the step rather than at the decision: a freeze landing between the
+    /// two used to leave the walk running anyway. NpcAI.OnTickAction's own comment said
+    /// "living, non-frozen NPC" while nothing checked it; combat had the test, movement
+    /// did not.</summary>
+    private static bool CanNpcMove(Character npc)
+    {
+        if (npc.PrivLevel >= PrivLevel.GM)
+            return true;
+        if (npc.IsStatFlag(StatFlag.Freeze) || npc.IsStatFlag(StatFlag.Stone))
+            return false;
+        // Only where a stamina pool actually exists. A creature with no MaxStam has no
+        // stamina model at all - the Dex setter raises the ceiling but never fills the
+        // pool - and reading its empty pool as exhaustion would leave it standing
+        // still forever rather than tiring it out.
+        return npc.IsDead || npc.MaxStam <= 0 || npc.Stam > 0;
+    }
+
+    /// <summary>Work out the step the NPC would take in <paramref name="dir"/>, and
+    /// where it would land.
+    ///
+    /// The geometry comes from the shared walk check - the very one a player's step
+    /// goes through - which knows tile heights, ceilings, climb limits, the diagonal
+    /// double-edge rule and the surface to land on. The NPC path used to answer from
+    /// item TYPE alone, so it walked into an impassable object that happened not to be
+    /// a Wall or Door, and under a ceiling too low to fit; the height it moved to was
+    /// whatever a separate resolver guessed. Source-X routes the real NPC step through
+    /// CanMoveWalkTo -> CheckValidMove for exactly this reason
+    /// (NPC_WalkToPoint, CCharNPCAct.cpp:493).
+    ///
+    /// Without map data there is no geometry to consult - the shape a unit-test world
+    /// has - so the older tile checks stand in, with the diagonal corner rule applied
+    /// on its own.</summary>
+    private bool TryNpcStep(Character npc, Direction dir, out Point3D dest)
+    {
+        var plain = dir & ~Direction.Running;
+        GetDirectionDelta(plain, out short dx, out short dy);
+        short nx = (short)(npc.X + dx);
+        short ny = (short)(npc.Y + dy);
+        dest = default;
+
+        if (_world.MapData != null)
+        {
+            if (!_world.Standing.CheckMovement(npc, npc.Position, plain, out int landZ))
+                return false;
+
+            dest = new Point3D(nx, ny, (sbyte)landZ, npc.MapIndex);
+            return CanNpcMoveTo(npc, dest);
+        }
+
+        sbyte fallbackZ = ResolveNpcStepZ(npc, nx, ny);
+        if (Math.Abs(fallbackZ - npc.Z) > 12)
+            return false;
+
+        dest = new Point3D(nx, ny, fallbackZ, npc.MapIndex);
+        return CanNpcStepTo(npc, plain, dest);
+    }
+
     private bool CanNpcStepTo(Character npc, Direction dir, Point3D dest)
     {
         if (!CanNpcMoveTo(npc, dest))
@@ -504,28 +594,32 @@ public sealed partial class NpcAI
         if (run)
             dir |= Direction.Running;
 
+        // Physically able to walk at all? Read at the step, not at the decision.
+        if (!CanNpcMove(npc))
+            return;
+
         short nx = (short)(npc.X + dx);
         short ny = (short)(npc.Y + dy);
         var mapData = _world.MapData;
-        sbyte nz = ResolveNpcStepZ(npc, nx, ny);
-        if (Math.Abs(nz - npc.Z) > 12)
-            return;
-        var directPos = new Point3D(nx, ny, nz, npc.MapIndex);
 
-        bool directBlocked = !CanNpcStepTo(npc, dir, directPos);
+        // The tile the step aims at, for the door/obstacle lookups below; the height
+        // the NPC would actually land on is settled by TryNpcStep.
+        var stepTile = new Point3D(nx, ny, npc.Z, npc.MapIndex);
+
+        bool directBlocked = !TryNpcStep(npc, dir, out var directPos);
 
         // Reference parity (NPC door handling in the idle look-at path): a
         // blocked adjacent step may just be a closed door — try to open it
         // (50% per attempt, like the reference) and re-check the tile.
         if (directBlocked && OnNpcOpenDoor != null && _rand.Next(2) == 0)
         {
-            var door = FindClosedDoorAt(directPos);
+            var door = FindClosedDoorAt(stepTile);
             if (door != null && OnNpcOpenDoor(npc, door))
-                directBlocked = !CanNpcStepTo(npc, dir, directPos);
+                directBlocked = !TryNpcStep(npc, dir, out directPos);
         }
 
-        if (directBlocked && TryClearObstacle(npc, directPos))
-            directBlocked = !CanNpcStepTo(npc, dir, directPos);
+        if (directBlocked && TryClearObstacle(npc, stepTile))
+            directBlocked = !TryNpcStep(npc, dir, out directPos);
 
         if (!directBlocked)
         {
@@ -661,27 +755,11 @@ public sealed partial class NpcAI
         // The search's Z is an approximation; the real landing surface is resolved
         // here, at the step. Without a surface the step is refused and the route
         // recomputed rather than committed at the guessed height.
-        // Only meaningful where there is map data to resolve against; without any the
-        // resolver reports nothing for every tile, and refusing on that would stop the
-        // NPC walking at all rather than correcting its height.
-        if (!TryResolveNpcStepZ(npc, nextStep.X, nextStep.Y, out sbyte stepZ) &&
-            _world.MapData != null)
-        {
-            _pathCache.Remove(uid);
-            _pathIndex.Remove(uid);
-            _pathTime.Remove(uid);
-            return;
-        }
-
-        nextStep = new Point3D(nextStep.X, nextStep.Y, stepZ, npc.MapIndex);
+        // The route's own Z is the search's approximation; the step that gets applied
+        // is the one the walk check works out from where the NPC is standing now.
         var pathDir = npc.Position.GetDirectionTo(nextStep);
-
-        // Re-validate the cached step before committing it. The path can be up to
-        // PathCacheMaxAge old, during which a door may have closed, another mob
-        // moved in, or a damage field appeared — walking it blindly would shove
-        // the NPC into a blocked/dangerous tile. If it's no longer valid, drop
-        // the path and recompute next tick.
-        if (!CanNpcStepTo(npc, pathDir, nextStep))
+        if (!TryNpcStep(npc, pathDir, out var landing) ||
+            landing.X != nextStep.X || landing.Y != nextStep.Y)
         {
             // NPC_AI_MOVEOBSTACLES (Source-X NPC_WalkToPoint, CCharNPCAct.cpp:525):
             // a hands-capable, smart-enough NPC shifts a movable blocking item
@@ -690,9 +768,11 @@ public sealed partial class NpcAI
             _pathCache.Remove(uid);
             _pathIndex.Remove(uid);
             _pathTime.Remove(uid);
-            npc.Direction = npc.Position.GetDirectionTo(nextStep);
+            npc.Direction = pathDir;
             return;
         }
+
+        nextStep = landing;
 
         npc.Direction = run ? pathDir | Direction.Running : pathDir;
         _world.MoveCharacter(npc, nextStep);

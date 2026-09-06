@@ -1301,6 +1301,54 @@ test guncellenmedi.
 capraz kural, pet/savas takip akislarinin ayri calistirilmasi, merdiven/multi
 yuzeylerinde onbellekteki Z, ve tasima ile rota uretiminin ayni tick'e denk gelmesi.
 
+### 07H-07K - NPC carpisma Z bilinci, gercek adim geometrisi, hareket izni (6 Eylul 2026)
+
+Kanit raporlari: [07H](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07H_NPC_KATLAR_ARASI_ENGEL.md),
+[07I](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07I_NPC_UST_KAT_NESNELERI.md),
+[07J](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07J_NPC_GECERSIZ_DOGRUDAN_ADIM.md),
+[07K](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07K_NPC_HAREKET_KISITLARI.md).
+Dort bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+**Raporlarin gormedigi baglanti:** 07J'nin duzeltmesi 07H ve 07I'nin DOGRUDAN-ADIM
+yarisini da kapatiyor. Raporlarin kendi olcumleri bunu gosteriyordu - ayni geometride
+`WalkCheck` dogru cevap veriyor, yanlis cevap veren tur-tabanli NPC kontroluydu. Bu
+yuzden uc ayri Z filtresi yamamak yerine dogrudan adim paylasilan denetime baglandi;
+Z filtreleri de A* tarafi ve tile-seviyesi kontrol icin ayrica eklendi.
+
+- [x] **SX-07H-01 (P2)** - Ust kattaki karakter alt kati engelliyordu. (YAPILDI:
+  `SharesHeightWith` - referansin bes Z erisimi (CCharAct.cpp:4622); hem
+  `CanNpcMoveTo` hem `GameWorld.IsPathTileBlockedByObject` kullaniyor.)
+- [x] **SX-07I-01 (P2)** - `IsStaticBlock` butun dikey sutunu kapatiyordu. (YAPILDI:
+  `BlocksAtHeight` - esyanin Z + yuksekligi ile yaratigin hacmi kesisiyor mu;
+  `Item.DefHeight` 07B turunda eklenmisti, burada ise yaradi. Iki yolda da gecerli.)
+- [x] **SX-07J-01 (P2)** - Dogrudan adim gercek yurume geometrisini calistirmiyordu.
+  (YAPILDI: `TryNpcStep` - harita verisi varken `WalkCheck.CheckMovement` hem izni hem
+  INILEN Z'yi veriyor; onbellekteki A* adimi da ayni yoldan gecip landing ile
+  dogrulaniyor. Boylece 07G'de yakalanan "yutulan Found=false" da kapandi.
+  **Kapsam:** harita verisi yoksa (test dunyalari) `CheckMovement` her seyi reddettigi
+  icin eski tile kontrolleri + capraz kose kurali devrede kaliyor.)
+- [x] **SX-07K-01 (P2)** - Freeze/Stone/sifir stamina NPC yuruyordu. (YAPILDI:
+  `CanNpcMove` gercek adimda; GM muaf, Freeze/Stone ret, canli yaratikta stamina.
+  **Referans ayrintisi:** stamina kapisi MEVCUT havuzu okur (`Stat_GetVal(STAT_DEX)`),
+  temel Dex'i degil - 03C'de kurdugum ayrimin aynisi.
+  **Kendi testlerimin yakaladigi tehlike:** ilk surum `Stam <= 0` diyordu ve
+  `Dex` verilmemis NPC'leri (MaxStam 0, havuz hic doldurulmamis) tamamen dondurdu -
+  tam paket 7 gerileme verdi. Kural `MaxStam > 0` ile sinirlandi; stamina modeli
+  olmayan yaratik bitkin sayilmiyor.)
+
+**07H-07K kapanisi:** tam suite **2.609 basarili / 0 basarisiz** (+18). Dort duzeltme
+de gecici olarak kapatilarak 9 testin eski davranisi yakaladigi kanitlandi. Mevcut
+hicbir test guncellenmedi.
+
+**Test yazarken duzelttigim iddia:** engelleme testlerini once "NPC yerinde kalir"
+diye yazmistim; gercekte NPC engelli kareye GIRMIYOR ama yanindan capraz dolasabiliyor.
+Iddia "engelli kareye girmedi" olarak duzeltildi - dogru olan da bu.
+
+**Acik kalan:** raporlarin kendi kuyruklari - `CAN_C_STATUE` gibi ozel karakter
+turleri, ayni kattaki shove/stamina tuketimi, cok katli multi/gemi geometrisiyle uctan
+uca takip, NOMOVETILL ve ozel hareket yetenekleri. Ayrica `Wander`/`TrySideStep`
+yollarinin kisit kapisini ayri kullanmasi.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.
