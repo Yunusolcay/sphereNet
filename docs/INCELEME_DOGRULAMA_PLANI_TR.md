@@ -1114,6 +1114,55 @@ Ayrica: Source-X `Use_EatQty` zehirli yiyecegi `SetPoison` ile uygular (:905) -
 `EatEngine`'e tasinmadi, 06I'nin konusu. FOODVAL'in itemdef VOLUME yarisi SphereNet'te
 karsiliksiz; simdilik FOODVAL etiketi ve 10 varsayilani kullaniliyor.
 
+### 06I-06M - zehirli yiyecek ve ceset diriltme on-kontrolu (6 Eylul 2026)
+
+Kanit raporlari: [06I](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_06I_ZEHIRLI_YIYECEK.md),
+[06J](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_06J_VETERINER_DIRILTME.md),
+[06K](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_06K_CESET_DIRILTME_MENZILI.md),
+[06L](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_06L_GECERSIZ_CESET_HEDEFI.md),
+[06M](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_06M_CESET_BOLGE_KURALLARI.md).
+Bes bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+- [x] **SX-06I-01 (P2)** - Zehirli yiyecek yenirken zehir uygulanmiyordu. (YAPILDI:
+  `EatEngine.ApplyFoodPoison`, referansin sirasiyla @Eat'ten ONCE (CCharUse.cpp:905).
+  **Raporun uyarisi karsilandi:** "POISON_SKILL ham beceri degeri ile ApplyPoison'in
+  seviye parametresi ayni birim degildir; dogrudan byte cast yapilmamali" - zehirli
+  silah yolunun zaten kullandigi `CombatEngine.CalcOsiPoisonLevel` bantlamasi
+  kullanildi, yeni bir eslem uydurulmadi.
+  **Yan sonuc:** tok pet hic lokma almadigi icin zehirlenmiyor - referansta da zehir
+  Use_EatQty'nin doygunluk reddinden sonra gelir.)
+- [x] **SX-06J-01 (P2)** - Savas modunda olmayan olu bonded pet diriltilemiyordu.
+  (YAPILDI: kapi artik `target.IsPlayer && !target.IsInWarMode`.
+  **Kaynak analizi:** referansin kapisi savas modu degil `STATF_INSUBSTANTIAL`;
+  olum bunu yalnizca savas modunda OLMAYAN OYUNCUYA kurar (CCharAct.cpp:4468), NPC'ye
+  asla. SphereNet'te hayalet-insubstantial diye bir modelleme yok - `ClientViewUpdater`
+  savas modunu manifest sinyali olarak kullaniyor - bu yuzden oyuncu yarisi aynen
+  korundu, NPC yarisi kaldirildi.
+  **Acik kalan:** SphereNet olumde `Insubstantial` bayragini hic kurmuyor; referansla
+  tam hizalama ayri bir hayalet-durum karari.)
+- [x] **SX-06K-01 (P2)** - Ceset hedefli diriltme hayaletin konumunu dogrulamiyordu.
+- [x] **SX-06L-01 (P2)** - Cozulemeyen ceset hedefi sessizce self-heal oluyordu.
+- [x] **SX-06M-01 (P2)** - Cesedin bolgesindeki antimagic bayraklari uygulanmiyordu.
+  (Ucu birlikte YAPILDI: yeni `IsCorpseResurrectable` yardimcisi referansin
+  CItemCorpse.cpp:28-75 kosullarini tek yerde topluyor ve maliyetten once calisiyor -
+  Skill_Healing bunu CCharSkill.cpp:2796'da yapar. Mevcut kap kontrolu de oraya
+  tasindi.
+  **Raporlarin uyarilari:** sifaci-ceset kontrolleri KALDIRILMADI, hayalet-ceset
+  kontrolleri onlarin USTUNE eklendi (06K). `Character.Resurrect` icine Recall/
+  NoTeleport eklenmedi - digger diriltme turlerini bozmasin diye ceset yoluna ozel
+  on-kontrol tercih edildi (06M). Hedef verilmemis self-heal varsayilani korundu,
+  yalnizca "secilmis hedef gecersiz" ondan ayrildi (06L).)
+
+**06I-06M kapanisi:** tam suite **2.550 basarili / 0 basarisiz** (+15). Bes duzeltme de
+gecici olarak kapatilarak 10 testin eski davranisi yakaladigi kanitlandi. Mevcut
+hicbir test guncellenmedi.
+
+**Acik kalan:** 06M'nin ikinci gozlemi - son asama diriltme reddinin `Healing`
+tarafindan basari sayilmasi - bolge on-kontrolu sayesinde bu senaryoda ortadan kalkti,
+ama `ResurrectTarget` sozlesmesi hala void; genel sonuc iletimi ayri bir konu.
+Ayrica raporlarin kendi kuyruklari: bonding saati, MAXFOOD tanimlari, olu bonded
+release, resurrection trigger sonucu, hayalet LOS'unun yanlis aktorle denetlenmesi.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

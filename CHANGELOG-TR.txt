@@ -3,6 +3,53 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Zehirli yemekler ve bandajin diriltmeden once denetledikleri (06I-06M)
+----------------------------------------
+
+FIX - Zehirli yiyecek kimseyi zehirlemiyordu. Poisoning becerisi yemege POISON_SKILL
+        yazar (Skill_Poisoning, CCharSkill.cpp:2197) ama bunu hicbir yer geri
+        okumuyordu; yani basariyla zehirlenmis bir erzak - oyuncu da yese, pete de
+        verilse - hicbir etki yaratmadan yeniliyordu. Source-X bunu Use_EatQty icinde,
+        yemegin kendisinden ONCE uygular (CCharUse.cpp:905); burada da artik @Eat'ten
+        once: kazanimlari veto eden bir script zehri geri almiyor, hic lokma almayan
+        tok bir pet de zehirlenmiyor. Saklanan deger bir zehir seviyesi degil,
+        zehirleyenin BECERISIDIR; zehirli silah yolunun zaten kullandigi OSI
+        bantlamasindan geciyor, boylece bicak ile yemek ayni beceriyi farkli
+        degerlendiremiyor.
+
+FIX - Olu bir pet, savas modunda olmeye denk gelmedikce diriltilemiyordu. Source-X
+        STATF_INSUBSTANTIAL ister; olum bunu yalnizca zaten savas modunda OLMAYAN bir
+        OYUNCUYA kurar - "manifest war mode for ghosts" (CCharAct.cpp:4468) - ve
+        NPC'ye asla. SphereNet bunu her olu hedeften istiyordu; petin yasaminda savas
+        modunda olmesini saglayan hicbir sey yok, dolayisiyla dovus disinda dusen
+        bonded pet hic diriltilemiyordu. Kosul artik yalnizca oyunculara uygulaniyor -
+        SphereNet'te savas bayraginin manifest anlamini tasidigi yer orasi.
+
+FIX - Ceset hedefli iyilestirme HAYALETI hic denetlemiyordu. SIFACININ cesede
+        erisebildigini ve gorebildigini dogruluyordu - bu farkli bir kosuldur - yani
+        cesedin basinda duran bir sifaci, sahibini haritanin herhangi bir yerinden,
+        hatta baska bir haritadan diriltebiliyordu. Source-X hayaletin kendi cesedine
+        iki kare mesafede ve gorus hattinda olmasini ister (CItemCorpse.cpp:48, :55).
+
+FIX - Sahibi cozulemeyen ceset - zaten dirilmis ya da NPC'siyle birlikte silinmis -
+        "hedef verilmedi, kendimi tedavi et" varsayilanina dusuyordu; yani eski bir
+        cesede bandaj tutmak sessizce sifacinin kendisini sariyor ve bandaji da
+        harciyordu. Source-X HEALING_BEYOND ile durur (CCharSkill.cpp:2769) ve artik
+        olu olmayan sahibi reddeder (CItemCorpse.cpp:37). Hedef verilmeden yapilan
+        gercek self-heal calismaya devam ediyor.
+
+FIX - Cesedin bolgesinin soz hakki yoktu. Source-X ANTIMAGIC_ALL, RECALL_IN veya
+        TELEPORT tasiyan bolgede ceset diriltmesini reddeder (CItemCorpse.cpp:73) ve
+        bunu bandaj harcanmadan once yapar. SphereNet yalnizca NoMagic'e, hem de en
+        sonda Character.Resurrect icinde bakiyordu - o noktada bandaj gitmis ve beceri
+        zaten basari bildirmisti. Uc bayrak da artik bastan, bandaj yerinde dururken
+        denetleniyor.
+
+        Bu dordu tek bir eksik on-kontroldur: Source-X butun ceset tarafi kosullarini
+        CItemCorpse::IsCorpseResurrectable icinde toplar ve maliyetten once bir kez
+        calistirir (Skill_Healing, CCharSkill.cpp:2796). SphereNet bunun yalnizca kap
+        yarisini tasiyordu; kalani da ayni gerekceyle tek yere kondu.
+
 [2026-09-06] - Petler: tek iliski, tek bond, tek yiyecek havuzu, tek yeme yolu (06E-06H)
 ----------------------------------------
 

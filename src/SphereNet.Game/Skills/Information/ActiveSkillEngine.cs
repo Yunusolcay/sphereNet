@@ -428,6 +428,20 @@ public static class ActiveSkillEngine
         SkillType healingSkill = SkillType.Healing, Item? selectedCorpse = null)
     {
         var ch = sink.Self;
+
+        // "No target given, treat me" and "the target I picked is gone" are different
+        // answers. A corpse whose owner cannot be resolved - already resurrected, or
+        // deleted with its NPC - used to fall through to the self-heal default, so
+        // aiming a bandage at a stale corpse quietly bandaged the healer and spent the
+        // bandage doing it. Source-X stops with HEALING_BEYOND instead
+        // (CCharSkill.cpp:2769), and IsCorpseResurrectable refuses an owner that is no
+        // longer dead (CItemCorpse.cpp:37).
+        if (target == null && selectedCorpse?.ItemType == ItemType.Corpse)
+        {
+            sink.SysMessage(ServerMessages.Get(Msg.HealingBeyond));
+            return false;
+        }
+
         target ??= ch;
 
         bool veterinary = healingSkill == SkillType.Veterinary;
@@ -445,14 +459,12 @@ public static class ActiveSkillEngine
             return false;
         }
 
-        // Source-X CItemCorpse::IsCorpseResurrectable: a corpse tucked inside a
-        // container cannot be resurrected over — it must be a top-level ground
-        // object. Reject up front, before a bandage is spent or the skill rolled.
-        if (selectedCorpse?.ItemType == ItemType.Corpse && selectedCorpse.ContainedIn.IsValid)
-        {
-            sink.SysMessage(ServerMessages.Get(Msg.HealingCorpseg));
+        // Source-X gathers every corpse-side condition into IsCorpseResurrectable and
+        // runs it BEFORE the bandage is spent or the skill rolled (Skill_Healing,
+        // CCharSkill.cpp:2796). SphereNet had only the container half of it.
+        if (selectedCorpse?.ItemType == ItemType.Corpse &&
+            !IsCorpseResurrectable(sink, ch, target, selectedCorpse))
             return false;
-        }
 
         Point3D healAnchor = selectedCorpse?.ItemType == ItemType.Corpse
             ? selectedCorpse.Position
@@ -518,7 +530,14 @@ public static class ActiveSkillEngine
 
         if (target.IsStatFlag(StatFlag.Dead))
         {
-            if (!target.IsInWarMode)
+            // Source-X asks for STATF_INSUBSTANTIAL, which death sets only on a PLAYER
+            // who was not already in war mode - "manifest war mode for ghosts"
+            // (CCharAct.cpp:4468) - and never on an NPC. SphereNet has no ghost
+            // insubstantial flag and uses war mode as the manifest signal for players,
+            // so that half stands; but holding a dead NPC to it meant a bonded pet
+            // that died out of combat could not be revived by Veterinary at all, and
+            // no part of a pet's life makes it die in war mode.
+            if (target.IsPlayer && !target.IsInWarMode)
             {
                 sink.SysMessage(ServerMessages.Get(Msg.HealingResManifest));
                 return false;
@@ -552,6 +571,56 @@ public static class ActiveSkillEngine
             ? ch.GetSkill(SkillType.Veterinary) / 40 + ch.GetSkill(SkillType.AnimalLore) / 80 + 3
             : ch.GetSkill(SkillType.Healing) / 40 + ch.GetSkill(SkillType.Anatomy) / 80 + 3;
         target.Hits = (short)Math.Min(target.MaxHits, target.Hits + heal);
+        return true;
+    }
+
+    /// <summary>The corpse-side half of a bandage resurrection, mirroring Source-X
+    /// CItemCorpse::IsCorpseResurrectable (CItemCorpse.cpp:28). These are checks ON TOP
+    /// of the healer's own reach to the corpse, not a replacement for it - the healer
+    /// can stand over a corpse whose ghost has wandered off, and used to be able to
+    /// raise it from anywhere on the map, or from another one.</summary>
+    private static bool IsCorpseResurrectable(IActiveSkillSink sink, Character healer,
+        Character ghost, Item corpse)
+    {
+        // A corpse inside a container cannot be resurrected over; it has to be a
+        // top-level ground object (:62).
+        if (corpse.ContainedIn.IsValid)
+        {
+            sink.SysMessage(ServerMessages.Get(Msg.HealingCorpseg));
+            return false;
+        }
+
+        var corpsePos = corpse.Position;
+
+        if (ghost.IsStatFlag(StatFlag.Dead))
+        {
+            // The ghost has to be able to see its own corpse and be within two tiles
+            // of it (:48, :55) - conditions on the GHOST, which nothing here checked.
+            if (ghost.MapIndex != corpsePos.Map ||
+                ghost.Position.GetDistanceTo(corpsePos) > 2)
+            {
+                sink.SysMessage(ServerMessages.Get(Msg.HealingResToofar));
+                return false;
+            }
+            if (!sink.World.CanSeeLOS(ghost.Position, corpsePos))
+            {
+                sink.SysMessage(ServerMessages.Get(Msg.HealingResLos));
+                return false;
+            }
+        }
+
+        // The antimagic flags of the CORPSE's region, refused before anything is spent
+        // (:73). Character.Resurrect only ever looked at NoMagic, and only at the very
+        // end - by which point the bandage was gone and the skill had reported success.
+        var region = sink.World.FindRegion(corpsePos);
+        if (region != null &&
+            (region.IsFlag(RegionFlag.NoMagic) || region.IsFlag(RegionFlag.Recall) ||
+             region.IsFlag(RegionFlag.NoTeleport)))
+        {
+            sink.SysMessage(ServerMessages.Get(Msg.HealingAm));
+            return false;
+        }
+
         return true;
     }
 

@@ -4,6 +4,52 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Poisoned meals, and what a bandage checks before it raises the dead (06I-06M)
+----------------------------------------
+
+FIX - Poisoned food poisoned nobody. The Poisoning skill writes POISON_SKILL onto a
+        meal (Skill_Poisoning, CCharSkill.cpp:2197) and nothing ever read it back, so a
+        successfully poisoned ration was eaten - by a player or by a pet - with no
+        effect at all. Source-X applies it inside Use_EatQty, ahead of the meal itself
+        (CCharUse.cpp:905), so it now sits ahead of @Eat too: a script that vetoes the
+        gains does not undo the poison, and a full pet that never takes a bite is never
+        poisoned either. The stored value is the poisoner's SKILL, not a poison level;
+        it goes through the same OSI banding the poisoned-weapon path already uses, so
+        a blade and a meal cannot disagree about what a given skill is worth.
+
+FIX - A dead pet could not be revived unless it happened to die in war mode. Source-X
+        asks for STATF_INSUBSTANTIAL, which death sets only on a PLAYER who was not
+        already in war mode - "manifest war mode for ghosts" (CCharAct.cpp:4468) - and
+        never on an NPC. SphereNet demanded war mode of every dead target, and nothing
+        in a pet's life makes it die in war mode, so a bonded pet that fell out of
+        combat was unrevivable. The requirement now applies to players only, which is
+        where SphereNet's war flag carries the manifest meaning.
+
+FIX - Corpse-targeted healing never checked the GHOST. It verified that the HEALER
+        could reach and see the corpse - which is a different condition - so a healer
+        standing over a corpse could raise its owner from anywhere on the map, or from
+        another one. Source-X requires the ghost to be within two tiles of its own
+        corpse and to have line of sight to it (CItemCorpse.cpp:48, :55).
+
+FIX - A corpse whose owner could not be resolved - already resurrected, or deleted
+        with its NPC - fell through to the "no target given, treat myself" default, so
+        aiming a bandage at a stale corpse quietly bandaged the healer and spent the
+        bandage doing it. Source-X stops with HEALING_BEYOND (CCharSkill.cpp:2769) and
+        refuses an owner that is no longer dead (CItemCorpse.cpp:37). A genuine
+        self-heal with no target given still works.
+
+FIX - The corpse's region had no say. Source-X refuses a corpse resurrection in a
+        region carrying ANTIMAGIC_ALL, RECALL_IN or TELEPORT (CItemCorpse.cpp:73), and
+        does so before the bandage is spent. SphereNet only ever consulted NoMagic, at
+        the very end, inside Character.Resurrect - by which point the bandage was gone
+        and the skill had already reported success. All three flags are now checked up
+        front, with the bandage intact.
+
+        These four are one missing precheck: Source-X gathers every corpse-side
+        condition into CItemCorpse::IsCorpseResurrectable and runs it once, ahead of
+        the cost (Skill_Healing, CCharSkill.cpp:2796). SphereNet carried only the
+        container half of it, so the rest is now in one place for the same reason.
+
 [2026-09-06] - Pets: one relationship, one bond, one food pool, one eating path (06E-06H)
 ----------------------------------------
 
