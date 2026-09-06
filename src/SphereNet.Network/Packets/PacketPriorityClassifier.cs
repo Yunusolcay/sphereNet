@@ -53,8 +53,11 @@ public static class PacketPriorityClassifier
         // of reorder bug as the vendor 0x74). 0x66 (single page, sent on a
         // page-turn request) is self-contained, so it can stay Low.
         t[0x66] = PacketPriority.Low;     // book page
-        t[0x90] = PacketPriority.Low;     // map
-        t[0xF5] = PacketPriority.Low;     // new map
+        // 0x90 / 0xF5 stay Normal (NOT Low): opening a map is an ORDER-CRITICAL
+        // sequence — the map gump, then the 0x56 pin-clear, then one 0x56 per pin.
+        // 0x56 is Normal, so a Low map gump drained AFTER its own pins and the client
+        // was told to plot on a window it did not have yet. Same class of reorder as
+        // the vendor 0x74; the cure is the same, keep the sequence in one queue.
         t[0x88] = PacketPriority.Low;     // open paperdoll
         // 0x74 / 0x9E stay Normal (NOT Low): the vendor buy/sell lists are part
         // of an ORDER-CRITICAL sequence — 0x3C container contents → 0x74 prices

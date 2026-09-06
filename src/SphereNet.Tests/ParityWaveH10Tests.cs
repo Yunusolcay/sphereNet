@@ -50,7 +50,12 @@ public class ParityWaveH10Tests
         Assert.Equal("Hello town", msg.Name);
         Assert.Equal("Scribe", msg.Tags.Get("AUTHOR"));
         Assert.Equal(player.Uid, msg.Link);
-        Assert.Equal("first line", msg.Tags.Get("BODY_1"));
+        // A board message and a book share ONE page list upstream, so the body lives
+        // in the page storage and reads back through the script BODY surface
+        // (CItemMessage.cpp:53, send.cpp:2222).
+        Assert.Equal("first line", msg.Tags.Get("PAGE_1"));
+        Assert.True(msg.TryGetProperty("BODY.0", out string? firstLine));
+        Assert.Equal("first line", firstLine);
 
         // Header request answers with 0x71 sub 1, body request with sub 2.
         client.HandleBulletinBoardRequestHead(board.Uid.Value, msg.Uid.Value);

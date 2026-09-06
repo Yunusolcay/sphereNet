@@ -397,6 +397,12 @@ public sealed partial class GameClient
         }
     }
 
+    /// <summary>Whether THIS reader may write this book - the one answer the open
+    /// packet announces and the page handler enforces.</summary>
+    public bool IsBookWritableFor(Item book) =>
+        _character != null && IsBookItem(book) &&
+        (_character.PrivLevel >= PrivLevel.GM || IsBookWritableBy(book, _character));
+
     private bool IsBookWritableBy(Item book, Character ch)
     {
         if (book.TryGetTag("BOOK_WRITABLE", out string? w) && w == "0")
@@ -461,17 +467,34 @@ public sealed partial class GameClient
         return msg != null && msg.ContainedIn == board.Uid ? msg : null;
     }
 
+    /// <summary>A board message's body. Upstream keeps a board message and a book in
+    /// the SAME page list and the full-message packet reads it with GetPageText
+    /// (send.cpp:2222), so a message out of a classic save - whose BODY lines the item
+    /// loader stores as pages - has to be found there too. A message posted in-game
+    /// writes the same page storage; the BODY_n tags a previous SphereNet save wrote
+    /// are still read first so an existing board is untouched.</summary>
     private static string[] ReadBoardBody(Item msg)
     {
         var lines = new List<string>();
-        for (int i = 1; i <= 32; i++)
+        for (int i = 1; i <= MaxBoardBodyLines; i++)
         {
             string? line = msg.Tags.Get($"BODY_{i}");
             if (line == null) break;
             lines.Add(line);
         }
+        if (lines.Count == 0)
+        {
+            for (int i = 1; i <= MaxBoardBodyLines; i++)
+            {
+                string? line = msg.Tags.Get($"PAGE_{i}");
+                if (line == null) break;
+                lines.Add(line);
+            }
+        }
         return lines.Count > 0 ? lines.ToArray() : [""];
     }
+
+    private const int MaxBoardBodyLines = 32;
 
     /// <summary>Handle bulletin board header request (0x71 sub 3, Source-X
     /// BBOARDF_REQ_HEAD): reply with the message summary (sub 1).</summary>
@@ -528,8 +551,11 @@ public sealed partial class GameClient
             System.Globalization.CultureInfo.InvariantCulture));
         if (replyTo != 0)
             msg.SetTag("REPLYTO", $"0{replyTo:X}");
-        for (int i = 0; i < bodyLines.Length && i < 32; i++)
-            msg.SetTag($"BODY_{i + 1}", bodyLines[i]);
+        // The page storage a book uses, so the script BODY.n surface and a classic
+        // save's own BODY lines all name the same text (CItemMessage.cpp:53).
+        msg.ItemType = ItemType.Message;
+        for (int i = 0; i < bodyLines.Length && i < MaxBoardBodyLines; i++)
+            msg.SetTag($"PAGE_{i + 1}", bodyLines[i]);
         board.AddItem(msg);
 
         // The client learns about the new message through a container-item

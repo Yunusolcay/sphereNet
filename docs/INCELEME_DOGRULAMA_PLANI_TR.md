@@ -1999,6 +1999,69 @@ yakin okura tasindi. Wire-uzunlugu korumalari (T1/E1) aynen duruyor.
 decay davranisi; sistem kitabi (RES_BOOK) icerik yolu; 0xD4 yeni baslik paketi hic
 uretilmiyor - eski istemci disi surumlerde ayrica degerlendirilmeli.
 
+### 11C-12A - icerik aktarimi ve cevre durumu: 10 bulgu + 1 tur ici bulus (6 Eylul 2026)
+
+Kanit raporlari: [11C](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_11C_ICERIK_PAKET_YUKLEME.md),
+[12A](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12A_HAVA_MEVSIM_ISIK.md).
+On bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+- [x] **11C-1 (P2)** - Eski kayitli pano mesajinin govdesi bos gidiyordu. (YAPILDI: pano
+  mesaji artik kitapla AYNI sayfa deposunu yaziyor - referanstaki tek CItemMessage sayfa
+  listesi - okuma tarafinda onceki SphereNet kayitlarinin BODY_n tag'leri once, sonra
+  PAGE_n. **Mevcut test guncellendi:** `ParityWaveH10Tests` depolama tag adini
+  dogruluyordu; test artik hem depoyu hem script BODY yuzeyini kontrol ediyor.)
+- [x] **11C-2 (P2)** - Yeni istemciye harita facet'i gonderilmiyordu. (YAPILDI: 0xF5, 21
+  bayt, son alan facet; surum esigi 7.0.13.0 veya enhanced/KR, altindakiler 0x90.
+  **Tuzak:** ilk denemede `FallbackVersionAtLeast` kullandim - o yardimci yalnizca
+  BILINMEYEN surum icin cevap veriyor, bilinen surumde daima false; dogrudan sayisal
+  karsilastirmaya cevrildi.)
+- [x] **11C-3 (P3)** - Ozel harita pencere boyutlari yok sayiliyordu. (YAPILDI: modern
+  pakette OVERRIDE.MAPWIDTH/MAPHEIGHT, alan sirasi yukseklik-sonra-genislik; eski paket
+  referanstaki gibi override okumuyor.)
+- [x] **11C-4 (P2)** - 65 satirlik sayfa sonraki sayfanin sinirini bozuyordu. (YAPILDI:
+  bildirilen her satir tuketiliyor, saklama sinirini asanlar atiliyor; 100'un ustunde
+  bildiren sayfa istegi bitiriyor - referansin kendi siniri.)
+- [x] **11C-5 (P3)** - Salt okunur kitap yazilabilir ilan ediliyordu. (YAPILDI: acilis ve
+  duzenleme ortak `IsBookWritableFor` hesabini kullaniyor.)
+- [x] **12A-1 (P3)** - DRY/RAIN kodlari uyusmuyordu. (YAPILDI: sektor artik WEATHER_TYPE
+  kullaniyor. **Kayit uyumu:** yeni olcek `ENV2` anahtariyla yaziliyor, eski `ENV`
+  satiri eski anlamiyla (0=kuru, 1=yagmur, 2=kar) okunup cevriliyor - raporun "eski 0
+  degerlerini korlemesine yagmur diye yorumlamamak gerekir" uyarisi.
+  **Bilincli sapma:** referansin isik hesabi ham bayta truthy bakar, ki WEATHER_RAIN==0
+  oldugu icin yagmuru acik hava sayar; buradaki kontrol "hava var mi" sorusunu soruyor,
+  boylece kod degisimi gokyuzunu ters cevirmiyor.)
+- [x] **12A-2 (P2)** - Sektor hava/mevsim ayari yayinlanmiyordu. (YAPILDI: setter'lar
+  sektordeki HER karaktere bildiriyor - referans paketi yalnizca istemcisi olana, ama
+  @EnvironChange'i hepsine gonderir - sunucu tarafi paketi kime yollayacagina kendi
+  karar veriyor.)
+- [x] **12A-3 (P2)** - Elle verilen isik etkin hesapta korunmuyordu. (YAPILDI:
+  LIGHT_OVERRIDE biti, `IsLightOverridden`, `ClearLightOverride`, yeni
+  `AllowLightOverride` ini anahtari. Kayitta override durumu ENV2'de acikca tasiniyor;
+  eski ENV satirinda sifir olmayan isik override sayiliyor.)
+- [x] **12A-4 (P2)** - RAINCHANCE/COLDCHANCE kullanilmiyordu. (YAPILDI: uretim bolgenin
+  altindaki sektorun iklimini okuyor; once yagis zari, sonra kar zari.)
+- [x] **12A-5 (P2)** - Ayni adli bolgeler ayni havayi paylasiyordu. (YAPILDI: anahtar
+  (map, region uid); `OnWeatherChanged` bolgenin kendisini tasiyor ve yayin
+  dinleyicilerini kimlikle seciyor - raporun "yalniz sozlugu degistirmek yetmez"
+  uyarisi.)
+
+**Tur ici bulus (raporlarda yok):** harita gump'i (0x90/0xF5) Low, ardindan gelen pin
+paketleri (0x56) Normal onceliktedi; kuyruk Highest->Low bosaldigi icin pencere kendi
+pinlerinden SONRA gidiyordu - satici 0x74 fiyat listesiyle ayni sinif siralama hatasi.
+Harita paketleri pinleriyle ayni kuyruga alindi ve sira testle sabitlendi.
+
+**11C-12A kapanisi:** tam suite **2.909 basarili / 0 basarisiz** (+28). On bir duzeltme
+de gecici olarak kapatilarak 21 testin eski davranisi yakaladigi kanitlandi.
+
+**Mevcut testler yeniden kuruldu:** `SourceXSectorMoonLightWave234Tests` fixture'i
+`Weather = 0` yazarak "kuru" demek istiyordu - yeni olcekte 0 yagmur; `Sector.WeatherDry`
+oldu. `ParityWaveH10Tests` pano govdesinin depolama tag adini dogruluyordu.
+
+**Acik kalan:** mevsimin sektor override'i ile global dongunun uzlastirilmasi (su an
+override yalnizca bildirimde kullaniliyor); sektor iklimi icin Source-X'in enlem tabanli
+SetDefaultWeatherChance dagilimi; WEATHER_CLOUDY (3) uretilmiyor; 0xD4 yeni kitap
+basligi hala uretilmiyor.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

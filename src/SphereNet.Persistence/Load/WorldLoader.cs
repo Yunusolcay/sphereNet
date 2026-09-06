@@ -1498,29 +1498,59 @@ public sealed class WorldLoader
             {
                 while (reader.NextProperty(out string key, out string val))
                 {
-                    if (!key.Equals("ENV", StringComparison.OrdinalIgnoreCase))
+                    // ENV is the original line, whose weather byte meant 0=dry, 1=rain,
+                    // 2=snow. ENV2 carries Source-X WEATHER_TYPE codes (255=dry, 0=rain)
+                    // plus an explicit light-override flag. Reading a legacy ENV line as
+                    // if it were the new scale would turn every stored dry sector into
+                    // rain, so the two keys keep their own meanings.
+                    bool legacy = key.Equals("ENV", StringComparison.OrdinalIgnoreCase);
+                    if (!legacy && !key.Equals("ENV2", StringComparison.OrdinalIgnoreCase))
                         continue;
                     var parts = val.Split(',');
-                    if (parts.Length >= 8 &&
-                        int.TryParse(parts[0], out int sMap) &&
-                        int.TryParse(parts[1], out int sX) &&
-                        int.TryParse(parts[2], out int sY) &&
-                        byte.TryParse(parts[3], out byte sWeather) &&
-                        byte.TryParse(parts[4], out byte sSeason) &&
-                        byte.TryParse(parts[5], out byte sLight) &&
-                        short.TryParse(parts[6], out short sRain) &&
-                        short.TryParse(parts[7], out short sCold))
+                    int minFields = legacy ? 8 : 9;
+                    if (parts.Length < minFields ||
+                        !int.TryParse(parts[0], out int sMap) ||
+                        !int.TryParse(parts[1], out int sX) ||
+                        !int.TryParse(parts[2], out int sY) ||
+                        !byte.TryParse(parts[3], out byte sWeather) ||
+                        !byte.TryParse(parts[4], out byte sSeason) ||
+                        !byte.TryParse(parts[5], out byte sLight))
+                        continue;
+
+                    bool lightPinned;
+                    short sRain, sCold;
+                    if (legacy)
                     {
-                        var sector = world.GetSector(sMap, sX, sY);
-                        if (sector != null)
+                        sWeather = sWeather switch
                         {
-                            sector.Weather = sWeather;
-                            sector.Season = sSeason;
-                            sector.Light = sLight;
-                            sector.RainChance = sRain;
-                            sector.ColdChance = sCold;
-                        }
+                            0 => SphereNet.Game.World.Sectors.Sector.WeatherDry,
+                            1 => (byte)WeatherType.Rain,
+                            2 => (byte)WeatherType.Snow,
+                            _ => SphereNet.Game.World.Sectors.Sector.WeatherDry,
+                        };
+                        // The old line had nowhere to say the light was pinned; a
+                        // non-zero stored light was the only way it could be.
+                        lightPinned = sLight != 0;
+                        if (!short.TryParse(parts[6], out sRain) ||
+                            !short.TryParse(parts[7], out sCold))
+                            continue;
                     }
+                    else
+                    {
+                        lightPinned = parts[6].Trim() == "1";
+                        if (!short.TryParse(parts[7], out sRain) ||
+                            !short.TryParse(parts[8], out sCold))
+                            continue;
+                    }
+
+                    var sector = world.GetSector(sMap, sX, sY);
+                    if (sector == null) continue;
+                    sector.Weather = sWeather;
+                    sector.Season = sSeason;
+                    if (lightPinned) sector.Light = sLight;
+                    else sector.ClearLightOverride();
+                    sector.RainChance = sRain;
+                    sector.ColdChance = sCold;
                 }
             }
             else if (upper.StartsWith("WORLDSCRIPT ", StringComparison.OrdinalIgnoreCase))

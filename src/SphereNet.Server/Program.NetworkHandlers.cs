@@ -1090,9 +1090,7 @@ public static partial class Program
             bool dead = client.Character.IsDead;
             byte light = dead ? (byte)0 : _world.GetLightLevel(client.Character.Position);
             var r = _world.FindRegion(client.Character.Position);
-            var weather = r != null
-                ? _weatherEngine.GetWeatherForRegion(r.Name)
-                : (WeatherType.None, (byte)0, (byte)20);
+            var weather = _weatherEngine.GetWeatherForRegion(r);
             client.Character.UpdateEnvironment(light, (byte)weather.Item1,
                 dead ? (byte)SeasonType.Desolation : (byte)_weatherEngine.CurrentSeason);
             client.Send(new PacketSeason(dead

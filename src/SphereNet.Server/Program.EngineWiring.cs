@@ -552,7 +552,7 @@ public static partial class Program
                 // @EnvironChange — the perceived light level differs between surface
                 // and dungeon regions (mirrors WeatherEngine.GetLightLevel).
                 byte regionLight = mover.IsDead ? (byte)0 : _world.GetLightLevel(mover.Position);
-                var (weatherType, weatherIntensity, weatherTemp) = _weatherEngine.GetWeatherForRegion(newRegion.Name);
+                var (weatherType, weatherIntensity, weatherTemp) = _weatherEngine.GetWeatherForRegion(newRegion);
                 mover.UpdateEnvironment(regionLight, (byte)weatherType,
                     mover.IsDead ? (byte)SeasonType.Desolation : (byte)_weatherEngine.CurrentSeason);
 
@@ -1246,6 +1246,22 @@ public static partial class Program
             {
                 if (TryGetClientFor(character, out var lightClient))
                     lightClient.Send(new PacketGlobalLight(level));
+            };
+            _world.AllowLightOverride = () => _config.AllowLightOverride;
+            // A sector's WEATHER / SEASON reaching the players standing in it, and
+            // @EnvironChange with them (CSector.cpp:879/904). Setting either used to
+            // change a field nothing ever published.
+            _world.OnSectorEnvironment = (sector, character) =>
+            {
+                byte light = character.IsDead ? (byte)0 : _world.GetLightLevel(character.Position);
+                byte season = character.IsDead
+                    ? (byte)SeasonType.Desolation
+                    : (sector.Season != 0 ? sector.Season : (byte)_weatherEngine.CurrentSeason);
+                character.UpdateEnvironment(light, sector.Weather, season);
+                if (!TryGetClientFor(character, out var envClient)) return;
+                envClient.Send(new PacketWeather(sector.Weather, 0, 20));
+                envClient.Send(new PacketSeason(season, playSound: false));
+                envClient.Send(new PacketGlobalLight(light));
             };
             _saver.GetSpellEffectRecords = _spellEngine.GetPersistedEffectRecords;
             _spellEngine.TriggerDispatcher = _triggerDispatcher;
@@ -2190,14 +2206,25 @@ public static partial class Program
                 _config.SeasonMode,
                 (SeasonType)Math.Clamp(_config.SeasonDefault, (byte)SeasonType.Spring, (byte)SeasonType.Desolation),
                 checked(_config.SeasonChangeIntervalMinutes * 60 * 1000));
-            _weatherEngine.OnWeatherChanged = (regionName, type, intensity, temp) =>
+            // The climate a region sits in, read from the sector under its anchor - the
+            // same values Source-X rolls in GetWeatherCalc.
+            _weatherEngine.GetClimate = region =>
+            {
+                var anchor = region.P;
+                if (anchor == null) return null;
+                var sector = _world.GetSector(anchor.Value);
+                return sector == null ? null : ((int)sector.RainChance, (int)sector.ColdChance);
+            };
+            _weatherEngine.OnWeatherChanged = (region, type, intensity, temp) =>
             {
                 var pkt = new PacketWeather((byte)type, intensity, temp);
                 foreach (var c in _clients.Values)
                 {
                     if (!c.IsPlaying || c.Character == null) continue;
                     var r = _world.FindRegion(c.Character.Position);
-                    if (r != null && r.Name == regionName)
+                    // Region IDENTITY, not its name: two same-named regions on two
+                    // facets used to receive each other's weather.
+                    if (r == region)
                     {
                         byte light = c.Character.IsDead ? (byte)0 : _world.GetLightLevel(c.Character.Position);
                         c.Character.UpdateEnvironment(light, (byte)type,
@@ -2650,9 +2677,7 @@ public static partial class Program
             {
                 _clientsByCharUid[ch.Uid] = client;
                 var region = _world.FindRegion(ch.Position);
-                var weather = region != null
-                    ? _weatherEngine.GetWeatherForRegion(region.Name).Type
-                    : WeatherType.None;
+                var weather = _weatherEngine.GetWeatherForRegion(region).Type;
                 ch.UpdateEnvironment(ch.IsDead ? 0 : _world.GetLightLevel(ch.Position),
                     (byte)weather,
                     ch.IsDead ? (byte)SeasonType.Desolation : (byte)_weatherEngine.CurrentSeason);

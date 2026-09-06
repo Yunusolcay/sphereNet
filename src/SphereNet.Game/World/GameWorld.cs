@@ -74,6 +74,14 @@ public sealed class GameWorld
     public Action<ObjBase, ObjBase.TimerFEntry>? TimerFExpired { get; set; }
     public Action<Character, byte>? OnSectorLight { get; set; }
 
+    /// <summary>A sector's weather or season changed under a player standing in it.
+    /// Source-X publishes both on the spot and fires @EnvironChange
+    /// (CSector.cpp:879/904).</summary>
+    public Action<Sector, Character>? OnSectorEnvironment { get; set; }
+
+    /// <summary>sphere.ini AllowLightOverride - whether a pinned sector light counts.</summary>
+    public Func<bool>? AllowLightOverride { get; set; }
+
     // --- Global script variables (VAR/VAR0 system) ---
     private readonly Dictionary<string, string> _globalVars = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<string>> _globalLists = new(StringComparer.OrdinalIgnoreCase);
@@ -418,6 +426,8 @@ public sealed class GameWorld
                     GetWorldTime = () => (WorldHour, WorldMinute),
                     GetLightSettings = () => (LightDay, LightNight, DungeonLight),
                     SendLight = (character, level) => OnSectorLight?.Invoke(character, level),
+                    OnEnvironmentChanged = (s, character) => OnSectorEnvironment?.Invoke(s, character),
+                    AllowLightOverride = () => AllowLightOverride?.Invoke() ?? true,
                     GetAdjacentSector = (sx, sy) => GetSector(mapIndex, sx, sy),
                     OnNoSleepChanged = (s, isNoSleep) =>
                     {

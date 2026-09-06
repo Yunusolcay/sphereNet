@@ -37,8 +37,10 @@ public sealed class WeatherEngine
     private readonly GameWorld _world;
     private readonly Random _rand = new();
 
-    // Region-specific weather state
-    private readonly Dictionary<string, WeatherState> _regionWeather = [];
+    // Region-specific weather state, keyed by the region's own identity. The visible
+    // NAME used to be the key, so two Britains on two facets shared one sky - and a
+    // rename silently orphaned a region's weather.
+    private readonly Dictionary<(byte Map, uint RegionUid), WeatherState> _regionWeather = [];
 
     // Reusable scratch set for OnTick's active-region pass; allocated
     // once to avoid per-tick GC churn when 500+ players are online.
@@ -49,14 +51,26 @@ public sealed class WeatherEngine
     private long _lastSeasonChangeTick;
     private SeasonMode _seasonMode = SeasonMode.Auto;
 
+    /// <summary>The sector climate covering a region: the chance of precipitation and,
+    /// given precipitation, the chance it falls as snow (Source-X RAINCHANCE /
+    /// COLDCHANCE).</summary>
+    public Func<Regions.Region, (int Rain, int Cold)?>? GetClimate { get; set; }
+
+    /// <summary>Source-X SetDefaultWeatherChance's mid-latitude values, used when no
+    /// sector answers for the region.</summary>
+    private const int DefaultRainChance = 15;
+    private const int DefaultColdChance = 5;
+
     /// <summary>Season change interval in milliseconds (default: 30 minutes).</summary>
     public int SeasonChangeInterval { get; set; } = 30 * 60 * 1000;
 
     public SeasonType CurrentSeason => _currentSeason;
     public SeasonMode CurrentSeasonMode => _seasonMode;
 
-    /// <summary>Fired when weather changes in a region. Args: (regionName, type, intensity, temp).</summary>
-    public Action<string, WeatherType, byte, byte>? OnWeatherChanged { get; set; }
+    /// <summary>Fired when weather changes in a region. The REGION is passed, not its
+    /// name: the broadcast has to reach exactly the players in that region and no
+    /// same-named region on another map.</summary>
+    public Action<Regions.Region, WeatherType, byte, byte>? OnWeatherChanged { get; set; }
 
     public WeatherEngine(GameWorld world)
     {
@@ -85,20 +99,23 @@ public sealed class WeatherEngine
     /// <summary>
     /// Get the current weather for a region. Returns (type, intensity, temp).
     /// </summary>
-    public (WeatherType Type, byte Intensity, byte Temperature) GetWeatherForRegion(string regionName)
+    public (WeatherType Type, byte Intensity, byte Temperature) GetWeatherForRegion(Regions.Region? region)
     {
-        if (_regionWeather.TryGetValue(regionName, out var state))
+        if (region != null && _regionWeather.TryGetValue(KeyOf(region), out var state))
             return (state.Type, state.Intensity, state.Temperature);
         return (WeatherType.None, 0, 20);
     }
 
+    private static (byte, uint) KeyOf(Regions.Region region) => (region.MapIndex, region.Uid);
+
     /// <summary>
     /// Set weather for a specific region.
     /// </summary>
-    public void SetRegionWeather(string regionName, WeatherType type, byte intensity, byte temp)
+    public void SetRegionWeather(Regions.Region region, WeatherType type, byte intensity, byte temp)
     {
-        _regionWeather[regionName] = new WeatherState
+        _regionWeather[KeyOf(region)] = new WeatherState
         {
+            Region = region,
             Type = type,
             Intensity = intensity,
             Temperature = temp,
@@ -115,16 +132,18 @@ public sealed class WeatherEngine
         long now = Environment.TickCount64;
 
         // Expire region weather
-        var expired = new List<string>();
-        foreach (var (name, state) in _regionWeather)
+        var expired = new List<(byte, uint)>();
+        foreach (var (key, state) in _regionWeather)
         {
             if (now >= state.EndTick)
-                expired.Add(name);
+                expired.Add(key);
         }
-        foreach (var name in expired)
+        foreach (var key in expired)
         {
-            _regionWeather.Remove(name);
-            OnWeatherChanged?.Invoke(name, WeatherType.None, 0, 20);
+            var state = _regionWeather[key];
+            _regionWeather.Remove(key);
+            if (state.Region != null)
+                OnWeatherChanged?.Invoke(state.Region, WeatherType.None, 0, 20);
         }
 
         // Random weather generation — only for regions that actually
@@ -143,33 +162,43 @@ public sealed class WeatherEngine
         foreach (var region in _activeRegionsScratch)
         {
             if (string.IsNullOrEmpty(region.Name)) continue;
-            if (_regionWeather.ContainsKey(region.Name)) continue;
+            if (_regionWeather.ContainsKey(KeyOf(region))) continue;
             if (region.IsFlag(RegionFlag.Underground)) continue; // no weather underground
 
-            if (_rand.Next(1000) < 5) // 0.5% chance per tick
+            if (_rand.Next(1000) >= 5) continue; // 0.5% chance per tick
+
+            // The local climate decides, not a flat table. Source-X rolls the sector's
+            // own RAINCHANCE for precipitation and then its COLDCHANCE for snow
+            // (GetWeatherCalc, CSector.cpp:857); both properties were accepted and
+            // stored here and then never read, so a region prepared as rainless still
+            // rained and a cold coast never saw snow out of season.
+            var climate = GetClimate?.Invoke(region);
+            int rainChance = climate?.Rain ?? DefaultRainChance;
+            int coldChance = climate?.Cold ?? DefaultColdChance;
+
+            int roll = _rand.Next(100);
+            if (roll >= rainChance) continue;
+
+            byte temp = _currentSeason switch
             {
-                byte temp = _currentSeason switch
-                {
-                    SeasonType.Spring => 15,
-                    SeasonType.Summer => 25,
-                    SeasonType.Fall => 10,
-                    SeasonType.Winter => 0,
-                    _ => 20
-                };
-                // Snow only when freezing; otherwise rain, with an occasional
-                // thunderstorm. Previously snow was season-only and Storm was
-                // never generated at all.
-                WeatherType type;
-                if (temp <= 0)
-                    type = WeatherType.Snow;
-                else
-                    type = _rand.Next(100) < 20 ? WeatherType.Storm : WeatherType.Rain;
-                byte intensity = type == WeatherType.Storm
-                    ? (byte)_rand.Next(50, 90)
-                    : (byte)_rand.Next(10, 50);
-                SetRegionWeather(region.Name, type, intensity, temp);
-                OnWeatherChanged?.Invoke(region.Name, type, intensity, temp);
-            }
+                SeasonType.Spring => 15,
+                SeasonType.Summer => 25,
+                SeasonType.Fall => 10,
+                SeasonType.Winter => 0,
+                _ => 20
+            };
+            WeatherType type;
+            if (coldChance > 0 && _rand.Next(100) <= coldChance)
+                type = WeatherType.Snow;
+            else if (temp <= 0)
+                type = WeatherType.Snow;
+            else
+                type = _rand.Next(100) < 20 ? WeatherType.Storm : WeatherType.Rain;
+            byte intensity = type == WeatherType.Storm
+                ? (byte)_rand.Next(50, 90)
+                : (byte)_rand.Next(10, 50);
+            SetRegionWeather(region, type, intensity, temp);
+            OnWeatherChanged?.Invoke(region, type, intensity, temp);
         }
 
         if (_seasonMode != SeasonMode.Auto || SeasonChangeInterval <= 0)
@@ -206,6 +235,7 @@ public sealed class WeatherEngine
 
     private class WeatherState
     {
+        public Regions.Region? Region;
         public WeatherType Type;
         public byte Intensity;
         public byte Temperature;

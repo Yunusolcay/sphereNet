@@ -3,6 +3,71 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Harita facet'i, pano govdesi ve sektorun gercekten sahip oldugu hava (11C-12A)
+----------------------------------------
+
+FIX - Klasik kayittan yuklenen pano mesaji yazarini gosteriyor ama metnini
+        gostermiyordu: kaydin BODY satirlari kitabin kullandigi ortak sayfa deposuna
+        dusuyor, pano ise yalnizca kendi BODY_n tag'lerini okuyordu. Referans pano
+        mesajini ve kitabi TEK sayfa listesinde tutar (CItemMessage.cpp:53) ve tam mesaj
+        paketi onu GetPageText ile okur (send.cpp:2222). Oyun icinde birakilan ilan artik
+        ayni depoya yaziyor, boylece script BODY yuzeyinden de okunuyor; onceki kayitla
+        yazilmis panolar yine okunuyor.
+
+FIX - Harita penceresi her istemciye eski 0x90 ile gidiyordu; modern istemciye haritanin
+        hangi dunyayi gosterdigi hic soylenmiyor, farkli facet'lerdeki ayni koordinatli
+        iki harita tel uzerinde ayirt edilemiyordu. 7.0.13.0 ve ustu ya da enhanced
+        istemci facet tasiyan 0xF5 aliyor (send.cpp:5358); eski istemciler 0x90'da
+        kaliyor.
+
+FIX - Haritanin kendi OVERRIDE.MAPWIDTH / OVERRIDE.MAPHEIGHT degerleri hic okunmuyordu,
+        her harita 200x200 varsayilaniyla ciziliyordu. Modern paket bunlari uygular ve
+        alan sirasi referanstaki gibi once yukseklik sonra genisliktir (:5363); eski
+        paket override okumaz ve bu fark korundu.
+
+FIX - Harita gump'i, ardindan gelen pin paketlerinden daha dusuk oncelikte kuyruga
+        giriyordu; kendi pinlerinden SONRA bosaliyor, istemciye henuz almadigi bir
+        pencerede cizim yapmasi soyleniyordu. Satici fiyat listesindekiyle ayni sinif
+        siralama hatasi; harita artik pinleriyle ayni kuyrukta.
+
+FIX - Sunucunun sakladigindan fazla satir bildiren kitap sayfasi, artan satirlari
+        tamponda birakiyor ve sonraki sayfa basligi onlarin icinden okunuyordu: 65
+        satirlik sayfa iki bayti "sayfa 30720" yapiyor ve ayni istegin gercek ikinci
+        sayfasini sessizce dusuruyordu. Artik bildirilen her satir tuketiliyor,
+        referansin tolere ettiginden fazlasini bildiren sayfa istegi bitiriyor
+        (receive.cpp:1032).
+
+FIX - Salt okunur kitap yazilabilir ilan edilerek aciliyordu, cunku bayrak kitabin
+        kendisinden degil esya turunden geliyordu. Istemci duzenleme sunuyor, sunucu ise
+        her sayfayi reddediyordu; yazanin metni yeniden acinca yok oluyordu.
+
+FIX - Sektorun DRY ve RAIN komutlari 0 ve 1 yaziyordu, oysa WEATHER_TYPE 255 kuru, 0
+        yagmur, 1 firtina, 2 kardir (sphereproto.h:514) - motorun kendi enum'u zaten bu
+        kodlari kullaniyordu. WEATHER'i sayisal karsilastiran script kuruyu yagmur,
+        yagmuru firtina okuyordu. Kayitli sektorler anlamini koruyor: yeni sayilar yeni
+        bir anahtarla yaziliyor, eski anahtar eski olceginde okunmaya devam ediyor.
+
+FIX - Sektorun WEATHER veya SEASON'ini ayarlamak, hicbir seyin yayinlamadigi bir alani
+        degistiriyordu; staff ya da script ile verilen yerel kar veya mevsim orada duran
+        oyunculara hic ulasmiyordu. Ikisi de artik sektordeki her karaktere ulasiyor ve
+        @EnvironChange tetikliyor (CSector.cpp:879/904).
+
+FIX - Elle verilen sektor isigi sakleniyor ama isik hesabinin disinda tutuluyordu;
+        property olarak dogru okunurken sektordeki herkes gunun saatini goruyor, sonraki
+        yenileme degeri kaydiriyordu. Sabitlenen isik isaretleniyor ve temizlenene kadar
+        saate, aylara ve zindan tablosuna ustun geliyor (:684/818); sphere.ini
+        AllowLightOverride mekanizmayi tumden kapatiyor.
+
+FIX - RAINCHANCE ve COLDCHANCE kabul edilip saklaniyor ve sonra hic okunmuyordu: hava
+        uretimi tek duz 5/1000 zar ve bir mevsim tablosu kullaniyordu, yagissiz olarak
+        hazirlanan bolge yine yagmur aliyor, soguk kiyi mevsim disinda kar gormuyordu.
+        Artik sektorun kendi iklimi karar veriyor (GetWeatherCalc, :857).
+
+FIX - Hava, bolgenin gorunen ADIYLA anahtarlaniyordu; iki facet'teki iki Britain ayni
+        gogu paylasiyor, bolgeyi yeniden adlandirmak havasini oksuz birakiyordu. Artik
+        bolgenin kendi kimligiyle anahtarlaniyor ve yayin dinleyicilerini ayni sekilde
+        seciyor.
+
 [2026-09-06] - Kitap, harita ve ilan panosu: pencere ve kimin duzenleyebilecegi (11A-11B)
 ----------------------------------------
 

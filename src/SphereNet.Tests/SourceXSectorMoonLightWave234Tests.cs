@@ -77,7 +77,9 @@ public sealed class SourceXSectorMoonLightWave234Tests
             GetWorldMinutes = () => worldMinutes,
             GetLightSettings = () => (0, 25, 27),
             IsDungeon = () => false,
-            Weather = 0,
+            // Clear skies. Weather codes are Source-X WEATHER_TYPE now, where 0 is
+            // RAIN and 255 is dry - this fixture used to mean "dry" by writing 0.
+            Weather = Sector.WeatherDry,
         };
     }
 }

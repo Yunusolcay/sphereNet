@@ -24,9 +24,16 @@ public sealed class Sector : IScriptObj
     private readonly List<Item> _items = [];
 
     // Weather/environment per-sector (Source-X CSector)
-    private byte _weather;      // 0=dry, 1=rain, 2=snow
+    /// <summary>Source-X WEATHER_TYPE (sphereproto.h:514): 255=dry, 0=rain, 1=storm,
+    /// 2=snow. NOT a 0=dry scale - the DRY and RAIN verbs used to write 0 and 1, so a
+    /// script comparing WEATHER numerically read dry as rain and rain as storm.</summary>
+    private byte _weather = WeatherDry;
     private byte _season;       // 0=spring, 1=summer, 2=fall, 3=winter, 4=desolation
-    private byte _light = 0;    // 0=bright, 30=dark (0 = use global)
+
+    /// <summary>Sector light, 0=bright..30=dark, with <see cref="LightOverrideBit"/>
+    /// set when a GM or script pinned it (Source-X LIGHT_OVERRIDE,
+    /// CSectorEnviron.h:14).</summary>
+    private byte _light = 0;
     private short _rainChance = 15;
     private short _coldChance = 5;
     private bool _isSleeping;
@@ -63,9 +70,79 @@ public sealed class Sector : IScriptObj
     public int ClientCount => _characters.Count(c => c.IsPlayer && c.IsOnline);
     public bool IsEmpty => _characters.Count == 0 && _items.Count == 0;
 
-    public byte Weather { get => _weather; set => _weather = value; }
-    public byte Season { get => _season; set => _season = value; }
-    public byte Light { get => _light; set => _light = value; }
+    /// <summary>Source-X WEATHER_DRY.</summary>
+    public const byte WeatherDry = 0xFF;
+
+    /// <summary>Source-X LIGHT_OVERRIDE - the high bit marking a pinned light.</summary>
+    public const byte LightOverrideBit = 0x80;
+
+    public byte Weather { get => _weather; set => SetWeather(value); }
+    public byte Season { get => _season; set => SetSeason(value); }
+
+    /// <summary>The stored light WITHOUT the override marker - what a script reads
+    /// and what the save carries.</summary>
+    public byte Light
+    {
+        get => (byte)(_light & ~LightOverrideBit);
+        set => SetLight(value);
+    }
+
+    /// <summary>Is this sector's light pinned rather than following the clock?</summary>
+    public bool IsLightOverridden => (_light & LightOverrideBit) != 0;
+
+    /// <summary>Whether a pinned sector light is honoured at all
+    /// (sphere.ini AllowLightOverride; Source-X gates GetLightCalc on it).</summary>
+    public Func<bool>? AllowLightOverride { get; set; }
+
+    /// <summary>The sector's environment changed for the characters standing in it.
+    /// Source-X SetWeather/SetSeason notify every active character and fire
+    /// @EnvironChange on the spot (CSector.cpp:879/904).</summary>
+    public Action<Sector, Character>? OnEnvironmentChanged { get; set; }
+
+    /// <summary>Set the weather and tell everyone standing here. Writing the field
+    /// alone left the sector holding a value nothing ever published.</summary>
+    public void SetWeather(byte weather)
+    {
+        if (_weather == weather) return;
+        _weather = weather;
+        NotifyEnvironment();
+    }
+
+    public void SetSeason(byte season)
+    {
+        if (_season == season) return;
+        _season = season;
+        NotifyEnvironment();
+    }
+
+    /// <summary>Source-X SetLight: a value inside the range is PINNED with the override
+    /// marker, anything outside clears the pin and falls back to the calculated
+    /// level (CSector.cpp:818).</summary>
+    public void SetLight(int light)
+    {
+        byte next = light is < 0 or > 30
+            ? GetLightCalc(quickSet: true)
+            : (byte)((light & ~LightOverrideBit) | LightOverrideBit);
+        if (_light == next) return;
+        _light = next;
+        foreach (var character in _characters)
+            if (character.IsPlayer && character.IsOnline)
+                SendLight?.Invoke(character, GetLightCalc());
+    }
+
+    /// <summary>Drop a pinned light and go back to following the clock.</summary>
+    public void ClearLightOverride() => SetLight(-1);
+
+    /// <summary>Source-X walks every active character in the sector: the client
+    /// packet goes only to those with a client, but @EnvironChange fires for all of
+    /// them, NPCs included (CSector.cpp:889). The hook receives all of them and the
+    /// server side decides what to send.</summary>
+    private void NotifyEnvironment()
+    {
+        if (OnEnvironmentChanged == null) return;
+        foreach (var character in _characters.ToList())
+            OnEnvironmentChanged(this, character);
+    }
     public short RainChance { get => _rainChance; set => _rainChance = value; }
     public short ColdChance { get => _coldChance; set => _coldChance = value; }
     public bool IsSleeping { get => _isSleeping; set => _isSleeping = value; }
@@ -223,6 +300,13 @@ public sealed class Sector : IScriptObj
     /// the Trammel/Felucca moon brightness tables.</summary>
     public byte GetLightCalc(bool quickSet = true, bool? dungeonOverride = null)
     {
+        // A pinned light wins over the clock, the moons and the dungeon table
+        // (GetLightCalc, CSector.cpp:684). The calculation used to ignore the stored
+        // value entirely, so a staff-set light read back correctly as a property while
+        // every player in the sector still saw the time of day.
+        if (IsLightOverridden && (AllowLightOverride?.Invoke() ?? true))
+            return (byte)(_light & ~LightOverrideBit);
+
         var settings = GetLightSettings?.Invoke() ?? (0, 25, 27);
         if ((dungeonOverride ?? IsDungeon?.Invoke()) == true)
             return (byte)Math.Clamp(settings.Item3, 0, 30);
@@ -232,7 +316,11 @@ public sealed class Sector : IScriptObj
         bool night = hour < 6 || hour > 20;
         int target = Math.Clamp(night ? settings.Item2 : settings.Item1, 0, 30);
 
-        if (_weather != 0)
+        // Cloud cover darkens the sector. Upstream tests the raw byte for truth, which
+        // with WEATHER_RAIN == 0 makes rain read as clear and dry as cloudy; the test
+        // here asks the question it means - is there weather at all - so renumbering
+        // the codes does not invert the sky.
+        if (_weather != WeatherDry)
             target = Math.Min(30, target + (night ? Random.Shared.Next(1, 3) : Random.Shared.Next(1, 5)));
 
         if (night)
@@ -247,14 +335,18 @@ public sealed class Sector : IScriptObj
                 target = Math.Max(0, target - FeluccaPhaseBrightness[felucca]);
         }
 
-        if (quickSet || _light == target)
+        byte stored = (byte)(_light & ~LightOverrideBit);
+        if (quickSet || stored == target)
             return (byte)target;
-        return _light > target ? (byte)Math.Max(0, _light - 1) : (byte)Math.Min(30, _light + 1);
+        return stored > target ? (byte)Math.Max(0, stored - 1) : (byte)Math.Min(30, stored + 1);
     }
 
     /// <summary>Advance the stored sector light one Source-X transition step.</summary>
     public bool RefreshLight()
     {
+        // A pinned light does not drift back to the clock on its own.
+        if (IsLightOverridden && (AllowLightOverride?.Invoke() ?? true))
+            return false;
         byte next = GetLightCalc(quickSet: false);
         if (next == _light) return false;
         _light = next;
@@ -480,7 +572,7 @@ public sealed class Sector : IScriptObj
                 value = _season.ToString();
                 return true;
             case "LIGHT":
-                value = _light.ToString();
+                value = (_light & ~LightOverrideBit).ToString();
                 return true;
             case "RAINCHANCE":
                 value = _rainChance.ToString();
@@ -549,13 +641,13 @@ public sealed class Sector : IScriptObj
         switch (upper)
         {
             case "WEATHER":
-                if (byte.TryParse(val, out byte w)) { _weather = w; return true; }
+                if (byte.TryParse(val, out byte w)) { SetWeather(w); return true; }
                 return false;
             case "SEASON":
-                if (byte.TryParse(val, out byte s)) { _season = s; return true; }
+                if (byte.TryParse(val, out byte s)) { SetSeason(s); return true; }
                 return false;
             case "LIGHT":
-                if (byte.TryParse(val, out byte l)) { _light = l; return true; }
+                if (int.TryParse(val, out int l)) { SetLight(l); return true; }
                 return false;
             case "RAINCHANCE":
                 if (short.TryParse(val, out short rc)) { _rainChance = rc; return true; }
@@ -595,13 +687,16 @@ public sealed class Sector : IScriptObj
         switch (upper)
         {
             case "DRY":
-                _weather = 0;
+                SetWeather(WeatherDry);
                 return true;
             case "RAIN":
-                _weather = 1;
+                // RAIN with an argument sets that weather code outright, as upstream
+                // does (CSector.cpp:387).
+                SetWeather(byte.TryParse(args.Trim(), out byte rainArg)
+                    ? rainArg : (byte)WeatherType.Rain);
                 return true;
             case "SNOW":
-                _weather = 2;
+                SetWeather((byte)WeatherType.Snow);
                 return true;
             case "ALLCHARS":
                 // Execute command on all characters — handled by caller via iteration

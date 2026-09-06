@@ -296,6 +296,11 @@ public sealed class SphereConfig
     public int LightNight { get; set; } = 25;
     public int DungeonLight { get; set; } = 27;
 
+    /// <summary>Whether a sector LIGHT pinned by staff or script overrides the
+    /// calculated day/night level (Source-X sphere.ini AllowLightOverride, consulted by
+    /// CSector::GetLightCalc). Off means the sector always follows the clock.</summary>
+    public bool AllowLightOverride { get; set; } = true;
+
     // Season
     public SeasonMode SeasonMode { get; set; } = SeasonMode.Auto;
     public byte SeasonDefault { get; set; } = 0;
@@ -680,6 +685,8 @@ public sealed class SphereConfig
         LightDay = ini.GetInt(section, "LightDay", LightDay);
         LightNight = ini.GetInt(section, "LightNight", LightNight);
         DungeonLight = ini.GetInt(section, "DungeonLight", DungeonLight);
+        AllowLightOverride = ini.GetInt(section, "AllowLightOverride",
+            AllowLightOverride ? 1 : 0) != 0;
         string? seasonModeRaw = ini.GetValue(section, "SeasonMode");
         if (!string.IsNullOrWhiteSpace(seasonModeRaw))
         {

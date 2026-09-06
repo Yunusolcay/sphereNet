@@ -856,7 +856,11 @@ public sealed class ClientItemUseHandler
 
             case ItemType.Book:
             case ItemType.Message:
-                OpenBook(item, item.ItemType == ItemType.Book);
+                // Upstream announces the object's OWN writability (PacketDisplayBook,
+                // send.cpp:2917). Deciding it from the item type alone told the client
+                // a BOOK_WRITABLE=0 book was editable while the server went on
+                // refusing every page - the writer's text vanished on reopen.
+                OpenBook(item, _client.IsBookWritableFor(item));
                 break;
 
             case ItemType.Spellbook:
@@ -2216,6 +2220,10 @@ public sealed class ClientItemUseHandler
     /// t_map_blank or an empty/invalid world rect — only reports blank.
     /// Rect words follow the CItem m_itMap layout: MORE1 = top(lo)/left(hi),
     /// MORE2 = bottom(lo)/right(hi).</summary>
+    /// <summary>CItemMap::DEFAULT_SIZE — the gump size a map with no declared one
+    /// is drawn at.</summary>
+    private const ushort MapGumpDefaultSize = 200;
+
     internal void OpenMapGump(Item item)
     {
         ushort top = (ushort)(item.More1 & 0xFFFF);
@@ -2228,7 +2236,29 @@ public sealed class ClientItemUseHandler
             return;
         }
 
-        _netState.Send(new PacketMapDisplay(item.Uid.Value, left, top, right, bottom));
+        // Gump size: the item definition's, else the 200x200 default, and on the
+        // modern packet the item's own OVERRIDE.* on top of that (send.cpp:5363).
+        // The old packet reads no override, and this keeps that difference.
+        ushort width = MapGumpDefaultSize, height = MapGumpDefaultSize;
+        if (_netState.SupportsNewMapDisplay)
+        {
+            if (item.TryGetTag("OVERRIDE.MAPWIDTH", out string? ow) &&
+                ushort.TryParse(ow, out ushort owv) && owv > 0)
+                width = owv;
+            if (item.TryGetTag("OVERRIDE.MAPHEIGHT", out string? oh) &&
+                ushort.TryParse(oh, out ushort ohv) && ohv > 0)
+                height = ohv;
+            // MOREM is the facet the map depicts (addDrawMap, CClientMsg.cpp:2499);
+            // without it two maps of the same coordinates on different worlds reached
+            // the client indistinguishable.
+            _netState.Send(new PacketMapDisplayNew(item.Uid.Value, left, top, right, bottom,
+                width, height, (byte)(item.MoreP.Map != 0 ? item.MoreP.Map : item.MapIndex)));
+        }
+        else
+        {
+            _netState.Send(new PacketMapDisplay(item.Uid.Value, left, top, right, bottom,
+                width, height));
+        }
         // Source-X addMapMode(MAP_UNSENT): reset the client's pin list before
         // replaying ours, plot mode off. addMapMode sets the SERVER's plot mode from
         // the same value it sends (CClientMsg.cpp:2542) - leaving the stored flag on

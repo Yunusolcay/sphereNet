@@ -147,6 +147,10 @@ internal interface IClientContext : ITextConsole
     void OpenGuildStoneGump(Item stone);
     void OpenHouseSignGump(Item signOrMulti);
     void OpenBook(Item book, bool writable);
+
+    /// <summary>Whether this reader may write that book - the same answer the open
+    /// packet announces and the page handler enforces.</summary>
+    bool IsBookWritableFor(Item book);
     void OpenBankBox();
     void OpenForeignBank(Character victim);
     void OpenInspectPropDialog(ObjBase obj, int requestedPage);

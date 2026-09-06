@@ -4,6 +4,69 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Map facets, board bodies and the weather a sector actually has (11C-12A)
+----------------------------------------
+
+FIX - A board message loaded from a classic save showed its author but no text: the
+        save's BODY lines land in the shared page storage a book uses, while the board
+        read only its own BODY_n tags. Upstream keeps a board message and a book in ONE
+        page list (CItemMessage.cpp:53) and the full-message packet reads it with
+        GetPageText (send.cpp:2222). A message posted in game now writes that same
+        storage, so it reads back through the script BODY surface too; boards written by
+        an earlier save are still read.
+
+FIX - The map window went out as the old 0x90 to every client, so a modern one was never
+        told which world the map depicts and two maps of the same coordinates on
+        different facets were indistinguishable on the wire. A client at 7.0.13.0 or an
+        enhanced one gets 0xF5, which carries the facet (send.cpp:5358); older clients
+        keep 0x90.
+
+FIX - A map's own OVERRIDE.MAPWIDTH / OVERRIDE.MAPHEIGHT were never read, so every map
+        was drawn at the 200x200 default. The modern packet applies them, with height
+        before width as upstream sends it (:5363); the old packet reads no override, and
+        that difference is kept.
+
+FIX - The map gump was queued at a lower priority than the pin packets that follow it,
+        so it drained AFTER its own pins and the client was told to plot on a window it
+        did not have yet. Same class of reorder as the vendor price list; the map now
+        shares a queue with its pins.
+
+FIX - A book page declaring more lines than the server stores left the extra lines in
+        the buffer, and the next page header was read out of them: a 65-line page turned
+        two bytes into "page 30720" and silently dropped the real second page of the same
+        request. Every declared line is consumed now, and a page declaring more than
+        upstream tolerates ends the request (receive.cpp:1032).
+
+FIX - A read-only book was opened announcing itself as writable, because the flag came
+        from the item type rather than the book. The client offered editing and the
+        server then refused every page, so the writer's text vanished on reopen.
+
+FIX - The DRY and RAIN sector commands wrote 0 and 1, but WEATHER_TYPE is 255 dry, 0
+        rain, 1 storm, 2 snow (sphereproto.h:514) - the engine's own enum already used
+        those codes. A script comparing WEATHER numerically read dry as rain and rain as
+        storm. Saved sectors keep their meaning: the new numbers are written under a new
+        key and the old key is still read on its old scale.
+
+FIX - Setting a sector's WEATHER or SEASON changed a field nothing published, so a local
+        snowfall or season set by staff or script never reached the players standing in
+        it. Both now reach every character in the sector and fire @EnvironChange, as
+        upstream does (CSector.cpp:879/904).
+
+FIX - A sector light set by hand was stored but excluded from the light calculation, so
+        it read back correctly as a property while everyone in the sector still saw the
+        time of day - and the next refresh walked it away. A pinned light is marked and
+        wins over the clock, the moons and the dungeon table (:684/818), until it is
+        cleared; sphere.ini AllowLightOverride turns the whole mechanism off.
+
+FIX - RAINCHANCE and COLDCHANCE were accepted and stored and then never read: weather
+        generation used one flat 5-in-1000 roll and a season table, so a region prepared
+        as rainless still rained and a cold coast never saw snow out of season. The
+        sector's own climate decides, as GetWeatherCalc does (:857).
+
+FIX - Weather was keyed by a region's visible NAME, so two Britains on two facets shared
+        one sky and renaming a region orphaned its weather. It is keyed by the region's
+        own identity now, and the broadcast picks its listeners the same way.
+
 [2026-09-06] - Books, maps and bulletin boards: the window, and who may edit it (11A-11B)
 ----------------------------------------
 

@@ -213,6 +213,12 @@ public sealed class NetState : IDisposable
     public bool IsClientPost6017  => HasProtocolChanges(ProtocolChanges.Version6017) || FallbackVersionAtLeast(60_001_007);
     public bool IsClientPost60142 => HasProtocolChanges(ProtocolChanges.Version60142) || FallbackVersionAtLeast(60_014_002);
     public bool IsClientPost7090  => HasProtocolChanges(ProtocolChanges.Version7090) || FallbackVersionAtLeast(70_009_000);
+
+    /// <summary>The 0xF5 map display, which carries the facet the map belongs to.
+    /// Source-X gates it on MINCLIVER_NEWMAPDISPLAY (7.0.13.0) or an enhanced client
+    /// (PacketDisplayMapNew::CanSendTo, send.cpp:5390).</summary>
+    public bool SupportsNewMapDisplay =>
+        IsEnhancedClient || IsKingdomRebornClient || _clientVersionNumber >= 70_013_000;
     public bool SupportsAosTooltip => HasProtocolChanges(ProtocolChanges.Version500a) || ClientEra == ClientEra.Modern || _clientVersionNumber >= 40_000_000;
     public bool SupportsBuffIcon => HasProtocolChanges(ProtocolChanges.BuffIcon) || ClientEra == ClientEra.Modern || _clientVersionNumber >= 50_002_002;
     public bool SupportsMapWaypoints => ClientEra == ClientEra.Modern || IsKingdomRebornClient ||

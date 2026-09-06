@@ -1592,6 +1592,44 @@ public sealed class PacketBulletinBoardOut : PacketWriter
     }
 }
 
+/// <summary>0xF5 — display a map gump on a client that understands facets
+/// (Source-X PacketDisplayMapNew, send.cpp:5358). Same as 0x90 plus the map the
+/// rectangle belongs to, so two maps of the same coordinates on different facets are
+/// no longer indistinguishable on the wire.
+///
+/// The size fields are HEIGHT then WIDTH here - inverted against the older packet, as
+/// upstream notes in the same place - and only this packet reads the item's
+/// OVERRIDE.MAPWIDTH / OVERRIDE.MAPHEIGHT.</summary>
+public sealed class PacketMapDisplayNew : PacketWriter
+{
+    private readonly uint _mapSerial;
+    private readonly ushort _left, _top, _right, _bottom, _width, _height;
+    private readonly byte _facet;
+
+    public PacketMapDisplayNew(uint mapSerial, ushort left, ushort top, ushort right, ushort bottom,
+        ushort width, ushort height, byte facet) : base(0xF5)
+    {
+        _mapSerial = mapSerial;
+        _left = left; _top = top; _right = right; _bottom = bottom;
+        _width = width; _height = height; _facet = facet;
+    }
+
+    public override PacketBuffer Build()
+    {
+        var buf = CreateFixed(21);
+        buf.WriteUInt32(_mapSerial);
+        buf.WriteUInt16(0x139D); // GUMP_MAP_2_NORTH
+        buf.WriteUInt16(_left);
+        buf.WriteUInt16(_top);
+        buf.WriteUInt16(_right);
+        buf.WriteUInt16(_bottom);
+        buf.WriteUInt16(_height);
+        buf.WriteUInt16(_width);
+        buf.WriteUInt16(_facet);
+        return buf;
+    }
+}
+
 /// <summary>0x90 — display a map gump (Source-X PacketDisplayMap):
 /// map item serial, the north-facing map gump art, world-coordinate bounds
 /// and the gump pixel size.</summary>

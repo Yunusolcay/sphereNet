@@ -1178,7 +1178,8 @@ public sealed class WorldSaver
             bool wroteSectorHeader = false;
             foreach (var (mapId, sector) in world.EnumerateSectors())
             {
-                if (sector.Weather == 0 && sector.Season == 0 && sector.Light == 0 &&
+                if (sector.Weather == SphereNet.Game.World.Sectors.Sector.WeatherDry && sector.Season == 0 &&
+                    !sector.IsLightOverridden &&
                     sector.RainChance == 15 && sector.ColdChance == 5)
                     continue;
                 if (!wroteSectorHeader)
@@ -1186,9 +1187,16 @@ public sealed class WorldSaver
                     w.BeginRecord("SECTORS");
                     wroteSectorHeader = true;
                 }
-                w.WriteProperty("ENV",
+                // ENV2, not ENV: the weather byte now carries Source-X WEATHER_TYPE codes
+                // (255=dry, 0=rain) where the old ENV line meant 0=dry, 1=rain. A reader
+                // that took the new numbers for the old ones would turn every dry sector
+                // into rain, so the new meaning gets its own key and the old key keeps
+                // its old meaning forever.
+                w.WriteProperty("ENV2",
                     $"{mapId},{sector.SectorX},{sector.SectorY}," +
-                    $"{sector.Weather},{sector.Season},{sector.Light},{sector.RainChance},{sector.ColdChance}");
+                    $"{sector.Weather},{sector.Season},{sector.Light}," +
+                    $"{(sector.IsLightOverridden ? 1 : 0)}," +
+                    $"{sector.RainChance},{sector.ColdChance}");
             }
             // TextSaveWriter closes the file with its own [EOF] marker.
         }

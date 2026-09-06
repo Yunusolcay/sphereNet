@@ -601,6 +601,9 @@ public sealed class PacketBookPage : PacketHandler
         // (no NUL, filling the packet) is stored verbatim and later echoed in a
         // 0x66 that overflows the length field — the book-poison client freeze.
         const int MaxLineChars = 256;
+        // Source-X's own hard, arbitrary limit on a declared line count
+        // (receive.cpp:1032); past it the request is abandoned rather than resynced.
+        const int MaxDeclaredLines = 100;
         var pages = new List<(ushort PageNum, string[] Lines)>();
         int maxPageCount = Math.Min((int)pageCount, MaxPages);
         for (int i = 0; i < maxPageCount && buffer.Remaining >= 4; i++)
@@ -614,11 +617,22 @@ public sealed class PacketBookPage : PacketHandler
                 continue;
             }
 
+            // A page declaring more lines than upstream tolerates ends the whole
+            // request (receive.cpp:1032) - there is no safe way to find the next page
+            // header past it.
+            if (lineCount > MaxDeclaredLines)
+                break;
+
+            // Every declared line has to be CONSUMED even when only the first few are
+            // kept, or the leftover bytes are read as the next page's header: a 65-line
+            // page turned "x\0" into page 30720 and silently dropped the real second
+            // page of the same request.
             var lines = new List<string>();
-            int maxLines = Math.Min((int)lineCount, MaxLinesPerPage);
-            for (int j = 0; j < maxLines && buffer.Remaining > 0; j++)
+            for (int j = 0; j < lineCount && buffer.Remaining > 0; j++)
             {
-                lines.Add(buffer.ReadAsciiNull(MaxLineChars));
+                string line = buffer.ReadAsciiNull(MaxLineChars);
+                if (lines.Count < MaxLinesPerPage)
+                    lines.Add(line);
             }
             pages.Add((pageNum, lines.ToArray()));
         }
