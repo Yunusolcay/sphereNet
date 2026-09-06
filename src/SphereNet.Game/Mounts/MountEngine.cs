@@ -28,6 +28,15 @@ public sealed class MountEngine
     {
         if (rider.IsDead || rider.IsMounted || npc.IsDead)
             return false;
+        // Source-X builds the mount item with Make_Figurine, which refuses a creature
+        // that is already disconnected - carrying someone, sitting in a stable, or
+        // shrunk into a figurine - and refuses a player outright (CCharAct.cpp:3619);
+        // Horse_Mount then fails with it (:3989). SphereNet only checked that the
+        // RIDER was free, so a second player could mount a creature already carrying
+        // one, and a double-click on the old uid of a stabled or shrunk pet started a
+        // mount while its stable entry or figurine still held the same NPC.
+        if (npc.IsPlayer || npc.IsStatFlag(StatFlag.Ridden))
+            return false;
         if (rider.FightTarget.IsValid || rider.IsStatFlag(StatFlag.Freeze))
             return false;
         if (rider.MapIndex != npc.MapIndex || rider.Position.GetDistanceTo(npc.Position) > 1)

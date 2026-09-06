@@ -63,13 +63,17 @@ public class P1SkillEventTriggerTests
 
         client.HandleDoubleClick(food.Uid.Value);
 
-        Assert.Equal(5, eatN1);          // @Eat fired with hunger restored
-        Assert.Equal(5, player.Food);    // fed by default
+        // ARGN1 is a STAT LIMIT and starts at ZERO, not the hunger restored: EatAnim
+        // seeds it from uiStatsLimit (CCharAct.cpp:3456) and carries the gains in
+        // LOCAL.Hits / Mana / Stam / Food instead. This assertion used to expect the
+        // 5 the old hand-written call passed, which no script could act on.
+        Assert.Equal(0, eatN1);
+        Assert.Equal(10, player.Food);   // fed by the food's own value, not a flat 5
         Assert.True(food.IsDeleted);     // single unit consumed
     }
 
     [Fact]
-    public void Eat_Food_ReturnTrue_BlocksTheMeal()
+    public void Eat_Food_ReturnTrue_BlocksTheGainButNotTheMeal()
     {
         var world = CreateWorld();
         var (client, player, d, _) = Setup(world);
@@ -83,8 +87,12 @@ public class P1SkillEventTriggerTests
 
         client.HandleDoubleClick(food.Uid.Value);
 
-        Assert.Equal(0, player.Food);    // blocked — no feeding
-        Assert.False(food.IsDeleted);    // and not consumed
+        // RETURN 1 skips the GAINS and nothing else. EatAnim returns early
+        // (CCharAct.cpp:3469) and its caller consumes the food regardless
+        // (Use_EatQty, CCharUse.cpp:913) - so a vetoing script blocks the benefit,
+        // not the meal. This test used to assert the food survived.
+        Assert.Equal(0, player.Food);    // no gain
+        Assert.True(food.IsDeleted);     // but the meal is still spent
     }
 
     [Fact]

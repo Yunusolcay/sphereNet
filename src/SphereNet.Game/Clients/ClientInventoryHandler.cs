@@ -357,10 +357,35 @@ public sealed class ClientInventoryHandler
                     or ItemType.Grain or ItemType.FoodRaw;
             if (edible)
             {
-                npc.NpcFood = (ushort)Math.Min(60, npc.NpcFood + 10 * Math.Max(1, (int)item.Amount));
-                _world.RemoveItem(item);
-                item.Delete();
+                // The pet eats what it has room for and no more. Source-X hands the
+                // offer to Use_EatQty, which refuses outright when the creature is
+                // full (CCharUse.cpp:891) and otherwise takes only the units the free
+                // space calls for (:894), then NPC_OnItemGive returns the rest to the
+                // player (CCharNPCAct.cpp:2119). SphereNet added ten per unit and
+                // destroyed the whole stack either way, so a hundred rations dropped
+                // on a full pet vanished. It also fired no @Eat, so nothing a shard
+                // scripted around feeding ever ran.
+                int eaten = SphereNet.Game.NPCs.EatEngine.Eat(
+                    npc, item, _triggerDispatcher, item.Amount);
+                if (eaten <= 0)
+                {
+                    SysMessage("Your pet is not hungry.");
+                    PlaceItemInPack(_character, item);
+                    _netState.Send(new PacketDropAck());
+                    return;
+                }
+
                 SysMessage("Your pet gratefully eats the food.");
+                if (eaten >= item.Amount)
+                {
+                    _world.RemoveItem(item);
+                    item.Delete();
+                }
+                else
+                {
+                    item.Amount = (ushort)(item.Amount - eaten);
+                    PlaceItemInPack(_character, item);
+                }
                 _netState.Send(new PacketDropAck());
                 return;
             }

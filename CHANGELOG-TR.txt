@@ -3,6 +3,61 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Petler: tek iliski, tek bond, tek yiyecek havuzu, tek yeme yolu (06E-06H)
+----------------------------------------
+
+FIX - Zaten bir binici tasiyan, ahirda duran veya figurine kuculmus bir yaratik ikinci
+        bir binisi kabul ediyordu. Source-X mount esyasini Make_Figurine ile kurar; bu
+        da disconnected bir yaratigi veya bir oyuncuyu dogrudan reddeder
+        (CCharAct.cpp:3619) ve Horse_Mount onunla basarisiz olur (:3989). SphereNet
+        yalnizca BINICININ bos olmasina bakiyordu; boylece ikinci bir oyuncu zaten
+        birini tasiyan ata binebiliyor, ahirdaki veya figurindeki petin eski uid'siyle
+        gelen bir cift tiklama ise ayni yaratik hala orada tutuluyorken mount
+        baslatiyordu. Motor artik reddediyor; cift tiklama gorunurluk kapisi da eski
+        bir tiklamanin park edilmis yaratiga ulasmasina izin vermiyor.
+
+FIX - Serbest birakilan veya sahibini terk eden pet BONDED kaliyordu. Source-X bond'u
+        sahip ve arkadas hafizasiyla ayni anda dusurur - "pets without owner cannot be
+        bonded" (NPC_PetClearOwners, CCharNPCPet.cpp:559). Korunmasi, petin sonraki
+        olumunun bonded daline girmesi demekti; yani sahipsiz bir beden, diger NPC'ler
+        gibi temizlenmek yerine dunya tablolarinda kaliyordu. SAHIPLI bonded pet
+        bedenini birakmaya devam ediyor; bonding zaten bunun icin.
+
+FIX - Peti beslemek yiyecek yiginin tamamini yok ediyordu. Source-X lokmayi bos alana
+        gore olcer: yaratik tok ise dogrudan reddeder (Use_EatQty, CCharUse.cpp:891),
+        yalnizca alanin gerektirdigi kadar adet alir (:894) ve kalani oyuncuya geri
+        yollar (NPC_OnItemGive, CCharNPCAct.cpp:2119). SphereNet adet basina 10
+        ekliyor ve boyutu ne olursa olsun esyayi kaldiriyordu; yani tok bir pete
+        birakilan yuz erzak yok oluyordu. Pet artik yeri kadarini yiyor, kalan sahibin
+        cantasina donuyor.
+
+FIX - FOOD ile petin acligi iki bagimsiz havuzdu. Besleme birini oynatirken FOOD
+        script ozelligi digerini okuyordu; yani bir script FOOD=60 yazip petin bir
+        sonraki sadakat tick'inde yine terk etmesini izleyebiliyordu. Source-X'te tek
+        bir STAT_FOOD vardir: yeme onu artirir, aclik tick'i azaltir, FOOD onu okur
+        (CChar.cpp:3180). Artik tek deger - bu ayni zamanda petin acliginin save'i
+        atlatmasi demek, cunku yalnizca oyuncu tarafindaki alan kaydediliyordu. Tavan
+        da sabit yerine yaratigin kendi MAXFOOD degerinden geliyor.
+
+FIX - Pet beslemesi @Eat'i hic calistirmiyordu; yani bir shard'in besleme etrafinda
+        yazdigi hicbir script islemiyordu. Oyuncu yemesi olayi calistiriyordu ama
+        ARGN1=5 geciyordu - referansta ARGN1 SIFIRDAN baslayan bir STAT LIMITIDIR -
+        olayin tasidigi LOCAL.Hits / Mana / Stam / Food degerlerinin hicbirini
+        hazirlamiyor ve sonra yine sabit bes uyguluyordu; yani o degerleri yazan bir
+        script hicbir sey degistirmiyordu. Ikisi de artik referansin argumanlari ve
+        geri okumasiyla tek yoldan geciyor (EatAnim, CCharAct.cpp:3436).
+
+        RETURN 1 kazanimlari atliyor ama yiyecegi artik kurtarmiyor: EatAnim erken
+        doner ve cagirani yemegi her halukarda tuketir (CCharUse.cpp:913). Eski
+        ARGN1=5 ve veto'da tuketilmeme davranisini kodlayan iki mevcut test referans
+        sozlesmesine gore duzeltildi.
+
+        Bilincli sapma, kayda gecirildi: EatAnim her local'e mevcut stat'i ekleyip
+        toplami UpdateStatVal'e verir; o da degeri mevcut degere BIR KEZ DAHA ekler
+        (CCharAct.cpp:757), yani referans kirpmadan once eldekini ikiye katliyor. Bunun
+        yerine duz kazanim uygulaniyor; aksi halde her ogunde shard'in yiyecegi ve
+        iyilesmesi ikiye katlanirdi.
+
 [2026-09-06] - Petler: komut yetkisi, kalan emirler ve saklanan pet kimligi (06A-06D)
 ----------------------------------------
 

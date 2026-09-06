@@ -348,7 +348,6 @@ public partial class Character : ObjBase
     // NPC fields
     private NpcBrainType _npcBrain;
     private Serial _npcMaster = Serial.Invalid;
-    private ushort _npcFood;
 
     // Runtime EVENTS list (from CHARDEF + dynamically added)
     private readonly List<ResourceId> _events = [];
@@ -1565,7 +1564,19 @@ public partial class Character : ObjBase
     public int ProcessPoisonTick(long now) => Poison.ProcessTick(now);
 
     // Hunger
-    public ushort Food { get => _food; set => _food = Math.Min(value, (ushort)60); }
+    /// <summary>Hunger. This is the ONE food pool: Source-X has a single STAT_FOOD
+    /// that eating raises (EatAnim, CCharAct.cpp:3436), the hunger tick lowers
+    /// (OnTickFood, :5753) and the FOOD script property reads (CChar.cpp:3180).</summary>
+    public ushort Food { get => _food; set => _food = Math.Min(value, MaxFood); }
+
+    /// <summary>Food ceiling. Source-X asks Stat_GetMaxAdjusted(STAT_FOOD); SphereNet
+    /// keeps the per-creature value in the MAXFOOD tag, which the spawner stamps from
+    /// the chardef, and falls back to the classic 60 when a creature sets none - the
+    /// constant is not spread across every creature.</summary>
+    public ushort MaxFood =>
+        TryGetTag("MAXFOOD", out string? raw) && ushort.TryParse(raw, out ushort max) && max > 0
+            ? max
+            : (ushort)60;
     public bool IsHungry => _food <= 0;
 
     // NPC
@@ -1580,7 +1591,13 @@ public partial class Character : ObjBase
         }
         set => SetOwnerControllerRaw(value, value, mirrorLegacySummon: false);
     }
-    public ushort NpcFood { get => _npcFood; set => _npcFood = value; }
+    /// <summary>The pet hunger/loyalty pool, which is the SAME value as
+    /// <see cref="Food"/> - kept as a named alias because the pet paths read better
+    /// through it. They were two independent fields, so feeding a pet moved one while
+    /// the FOOD script property read the other: a script could set FOOD=60 and watch
+    /// the pet desert at the next loyalty tick anyway. Only Food was ever persisted,
+    /// so a pet's hunger also failed to survive a save.</summary>
+    public ushort NpcFood { get => Food; set => Food = value; }
 
     /// <summary>Pet AI mode — controls pet behavior when owned by a player.</summary>
     public PetAIMode PetAIMode { get; set; } = PetAIMode.Follow;
@@ -1890,8 +1907,8 @@ public partial class Character : ObjBase
         if (ownerUid.IsValid)
         {
             SetStatFlag(StatFlag.Pet);
-            if (_npcFood == 0)
-                _npcFood = 50;
+            if (_food == 0)
+                _food = 50;
         }
         else
         {
@@ -1925,6 +1942,13 @@ public partial class Character : ObjBase
         }
 
         ClearStatFlag(StatFlag.Pet);
+
+        // Source-X clears the bond in the same breath as the owner and friend memory:
+        // "pets without owner cannot be bonded" (NPC_PetClearOwners,
+        // CCharNPCPet.cpp:559). Leaving BONDED set on a released or deserted pet made
+        // its later death take the bonded branch, so an ownerless corpse-less ghost
+        // stayed in the world tables instead of being cleaned up like any other NPC.
+        IsBonded = false;
     }
 
     public void NormalizePlayerSkillClass()
@@ -2146,12 +2170,12 @@ public partial class Character : ObjBase
         // Hirelings are paid in gold (handled by the AI wage tick), so hunger
         // does not erode their loyalty.
         bool isHireling = TryGetTag("HIRE_WAGE", out _);
-        if (!isHireling && _npcFood > 0)
-            _npcFood--;
+        if (!isHireling && _food > 0)
+            _food--;
 
         var petOwner = OwnerSerial.IsValid ? ResolveCharByUid?.Invoke(OwnerSerial) : null;
 
-        if (_npcFood == 0)
+        if (_food == 0)
         {
             // @PetDesert (Source-X) — fires before the pet goes wild; a script may
             // RETURN 1 to cancel the desertion and keep the pet serving.
@@ -2167,7 +2191,7 @@ public partial class Character : ObjBase
         }
 
         // Escalating loyalty warnings as the pet grows hungry/unhappy.
-        if (petOwner != null && (_npcFood == 15 || _npcFood == 10 || _npcFood == 5))
+        if (petOwner != null && (_food == 15 || _food == 10 || _food == 5))
             SendOwnerMessage?.Invoke(petOwner, ServerMessages.GetFormatted("pet_loyalty_low", Name));
 
         return false;

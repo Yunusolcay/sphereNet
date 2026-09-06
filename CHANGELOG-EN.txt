@@ -4,6 +4,60 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Pets: one relationship, one bond, one food pool, one eating path (06E-06H)
+----------------------------------------
+
+FIX - A creature already carrying a rider, sitting in a stable or shrunk into a
+        figurine accepted a second mount. Source-X builds the mount item with
+        Make_Figurine, which refuses a disconnected creature or a player outright
+        (CCharAct.cpp:3619), and Horse_Mount fails with it (:3989). SphereNet checked
+        only that the RIDER was free, so a second player could mount a horse already
+        carrying one, and a double-click carrying the old uid of a stabled or shrunk
+        pet started a mount while its stable entry or figurine still held the same
+        creature. The engine now refuses it, and the double-click visibility gate no
+        longer lets a stale click reach a parked creature at all.
+
+FIX - A released or deserted pet stayed BONDED. Source-X drops the bond in the same
+        breath as the owner and friend memory - "pets without owner cannot be bonded"
+        (NPC_PetClearOwners, CCharNPCPet.cpp:559). Keeping it meant the pet's later
+        death took the bonded branch, so an ownerless body stayed in the world tables
+        instead of being cleaned up like any other NPC. An OWNED bonded pet still
+        leaves its body behind, which is what bonding is for.
+
+FIX - Feeding a pet destroyed the whole stack. Source-X sizes the bite against the
+        free space: it refuses outright when the creature is full (Use_EatQty,
+        CCharUse.cpp:891), takes only as many units as the space calls for (:894), and
+        returns the rest to the player (NPC_OnItemGive, CCharNPCAct.cpp:2119).
+        SphereNet added ten per unit and removed the item whatever its size, so a
+        hundred rations dropped on a full pet simply vanished. The pet now eats what it
+        has room for and the remainder goes back to the owner's pack.
+
+FIX - FOOD and the pet's hunger were two independent pools. Feeding moved one while
+        the FOOD script property read the other, so a script could set FOOD=60 and
+        watch the pet desert at the next loyalty tick anyway. Source-X has a single
+        STAT_FOOD that eating raises, the hunger tick lowers and FOOD reads
+        (CChar.cpp:3180). They are now one value - which also means a pet's hunger
+        finally survives a save, since only the player-side field was ever persisted.
+        The ceiling comes from the creature's own MAXFOOD rather than a constant.
+
+FIX - Feeding a pet fired no @Eat at all, so nothing a shard scripted around feeding
+        ever ran. Player eating did fire it, but passed ARGN1=5 - the reference's ARGN1
+        is a STAT LIMIT that starts at zero - prepared none of the LOCAL.Hits / Mana /
+        Stam / Food values the event carries, and then applied a flat five regardless,
+        so a script that wrote those values changed nothing. Both now go through one
+        path with the reference's arguments and read-back (EatAnim, CCharAct.cpp:3436).
+
+        RETURN 1 skips the gains but no longer saves the food: EatAnim returns early
+        and its caller consumes the meal either way (CCharUse.cpp:913). Two existing
+        tests encoded the old ARGN1=5 and the uneaten-on-veto behaviour and were
+        corrected to the reference contract.
+
+        Deliberate divergence, recorded: EatAnim adds the current stat to each local
+        and hands the sum to UpdateStatVal, which adds it to the current value again
+        (CCharAct.cpp:757) - doubling what is already there before clamping. The plain
+        gain is applied instead rather than doubling a shard's food and healing on
+        every meal.
+
 [2026-09-06] - Pets: command authority, stale orders and stored-pet identity (06A-06D)
 ----------------------------------------
 

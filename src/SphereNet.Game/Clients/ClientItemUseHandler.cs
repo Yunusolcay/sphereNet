@@ -386,6 +386,14 @@ public sealed class ClientItemUseHandler
 
     private bool CanSeeCharacterForDoubleClick(Character target)
     {
+        // A parked creature - carrying a rider, stabled or shrunk - is out of its
+        // sector and cannot be seen, but it stays in the world table at its last
+        // position, so a double-click carrying its old uid still arrived here. The
+        // engine refuses a second relationship on its own; this closes the door the
+        // stale click came through.
+        if (target.IsStatFlag(StatFlag.Ridden))
+            return false;
+
         if (_character == null || target.IsDeleted) return false;
         if (target == _character) return true;
         if (target.MapIndex != _character.MapIndex) return false;
@@ -744,11 +752,15 @@ public sealed class ClientItemUseHandler
                         item.ItemType == ItemType.Drink ? Msg.DrinkCantmove : Msg.FoodCantmove));
                     break;
                 }
-                // @Eat (Source-X) — RETURN 1 blocks the meal. N1 = hunger restored.
-                if (_triggerDispatcher?.FireCharTrigger(_character, CharTrigger.Eat,
-                        new TriggerArgs { CharSrc = _character, ItemSrc = item, O1 = item, N1 = 5 }) == TriggerResult.True)
-                    break;
-                _character.Food = (ushort)Math.Min(_character.Food + 5, 60);
+                // One meal, one path: EatEngine carries the reference's @Eat
+                // contract - ARGN1 is a STAT LIMIT starting at zero rather than the
+                // hunger restored, the gains ride in LOCAL.Hits / Mana / Stam / Food
+                // with the item as the object argument, and all of them are read back
+                // (CCharAct.cpp:3456-3476). The old call passed N1=5, prepared no
+                // locals and then applied a flat five regardless, so a script that
+                // wrote those values changed nothing. RETURN 1 skips the gains but
+                // still costs the food, as Use_EatQty consumes either way (:913).
+                SphereNet.Game.NPCs.EatEngine.Eat(_character, item, _triggerDispatcher, 1);
                 SysMessage(ServerMessages.Get("itemuse_eat_food"));
                 BroadcastNearby?.Invoke(_character.Position, UpdateRange,
                     new PacketAnimation(_character.Uid.Value, (ushort)AnimationType.Eat), 0);
@@ -782,10 +794,7 @@ public sealed class ClientItemUseHandler
             case ItemType.Grain:
             case ItemType.Grass:
             case ItemType.WaterWash:
-                if (_triggerDispatcher?.FireCharTrigger(_character, CharTrigger.Eat,
-                        new TriggerArgs { CharSrc = _character, ItemSrc = item, O1 = item, N1 = 5 }) == TriggerResult.True)
-                    break;
-                _character.Food = (ushort)Math.Min(_character.Food + 5, 60);
+                SphereNet.Game.NPCs.EatEngine.Eat(_character, item, _triggerDispatcher, 1);
                 SysMessage(ServerMessages.Get("itemuse_eat_food"));
                 BroadcastNearby?.Invoke(_character.Position, UpdateRange,
                     new PacketAnimation(_character.Uid.Value, (ushort)AnimationType.Eat), 0);

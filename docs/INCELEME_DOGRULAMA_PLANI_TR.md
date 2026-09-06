@@ -1059,6 +1059,61 @@ Ayrica raporlarin kendi kuyruklari: dismount yerlestirme basarisizligi, ayni mou
 iki rider, zaten park edilmis NPC'nin yeniden paketlenmesi, stable hedefinde gorus
 denetimi ve friend/unfriend/release fiillerinin ayri regresyonlari.
 
+### 06E-06H - tekil pet durumu, bonded, besleme, @Eat (6 Eylul 2026)
+
+Kanit raporlari: [06E](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_06E_TEKIL_PET_DURUMU.md),
+[06F](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_06F_BONDED_SAHIPLIK.md),
+[06G](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_06G_PET_BESLEME.md),
+[06H](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_06H_EAT_SCRIPT.md).
+Alti bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+- [x] **SX-06E-01 (P2)** - Zaten saklanmis/binilmis pet yeniden mount kabul ediyordu.
+  (YAPILDI: `TryMount` artik `npc.IsPlayer || npc.IsStatFlag(Ridden)` reddediyor -
+  referansta Make_Figurine disconnected yaratigi ve oyuncuyu bastan reddeder
+  (CCharAct.cpp:3619), Horse_Mount da onunla basarisiz olur (:3989).
+  **Raporun istedigi iki katman:** "yalniz istemci kapisini degistirmek script/motor
+  cagrilarini korumaz" - motor kapisi otoriter, `CanSeeCharacterForDoubleClick`'teki
+  Ridden reddi ise eski tiklamanin geldigi yolu kapatiyor.)
+- [x] **SX-06F-01 (P2)** - Sahipligi biten pet BONDED kaliyordu. (YAPILDI:
+  `ClearOwnership` artik `IsBonded = false` yapiyor - referans ayni yerde
+  `m_pNPC->m_bonded = 0` yazar (CCharNPCPet.cpp:559).
+  **Ortak yol secildi:** rapor "yalniz DeathEngine'de sahiplik sarti eklemek canli
+  sahipsiz NPC uzerindeki yanlis BONDED durumunu duzeltmez" diyordu; duzeltme
+  release ve desert'i birlikte kapsayan sahiplik temizleme yoluna kondu.
+  Tum `ClearOwnership` cagiranlari denetlendi; hepsi gercekten sahipligin bittigi
+  durumlar.)
+- [x] **SX-06G-01 (P2)** - Tok pete verilen yigin tamamen siliniyordu. (YAPILDI:
+  yeni `EatEngine` bos alani olcuyor; tok ise hic yemiyor, kismi ise yalnizca gereken
+  adedi tuketiyor, kalan yigin sahibin cantasina donuyor - Use_EatQty :891/:894 ve
+  NPC_OnItemGive.)
+- [x] **SX-06G-02 (P2)** - FOOD script degeri ile aclik havuzu ayrisiyordu. (YAPILDI:
+  `NpcFood` artik `Food` uzerine alias; tek `_food` havuzu. Yan kazanc: `NpcFood` hic
+  persist edilmiyordu, artik petin acligi save'i atlatiyor. `MaxFood` MAXFOOD
+  etiketinden geliyor - raporun "MAXFOOD=60 sabitini butun yaratiklara yayma"
+  uyarisi.)
+- [x] **SX-06H-01 (P2)** - Pet beslemesi @Eat'i atliyordu. (YAPILDI: besleme ortak
+  `EatEngine` yolundan geciyor, olay yiyen pet uzerinde O1=yiyecek ile calisiyor.)
+- [x] **SX-06H-02 (P2)** - Oyuncu @Eat cagrisi ARGN1/LOCAL sozlesmesini uygulamiyordu.
+  (YAPILDI: ARGN1 sifirdan baslayan STAT LIMITI, LOCAL.Hits/Mana/Stam/Food hazirlanip
+  geri okunuyor (CCharAct.cpp:3456-3476).
+  **Raporun isaret ettigi mevcut test duzeltildi:** `P1SkillEventTriggerTests` N1=5
+  bekliyordu ve RETURN 1'in yiyecegi de kurtardigini test ediyordu. Referansta ikisi
+  de yanlis: ARGN1 stat limiti, ve Use_EatQty EatAnim'den sonra her hâlükârda
+  ConsumeAmount cagirir (:913). Iki iddia da referansa gore yeniden yazildi.
+  **Bilincli sapma, kayda gecirildi:** EatAnim her local'e mevcut stat'i ekler ve
+  toplami UpdateStatVal'e verir; o da mevcut degere BIR KEZ DAHA ekler
+  (CCharAct.cpp:757). Bu, her ogunde eldekini ikiye katlar. Duz kazanim uygulandi;
+  gerekce EatEngine icinde ve changelog'da yazili.)
+
+**06E-06H kapanisi:** tam suite **2.535 basarili / 0 basarisiz** (+17). Alti duzeltme
+de gecici olarak kapatilarak 11 testin eski davranisi yakaladigi kanitlandi; havuz
+birlestirmesi icin ayrica ikinci bir kapatma turu yapildi.
+
+**Acik kalan:** `SOURCE_X_BOLUM_06I_ZEHIRLI_YIYECEK.md` bu partide istenmedi.
+Ayrica: Source-X `Use_EatQty` zehirli yiyecegi `SetPoison` ile uygular (:905) -
+`EatEngine`'e tasinmadi, 06I'nin konusu. FOODVAL'in itemdef VOLUME yarisi SphereNet'te
+karsiliksiz; simdilik FOODVAL etiketi ve 10 varsayilani kullaniliyor.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.
