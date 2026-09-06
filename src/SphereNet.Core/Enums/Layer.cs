@@ -44,5 +44,9 @@ public enum Layer : byte
     // tracks dragging via the DRAGGING tag rather than this layer, so it is defined
     // only for numeric parity with LAYER_TYPE; it is not a client-equippable slot.
     Dragging = 31,
+    // Source-X keeps its spell and flag layers above LAYER_DRAGGING (uofiles_enums.h:592).
+    // SphereNet models the ones it needs at the reference's own numbers, so a layer
+    // byte means the same thing on both sides.
+    FlagWool = 46,      // LAYER_FLAG_Wool - a shorn sheep's regrowing fleece
     Qty
 }

@@ -781,6 +781,50 @@ public class Item : ObjBase
     public const long BeeHiveRefillMs = 15 * 60 * 1000;
     public const uint BeeHiveMaxHoney = 5;
 
+    /// <summary>Source-X WOOLGROWTHTIME default: half an hour before a shorn sheep
+    /// is worth shearing again (CServerConfig.cpp:229).</summary>
+    public const long WoolGrowthMs = 30 * 60 * 1000;
+
+    private const ushort SheepBody = 0x00CF;
+    private const ushort ShornSheepBody = 0x00DF;
+
+    /// <summary>Put this item into a timed animation state and remember what to come
+    /// back to. Source-X SetAnim (CItem.cpp:4128) saves the graphic and the type in
+    /// m_itAnim, switches the item to IT_ANIM_ACTIVE and arms the timer - which is
+    /// what keeps a workstation busy: while it is IT_ANIM_ACTIVE it no longer answers
+    /// as the station it was.</summary>
+    public void SetAnim(ushort animId, long durationMs)
+    {
+        More1 = DispIdFull;
+        More2 = (uint)_type;
+        _dispId = animId;
+        _type = ItemType.AnimActive;
+        SetTimeout(Environment.TickCount64 + durationMs);
+        MarkDirty((DirtyFlag)0xFFFFFFFF);
+        OnVisualUpdate?.Invoke(this);
+    }
+
+    /// <summary>Come back out of the animation state SetAnim put us in.</summary>
+    private void EndAnim()
+    {
+        if (More1 != 0) _dispId = (ushort)More1;
+        _type = More2 != 0 ? (ItemType)More2 : ItemType.Normal;
+        More1 = 0;
+        More2 = 0;
+        MarkDirty((DirtyFlag)0xFFFFFFFF);
+        OnVisualUpdate?.Invoke(this);
+    }
+
+    /// <summary>A shorn sheep's fleece has grown back (Source-X OnTickEquip
+    /// LAYER_FLAG_Wool, CCharAct.cpp:4067). The marker is spent either way.</summary>
+    private void RegrowWool()
+    {
+        var world = ResolveWorld?.Invoke();
+        if (world?.FindChar(ContainedIn) is { } sheep && sheep.BodyId == ShornSheepBody)
+            sheep.BodyId = SheepBody;
+        Delete();
+    }
+
     public void RemoveFromWorld()
     {
         var world = ResolveWorld?.Invoke();
@@ -3096,6 +3140,12 @@ public class Item : ObjBase
                     break;
                 case ItemType.LightLit:
                     OnLightBurnTick();
+                    break;
+                case ItemType.AnimActive:
+                    EndAnim();
+                    break;
+                case ItemType.EqMemoryObj when EquipLayer == Layer.FlagWool:
+                    RegrowWool();
                     break;
                 case ItemType.BeeHive:
                     // Source-X CItem::_OnTick IT_BEE_HIVE (CItem.cpp:6380): the hive

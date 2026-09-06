@@ -1630,6 +1630,49 @@ veriyor.
 gem ciktisi; kulce SKILLMAKE minimum-beceri araligi; onarimda kismi/coklu kaynak,
 statik ors ve ic ice cantalar; skillgain miktarlari.
 
+### 08B - hedefli esya kullanimi: 6 bulgu (6 Eylul 2026)
+
+Kanit raporu: [08B](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_08B_HEDEFLI_KULLANIM_TOPLU.md).
+Alti bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+- [x] **08B-1 (P2)** - Balik kesmede yalnizca erisim deneniyordu. (YAPILDI:
+  `CanConsumeTarget` = referansin CanUse(hedef, MOVE) karsiligi; donusum de artik
+  yerinde - yeni yigin uretmek baskasinin baligini kesenin eline tasiyordu.)
+- [x] **08B-2 (P2)** - Kirkim yun yenilenmesini baslatmiyordu. (YAPILDI: `Layer.FlagWool`
+  (=46, referansin kendi numarasi) uzerinde sureli isaret esyasi; suresi dolunca beden
+  geri donuyor.
+  **Yapisal not:** SphereNet'in Layer enum'u 31'de bitiyordu; referansin dahili katman
+  bloguna yalnizca ihtiyac duyulan giris eklendi. `Layer.Qty` degistigi icin
+  `ItemInventoryParityTests.Layer_MatchesUoLayerTypeNumbering` guncellendi - eski
+  `Qty == 32` iddiasi SphereNet'in kesilmis modelini kodluyordu, referansta da 32 degil.
+  **Raporun otesinde:** dahili katmanlar artik istemciye gonderilmiyor
+  (`SendItemVisualUpdate` > Layer.Horse guard) - referans "don't bother sending these".
+  Ayrica bicak dagiticisi kirkilmis koyunu da yanitliyor, yoksa yeni uyari mesaji
+  erisilemez kalirdi.)
+- [x] **08B-3 (P3)** - Yatak rulosu acilip kapanmiyordu. (YAPILDI: 0A57/0A58/0A59 ->
+  acik, 0A55/0A56 -> kapali; cantadaki rulo icin "once yere koy". Tanimadigi grafik
+  eski Camping davranisini koruyor.)
+- [x] **08B-4 (P2)** - Top doldurmada hedef/mermi dogrulanmiyordu. (YAPILDI: muzzle icin
+  erisim, mermi icin `CanConsumeTarget`.)
+- [x] **08B-5 (P2)** - Meyve/ham reaktiften tohum dali yoktu. (YAPILDI: `CutSeedFrom` -
+  DEFAULTSEED grafigi, IT_SEED turu ve "<ad> seed" adi, yerinde.)
+- [x] **08B-6 (P2)** - Cikrik iki saniyelik mesgul duruma gecmiyordu. (YAPILDI:
+  `Item.SetAnim`/`EndAnim` - onceki grafik MORE1'de, onceki tur MORE2'de, tur
+  `AnimActive`, timer 2 sn; `Item.OnTick` geri donduruyor. `AnimActive` dclick mesaji
+  zaten vardi, onu kuran yoktu.)
+
+**08B kapanisi:** tam suite **2.736 basarili / 0 basarisiz** (+18). Alti duzeltme de
+gecici olarak kapatilarak 15 testin eski davranisi yakaladigi kanitlandi.
+
+**Kendi testimi duzelttim:** ilk kapatma kosusunda "sabit balik" ve "baskasinin baligi"
+testleri yesil kalmisti - eski kod baligi silip filetoyu cantaya koydugu icin
+`fish.ItemType` silinmis nesnede hala Fish okunuyordu. Iddia `IsDeleted == false` ve
+"cantada fileto yok" olarak guclendirildi.
+
+**Acik kalan:** yun sayisinin script tanimlarina gore degerlendirilmesi ve save/load
+sonrasi yenilenme; cikrik anim durumunun kayittan donmesi; yatak rulosunun 1F24-1F27
+ailesi; top atisi hasari; DEFAULTSEED'in gercek paketle cozulmesi.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

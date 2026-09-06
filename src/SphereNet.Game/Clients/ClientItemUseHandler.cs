@@ -926,7 +926,9 @@ public sealed class ClientItemUseHandler
                         CarveCorpseWithBlade(corpse);
                         return;
                     }
-                    if (targetObj is Character sheep && sheep.BodyId == 0x00CF)
+                    // A shorn sheep is answered too - the reference tells the player
+                    // to wait rather than silently doing nothing (CClientTarg.cpp:1870).
+                    if (targetObj is Character sheep && sheep.BodyId is 0x00CF or 0x00DF)
                     {
                         ShearSheep(sheep);
                         return;
@@ -940,6 +942,12 @@ public sealed class ClientItemUseHandler
                         cropItem.ItemType is ItemType.Crops or ItemType.Foliage)
                     {
                         HarvestPlant(cropItem);
+                        return;
+                    }
+                    if (targetObj is Item seedSource &&
+                        seedSource.ItemType is ItemType.Fruit or ItemType.ReagentRaw)
+                    {
+                        CutSeedFrom(seedSource);
                         return;
                     }
                     // Axe at a tree/ground: start Lumberjacking at the spot.
@@ -1652,8 +1660,7 @@ public sealed class ClientItemUseHandler
                 RouteSkillTarget(SkillType.Camping, item.Uid);
                 break;
             case ItemType.Bedroll:
-                SysMessage("You lay out the bedroll.");
-                RouteSkillTarget(SkillType.Camping, item.Uid);
+                UseBedroll(item);
                 break;
             case ItemType.Campfire:
                 SysMessage("The fire is warm.");
@@ -2490,6 +2497,9 @@ public sealed class ClientItemUseHandler
         _world.RemoveItem(ore);
     }
 
+    /// <summary>Source-X spins for two seconds (SetAnim, CClientTarg.cpp:2029).</summary>
+    private const long SpinWheelBusyMs = 2000;
+
     private const ushort CleanBandageId = 0x0E21;   // ITEMID_BANDAGES1
     private const ushort PlainLeatherId = 0x1067;   // ITEMID_LEATHER_1
 
@@ -2640,8 +2650,96 @@ public sealed class ClientItemUseHandler
         return false;
     }
 
+    // Source-X bedroll graphics (uofiles_enums_itemid.h:115): open east-west and
+    // north-south, the rolled-up one, and the two rolls that open a fixed way.
+    private const ushort BedrollOpenEW = 0x0A55;
+    private const ushort BedrollOpenNS = 0x0A56;
+    private const ushort BedrollClosed = 0x0A57;
+    private const ushort BedrollClosedNS = 0x0A58;
+    private const ushort BedrollClosedEW = 0x0A59;
+
+    /// <summary>Roll a bedroll out, or roll it back up (Use_BedRoll,
+    /// CCharUse.cpp:1534). SphereNet said "you lay out the bedroll" and went straight
+    /// to Camping without ever changing the item, so a bedroll never looked laid out.
+    /// A rolled-up one has to be on the GROUND to open, which is what the reference
+    /// tells the player instead.</summary>
+    private void UseBedroll(Item bedroll)
+    {
+        if (_character == null) return;
+
+        ushort id = bedroll.DispIdFull;
+        if (id is BedrollOpenEW or BedrollOpenNS)
+        {
+            SetBedrollId(bedroll, BedrollClosed);
+            return;
+        }
+
+        if (id is BedrollClosed or BedrollClosedNS or BedrollClosedEW)
+        {
+            if (bedroll.ContainedIn.IsValid)
+            {
+                SysMessage(ServerMessages.Get(Msg.ItemuseBedroll));
+                return;
+            }
+            SetBedrollId(bedroll, id switch
+            {
+                BedrollClosedNS => BedrollOpenNS,
+                BedrollClosedEW => BedrollOpenEW,
+                _ => Random.Shared.Next(2) == 0 ? BedrollOpenEW : BedrollOpenNS,
+            });
+            return;
+        }
+
+        // A bedroll graphic the reference does not know still camps, which is what
+        // SphereNet has always done here.
+        SysMessage("You lay out the bedroll.");
+        RouteSkillTarget(SkillType.Camping, bedroll.Uid);
+    }
+
+    private void SetBedrollId(Item bedroll, ushort id)
+    {
+        bedroll.BaseId = id;
+        Item.OnVisualUpdate?.Invoke(bedroll);
+        if (!bedroll.ContainedIn.IsValid)
+            BroadcastNearby?.Invoke(bedroll.Position, UpdateRange,
+                new PacketWorldItem(bedroll.Uid.Value, bedroll.DispIdFull, bedroll.Amount,
+                    bedroll.X, bedroll.Y, bedroll.Z, bedroll.Hue), 0);
+    }
+
     /// <summary>Source-X blade-on-corpse: carving through DeathEngine.CarveCorpse —
     /// the engine existed but no player input path reached it (audit #2).</summary>
+    /// <summary>A fruit or a raw reagent cut open gives a seed: the reference swaps
+    /// the graphic for the DEFAULTSEED one, retypes it IT_SEED and renames it
+    /// "&lt;name&gt; seed" in place (CClientTarg.cpp:1939). SphereNet's blade dispatcher
+    /// had no such branch, so the whole fruit-to-seed-to-plant chain started
+    /// nowhere.</summary>
+    private void CutSeedFrom(Item fruit)
+    {
+        if (_character == null) return;
+        if (!CanConsumeTarget(fruit))
+        {
+            SysMessage(ServerMessages.Get(Msg.ItemuseCantthink));
+            return;
+        }
+
+        ushort seedId = Item.ResolveDefName?.Invoke("DEFAULTSEED") ?? 0;
+        if (seedId == 0)
+        {
+            SysMessage(ServerMessages.Get(Msg.ItemuseCantthink));
+            return;
+        }
+
+        string was = fruit.GetName();
+        fruit.BaseId = seedId;
+        fruit.ItemType = ItemType.Seed;
+        fruit.Name = $"{was} seed";
+        Item.OnVisualUpdate?.Invoke(fruit);
+        if (fruit.ContainedIn.IsValid)
+            _netState.Send(new PacketContainerItem(
+                fruit.Uid.Value, fruit.DispIdFull, 0, fruit.Amount, fruit.X, fruit.Y,
+                fruit.ContainedIn.Value, fruit.Hue, _netState.IsClientPost6017));
+    }
+
     private void CarveCorpseWithBlade(Item corpse)
     {
         if (_character == null) return;
@@ -2664,7 +2762,13 @@ public sealed class ClientItemUseHandler
     private void ShearSheep(Character sheep)
     {
         if (_character == null) return;
-        if (sheep.IsDead || sheep.BodyId != 0x00CF) return;
+        if (sheep.IsDead) return;
+        if (sheep.BodyId == 0x00DF)
+        {
+            SysMessage(ServerMessages.Get("itemuse_weapon_wwait"));
+            return;
+        }
+        if (sheep.BodyId != 0x00CF) return;
         if (_character.PrivLevel < PrivLevel.GM &&
             _character.Position.GetDistanceTo(sheep.Position) > 3)
         {
@@ -2676,6 +2780,19 @@ public sealed class ClientItemUseHandler
         wool.Amount = 2;
         PlaceItemInPack(_character, wool);
         sheep.BodyId = 0x00DF; // sheared sheep
+
+        // The fleece grows back on a timer the sheep CARRIES: Source-X hangs a second
+        // wool item on LAYER_FLAG_Wool with WOOLGROWTHTIME on it, and when that
+        // expires the shorn body becomes a sheep again (CClientTarg.cpp:1862 ->
+        // OnTickEquip, CCharAct.cpp:4067). SphereNet made no such record at all, so
+        // nothing but a respawn ever un-sheared it.
+        var regrow = _world.CreateItem();
+        regrow.BaseId = 0x0DF8;
+        regrow.ItemType = ItemType.EqMemoryObj;
+        regrow.SetAttr(ObjAttributes.Newbie | ObjAttributes.Move_Never);
+        sheep.Equip(regrow, Layer.FlagWool);
+        regrow.SetTimeout(Environment.TickCount64 + Item.WoolGrowthMs);
+
         SysMessage("You shear the sheep and collect the wool.");
     }
 
@@ -2683,19 +2800,51 @@ public sealed class ClientItemUseHandler
     private void FilletFish(Item fish)
     {
         if (_character == null) return;
-        if (_character.PrivLevel < PrivLevel.GM && !CanReachTargetItem(fish))
+
+        // Reaching a thing is not the same as being allowed to consume it: Source-X
+        // asks CanUse(target, MOVE) here (IT_FISH, CClientTarg.cpp:1919), which brings
+        // the move rules and the take-crime check with it. Without them a decorative
+        // fixed fish vanished and another player's catch could be cut up out of their
+        // own pack.
+        if (!CanConsumeTarget(fish))
         {
-            SysMessage(ServerMessages.Get(Msg.ItemuseToofar));
+            SysMessage(ServerMessages.Get(Msg.ItemuseFishUnable));
             return;
         }
-        int count = Math.Max(1, (int)fish.Amount);
-        var steaks = _world.CreateItem();
-        steaks.BaseId = 0x097A; // raw fish steak
-        steaks.ItemType = ItemType.Food;
-        steaks.Amount = (ushort)Math.Min(ushort.MaxValue, count * 4);
-        PlaceItemInPack(_character, steaks);
-        _world.RemoveItem(fish);
+
+        // The catch is CUT WHERE IT LIES - the reference changes the same item's
+        // graphic, clears its hue and multiplies the amount by four. Making a new pile
+        // in the pack moved someone else's fish into the cutter's own hands.
+        fish.BaseId = 0x097A;   // ITEMID_FOOD_FISH_RAW
+        fish.ItemType = ItemType.Food;
+        fish.Hue = new Core.Types.Color(0);
+        fish.Amount = (ushort)Math.Min(ushort.MaxValue, Math.Max(1, (int)fish.Amount) * 4);
+        Item.OnVisualUpdate?.Invoke(fish);
+        if (fish.ContainedIn.IsValid)
+            _netState.Send(new PacketContainerItem(
+                fish.Uid.Value, fish.DispIdFull, 0, fish.Amount, fish.X, fish.Y,
+                fish.ContainedIn.Value, fish.Hue, _netState.IsClientPost6017));
         SysMessage("You cut the fish into raw fish steaks.");
+    }
+
+    /// <summary>Source-X CanUse(item, fMoveOrConsume: true) (CCharStatus.cpp:1736):
+    /// reach, plus the move rules and the take-crime check that consuming implies.
+    /// SphereNet's use paths asked only for reach, so a fixed or someone else's item
+    /// could be spent.</summary>
+    private bool CanConsumeTarget(Item target)
+    {
+        if (_character == null) return false;
+        if (_character.PrivLevel >= PrivLevel.GM) return true;
+
+        if (!CanReachTargetItem(target))
+            return false;
+        if (!ItemMoveRules.CanMove(_character, target, out _))
+            return false;
+
+        // Whatever is inside somebody else is theirs; the ground and my own pack are
+        // fair game (the reference's IsTakeCrime for a container it does not own).
+        var top = target.ResolveTopObject();
+        return top is not Character owner || ReferenceEquals(owner, _character);
     }
 
     /// <summary>Source-X Use_Cannon_Feed: sulfurous ash loads powder (MORE1
@@ -2704,6 +2853,21 @@ public sealed class ClientItemUseHandler
     {
         if (_character == null) return;
         if (feed == null || feed.IsDeleted)
+        {
+            SysMessage(ServerMessages.Get(Msg.ItemuseCannonEmpty));
+            return;
+        }
+
+        // Both ends are checked: the muzzle has to be within reach, and the charge has
+        // to be one this player may actually spend (Use_Cannon_Feed, CCharUse.cpp:301).
+        // Neither was, so a cannon across the map took a charge out of a stranger's
+        // pack.
+        if (_character.PrivLevel < PrivLevel.GM && !CanReachTargetItem(cannon))
+        {
+            SysMessage(ServerMessages.Get(Msg.ItemuseToofar));
+            return;
+        }
+        if (!CanConsumeTarget(feed))
         {
             SysMessage(ServerMessages.Get(Msg.ItemuseCannonEmpty));
             return;
@@ -2825,6 +2989,13 @@ public sealed class ClientItemUseHandler
         made.ItemType = wool ? ItemType.Yarn : ItemType.Thread;
         made.Amount = wool ? (ushort)3 : (ushort)6;
         PlaceItemInPack(_character, made);
+
+        // The wheel turns for two seconds and is not a spinning wheel while it does:
+        // Source-X SetAnim(id+1, 2s) parks it in IT_ANIM_ACTIVE (CClientTarg.cpp:2029
+        // -> CItem.cpp:4128), so a second batch cannot be fed to the same wheel until
+        // it stops. SphereNet left the wheel idle and instantly reusable.
+        wheel.SetAnim((ushort)(wheel.DispIdFull + 1), SpinWheelBusyMs);
+
         SysMessage(ServerMessages.Get(wool ? "itemuse_wool_create" : "itemuse_cotton_create"));
     }
 

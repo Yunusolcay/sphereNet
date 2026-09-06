@@ -3,6 +3,42 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Bicaklar, toplar, cikriklar ve yatak rulolari (08B)
+----------------------------------------
+
+FIX - Balik kesmek icin ERISIM yetiyordu ve filetolar kesenin kendi cantasinda
+        olusuyordu. Source-X tuketen bir kullanimi CanUse(hedef, MOVE) ile kapatir -
+        erisim + tasima kurallari + alma-sucu denetimi (CCharStatus.cpp:1736) - ve
+        baligi bulundugu yerde donusturur (CClientTarg.cpp:1919). Sabit dekor balik
+        artik kaybolmuyor, baska oyuncunun avi da onda kaliyor.
+
+FIX - Top doldurmada iki ucun hicbiri denetlenmiyordu: erisim disindaki top mermi
+        aliyor, mermi de sabit ya da baska oyuncunun olabiliyordu. Use_Cannon_Feed
+        ikisini de denetler (CCharUse.cpp:301).
+
+FIX - Kirkilan koyunun yunu hic geri gelmiyordu. Source-X koyuna sureli bir yun esyasi
+        takar; suresi dolunca kirkilmis beden yeniden koyun olur (CClientTarg.cpp:1862;
+        OnTickEquip, CCharAct.cpp:4067) - varsayilan yarim saat. Hala buyuyen koyunu
+        kirkmaya calismak artik sessiz kalmak yerine uyari veriyor.
+
+FIX - Meyve veya ham reaktiften tohum cikarilamiyordu; bicakta boyle bir dal yoktu,
+        yani meyve -> tohum -> bitki zinciri hic baslamiyordu. Referans DEFAULTSEED
+        grafigini yazar, turu IT_SEED yapar ve adi yerinde gunceller (:1939).
+
+FIX - Cikrik uretimden hemen sonra yeniden kullanilabiliyordu. Source-X onu iki
+        saniyelik animasyon durumuna park eder ve o sure boyunca cikrik degildir
+        (SetAnim, CClientTarg.cpp:2029 -> CItem.cpp:4128); ikinci parti beklemek
+        zorunda.
+
+FIX - Yatak rulosu hic acilip kapanmiyordu, yalnizca serildigini soyluyordu. Referans
+        yerdeki ruloyu acar - yonlu rulonun yonunu koruyarak - ve tekrar kullanildiginda
+        toplar; cantadaki rulo icin once yere koymayi ister (Use_BedRoll,
+        CCharUse.cpp:1534).
+
+FIX - Dahili ekipman katmanlari referanstaki gibi hatta gonderilmiyor
+        (uofiles_enums.h:589): hafiza esyasinin, buyu efektinin veya buyuyen yunun
+        paperdoll'da yeri yok.
+
 [2026-09-06] - Maden eritme ve esya onarimi (08A)
 ----------------------------------------
 

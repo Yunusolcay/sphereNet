@@ -4,6 +4,43 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Blades, cannons, wheels and bedrolls (08B)
+----------------------------------------
+
+FIX - A fish only had to be within REACH to be cut up, and the steaks were made in the
+        cutter's own pack. Source-X gates a consuming use behind CanUse(target, MOVE) -
+        reach plus the move rules and the take-crime check (CCharStatus.cpp:1736) - and
+        converts the catch where it lies (CClientTarg.cpp:1919). A fixed decorative
+        fish no longer vanishes, and another player's catch stays theirs.
+
+FIX - Loading a cannon checked neither end: a muzzle out of reach took a charge, and
+        the charge could be a fixed one or another player's. Use_Cannon_Feed checks
+        both (CCharUse.cpp:301).
+
+FIX - A shorn sheep never grew its fleece back. Source-X hangs a timed wool item on the
+        sheep and turns the shorn body back into a sheep when it expires
+        (CClientTarg.cpp:1862; OnTickEquip, CCharAct.cpp:4067) - half an hour by
+        default. Shearing one that is still growing now says so instead of doing
+        nothing.
+
+FIX - A fruit or raw reagent could not be cut open for its seed at all: the blade had
+        no such branch, so the fruit-to-seed-to-plant chain began nowhere. The reference
+        swaps in the DEFAULTSEED graphic, retypes it and renames it in place (:1939).
+
+FIX - A spinning wheel could be used again the instant it finished. Source-X parks it
+        in a two-second animation state that is no longer a spinning wheel while it
+        lasts (SetAnim, CClientTarg.cpp:2029 -> CItem.cpp:4128), so a second batch has
+        to wait.
+
+FIX - A bedroll never opened or closed; it only said it had been laid out. The
+        reference rolls it out on the ground - keeping the direction a directional roll
+        carries - and rolls it back up when used again, and tells the player to put a
+        rolled one down first (Use_BedRoll, CCharUse.cpp:1534).
+
+FIX - Internal equipment layers are kept off the wire, as the reference keeps them
+        (uofiles_enums.h:589): a memory, a spell effect or a regrowing fleece has no
+        paperdoll slot to be sent to.
+
 [2026-09-06] - Smelting ore and mending gear (08A)
 ----------------------------------------
 

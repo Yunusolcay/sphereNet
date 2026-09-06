@@ -30,7 +30,11 @@ public class ItemInventoryParityTests
         Assert.Equal(16, (int)Layer.FacialHair);  // LAYER_BEARD (was wrongly 15)
         Assert.Equal(30, (int)Layer.Special);     // LAYER_SPECIAL
         Assert.Equal(31, (int)Layer.Dragging);    // LAYER_DRAGGING
-        Assert.Equal(32, (int)Layer.Qty);
+        // Source-X continues past LAYER_DRAGGING with its internal spell and flag
+        // layers (uofiles_enums.h:592), so LAYER_QTY is not 32 there either. The ones
+        // SphereNet models carry the reference's own numbers.
+        Assert.Equal(46, (int)Layer.FlagWool);    // LAYER_FLAG_Wool
+        Assert.True((int)Layer.Qty > (int)Layer.FlagWool);
     }
 
     // ---- Phase 2: stack split full clone ----

@@ -770,6 +770,11 @@ public sealed partial class GameClient
             var wearer = item.ContainedIn.IsValid ? _world.FindChar(item.ContainedIn) : null;
             if (wearer == null || wearer.Position.GetDistanceTo(_character.Position) > UpdateRange)
                 return;
+            // Source-X keeps its internal layers off the wire entirely
+            // (uofiles_enums.h:589): a memory, a spell effect or a sheep's regrowing
+            // fleece has no paperdoll slot to land in.
+            if ((int)item.EquipLayer > (int)Layer.Horse)
+                return;
 
             // The single worn-item update recolors for a tripping viewer too
             // — otherwise a fresh equip showed its real hue until the next
