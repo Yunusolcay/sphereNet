@@ -51,6 +51,11 @@ public sealed class ChampionComponent
     public int SpawnsNextWhite { get; set; }
     public int SpawnsNextRed { get; set; }
     public int CandlesNextLevel { get; set; }
+    /// <summary>The world's game clock in milliseconds - the base Source-X stamps
+    /// LASTACTIVATIONTIME with. Supplied by the world so the component keeps no
+    /// dependency on it.</summary>
+    public static Func<long>? ResolveGameClockMs;
+
     public long LastActivationTime { get; set; }
     /// <summary>Boss chardef index (CHAMPIONID).</summary>
     public int ChampionId { get; set; }
@@ -80,6 +85,19 @@ public sealed class ChampionComponent
 
     /// <summary>Pull LEVELMAX/SPAWNSMAX/CHAMPIONID/NPCGROUP[n] from the
     /// [CHAMPION defname] resource section, then restore persisted state.</summary>
+    /// <summary>The wave for a level: the instance override if the script set one,
+    /// otherwise the CHAMPION definition's own group (CCChampion.cpp:277).</summary>
+    private List<int>? ResolveSpawnGroup(int level)
+    {
+        if (_spawnGroups.TryGetValue(level, out var over) && over.Count > 0)
+            return over;
+        return _defSpawnGroups.TryGetValue(level, out var def) ? def : null;
+    }
+
+    /// <summary>The groups the CHAMPION definition declares, kept apart from the
+    /// script's per-instance overrides.</summary>
+    private readonly Dictionary<int, List<int>> _defSpawnGroups = [];
+
     public bool InitFromDef(ResourceHolder resources, string defName)
     {
         _resources = resources;
@@ -97,7 +115,13 @@ public sealed class ChampionComponent
         ChampionDefName = defName;
         LevelMax = DefaultLevelMax;
         SpawnsMax = DefaultSpawnsMax;
-        _spawnGroups.Clear();
+        // A definition is loaded as a WHOLE new configuration: a field the new one
+        // does not declare falls back to its default rather than inheriting the
+        // previous definition's value (Init, CCChampion.cpp:146; the boss id defaults
+        // to invalid, :1218). Leaving ChampionId alone meant switching to a definition
+        // with no CHAMPIONID still produced the old event's boss.
+        ChampionId = 0;
+        _defSpawnGroups.Clear();
 
         foreach (var key in link.StoredKeys)
         {
@@ -137,7 +161,7 @@ public sealed class ChampionComponent
                                 members.Add(mRid.Index);
                         }
                         if (members.Count > 0)
-                            _spawnGroups[groupLevel] = members;
+                            _defSpawnGroups[groupLevel] = members;
                     }
                     break;
             }
@@ -212,7 +236,11 @@ public sealed class ChampionComponent
         if (Active)
             return;
 
-        LastActivationTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        // Upstream stamps this with the GAME clock, in milliseconds
+        // (CCChampion.cpp:168 -> CWorldGameTime.cpp:11). A UTC second count carries a
+        // different unit AND a different origin, so a script comparing
+        // LASTACTIVATIONTIME against the game clock got a meaningless interval.
+        LastActivationTime = ResolveGameClockMs?.Invoke() ?? 0;
         Active = true;
         SpawnsNextRed = GetCandlesCount();
         SetLevel(1);
@@ -234,7 +262,13 @@ public sealed class ChampionComponent
 
     public void Stop(Character? src = null)
     {
-        if (FireTrigger(ItemTrigger.Stop, new SpawnTriggerArgs { SpawnedChar = src }) == TriggerResult.True)
+        // @Stop runs for a REQUESTED stop only - upstream fires it when a character
+        // asked (CCChampion.cpp:185), and the automatic teardown after the boss dies
+        // calls Stop with no source (:216). Firing it either way let a script written
+        // to stop staff from closing the event also stop the event from finishing
+        // itself: @Complete ran while the champion stayed active forever.
+        if (src != null &&
+            FireTrigger(ItemTrigger.Stop, new SpawnTriggerArgs { SpawnedChar = src }) == TriggerResult.True)
             return;
 
         KillChildren();
@@ -314,8 +348,14 @@ public sealed class ChampionComponent
         int defIndex;
         if (Level >= LevelMax)
         {
-            if (ChampionSummoned.IsValid)
+            // "Already out" has to mean the boss is still THERE. A boss removed with
+            // .nuke or a script REMOVE left its uid behind and the event never
+            // produced another one, nor completed (CObjBase dtor -> DelObj -> OnKill,
+            // CObjBase.cpp:147).
+            if (ChampionSummoned.IsValid && _world.FindChar(ChampionSummoned) is { IsDeleted: false })
                 return; // boss already out
+            if (ChampionSummoned.IsValid)
+                ChampionSummoned = Serial.Invalid;
             if (ChampionId == 0)
                 return;
             // The shared counter update below applies to the boss too
@@ -333,7 +373,8 @@ public sealed class ChampionComponent
                 SpawnsNextWhite = 0;
                 return;
             }
-            if (!_spawnGroups.TryGetValue(Level, out var group) || group.Count == 0)
+            var group = ResolveSpawnGroup(Level);
+            if (group == null || group.Count == 0)
                 return;
             defIndex = group[Random.Shared.Next(group.Count)];
         }
@@ -407,14 +448,24 @@ public sealed class ChampionComponent
         // Re-linking a candle read back from a save is a separate path and is not
         // subject to the level gate (Source-X takes the uid branch first,
         // CCChampion.cpp:437).
-        Item? candle = existing.IsValid ? _world.FindItem(existing) : null;
-        if (candle != null)
+        // "Link this uid" and "make a new candle" are different requests
+        // (CCChampion.cpp:360). Falling through to creation when the uid does not
+        // resolve quietly produced a DIFFERENT object and recorded that one instead -
+        // the link the caller asked for was lost.
+        //
+        // NamesAUid, not Serial.IsValid: IsValid only rules out the clear sentinel, so
+        // an omitted argument reports valid and would take this branch.
+        if (NamesAUid(existing))
         {
-            _whiteCandles.Add(candle.Uid);
-            SpawnsNextWhite = SpawnsNextRed / (CandlesNextRed + 1);
-            SaveStateToTags();
+            if (_world.FindItem(existing) is { } restored)
+            {
+                _whiteCandles.Add(restored.Uid);
+                SpawnsNextWhite = SpawnsNextRed / (CandlesNextRed + 1);
+                SaveStateToTags();
+            }
             return;
         }
+        Item? candle;
 
         // The boss is out; the progress ring is finished and takes no more candles
         // (:346).
@@ -449,13 +500,15 @@ public sealed class ChampionComponent
 
     public void AddRedCandle(Serial existing = default)
     {
-        // A candle read back from a save is re-linked and nothing else (:433).
-        // The uid has to RESOLVE, not merely be non-sentinel: Serial.IsValid only
-        // rules out the clear value, so an omitted argument reports valid.
-        if (existing.IsValid && _world.FindItem(existing) is { } restored)
+        // A candle read back from a save is re-linked and nothing else (:433), and a
+        // uid that does not resolve is NOT turned into a fresh candle.
+        if (NamesAUid(existing))
         {
-            _redCandles.Add(restored.Uid);
-            SaveStateToTags();
+            if (_world.FindItem(existing) is { } restored)
+            {
+                _redCandles.Add(restored.Uid);
+                SaveStateToTags();
+            }
             return;
         }
 
@@ -498,7 +551,11 @@ public sealed class ChampionComponent
             return;
         var uid = _whiteCandles[^1];
         var candle = _world.FindItem(uid);
-        if (FireTrigger(ItemTrigger.DelWhiteCandle,
+        // A candle that is no longer in the world is simply dropped: upstream runs the
+        // trigger only when the object is found (CCChampion.cpp:657). Firing it for a
+        // dead uid let a protective script veto the removal of something that did not
+        // exist, so the count stopped matching what stands on the ground.
+        if (candle != null && FireTrigger(ItemTrigger.DelWhiteCandle,
                 new SpawnTriggerArgs { SpawnedItem = candle, N1 = reason }) == TriggerResult.True)
             return; // script keeps the candle
         _whiteCandles.RemoveAt(_whiteCandles.Count - 1);
@@ -512,7 +569,8 @@ public sealed class ChampionComponent
             return;
         var uid = _redCandles[^1];
         var candle = _world.FindItem(uid);
-        if (FireTrigger(ItemTrigger.DelRedCandle,
+        // Same rule on the red side.
+        if (candle != null && FireTrigger(ItemTrigger.DelRedCandle,
                 new SpawnTriggerArgs { SpawnedItem = candle, N1 = reason }) == TriggerResult.True)
             return;
         _redCandles.RemoveAt(_redCandles.Count - 1);
@@ -679,6 +737,11 @@ public sealed class ChampionComponent
         }
     }
 
+    /// <summary>Did the caller actually name a uid? <see cref="Serial.IsValid"/> only
+    /// rules out the clear sentinel, so an omitted argument - a zero serial - reports
+    /// valid and cannot be told apart from a real one that way.</summary>
+    private static bool NamesAUid(Serial uid) => uid.Value != 0 && uid.IsValid;
+
     private static Serial ParseSerial(string s)
     {
         s = s.Trim();
@@ -701,8 +764,12 @@ public sealed class ChampionComponent
         {
             string rest = key[8..].Trim('[', ']', ' ');
             var parts = rest.Split('.', StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length == 0 || !int.TryParse(parts[0], out int grp) ||
-                !_spawnGroups.TryGetValue(grp, out var group))
+            // The EFFECTIVE group - the override when the script set one, otherwise
+            // the definition's own (CCChampion.cpp:277) - so the read agrees with what
+            // the wave will actually spawn.
+            List<int>? group = parts.Length == 0 || !int.TryParse(parts[0], out int grp)
+                ? null : ResolveSpawnGroup(grp);
+            if (group == null)
             {
                 value = "-1";
                 return true;
@@ -767,6 +834,11 @@ public sealed class ChampionComponent
                 if (mRid.IsValid && mRid.Type == ResType.CharDef)
                     members.Add(mRid.Index);
             }
+            // The INSTANCE override and the definition's own group are separate lists
+            // upstream, and clearing the override falls back to the definition
+            // (CCChampion.cpp:277/1014). Sharing one dictionary meant emptying an
+            // override deleted the definition's group with it and the wave simply
+            // stopped spawning.
             if (members.Count > 0) _spawnGroups[groupLevel] = members;
             else _spawnGroups.Remove(groupLevel);
             return true;
@@ -783,7 +855,26 @@ public sealed class ChampionComponent
                 AddWhiteCandle(ParseSerial(value));
                 return true;
             case "LEVEL":
-                if (int.TryParse(value, out int lv)) SetLevel(lv);
+                // Upstream's LEVEL key assigns the field and nothing else
+                // (CCChampion.cpp:1010). Routing it through SetLevel meant restoring a
+                // saved value - or writing the level it already had - re-ran the whole
+                // transition: @Level fired, the next-level threshold grew again, and
+                // assigning the final level wiped the wave and summoned the boss.
+                if (int.TryParse(value, out int lv)) Level = Math.Max(1, lv);
+                return true;
+            case "ACTIVE":
+                // The saved run state, as the classic field carries it.
+                Active = value.Trim() is not ("" or "0");
+                return true;
+            case "SPAWNSCUR":
+                if (int.TryParse(value, out int scur)) { SpawnsCur = scur; SaveStateToTags(); }
+                return true;
+            case "LASTACTIVATIONTIME":
+                if (long.TryParse(value, out long lat)) { LastActivationTime = lat; SaveStateToTags(); }
+                return true;
+            case "SETLEVEL":
+                // The deliberate "advance to this level" request keeps the side effects.
+                if (int.TryParse(value, out int slv)) SetLevel(slv);
                 return true;
             // Every live write is persisted on the spot. The state snapshot used to be
             // taken only on a candle or a kill, so a staff change to the running event
@@ -803,6 +894,15 @@ public sealed class ChampionComponent
                 int.TryParse(value, out int nr); SpawnsNextRed = nr; SaveStateToTags(); return true;
             case "CANDLESNEXTLEVEL":
                 int.TryParse(value, out int cn); CandlesNextLevel = cn; SaveStateToTags(); return true;
+            case "CHAMPIONSUMMONED":
+            {
+                // Upstream maps this key straight onto the boss uid
+                // (CCChampion.cpp:1046). It was read from the component but never
+                // written, so a script could not mark or correct the event's boss.
+                ChampionSummoned = ParseSerial(value);
+                SaveStateToTags();
+                return true;
+            }
             case "CHAMPIONID":
             {
                 var rid = _resources?.ResolveDefName(value.Trim()) ?? ResourceId.Invalid;

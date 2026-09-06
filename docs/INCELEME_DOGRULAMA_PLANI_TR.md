@@ -2121,6 +2121,66 @@ MAPLIST resolver'inin kendisi test projesinden erisilemiyor).
 entegrasyonu; Champion mum decay'inin seviye dususu ile etkilesimi; dunya saatinin
 GameMinuteLengthMs canli degisiminde davranisi.
 
+### 12E-12I - spawn yonetimi ve Champion sozlesmesi: 25 bulgu (6 Eylul 2026)
+
+Kanit raporlari: [12E](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12E_CHAMPION_SCRIPT_KIMLIK.md),
+[12F](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12F_CHAMPION_TETIKLEYICI_LEGACY.md),
+[12G](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12G_NORMAL_SPAWN_YONETIMI.md),
+[12H](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12H_ESYA_SPAWN_KAYIT_ZAMANLAMA.md),
+[12I](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12I_SPAWN_YASAM_TETIKLEYICI.md).
+Yirmi bes bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+**Kok neden ortak:** Source-X'te yaratik ve esya ureten TEK bir `CCSpawn` bileseni var;
+SphereNet'te `SpawnComponent` ve `ItemSpawnComponent` ayri, ve esya tarafinin yarisi hic
+baglanmamis. 12G/12H/12I bulgularinin cogu bu ayrimin ayni sonucu.
+
+- [x] **12G-1 (P1)** - DELOBJ uyelik denetimsiz olduruyordu. (YAPILDI: once uyelik, sonra
+  yalnizca bag kaldirma; oldurme toplu silme yolunda kaldi.)
+- [x] **12G-2 / 12G-3 (P2)** - Canli SPAWNID/ADDOBJ bilesene ulasmiyordu. (YAPILDI.
+  **Sinir:** yukleme sirasinda uid henuz olusmamis olabilecegi icin ADDOBJ yalnizca
+  nesne gercekten varsa canli baglaniyor; yoksa mevcut relink gecisine kaliyor.)
+- [x] **12G-4 / 12G-5 (P2/P3)** - @Spawn konumu ve @Create adi eziliyordu. (YAPILDI:
+  konum tetikleyici oncesi/sonrasi karsilastirmasiyla korunuyor; ad yalnizca bos ise
+  tanimdan doluyor.)
+- [x] **12H-1..12H-5 (P2)** - Esya spawn'i kayit, MOREP, timer, komut ve baslangic
+  turunde ikinci sinifti. (YAPILDI: uyeler ADDOBJ olarak yaziliyor ve relink ediliyor;
+  MOREP uygulaniyor; item timer bilesene bagli; STOP/START/RESET/DELOBJ eklendi;
+  bootstrap bilinen spawn turunu koruyor.)
+- [x] **12I-1..12I-5 (P2)** - Tas silme, kap ici uretim, MOREP geri yazimi, grup->tek
+  hedef ve @AddObj sure sozlesmesi. (YAPILDI.)
+- [x] **12E-1..12E-5 / 12F-1..12F-5** - Champion grup fallback'i, boss silme, tanim
+  degisimi, mum uid baglama, CHAMPIONSUMMONED, @Stop kapsami, LEVEL yan etkisi, klasik
+  alanlar, olu mum veto'su ve zaman tabani. (YAPILDI.)
+
+**Bilincli kararlar:**
+- **LEVEL vs SETLEVEL:** referansin LEVEL anahtari yalnizca alani atar. Yan etkili
+  ilerletme kaybolmasin diye ayri bir `SETLEVEL` anahtari eklendi - Source-X'te olmayan
+  bir ek, parite denetiminde "fazladan" diye silinmemeli.
+- **LASTACTIVATIONTIME tabani degisti:** alan hicbir hesaba girmiyor (yalnizca
+  saklaniyor/okunuyor), bu yuzden eski kayittaki UTC saniyesi yalnizca eskimis bir sayi
+  olarak kaliyor; raporun uyardigi "eski degerleri oyun milisaniyesi sayma" hatasi
+  yapilmadi.
+- **`_defSpawnGroups` ayrimi:** tanimin gruplari ile instance override'lari artik ayri
+  sozluklerde; NPCGROUP okumasi da etkin grubu (override, yoksa tanim) veriyor.
+
+**Tur ici tuzak (kendi hatam, testler yakaladi):** `Serial.IsValid` yalnizca sentinel
+`ClearValue` ile karsilastirdigi icin `default(Serial)` GECERLI raporluyor - "cagiran bir
+uid verdi mi" sorusu bununla yanitlanamaz. Yeniden yazdigim mum baglama dallari once bu
+tuzaga dustu ve hicbir mum olusmadi; `NamesAUid` (deger != 0) yardimcisi eklendi.
+
+**12E-12I kapanisi:** tam suite **2.963 basarili / 0 basarisiz** (+33). Yirmi bes
+duzeltme gecici olarak kapatilarak 28 testin eski davranisi yakaladigi kanitlandi; esya
+uyelerinin kayda yazilmasi ayrica tek basina kapatilip dogrulandi. 12H-5 (bootstrap tur
+korumasi) `Program.WorldBootstrap` icinde oldugu icin test projesinden erisilemiyor.
+
+**Mevcut test yeniden kuruldu:** `ChampionSystemTests.NpcGroup_...` override temizlemenin
+"-1" dondugunu iddia ediyordu; bu tam olarak 12E-1'in kendisi - test artik tanimin
+grubuna donusu ve hic tanimlanmamis seviyenin -1 kaldigini dogruluyor.
+
+**Acik kalan:** ADDOBJ'un yukleme sirasinda ileri UID referansi; spawn grubu -> grup
+gecisi; Champion mum decay'inin seviye dususuyle etkilesimi; esya spawn'inda PILE ile
+kota etkilesimi.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

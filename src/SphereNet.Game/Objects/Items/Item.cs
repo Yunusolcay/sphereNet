@@ -756,6 +756,11 @@ public class Item : ObjBase
     public void Delete()
     {
         SpawnChar?.KillAll();
+        // An item spawner's children go with it too: upstream's single component
+        // clears both kinds from its destructor (CCSpawn.cpp:76 -> KillChildren,
+        // :712). Only the char list was wired, so removing a resource or reward
+        // spawner left everything it had produced lying on the ground.
+        SpawnItem?.KillAll();
         FigurineDeletedHook?.Invoke(this);
         _isDeleted = true;
         _contents.Clear();
@@ -1744,6 +1749,18 @@ public class Item : ObjBase
 
         var upper = key.ToUpperInvariant();
 
+        // A classic Source-X save writes the champion's state as plain fields
+        // (r_Write, CCChampion.cpp:785) and the loader feeds them in one property at a
+        // time - long BEFORE the component exists, because the component is built by
+        // the bootstrap pass after every item is loaded. Those writes used to vanish,
+        // so an event that was mid-run came back inactive at level one. They are parked
+        // on the item and applied in one go when the component is created.
+        if (Champion == null && ChampionStateKeys.Contains(upper))
+        {
+            SetTag($"CHAMPION_LOAD.{upper}", value.Trim());
+            return true;
+        }
+
         // AOS on-hit combat properties are tag-backed (see TryGetProperty).
         if (AosOnHitProperties.Contains(upper))
         {
@@ -1960,7 +1977,20 @@ public class Item : ObjBase
             // below, so the application must happen here.)
             case "SPAWNID": case "TIMELO": case "TIMEHI": case "MAXDIST":
                 SetTag(upper, value);
-                if (upper == "MAXDIST" && int.TryParse(value, out int spawnMd))
+                if (upper == "SPAWNID")
+                {
+                    // The tag alone was stored and nothing resolved it, so a live
+                    // retarget looked accepted while the spawner went on producing the
+                    // old creature or item. Upstream's setter changes the component's
+                    // own target on the spot (CCSpawn.cpp:943).
+                    var spawnRes = Definitions.DefinitionLoader.StaticResources;
+                    if (spawnRes != null)
+                    {
+                        SpawnChar?.SetFromDefName(value.Trim(), spawnRes);
+                        SpawnItem?.SetFromDefName(value.Trim(), spawnRes);
+                    }
+                }
+                else if (upper == "MAXDIST" && int.TryParse(value, out int spawnMd))
                 {
                     if (SpawnChar != null) SpawnChar.SpawnRange = spawnMd;
                     if (SpawnItem != null) SpawnItem.SpawnRange = spawnMd;
@@ -1977,6 +2007,21 @@ public class Item : ObjBase
             {
                 string? existing = Tags.Get(upper);
                 SetTag(upper, string.IsNullOrEmpty(existing) ? value : $"{existing},{value}");
+                // While the world is RUNNING the object exists, so it is linked now
+                // (AddObj, CCSpawn.cpp:933/585). Only the tag was written, and the
+                // actual link waited for the next re-initialisation - so the spawner
+                // did not count the NPC the script had just handed it and promptly
+                // spawned another one over its own quota. During a load the uid may
+                // not exist yet, which is what the relink pass is for.
+                if (TryParseSpawnUid(value.Trim(), out uint addUid))
+                {
+                    var addSerial = new Serial(addUid);
+                    var addWorld = ResolveWorld?.Invoke();
+                    if (addWorld?.FindChar(addSerial) is { IsDeleted: false })
+                        SpawnChar?.RegisterExisting(addSerial);
+                    else if (addWorld?.FindItem(addSerial) is { IsDeleted: false })
+                        SpawnItem?.RegisterExisting(addSerial);
+                }
                 return true;
             }
             // Multi/housing properties — round-trip as TAGs
@@ -3017,6 +3062,36 @@ public class Item : ObjBase
             }
         }
 
+        // Spawn commands for an ITEM spawner. Upstream has one verb table on one
+        // component (r_Verb, CCSpawn.cpp:1233) with no item exclusion; here the whole
+        // block was gated on SpawnChar, so STOP, START, RESET and DELOBJ were simply
+        // refused on a spawner that produces items.
+        if (SpawnChar == null && SpawnItem != null)
+        {
+            switch (upper)
+            {
+                case "SPAWNRESET" or "RESET":
+                    SpawnItem.Reset();
+                    return true;
+                case "SPAWNCLEAR":
+                    SpawnItem.KillAll();
+                    return true;
+                case "START":
+                    SpawnItem.Start();
+                    OnSpawnStartStop?.Invoke(this, true);
+                    return true;
+                case "STOP":
+                    SpawnItem.Stop();
+                    OnSpawnStartStop?.Invoke(this, false);
+                    return true;
+                case "DELOBJ":
+                    if (!string.IsNullOrEmpty(args) && uint.TryParse(args.TrimStart('0'),
+                        System.Globalization.NumberStyles.HexNumber, null, out uint iduid))
+                        SpawnItem.DelObj(new Core.Types.Serial(iduid));
+                    return true;
+            }
+        }
+
         // Spawn commands (IT_SPAWN_CHAR)
         if (SpawnChar != null)
         {
@@ -3244,6 +3319,11 @@ public class Item : ObjBase
         // sync SpawnComponent so it spawns on this tick.
         if (timerFired && SpawnChar != null)
             SpawnChar.ForceSpawn();
+        // The item spawner runs off the same item timer (OnTickComponent,
+        // CCSpawn.cpp:673). Without this it kept its own private schedule, so bringing
+        // the timer forward by hand did nothing at all.
+        if (timerFired && SpawnItem != null)
+            SpawnItem.ForceSpawn();
 
         long now = Environment.TickCount64;
         SpawnChar?.OnTick(now);
@@ -3551,6 +3631,35 @@ public class Item : ObjBase
     /// Called from WorldLoader/LegacySphereImporter after item load, and at
     /// runtime when TYPE is set to a spawn type via script.
     /// </summary>
+    /// <summary>The champion state fields a classic save writes as loose properties
+    /// (CCChampion.cpp:785). They arrive before the component exists.</summary>
+    private static readonly HashSet<string> ChampionStateKeys =
+    [
+        "ACTIVE", "LEVEL", "LEVELMAX", "SPAWNSCUR", "SPAWNSMAX", "DEATHCOUNT",
+        "KILLSNEXTRED", "KILLSNEXTWHITE", "CANDLESNEXTLEVEL", "LASTACTIVATIONTIME",
+        "CHAMPIONSUMMONED", "CHAMPIONID", "ADDREDCANDLE", "ADDWHITECANDLE",
+    ];
+
+    /// <summary>Hand the parked classic champion fields to the component now that it
+    /// exists, and clear them. Applied AFTER the definition and the native state tag,
+    /// so an explicit saved field wins over the definition's default.</summary>
+    private void ApplyParkedChampionState()
+    {
+        if (Champion == null) return;
+        var parked = new List<(string Key, string Value)>();
+        foreach (var (k, v) in Tags.GetAll())
+            if (k.StartsWith("CHAMPION_LOAD.", StringComparison.OrdinalIgnoreCase))
+                parked.Add((k["CHAMPION_LOAD.".Length..], v));
+        if (parked.Count == 0) return;
+
+        // The candle re-links have to come last: they name uids the world has by now.
+        foreach (var (k, v) in parked.OrderBy(p =>
+                     p.Key.StartsWith("ADD", StringComparison.OrdinalIgnoreCase) ? 1 : 0))
+            Champion.TrySetProperty(k, v);
+        foreach (var (k, _) in parked)
+            Tags.Remove($"CHAMPION_LOAD.{k}");
+    }
+
     public void InitializeSpawnComponent(World.GameWorld world, ResourceHolder resources, long preservedTimeoutMs = 0)
     {
         // Gate on the VIRTUALIZED type: Sphere saves omit TYPE when it equals
@@ -3572,6 +3681,9 @@ public class Item : ObjBase
                 // chardef/spawn group — the champion component owns the wave
                 // composition and drives all spawning through SpawnChar.
                 Champion ??= new ChampionComponent(this, world);
+                // The activation stamp is game time (CWorldGameTime.cpp:11).
+                Components.ChampionComponent.ResolveGameClockMs ??= () =>
+                    ResolveWorld?.Invoke()?.GameClockMs ?? 0;
                 string champDef = TryGetTag("MORE1_DEFNAME", out string? champTag) &&
                     !string.IsNullOrWhiteSpace(champTag)
                     ? champTag.Trim()
@@ -3629,7 +3741,40 @@ public class Item : ObjBase
             if (_amount > 1)
                 SpawnItem.MaxCount = _amount;
 
+            // MOREP carries the interval and the scatter range for an item spawner
+            // exactly as it does for a char spawner - upstream has ONE component and
+            // one MOREP setter (CCSpawn.cpp:1064). The item branch read the target and
+            // the amount and then stopped, so a spawner asking for nine minutes and
+            // seven tiles quietly kept the engine defaults.
+            SpawnItem.ApplyMoreP();
+
             SpawnItem.ResetTimer(preservedTimeoutMs);
+            RelinkSpawnedItemsFromTag(world);
+        }
+
+        // A classic save's champion fields arrive before the component exists; hand
+        // them over now, after the definition and the native state tag.
+        ApplyParkedChampionState();
+    }
+
+    /// <summary>Restore an ITEM spawner's live-children list from its saved ADDOBJ
+    /// entries, the same way the char spawner does. Upstream keeps one member list for
+    /// both kinds and writes it for both (r_Write, CCSpawn.cpp:1094), so an item
+    /// spawner that forgot its children came back under quota and topped itself up
+    /// again on every restart.</summary>
+    private void RelinkSpawnedItemsFromTag(World.GameWorld world)
+    {
+        if (SpawnItem == null) return;
+        string? addObj = Tags.Get("ADDOBJ");
+        if (string.IsNullOrEmpty(addObj)) return;
+
+        foreach (string tok in addObj.Split(',',
+            StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (!TryParseSpawnUid(tok, out uint uid)) continue;
+            var child = world.FindItem(new Serial(uid));
+            if (child == null || child.IsDeleted) continue;
+            SpawnItem.RegisterExisting(child.Uid);
         }
     }
 

@@ -269,10 +269,16 @@ public class ChampionSystemTests
         Assert.True(champ.TryGetProperty("NPCGROUP2", out string grp2));
         Assert.Contains("boss", grp2, StringComparison.OrdinalIgnoreCase);
 
-        // Empty list clears the override → reads back as -1.
+        // Empty list clears the OVERRIDE, and the definition's own group takes over
+        // again (CCChampion.cpp:277/1014) — clearing an override is not the same as
+        // deleting the wave.
         Assert.True(champ.TrySetProperty("NPCGROUP2", ""));
         Assert.True(champ.TryGetProperty("NPCGROUP2", out string cleared));
-        Assert.Equal("-1", cleared);
+        Assert.Contains("imp", cleared, StringComparison.OrdinalIgnoreCase);
+
+        // A level the definition never declared still reads back as -1.
+        Assert.True(champ.TryGetProperty("NPCGROUP9", out string missing));
+        Assert.Equal("-1", missing);
     }
 
     [Fact]

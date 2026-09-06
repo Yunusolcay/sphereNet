@@ -1321,6 +1321,11 @@ public sealed class GameWorld
     /// <summary>Game-minute length in real milliseconds. Default = 20 real seconds per game minute.</summary>
     public int GameMinuteLengthMs { get; set; } = 20_000;
 
+    /// <summary>The game clock in MILLISECONDS - the unit Source-X keeps it in
+    /// (CWorldGameTime.cpp:11) and stamps things like a champion's activation
+    /// with.</summary>
+    public long GameClockMs => _worldClock * (long)Math.Max(1, GameMinuteLengthMs);
+
     /// <summary>
     /// Main world tick. Called from the game loop.
     /// Iterates all sectors and ticks their objects.

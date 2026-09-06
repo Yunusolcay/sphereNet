@@ -781,11 +781,20 @@ public sealed class WorldSaver
                 w.WriteProperty("EVENTS", name!);
         }
 
-        // Spawn items: write ADDOBJ from live SpawnComponent state, not stale tag
+        // Spawn members: write ADDOBJ from the live component, not a stale tag.
+        // BOTH kinds - upstream keeps one member list and writes it whatever the
+        // spawner produces (r_Write, CCSpawn.cpp:1094). Only the char list was written,
+        // so an item spawner came back under quota and topped itself up again on every
+        // single restart.
         if (item.SpawnChar != null)
         {
             item.SpawnChar.CleanupDead();
             foreach (var uid in item.SpawnChar.SpawnedUids)
+                w.WriteProperty("ADDOBJ", $"0{uid.Value:x}");
+        }
+        else if (item.SpawnItem != null)
+        {
+            foreach (var uid in item.SpawnItem.SpawnedUids)
                 w.WriteProperty("ADDOBJ", $"0{uid.Value:x}");
         }
 

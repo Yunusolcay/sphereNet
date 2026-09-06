@@ -149,9 +149,14 @@ public static partial class Program
                 }
             }
 
-            // Sphere saves don't write TYPE — detect spawn items by SPAWNID tag
+            // Sphere saves don't write TYPE — detect spawn items by SPAWNID tag.
+            // But SPAWNID does not mean "char spawner": upstream writes it for an ITEM
+            // spawner too (r_Write, CCSpawn.cpp:1105). Overwriting a type that is
+            // already a known spawner kind turned a t_spawn_item record from a Source-X
+            // save into a char spawner and built the wrong component for it.
             string? spawnId = item.Tags.Get("SPAWNID");
-            if (!string.IsNullOrEmpty(spawnId) && item.ItemType != ItemType.SpawnChar)
+            if (!string.IsNullOrEmpty(spawnId) &&
+                item.ItemType is not (ItemType.SpawnChar or ItemType.SpawnItem or ItemType.SpawnChampion))
             {
                 item.ItemType = ItemType.SpawnChar;
                 fromTag++;

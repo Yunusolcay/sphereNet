@@ -709,7 +709,15 @@ public static partial class Program
                 {
                     targs.N1 = args.SpawnDefIndex;
                 }
-                return _triggerDispatcher.FireItemTrigger(item, trigger, targs);
+                var spawnResult = _triggerDispatcher.FireItemTrigger(item, trigger, targs);
+                // ARGN1 is an OUT parameter for @AddObj and @DelObj: upstream reads the
+                // seconds the script left there and re-arms the spawner with it
+                // (CCSpawn.cpp:648/571). The bridge built its own args object and threw
+                // the modified numbers away on the way back.
+                args.N1 = targs.N1;
+                args.N2 = targs.N2;
+                args.N3 = targs.N3;
+                return spawnResult;
             };
 
             _partyManager = new PartyManager();

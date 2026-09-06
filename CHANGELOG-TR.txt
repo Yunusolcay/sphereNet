@@ -3,6 +3,92 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Spawn ve Champion: scriptin neyi degistirebilecegi, neyin yok edilebilecegi (12E-12I)
+----------------------------------------
+
+FIX - DELOBJ yaratigi serbest birakmak yerine yok ediyordu ve bunu, yaratigin o spawn'a
+        ait olup olmadigini hic denetlemeden yapiyordu. NPC'yi serbest birakmak onu
+        olduruyor, eski ya da yanlis yazilmis bir uid baskasinin NPC'sini veya bir
+        oyuncunun karakterini siliyordu. Referans once uyeligi denetler, sonra yalnizca
+        bagi kaldirir (CCSpawn.cpp:509).
+
+FIX - Calisan spawn'a SPAWNID yazmak yalnizca tag sakliyordu; hedef degisimi kabul
+        edilmis gorunurken spawn eski yaratigi/esyayi uretmeye devam ediyordu. ADDOBJ de
+        ayniydi: bag bir sonraki yeniden ilklendirmeye kaliyor, spawn az once eline
+        verilen NPC'yi saymiyor ve kendi kotasinin uzerine bir tane daha uretiyordu
+        (:585/:933/:943).
+
+FIX - Tek bir CHARDEF adlandirmak onceki spawn grubunu yerinde birakiyordu ve uretimde
+        yine grup kazaniyordu. Referansta tek etkin hedef vardir (:943).
+
+FIX - Kap icindeki spawn, bir tick aldiginda hala dunyaya nesne uretiyordu. Iki uretici
+        de spawn top-level degilse hic baslamaz (:299/:383).
+
+FIX - @Spawn ile yerlestirilen esya dogruca spawn tasina geri surukleniyordu, cunku
+        varsayilan konum kosulsuz uygulaniyordu; referans yalnizca tetikleyici gecerli
+        bir konum birakmadiginda yer secer (:353). Esyanin kendi @Create'inin sectigi ad
+        da tanimin adiyla eziliyordu (:323).
+
+FIX - Esya spawn'lari bes yerde daha ikinci sinifti: uyeleri kayda hic yazilmiyordu (her
+        yeniden acilis eski esyalari yerde birakip kotayi yeniden dolduruyordu), MOREP'in
+        araligi ve dagilimi yok sayiliyordu, elle verilen TIMER onlara ulasmiyordu, STOP,
+        START, RESET ve DELOBJ dogrudan reddediliyordu ve spawn tasini silmek esyalarini
+        dunyada birakiyordu. Referansta iki tur icin TEK bilesen vardir ve hicbir
+        dislama yoktur (:76/:673/:1064/:1094/:1233).
+
+FIX - SPAWNID tasiyan kayit, turu zaten esya spawn'i dese bile baslangicta NPC spawn'ina
+        ceviriliyordu: referans SPAWNID'yi esya spawn'lari icin de yazar (:1105), yani
+        Source-X bicimindeki esya spawn kaydi yanlis bilesenle kuruluyordu.
+
+FIX - NPC spawn'inin MOREP okumasi, bilesenin eski mesafesini islem ortasinda esyaya
+        geri yaziyordu; esya ile bilesen ayrisiyor ve sonraki yeniden ilklendirme eski
+        dolasma mesafesini geri getiriyordu.
+
+FIX - @AddObj'a referansin kalan timer suresini saniye olarak verdigi yerde tanim
+        indeksi veriliyor ve donen deger hic okunmuyordu; sonraki araligi buradan
+        ayarlayan script yok sayiliyordu (:648). Tetikleyici koprusu artik degisen
+        sayilari geri kopyaliyor.
+
+FIX - Champion'in NPCGROUP override'ini temizlemek tanimin kendi dalgasini da siliyor ve
+        o seviye uretmeyi birakiyordu; override ile tanim ayri listelerdir ve birini
+        temizlemek digerine doner (CCChampion.cpp:277/1014).
+
+FIX - Farkli bir CHAMPION tanimi yuklemek oncekinin boss'unu koruyordu; CHAMPIONID
+        belirtmeyen bir tanima gecen etkinlik yine eski boss'u cikariyordu. Tanim
+        butunuyle yeni bir yapilandirmadir (:146/:1218).
+
+FIX - .nuke veya scriptle silinen boss uid'ini geride birakiyordu: etkinlik ne yeni bir
+        boss uretiyor ne de tamamlaniyordu. Silinen spawn uyesi artik kendi spawn'ina
+        ulasiyor ve Champion, hicbir seye cozulmeyen uid'i "boss yok" sayiyor
+        (CObjBase.cpp:147 -> CCChampion.cpp:730).
+
+FIX - Uid ile mum baglama istegi, uid cozulemedigi zaman sessizce BASKA bir mum
+        yaratiyordu; istenen bag kayboluyordu (:360). CHAMPIONSUMMONED okunabiliyor ama
+        hic yazilamiyordu, yani script etkinligin boss'unu isaretleyemiyor ya da
+        duzeltemiyordu (:1046).
+
+FIX - LEVEL atamasi butun seviye gecisini yeniden calistiriyordu: @Level tetikleniyor,
+        sonraki seviye esigi yeniden buyuyor ve son seviyeyi atamak dalgayi silip boss'u
+        cagiriyordu. Referansin LEVEL anahtari alani atar (:1010); bilincli ilerletme
+        SETLEVEL olarak duruyor.
+
+FIX - Staff'in etkinligi kapatmasini engellemek icin yazilan @Stop scripti, etkinligin
+        kendi kendini bitirmesini de engelliyordu - @Complete calisirken Champion
+        sonsuza kadar aktif kaliyordu. @Stop ISTENEN durdurmaya aittir; boss oldukten
+        sonraki otomatik kapanis kaynak vermez (:185/:216).
+
+FIX - Mum kaldirma veto'su, dunyada artik olmayan mum icin de calisiyordu; koruma
+        scripti olu bir uid'i listede tutabiliyor ve sayi yerdekiyle ortusmuyordu (:657).
+
+FIX - Klasik Source-X kaydindaki Champion durum alanlari dusuyordu: bilesen olusmadan
+        once duz property olarak geliyorlar, bu yuzden yarida kalmis etkinlik pasif ve
+        birinci seviyede geri geliyordu. Artik esyada park ediliyor ve bilesen
+        kuruldugunda uygulaniyor.
+
+FIX - LASTACTIVATIONTIME, referansin oyun saatini milisaniye olarak damgaladigi yerde
+        UTC saniye sayaciydi; oyun zamaniyla karsilastiran script anlamsiz bir sure
+        aliyordu (:168).
+
 [2026-09-06] - Dunya saati, giristeki cevre ve Champion etkinligi (12B-12D)
 ----------------------------------------
 

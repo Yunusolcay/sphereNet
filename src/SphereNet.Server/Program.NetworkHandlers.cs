@@ -71,6 +71,20 @@ public static partial class Program
         }
     }
 
+    /// <summary>Tell the spawner that produced this creature that it is gone.</summary>
+    private static void NotifySpawnerOfDeletedMember(Character ch)
+    {
+        if (!ch.TryGetTag("SPAWN_POINT_UUID", out string? raw) ||
+            !Guid.TryParse(raw, out Guid spawnUuid) ||
+            _world.FindByUuid(spawnUuid) is not Item spawner)
+            return;
+
+        if (spawner.Champion != null)
+            spawner.Champion.OnMemberDeath(ch);
+        else
+            spawner.SpawnChar?.DelObj(ch.Uid);
+    }
+
     private static void OnWorldObjectDeleting(SphereNet.Game.Objects.ObjBase obj)
     {
         _systemHooks.DispatchObject("delete", obj);
@@ -93,6 +107,12 @@ public static partial class Program
         }
         else if (obj is Character ch && !ch.IsPlayer)
         {
+            // A spawned creature that is deleted rather than killed still has to reach
+            // its spawner: upstream routes the object destructor through the spawn's
+            // DelObj, which is how a champion learns its boss is gone
+            // (CObjBase.cpp:147 -> CCChampion.cpp:730). Removing a stuck boss with
+            // .nuke used to leave the event running with a uid pointing at nothing.
+            NotifySpawnerOfDeletedMember(ch);
             _npcTimerWheel?.Remove(ch);
             MarkNearbyClientsRefresh(ch.Position);
         }

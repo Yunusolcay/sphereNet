@@ -4,6 +4,93 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Spawners and champions: what a script may retarget, and what may be destroyed (12E-12I)
+----------------------------------------
+
+FIX - DELOBJ destroyed the creature instead of releasing it, and did it without ever
+        checking that the creature belonged to the spawner. Releasing an NPC killed it,
+        and a stale or mistyped uid killed somebody else's NPC or a player's character.
+        Upstream checks membership first and then only unlinks (CCSpawn.cpp:509).
+
+FIX - Writing SPAWNID on a running spawner stored a tag and nothing else, so a retarget
+        looked accepted while the spawner went on producing the old creature or item.
+        Writing ADDOBJ was the same: the link waited for the next re-initialisation, so
+        the spawner did not count the NPC it had just been handed and spawned another
+        one over its own quota (:585/:933/:943).
+
+FIX - Naming a single CHARDEF left an earlier spawn group in place, and the group still
+        won at spawn time. There is one effective target upstream (:943).
+
+FIX - A spawner inside a container still produced objects into the world when something
+        gave it a tick. Neither generator starts unless the spawner is top level
+        (:299/:383).
+
+FIX - An item placed by @Spawn was dragged straight back to the spawner, because the
+        default position was applied unconditionally; upstream only picks a spot when
+        the trigger left the object without a valid one (:353). The definition's name
+        was likewise written over whatever the item's own @Create had chosen (:323).
+
+FIX - Item spawners were second-class in five more places: their members were never
+        written to the save (so every restart left the old items lying about and topped
+        the quota up again), MOREP's interval and scatter range were ignored, a manual
+        TIMER did not reach them, STOP, START, RESET and DELOBJ were refused outright,
+        and deleting the spawner left its items in the world. Upstream has ONE component
+        for both kinds, with no exclusions (:76/:673/:1064/:1094/:1233).
+
+FIX - A spawner record carrying SPAWNID was converted to a char spawner at startup even
+        when its type already said item: upstream writes SPAWNID for item spawners too
+        (:1105), so a Source-X item-spawner record was rebuilt as the wrong thing.
+
+FIX - Reading a char spawner's MOREP wrote the component's stale range back into the
+        item mid-way through, so the item and the component disagreed and the next
+        re-initialisation restored the old wander range.
+
+FIX - @AddObj was handed a definition index where upstream hands it the spawner's
+        remaining timer in seconds, and nothing was read back, so a script setting the
+        next interval from it was ignored (:648). The trigger bridge now copies the
+        modified numbers back out.
+
+FIX - Clearing a champion's NPCGROUP override deleted the definition's own wave with it
+        and the level stopped spawning; the override and the definition are separate
+        lists, and clearing one falls back to the other (CCChampion.cpp:277/1014).
+
+FIX - Loading a different CHAMPION definition kept the previous one's boss, so an event
+        switched to a definition that declares no CHAMPIONID still summoned the old
+        boss. A definition is a whole new configuration (:146/:1218).
+
+FIX - A boss removed with .nuke or a script REMOVE left its uid behind: the event never
+        produced another one and never completed. A deleted spawn member now reaches its
+        spawner, and a champion treats a uid that resolves to nothing as no boss at all
+        (CObjBase.cpp:147 -> CCChampion.cpp:730).
+
+FIX - Asking to link a candle by uid quietly created a different candle when the uid
+        could not be resolved, so the link the caller asked for was lost (:360).
+        CHAMPIONSUMMONED could be read but never written, so a script could not mark or
+        correct the event's boss (:1046).
+
+FIX - Assigning LEVEL re-ran the whole level transition: @Level fired, the next-level
+        threshold grew again, and assigning the final level wiped the wave and summoned
+        the boss. Upstream's LEVEL key assigns the field (:1010); the deliberate advance
+        is available as SETLEVEL.
+
+FIX - A @Stop script written to stop staff closing an event also stopped the event
+        finishing itself - @Complete ran while the champion stayed active forever.
+        @Stop belongs to a REQUESTED stop; the automatic teardown after the boss dies
+        passes no source (:185/:216).
+
+FIX - The candle-removal veto ran for a candle that was no longer in the world, so a
+        protective script could keep a dead uid in the list and the count stopped
+        matching the ground (:657).
+
+FIX - A champion's state fields out of a classic Source-X save were dropped: they arrive
+        as plain properties before the component exists, so an event that was mid-run
+        came back inactive at level one. They are parked on the item and applied when
+        the component is built.
+
+FIX - LASTACTIVATIONTIME was a UTC second count where upstream stamps the game clock in
+        milliseconds, so a script comparing it against game time got a meaningless
+        interval (:168).
+
 [2026-09-06] - The world clock, the environment on arrival, and the champion event (12B-12D)
 ----------------------------------------
 

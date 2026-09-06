@@ -130,6 +130,12 @@ public sealed class SpawnComponent
 
     private void SpawnOne()
     {
+        // A spawner has to be standing in the world. Upstream leaves GenerateChar
+        // immediately when the point is not top level (CCSpawn.cpp:383), because the
+        // position it would spawn around is a container slot, not a map coordinate.
+        if (!_spawnItem.IsOnGround)
+            return;
+
         int defIndex = _charDefId;
 
         if (_spawnGroup != null)
@@ -459,18 +465,23 @@ public sealed class SpawnComponent
         _killingChildren = false;
     }
 
-    /// <summary>Remove a specific spawned NPC by UID (DELOBJ verb).</summary>
+    /// <summary>Release a spawned NPC from this spawner without harming it - the
+    /// DELOBJ verb.
+    ///
+    /// Source-X checks MEMBERSHIP first and then only unlinks: the spawn pointer is
+    /// cleared, the spawned flag comes off and the quota timer is re-armed
+    /// (CCSpawn.cpp:509). It never kills. This used to find the character in the world
+    /// and delete it whether or not it belonged to this spawner - so releasing an NPC
+    /// destroyed it, and a stale or mistyped uid destroyed somebody else's NPC, or a
+    /// player's character object.</summary>
     public void DelObj(Serial uid)
     {
+        if (!_spawnedUids.Remove(uid))
+            return;
+
         var ch = _world.FindChar(uid);
-        if (ch != null)
-        {
+        if (ch != null && !ch.IsDeleted)
             FireDelObj(ch);
-            if (!ch.IsDead) ch.Kill();
-            _world.DeleteObject(ch);
-            ch.Delete();
-        }
-        _spawnedUids.Remove(uid);
 
         if (_spawnedUids.Count < _maxCount && _nextSpawnTick < 0 && !_stopped)
             SetNextSpawnTime();
@@ -563,6 +574,12 @@ public sealed class SpawnComponent
     /// Resolve a Sphere SPAWNID defname (e.g. "spawn_Mages", "c_horse")
     /// as either a spawn group or a single chardef.
     /// </summary>
+    /// <summary>Point this spawner at a named CHARDEF or SPAWN group.
+    ///
+    /// There is ONE effective target upstream (_idSpawn, CCSpawn.cpp:943), so naming a
+    /// chardef has to drop any group that was set before it. Keeping both meant the
+    /// group still won at spawn time and the spawner went on producing the old
+    /// creature while every field said otherwise.</summary>
     public void SetFromDefName(string spawnId, ResourceHolder resources)
     {
         _resources = resources;
@@ -582,6 +599,7 @@ public sealed class SpawnComponent
             if (rid.Type == ResType.CharDef)
             {
                 _charDefId = rid.Index;
+                _spawnGroup = null;   // one effective target: the group gives way
                 _spawnItem.More1 = (uint)rid.Index;
                 return;
             }
@@ -590,6 +608,7 @@ public sealed class SpawnComponent
         if (uint.TryParse(spawnId, System.Globalization.NumberStyles.HexNumber, null, out uint raw))
         {
             _charDefId = (int)(raw & 0xFFFF);
+            _spawnGroup = null;
             _spawnItem.More1 = (uint)_charDefId;
         }
     }
@@ -626,9 +645,20 @@ public sealed class SpawnComponent
     /// MOREP.X = min spawn time (minutes), MOREP.Y = max spawn time (minutes),
     /// MOREP.Z = home distance (tiles).
     /// </summary>
+    /// <summary>Take the item's MOREP (time-lo, time-hi, max-dist) into the component.
+    ///
+    /// Every field is read into the component FIRST and the item is synced once
+    /// afterwards. The old order set the delay before the range, and the delay's own
+    /// sync wrote the component's stale range back into MOREP.Z - so the item and the
+    /// component disagreed, and the next re-initialisation read the stale value back
+    /// as the live wander range (upstream's setter just fills the three fields,
+    /// CCSpawn.cpp:1064).</summary>
     public void ApplyMoreP()
     {
         var mp = _spawnItem.MoreP;
+        // Range first: SetDelay syncs MOREP back to the item, and doing that while the
+        // range was still the old one overwrote the value being read.
+        _spawnRange = Math.Max(0, (int)mp.Z);
         if (mp.X > 0 || mp.Y > 0)
         {
             int minMin = Math.Max(1, (int)mp.X);
@@ -639,7 +669,6 @@ public sealed class SpawnComponent
         // makes children spawn adjacent to the gem (CCSpawn MoveNear dist 1).
         // Keeping the 15-tile default whenever MOREZ was 0 scattered fresh
         // GM-placed worldgems' children across the neighborhood.
-        _spawnRange = Math.Max(0, (int)mp.Z);
     }
 
     /// <summary>Reset the spawn timer using current delay values.</summary>
@@ -764,6 +793,7 @@ public sealed class ItemSpawnComponent
     /// independent of sector sleep (admin/console/IPC RESPAWN command).</summary>
     public void RespawnNow()
     {
+        if (_stopped) return;
         CleanupDeleted();
         if (_itemDefId == 0) return;
         int guard = 0;
@@ -773,6 +803,10 @@ public sealed class ItemSpawnComponent
 
     private void SpawnOneItem()
     {
+        // Same top-level rule as the char side (GenerateItem, CCSpawn.cpp:299).
+        if (!_spawnItem.IsOnGround)
+            return;
+
         int defIndex = _itemDefId;
         if (SpawnComponent.OnSpawnTrigger != null)
         {
@@ -809,10 +843,14 @@ public sealed class ItemSpawnComponent
             }
             item.BaseId = (ushort)defIndex;
         }
-        if (idef != null && !string.IsNullOrEmpty(idef.Name))
-            item.Name = idef.Name;
-        else
-            item.Name = $"Spawned_{defIndex:X}";
+        // The definition's name is a DEFAULT, applied only when the instance has not
+        // been given one. ApplyInstanceMetadata above runs the itemdef's @Create, so
+        // overwriting the name afterwards threw away whatever that script chose -
+        // upstream never rewrites it (GenerateItem, CCSpawn.cpp:323).
+        if (string.IsNullOrEmpty(item.Name))
+            item.Name = idef != null && !string.IsNullOrEmpty(idef.Name)
+                ? idef.Name
+                : $"Spawned_{defIndex:X}";
 
         if (_pile > 1)
             item.Amount = (ushort)Math.Max(1, _rand.Next(1, _pile + 1));
@@ -832,6 +870,9 @@ public sealed class ItemSpawnComponent
         SetNextSpawnTime();
 
         item.SetTag("SPAWN_POINT_UUID", _spawnItem.Uuid.ToString("D"));
+        // Where the item sat before @Spawn ran, so a position the trigger CHOSE can be
+        // told apart from the one it left alone.
+        var beforeTrigger = item.Position;
         if (SpawnComponent.OnSpawnTrigger != null)
         {
             var spawnArgs = new SpawnTriggerArgs { SpawnedItem = item, SpawnDefIndex = defIndex };
@@ -842,20 +883,131 @@ public sealed class ItemSpawnComponent
                 return;
             }
         }
-        if (!_world.PlaceItem(item, pos))
+        // Only place the item when @Spawn has NOT already put it somewhere valid
+        // (GenerateItem, CCSpawn.cpp:353). The unconditional move dragged a reward or
+        // event item the script had deliberately placed straight back to the spawner.
+        if (item.Position == beforeTrigger)
         {
-            // Out-of-bounds placement — delete instead of leaving an orphan item
-            // with no sector (Source-X deletes on placement failure).
-            _world.DeleteObject(item);
-            item.Delete();
-            return;
+            if (!_world.PlaceItem(item, pos))
+            {
+                // Out-of-bounds placement — delete instead of leaving an orphan item
+                // with no sector (Source-X deletes on placement failure).
+                _world.DeleteObject(item);
+                item.Delete();
+                return;
+            }
         }
         _spawnedUids.Add(item.Uid);
-        SpawnComponent.OnSpawnTrigger?.Invoke(_spawnItem, ItemTrigger.AddObj,
-            new SpawnTriggerArgs { SpawnedItem = item, SpawnDefIndex = defIndex });
+        FireAddObj(item);
     }
 
     public void ForceSpawn() => _nextSpawnTick = 0;
+
+    /// <summary>Run @AddObj and take the timer back out of it.
+    ///
+    /// Upstream hands the trigger the spawner's remaining timer in SECONDS and applies
+    /// whatever comes back (_SetTimeoutS(m_iN1), CCSpawn.cpp:648). The value was sent
+    /// as a def index and never read back, so a script setting the next interval from
+    /// @AddObj was ignored.</summary>
+    private void FireAddObj(Item item)
+    {
+        if (SpawnComponent.OnSpawnTrigger == null) return;
+        long remainingMs = _nextSpawnTick - Environment.TickCount64;
+        var args = new SpawnTriggerArgs
+        {
+            SpawnedItem = item,
+            SpawnDefIndex = _itemDefId,
+            N1 = _nextSpawnTick < 0 ? -1 : (int)Math.Max(0, remainingMs / 1000),
+        };
+        SpawnComponent.OnSpawnTrigger(_spawnItem, ItemTrigger.AddObj, args);
+        ApplyTriggerTimeout(args.N1);
+    }
+
+    /// <summary>Apply the seconds a spawn trigger asked for; -1 pauses.</summary>
+    private void ApplyTriggerTimeout(int seconds)
+    {
+        if (seconds < 0)
+        {
+            _nextSpawnTick = -1;
+            _spawnItem.SetTimeout(-1);
+            return;
+        }
+        _nextSpawnTick = Environment.TickCount64 + seconds * 1000L;
+        _spawnItem.SetTimeout(_nextSpawnTick);
+    }
+
+    /// <summary>Members of this spawner, for the save file.</summary>
+    public IReadOnlyList<Serial> SpawnedUids => _spawnedUids;
+
+    /// <summary>Link an item that already exists to this spawner (load-time ADDOBJ,
+    /// and the live script setter).</summary>
+    public void RegisterExisting(Serial uid)
+    {
+        if (!_spawnedUids.Contains(uid))
+            _spawnedUids.Add(uid);
+    }
+
+    /// <summary>Point this spawner at a named ITEMDEF or TEMPLATE (SPAWNID).</summary>
+    public void SetFromDefName(string spawnId, ResourceHolder resources)
+    {
+        var rid = resources.ResolveDefName(spawnId.Trim());
+        if (rid.IsValid && rid.Type is ResType.ItemDef or ResType.Template)
+        {
+            _itemDefId = rid.Index;
+            _spawnItem.More1 = (uint)rid.Index;
+            return;
+        }
+        if (uint.TryParse(spawnId.Trim(), System.Globalization.NumberStyles.HexNumber,
+                null, out uint raw) && raw != 0)
+        {
+            _itemDefId = (int)raw;
+            _spawnItem.More1 = raw;
+        }
+    }
+
+    /// <summary>Take the item's MOREP into the component, exactly as the char spawner
+    /// does - upstream has one component and one MOREP setter (CCSpawn.cpp:1064).</summary>
+    public void ApplyMoreP()
+    {
+        var mp = _spawnItem.MoreP;
+        _spawnRange = Math.Max(0, (int)mp.Z);
+        if (mp.X > 0 || mp.Y > 0)
+        {
+            int minMin = Math.Max(1, (int)mp.X);
+            int maxMin = Math.Max(minMin, mp.Y > 0 ? (int)mp.Y : minMin);
+            SetDelay(minMin, maxMin);
+        }
+    }
+
+    private bool _stopped;
+
+    /// <summary>Has STOP been used on this spawner?</summary>
+    public bool IsStopped => _stopped;
+
+    /// <summary>Source-X STOP: clear the children and hold the timer (r_Verb,
+    /// CCSpawn.cpp:1233). There is no item exclusion upstream.</summary>
+    public void Stop()
+    {
+        _stopped = true;
+        KillAll();
+        _nextSpawnTick = -1;
+        _spawnItem.SetTimeout(-1);
+    }
+
+    /// <summary>Source-X START: run again from now.</summary>
+    public void Start()
+    {
+        _stopped = false;
+        ForceSpawn();
+    }
+
+    /// <summary>Source-X RESET: clear the children and start over immediately.</summary>
+    public void Reset()
+    {
+        KillAll();
+        _stopped = false;
+        ForceSpawn();
+    }
 
     /// <summary>Detach a spawned item without deleting it (Source-X DelObj).</summary>
     public void DelObj(Serial uid)
