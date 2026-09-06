@@ -309,7 +309,11 @@ public sealed class CraftingEngine
             if (item.IsDeleted) continue;
             if (item.ItemType == type)
                 count += item.Amount;
-            count += CountInContainerByType(item, type, depth + 1);
+            // Source-X gates a recursive resource search on IsSearchable
+            // (CContainer::ContentFind, CContainer.cpp:236): a locked chest in
+            // the pack is not part of the reachable stock a craft may consume.
+            if (item.IsSearchableContainer)
+                count += CountInContainerByType(item, type, depth + 1);
         }
         return count;
     }
@@ -332,7 +336,8 @@ public sealed class CraftingEngine
         {
             if (item.IsDeleted) continue;
             if (item.ItemType == type) return true;
-            if (depth > 0 && item.ContentCount > 0 && HasItemOfTypeIn(item, type, depth - 1))
+            if (depth > 0 && item.ContentCount > 0 && item.IsSearchableContainer &&
+                HasItemOfTypeIn(item, type, depth - 1))
                 return true;
         }
         return false;
@@ -440,6 +445,7 @@ public sealed class CraftingEngine
         {
             if (item.IsDeleted) continue;
             if (item.ItemType == type) return item;
+            if (!item.IsSearchableContainer) continue;
             var found = FindInContainerByType(item, type, depth + 1);
             if (found != null) return found;
         }
@@ -452,6 +458,7 @@ public sealed class CraftingEngine
         foreach (var item in container.Contents)
         {
             if (item.BaseId == itemId) return item;
+            if (!item.IsSearchableContainer) continue;
             var found = FindInContainer(item, itemId, depth + 1);
             if (found != null) return found;
         }
@@ -466,7 +473,8 @@ public sealed class CraftingEngine
         {
             if (item.BaseId == itemId)
                 count += item.Amount;
-            count += CountInContainer(item, itemId, depth + 1);
+            if (item.IsSearchableContainer)
+                count += CountInContainer(item, itemId, depth + 1);
         }
         return count;
     }
@@ -531,7 +539,7 @@ public sealed class CraftingEngine
                 : item.BaseId == res.ItemId;
             if (matches && item.Hue.Value == hue)
                 return item;
-            if (item.ContentCount > 0)
+            if (item.ContentCount > 0 && item.IsSearchableContainer)
             {
                 var found = FindResourceItemByHue(item, res, hue, depth + 1, seen);
                 if (found != null) return found;
@@ -555,7 +563,7 @@ public sealed class CraftingEngine
                 totals.TryGetValue(item.Hue.Value, out long amount);
                 totals[item.Hue.Value] = Math.Min(int.MaxValue, amount + item.Amount);
             }
-            if (item.ContentCount > 0)
+            if (item.ContentCount > 0 && item.IsSearchableContainer)
                 CollectResourceHues(item, res, totals, depth + 1, seen);
         }
     }

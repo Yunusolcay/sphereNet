@@ -430,8 +430,16 @@ public class CombatAuditRegressionTests
         }
     }
 
+    /// <summary>
+    /// Source-X Fight_Hit applies the weapon's own damage first (OnTakeDamage,
+    /// CCharFight.cpp:2259) and runs the procs afterwards (:2270-2361). This test
+    /// used to assert the opposite ordering — that a killing proc aborted the strike
+    /// before its damage landed and before it was recorded — which handed the kill,
+    /// the murder count and the loot rights to the proc instead of to the blow that
+    /// was actually swung.
+    /// </summary>
     [Fact]
-    public void OnHitProcKillStopsTheOriginalStrikePipeline()
+    public void OnHitProcKillStillCreditsTheStrikeThatLanded()
     {
         var savedSpell = CombatEngine.OnHitSpell;
         try
@@ -446,9 +454,13 @@ public class CombatAuditRegressionTests
 
             int result = CombatEngine.ResolveAttack(attacker, target, weapon);
 
+            // The proc still short-circuits the REST of the tail once it kills.
             Assert.Equal(CombatEngine.AttackResolvedByProc, result);
             Assert.True(target.IsDead);
-            Assert.Empty(target.Attackers);
+
+            // ...but the swing that preceded it is applied and attributed.
+            Assert.NotEmpty(target.Attackers);
+            Assert.Contains(target.Attackers, a => a.Uid == attacker.Uid);
         }
         finally
         {

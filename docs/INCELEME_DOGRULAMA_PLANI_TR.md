@@ -406,8 +406,8 @@ client'ta görünmesi, ışık kaynaklarının 20 dakikada sönmesi.
 Bu ek bölüm yukarıdaki tarihsel incelemeden ayrıdır; burada üç ajanla doğrulama
 yapılmadı. SphereNet `da5972ca`, yerel Source-X `92ced0ba` üzerinde kaynak
 karşılaştırması ve izole çalışma senaryoları kullanıldı. Çözüm testleri: 2333/2333.
-[Kategori planı](D:/Projeler/Yunus/sphereNet/SOURCE_X_KARSILASTIRMA_PLANI.md) ve
-[01A kanıt raporu](D:/Projeler/Yunus/sphereNet/SOURCE_X_BOLUM_01A_TICARET_OLUM.md)
+[Kategori planı](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_KARSILASTIRMA_PLANI.md) ve
+[01A kanıt raporu](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_01A_TICARET_OLUM.md)
 tarihli kapsam/kanıt kayıtlarıdır; aşağıdaki kutular yaşayan düzeltme durumudur.
 
 - [x] **SX-01A-02 (P1)** — Sahipli satıcıdan dolu çanta tam alımında özgün nesne
@@ -462,7 +462,7 @@ artık ayrı Amount=1 nesneler).
 
 ### 01B — kaldirma, birakma, kaplar ve kusanma (6 Eylül 2026)
 
-[01B kanit raporu](D:/Projeler/Yunus/sphereNet/SOURCE_X_BOLUM_01B_ENVANTER.md).
+[01B kanit raporu](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_01B_ENVANTER.md).
 Alti bulgunun tamami kodda dogrulandi ve uygulandi.
 
 - [x] **SX-01B-01 (P1)** — Tek surukleme kurali. (YAPILDI: `ResolvePreviousDrag`
@@ -509,8 +509,8 @@ itemdef ile eslesmesi. Bunlar 01B'de dogrulanmadi.
 
 ### 02 + 02B — guvenli ticaret (6 Eylul 2026)
 
-[02 kanit raporu](D:/Projeler/Yunus/sphereNet/SOURCE_X_BOLUM_02_GUVENLI_TICARET.md) ·
-[02B kanit raporu](D:/Projeler/Yunus/sphereNet/SOURCE_X_BOLUM_02B_KAYIT_SCRIPT.md).
+[02 kanit raporu](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_02_GUVENLI_TICARET.md) ·
+[02B kanit raporu](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_02B_KAYIT_SCRIPT.md).
 Yedi bulgunun tamami dogrulandi ve uygulandi.
 
 **Kok neden (yedi bulgunun besini birden besliyordu):** trade penceresinin kimligi
@@ -572,6 +572,53 @@ ticaret surerken save/load'in canli oturumla etkilesimi. Ayrica kapasite
 davranisi bilincli tasarim farki olarak birakildi: SphereNet `CanAcceptTradeItems`
 ile on-kontrol yapar, Source-X kabulden sonra ItemBounce ile teslim eder.
 
+### 03A — dovus ilk taramasi (6 Eylul 2026)
+
+[03A kanit raporu](D:/Projeler/Yunus/sphereNet/SOURCE_X_BOLUM_03A_DOVUS.md).
+Uc bulgunun tamami dogrulandi ve uygulandi; ucu de raporun anlattigindan genisti.
+
+- [x] **SX-03A-02 (P1)** — Yansitilan hasar Invul korumasini atliyor. (YAPILDI:
+  `CombatEngine.ApplyReflectedDamage` tek giris; uc yansima dali da (Blood Oath,
+  Reactive Armor, REFLECTPHYSICALDAM) buradan geciyor. **Rapora duzeltme:**
+  SphereNet'in "fixed hasar recurse edemez" yorumu Source-X'i yanlis okuyordu —
+  DAMAGE_FIXED Invul'u atlamaz; recursion'u DAMAGE_REACTIVE engeller
+  (CCharFight.cpp:1015), Invul kapisi girişte durur (:642). **Raporda olmayan
+  ek dallar:** `SpellEngine` Reactive Armor yansimasi ve `CharacterPoisonState`
+  zehir tikleri de bagisikligi hic kontrol etmiyordu; ikisi de kapatildi.
+  NOT: `IsDamageImmune` yalnizca Invul+God kapsiyor; Source-X ayrica STATF_STONE,
+  CAN_C_FIRE_IMMUNE ve SAFE bolge bayraklarini da kontrol eder — genisletilmedi,
+  03B adayi.)
+- [x] **SX-03A-01 (P2)** — Mühimmat aramasi kilitli alt kaplara iniyor. (YAPILDI:
+  `FindAmmoInContainerCore` artik `IsSearchableContainer` ile iniyor. **Raporda
+  olmayan ek:** ayni hata `CraftingEngine`'de sekiz ayri gezicide daha vardi
+  (CountInContainerByType, HasItemOfTypeIn, FindItemOfTypeIn, FindInContainerByType,
+  FindInContainer, CountInContainer, FindResourceItemByHue, CollectResourceHues) —
+  crafting kilitli sandiktan malzeme tuketebiliyordu; hepsi kapatildi.
+  **Bilincli istisna:** altin sayimi (`TradeEngine.EnumerateContainerContentsRecursive`)
+  DOKUNULMADI — Source-X `ContentConsume` altin icin yalnizca IT_CONTAINER_LOCKED'i
+  disliyor, tam IsSearchable kumesini degil (CContainer.cpp:443); oraya bu predikati
+  uygulamak yeni bir sapma olurdu.)
+- [x] **SX-03A-03 (P2)** — Vurus proc'lari ana hasardan once. (YAPILDI:
+  `ApplyAosOnHitEffects` hasar uygulamasindan SONRAYA alindi (Source-X Fight_Hit:
+  OnTakeDamage :2259, proc'lar :2270). **Rapora ek — asil zarar gozlemlenen HP
+  degil:** proc oldurdugunde silahin kendi hasari hic islenmiyordu ve onun icin
+  `RecordAttack` calismiyordu, yani oldurme kredisi, murder count ve loot hakki
+  savrulan darbeden proc'a kayiyordu. **Tehlike:** proc cagrisi bagisiklik blogunun
+  DISINDA birakildi; Source-X proc'lari `iDmg > 0` ile kapatir ve OnTakeDamage'in
+  donusunu yok sayar, iceri tasimak yeni bir sapma olurdu.)
+
+**03A kapanisi:** tam suite **2.388 basarili / 0 basarisiz** (+14). Sozlesme
+degisikligi nedeniyle guncellenen mevcut test: `CombatAuditRegressionTests`
+`OnHitProcKillStopsTheOriginalStrikePipeline` → `OnHitProcKillStillCreditsTheStrikeThatLanded`
+(eski adi ve iddiasi parite disi sirayi sabitliyordu).
+
+**Bu turda ortaya cikan, rapora dahil olmayan fark:** SphereNet Invul bir HEDEFE
+hic vurus yapmiyor (`CombatHelper.IsInvalidSwingParticipant` Invul'u gecersiz hedef
+sayar), Source-X ise vurup OnTakeDamage icinde sektiriyor — yani Source-X'te
+proc'lar Invul hedefe karsi da calisir. Duzeltilmedi (bu turun bulgusu degil);
+`CombatParity03ATests.AnInvulnerableTargetIsNotSwungAtAtAll` mevcut davranisi
+sabitliyor ve gerekcesini tasiyor. 03B adayi.
+
 **Elenen varsayım:** `OYUN_ICI_ANALIZ_RAPORU.md` G04'teki normal çanta içindeki
 korumalı eşyanın ayrıca kurtarılması beklentisi Source-X kuralı değil.
 `CContainer::ContentsTransfer` yalnızca doğrudan çocukları değerlendirir; güncel
@@ -581,7 +628,7 @@ recursive ölüm koruması uygulanmamalı; shard kuralı istenirse ayrı tasarı
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.
-[Ayrıntılı kanıt raporu](D:/Projeler/Yunus/sphereNet/SOURCE_X_BOLUM_01B_ENVANTER.md).
+[Ayrıntılı kanıt raporu](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_01B_ENVANTER.md).
 Altı yeni bulgu izole GameClient handler senaryolarıyla çalıştırıldı; Source-X
 tarafı kaynak karşılaştırmasıdır. Üretim kodu değiştirilmedi. Tam test sonucu
 2348/2348 başarılı. 01A'nın beş eski çalışma senaryosu da düzeltmeleri doğruladı.
@@ -597,7 +644,7 @@ Ek envanter varyantları rapor sonunda ayrıldı; sıradaki ana bölüm 02 güve
 ### SX-02 — Güvenli ticaret ilk tur (6 Eylül 2026)
 
 SphereNet `6804d29`, Source-X `92ced0ba`.
-[Kanıt ve tekrar raporu](D:/Projeler/Yunus/sphereNet/SOURCE_X_BOLUM_02_GUVENLI_TICARET.md).
+[Kanıt ve tekrar raporu](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_02_GUVENLI_TICARET.md).
 Tam suite 2362/2362 başarılı. Dört bulgu izole handler/world deneyleriyle üretildi.
 
 - [ ] **SX-02-01 (P1)** — `HandleSecureTrade` param değerini kullanmalı;
@@ -618,7 +665,7 @@ farkı olarak ayrıldı, yeni hata hükmü verilmedi.
 
 Kullanıcı SX-02-01–04 sorunlarının sürdüğünü bildirdi; açık durumları korundu.
 Bu tur onları düzeltmeden üç ayrı senaryo çalıştırıldı. SphereNet `db97de6`.
-[02B raporu](D:/Projeler/Yunus/sphereNet/SOURCE_X_BOLUM_02B_KAYIT_SCRIPT.md).
+[02B raporu](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_02B_KAYIT_SCRIPT.md).
 
 - [ ] **SX-02B-01 (P1)** — Aktif trade snapshot'ından yüklemede teklif eşyasını
   özgün sahibine geri bağla; nesne oturumsuz ve sahipsiz eski trade kabında kalıyor.
@@ -631,3 +678,20 @@ Bu tur onları düzeltmeden üç ayrı senaryo çalıştırıldı. SphereNet `db
 değiştirilmedi. Önceki 2362 test sonucu geçerli kaynak ağacına aittir; tam suite
 bu tur tekrar çalıştırılmadı. Sonraki ana alan 03 dövüş; kalan ticaret varyantları
 02B raporunda açık kapsam olarak korunuyor.
+
+### SX-03A — Dövüş ilk tarama (6 Eylül 2026)
+
+SphereNet `f42ea6a`, Source-X `92ced0ba`.
+[Ayrıntılı rapor](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_03A_DOVUS.md).
+Üç fark izole deneyle doğrulandı; tam suite 2374/2374 başarılı. Üretim koduna
+bu incelemede dokunulmadı; ticaret düzeltmelerinin kapanışı bu turun konusu değil.
+
+- [ ] **SX-03A-01 (P2)** — Normal mühimmat aramasında kilitli alt kaplara inme;
+  FindAmmoInContainerCore IsSearchableContainer kontrolünü kullanmıyor.
+- [ ] **SX-03A-02 (P1)** — REFLECTPHYSICALDAM hasarını bağışıklık sözleşmesinden
+  geçir; Invul saldırgan doğrudan HP yazımı nedeniyle 20 can kaybediyor.
+- [ ] **SX-03A-03 (P2)** — Vuruş sonrası proc'ları ana HP hasarından sonra uygula;
+  HITFIREBALL callback'i 20 hasarlık vuruşta hedefi hâlâ 100 HP'de görüyor.
+
+Sonraki 03B: windup/hedef değişimi, silah değiştirme, player/NPC zamanlaması,
+miss/parry/veto cephane yolları. İlk tarama bütün dövüş kategorisini kapatmaz.

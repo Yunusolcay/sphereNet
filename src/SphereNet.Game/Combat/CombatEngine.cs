@@ -618,6 +618,36 @@ public static class CombatEngine
     public static bool IsDamageImmune(Character target, DamageType type = DamageType.Physical)
         => target.IsStatFlag(StatFlag.Invul) && !type.HasFlag(DamageType.God);
 
+    /// <summary>
+    /// Apply damage that a defender bounces back at its attacker — Blood Oath,
+    /// Reactive Armor, REFLECTPHYSICALDAM.
+    ///
+    /// Source-X sends reflected damage back through the SAME entry as any other
+    /// blow: OnTakeDamage(dam, src, DAMAGE_FIXED | DAMAGE_REACTIVE)
+    /// (CCharFight.cpp:1021), whose first act is to bounce everything without
+    /// DAMAGE_GOD off an invulnerable target (:642). Recursion is prevented by the
+    /// DAMAGE_REACTIVE flag (:1015), NOT by the damage being "fixed" — SphereNet's
+    /// three reflect branches wrote attacker.Hits directly on the belief that fixed
+    /// damage cannot recurse, and so skipped the immunity gate entirely: a character
+    /// that cannot be harmed still lost hit points to its own victim.
+    ///
+    /// Reflected damage is never itself reflected, which is what the direct write
+    /// bought and what this reproduces without giving up the guard.
+    /// </summary>
+    /// <returns>The damage actually dealt; 0 when the recipient is immune.</returns>
+    public static int ApplyReflectedDamage(Character recipient, Character from, int damage)
+    {
+        if (damage <= 0) return 0;
+        if (recipient.IsDeleted || recipient.IsDead) return 0;
+        if (IsDamageImmune(recipient)) return 0;
+
+        recipient.Hits -= (short)Math.Min(damage, short.MaxValue);
+        // Credit it so a reflect kill attributes to the defender (murder count,
+        // karma/fame, loot rights).
+        recipient.RecordAttack(from.Uid, damage);
+        return damage;
+    }
+
     /// <summary>Apply the Source-X CObjBase DAMAGE verb to a character or item.
     /// Character damage honors @GetHit and elemental resists; item damage uses
     /// the existing @Damage cancellation and durability-break callbacks.</summary>
@@ -1032,19 +1062,6 @@ public static class CombatEngine
             damage = ApplySlayerDamage(attacker, target, damage, weapon);
         damage = Math.Clamp(damage, 0, short.MaxValue);
 
-        // AOS on-hit properties (Source-X Fight_Hit tail, CCharFight.cpp:2270):
-        // leeches, mana drain, hit-area splashes and on-hit spell procs run on
-        // any hit that dealt damage.
-        if (damage > 0)
-            ApplyAosOnHitEffects(attacker, target, damage, weapon, flags);
-
-        // An on-hit spell/area callback can synchronously kill either party
-        // through the normal spell/death engine. Do not continue the original
-        // strike into a dead mobile (double damage, duplicate death feedback,
-        // poison and durability side effects).
-        if (attacker.IsDeleted || attacker.IsDead || target.IsDeleted || target.IsDead)
-            return AttackResolvedByProc;
-
         // Weapon poison on-hit: transfer poison from weapon to target.
         // Source-X: HIT_POISON attribute on weapon. SphereNet: POISON_SKILL tag
         // set by Poisoning skill. Uses 1 charge per hit; cleared at 0.
@@ -1126,35 +1143,19 @@ public static class CombatEngine
                 if (extra > 0)
                     target.Hits -= (short)Math.Min(extra, short.MaxValue);
                 int reflect = damage * (100 - target.BloodOathLevel) / 100;
-                if (reflect > 0)
-                {
-                    attacker.Hits -= (short)Math.Min(reflect, short.MaxValue);
-                    attacker.RecordAttack(target.Uid, reflect);
-                }
+                ApplyReflectedDamage(attacker, target, reflect);
             }
 
             if (target.IsStatFlag(StatFlag.Reactive) && attacker != target && !attacker.IsDead)
-            {
-                int reflect = Math.Max(1, damage / 4);
-                attacker.Hits -= (short)Math.Min(reflect, short.MaxValue);
-                // Credit reflected damage so a reactive-armor kill attributes to
-                // the target (murder count / karma-fame / loot rights).
-                attacker.RecordAttack(target.Uid, reflect);
-            }
+                ApplyReflectedDamage(attacker, target, Math.Max(1, damage / 4));
 
             // AOS REFLECTPHYSICALDAM (Source-X OnTakeDamage, CCharFight.cpp:1013):
             // the defender's suit bounces a percentage of the damage back at the
-            // attacker, capped at 250%. Separate from the Reactive Armor spell
-            // above and applied as fixed damage so it cannot recurse.
+            // attacker, capped at 250%. Separate from the Reactive Armor spell above.
             if (attacker != target && !attacker.IsDead)
             {
                 int reflectPct = Math.Min(GetOnHitPropertyValue(target, null, "REFLECTPHYSICALDAM"), 250);
-                int reflectDam = damage * reflectPct / 100;
-                if (reflectDam > 0)
-                {
-                    attacker.Hits -= (short)Math.Min(reflectDam, short.MaxValue);
-                    attacker.RecordAttack(target.Uid, reflectDam);
-                }
+                ApplyReflectedDamage(attacker, target, damage * reflectPct / 100);
             }
 
             // Source-X @Hit LOCAL.ItemDamageChance: the weapon wears only
@@ -1163,6 +1164,29 @@ public static class CombatEngine
                 _rand.Next(100) < Math.Clamp(hitCtx.WeaponDamageChance, 0, 100))
                 ApplyDurabilityLoss(weapon, rollConfiguredChance: false);
         }
+
+        // AOS on-hit properties: leeches, mana drain, hit-area splashes and on-hit
+        // spell procs.
+        //
+        // Source-X Fight_Hit applies the weapon's own damage FIRST
+        // (OnTakeDamage, CCharFight.cpp:2259) and only then runs the procs
+        // (:2270-2361). Running them first meant a proc that killed the target
+        // aborted the strike before its damage ever landed and before RecordAttack
+        // ran for it - so the kill, the murder count and the loot rights went to the
+        // proc rather than to the blow that was actually swung.
+        //
+        // Deliberately OUTSIDE the immunity block above: Source-X gates the procs on
+        // `iDmg > 0` and discards OnTakeDamage's return, so they fire even when the
+        // target bounced the blow. Moving this inside would be a new deviation.
+        if (damage > 0)
+            ApplyAosOnHitEffects(attacker, target, damage, weapon, flags);
+
+        // A proc can synchronously kill either party through the normal spell/death
+        // engine. The strike itself is already applied and credited by this point;
+        // stop here so the tail below does not add poison, durability or death
+        // feedback on top of a mobile that is already dead.
+        if (attacker.IsDeleted || attacker.IsDead || target.IsDeleted || target.IsDead)
+            return AttackResolvedByProc;
 
         // Passive combat skill gain — Source-X Fight_Hit tail: every landed
         // swing trains the active weapon skill AND Tactics for a player

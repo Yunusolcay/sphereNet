@@ -44,3 +44,6 @@ src/SphereNet.Server/panel
 tools/bot.txt
 /.claude
 oldSphere.rar
+
+# Local review reports
+/docs/reviews/

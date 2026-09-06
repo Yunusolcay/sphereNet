@@ -4,6 +4,42 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Combat: reflected damage, on-hit ordering and searchable containers (03A)
+----------------------------------------
+
+FIX - Reflected damage went straight to attacker.Hits, so a character that cannot be
+        harmed still lost hit points to its own victim. Source-X sends reflection
+        back through the ordinary entry - OnTakeDamage(dam, src, DAMAGE_FIXED |
+        DAMAGE_REACTIVE), CCharFight.cpp:1021 - whose first act is to bounce anything
+        without DAMAGE_GOD off an invulnerable target (:642). The comment claiming
+        fixed damage cannot recurse misread the reference: recursion is stopped by
+        DAMAGE_REACTIVE (:1015), so writing HP directly bought nothing and skipped
+        the guard. All three reflect branches (Blood Oath, Reactive Armor,
+        REFLECTPHYSICALDAM) now share one immunity-respecting entry.
+
+FIX - The same gate was missing on two more paths: the Reactive Armor reflection in
+        SpellEngine, and poison ticks, which applied damage with no immunity check at
+        all. A poisoned invulnerable character now takes no tick damage, while the
+        poison still expires on schedule.
+
+FIX - On-hit properties (leeches, hit-area splashes, on-hit spell procs) ran BEFORE
+        the weapon's own damage. Source-X Fight_Hit applies the damage first
+        (CCharFight.cpp:2259) and runs the procs after (:2270). The visible cost was
+        not the HP a proc observed: when a proc killed the target, the strike's own
+        damage never landed and was never recorded, so the kill, the murder count and
+        the loot rights went to the proc instead of to the blow that was swung. The
+        proc call stays outside the immunity block, because Source-X gates procs on
+        `iDmg > 0` and discards OnTakeDamage's return.
+
+FIX - The ranged-ammo search recursed into every container, so arrows locked in a
+        chest inside the pack were still fired. Source-X gates the descent on
+        IsSearchable (CContainer::ContentFind, CContainer.cpp:236). The same defect
+        was in eight more container walks in CraftingEngine, which could consume
+        materials out of a locked chest; all nine now use the searchable contract.
+        Gold counting is deliberately left alone: Source-X excludes only
+        IT_CONTAINER_LOCKED for gold (CContainer.cpp:443), not the full searchable
+        set.
+
 [2026-09-06] - Secure trade: window ownership, accept contract and recovery (02)
 ----------------------------------------
 

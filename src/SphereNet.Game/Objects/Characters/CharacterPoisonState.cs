@@ -216,6 +216,15 @@ public sealed class CharacterPoisonState
 
         // A script can zero the tick (reference handler maps sub-lesser
         // strength to 0 damage): keep the schedule, skip the application.
+        // Source-X OnTakeDamage bounces every blow off STATF_INVUL regardless of
+        // where it came from; a poison tick is not an exception. The schedule keeps
+        // running so the poison still expires normally.
+        // Source-X OnTakeDamage bounces every blow off STATF_INVUL regardless of
+        // where it came from; a poison tick is not an exception. The schedule keeps
+        // running so the poison still expires normally.
+        if (damage > 0 && Combat.CombatEngine.IsDamageImmune(_owner))
+            damage = 0;
+
         if (damage > 0)
         {
             _owner.Hits = (short)Math.Max(0, _owner.Hits - damage);

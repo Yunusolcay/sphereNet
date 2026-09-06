@@ -3,6 +3,41 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Dovus: yansiyan hasar, vurus sirasi ve aranabilir kaplar (03A)
+----------------------------------------
+
+FIX - Yansiyan hasar dogrudan attacker.Hits'e yaziliyordu; zarar goremeyecek bir
+        karakter kendi kurbanindan can kaybediyordu. Source-X yansimayi siradan
+        girisin kendisinden geri gonderir - OnTakeDamage(dam, src, DAMAGE_FIXED |
+        DAMAGE_REACTIVE), CCharFight.cpp:1021 - ve o girisin ilk isi DAMAGE_GOD
+        tasimayan her seyi Invul hedeften sektirmektir (:642). "Fixed hasar recurse
+        edemez" diyen yorum referansi yanlis okuyordu: recursion'u DAMAGE_REACTIVE
+        engeller (:1015), yani HP'yi dogrudan yazmak hicbir sey kazandirmayip
+        korumayi atliyordu. Uc yansima dali da (Blood Oath, Reactive Armor,
+        REFLECTPHYSICALDAM) artik bagisikliga saygili tek giristen geciyor.
+
+FIX - Ayni kapi iki yolda daha eksikti: SpellEngine'deki Reactive Armor yansimasi ve
+        hicbir bagisiklik kontrolu yapmayan zehir tikleri. Zehirlenmis Invul bir
+        karakter artik tik hasari almiyor; zehir yine normal sekilde suresini
+        dolduruyor.
+
+FIX - Vurus ozellikleri (leech, alan etkisi, vurus buyusu proc'lari) silahin kendi
+        hasarindan ONCE calisiyordu. Source-X Fight_Hit once hasari uygular
+        (CCharFight.cpp:2259), proc'lari sonra calistirir (:2270). Gorunur bedel
+        proc'un gozledigi HP degildi: proc hedefi oldurdugunde darbenin kendi hasari
+        hic islenmiyor ve hic kaydedilmiyordu; oldurme, murder count ve loot hakki
+        savrulan darbe yerine proc'a gidiyordu. Proc cagrisi bagisiklik blogunun
+        disinda kaldi, cunku Source-X proc'lari `iDmg > 0` ile kapatir ve
+        OnTakeDamage'in donusunu yok sayar.
+
+FIX - Menzilli muhimmat aramasi her kaba iniyordu; cantadaki kilitli sandiga konmus
+        oklar hala atilabiliyordu. Source-X inisi IsSearchable ile kapatir
+        (CContainer::ContentFind, CContainer.cpp:236). Ayni kusur CraftingEngine'de
+        sekiz kap gezicisinde daha vardi ve crafting kilitli sandiktan malzeme
+        tuketebiliyordu; dokuzu da artik aranabilir kap sozlesmesini kullaniyor.
+        Altin sayimi bilincli olarak disarida birakildi: Source-X altin icin yalnizca
+        IT_CONTAINER_LOCKED'i disler (CContainer.cpp:443), tam kumeyi degil.
+
 [2026-09-06] - Guvenli ticaret: pencere sahipligi, onay sozlesmesi ve kurtarma (02)
 ----------------------------------------
 

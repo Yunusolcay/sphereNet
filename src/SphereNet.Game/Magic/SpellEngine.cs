@@ -1400,12 +1400,11 @@ public sealed class SpellEngine
 
                 // Reactive Armor reflects a quarter of the damage back at the
                 // caster, the same as the melee path (previously melee-only).
+                // Through the shared reflect entry so an invulnerable caster is not
+                // damaged by its own victim (Source-X routes reflection back through
+                // OnTakeDamage, whose Invul gate applies).
                 if (target.IsStatFlag(StatFlag.Reactive) && caster != target && !caster.IsDead)
-                {
-                    int reflect = Math.Max(1, damage / 4);
-                    caster.Hits -= (short)Math.Min(reflect, short.MaxValue);
-                    caster.RecordAttack(target.Uid, reflect);
-                }
+                    CombatEngine.ApplyReflectedDamage(caster, target, Math.Max(1, damage / 4));
 
                 TryInterruptFromDamage(target, damage);
 

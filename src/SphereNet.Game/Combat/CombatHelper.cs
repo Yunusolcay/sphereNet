@@ -435,6 +435,16 @@ public static class CombatHelper
             bool matches = baseId != 0 ? item.BaseId == baseId : item.ItemType == fallbackType;
             if (matches && item.Amount > 0)
                 return item;
+            // Source-X CContainer::ContentFind checks IsSearchable before descending
+            // (CContainer.cpp:236), so a locked chest inside the pack is not part of
+            // an ordinary resource search — arrows separated from the player's
+            // reachable quiver were still being fired.
+            // Source-X CContainer::ContentFind checks IsSearchable before descending
+            // (CContainer.cpp:236), so a locked chest inside the pack is not part of
+            // an ordinary resource search — arrows separated from the player's
+            // reachable quiver were still being fired.
+            if (!item.IsSearchableContainer) continue;
+
             var nested = FindAmmoInContainerCore(item, baseId, fallbackType, depth - 1, visited);
             if (nested != null)
                 return nested;
