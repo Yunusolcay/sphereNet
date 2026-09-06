@@ -3181,6 +3181,13 @@ public static partial class Program
 
             // Mounts
             _mountEngine = new SphereNet.Game.Mounts.MountEngine(_world);
+            // Break a rider's link when the creature carrying them is deleted, and
+            // end a shrunk pet's life with the figurine holding it - the two halves
+            // Source-X does in its own DeleteCleanup paths.
+            SphereNet.Game.Objects.Characters.Character.MountedNpcDeletedHook =
+                npc => _mountEngine?.OnMountNpcDeleted(npc);
+            SphereNet.Game.Objects.Items.Item.FigurineDeletedHook =
+                figurine => SphereNet.Game.NPCs.PetFigurine.OnFigurineDeleted(figurine, _world);
             // Script DISMOUNT verb: prefer the client path (fires @Dismount and
             // refreshes the rider's view); fall back to the engine for NPCs and
             // offline riders so the mount NPC is still restored.

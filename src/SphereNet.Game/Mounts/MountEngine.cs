@@ -44,6 +44,9 @@ public sealed class MountEngine
         // Store NPC identity so we can find the same NPC on dismount
         rider.Tags.Set("MOUNT_NPC_SERIAL", npc.Uid.Value.ToString());
         rider.Tags.Set("MOUNT_NPC_UUID", npc.Uuid.ToString("D"));
+        // ...and the way back, so a mount that is deleted can break the rider's half
+        // of the link instead of leaving it to be re-resolved later.
+        npc.SetTag(RiderUuidTag, rider.Uuid.ToString("D"));
 
         // Hide NPC: remove from sector so it is invisible and won't tick,
         // but keep it in the world object table so it survives save/load.
@@ -77,19 +80,9 @@ public sealed class MountEngine
         bool hasHorseItem = horseItem != null;
         bool hasMountedFlag = rider.IsMounted;
 
-        // Try to find mount NPC — UUID first (survives Serial recycling), then Serial fallback
-        Character? mountNpc = null;
-        if (rider.TryGetTag("MOUNT_NPC_UUID", out string? uuidStr) &&
-            Guid.TryParse(uuidStr, out Guid npcUuid))
-        {
-            mountNpc = _world.FindByUuid(npcUuid) as Character;
-        }
-        if (mountNpc == null &&
-            rider.TryGetTag("MOUNT_NPC_SERIAL", out string? serialStr) &&
-            uint.TryParse(serialStr, out uint npcSerial) && npcSerial != 0)
-        {
-            mountNpc = _world.FindChar(new Serial(npcSerial));
-        }
+        Character? mountNpc = ResolveMountNpc(rider);
+        if (mountNpc != null)
+            mountNpc.SetTag(RiderUuidTag, rider.Uuid.ToString("D"));  // stamp older saves
 
         // Fallback: try legacy body tags for backward compat with old saves
         ushort taggedBodyId = 0;
@@ -175,6 +168,67 @@ public sealed class MountEngine
         }
     }
 
+    /// <summary>Tag on the mount NPC naming the rider it is carrying. Source-X finds
+    /// the rider's side of the link from the ridden creature itself when the creature
+    /// is torn down (Horse_GetMountItem in DeleteCleanup, CChar.cpp:395).</summary>
+    private const string RiderUuidTag = "MOUNT_RIDER_UUID";
+
+    /// <summary>The creature a rider is mounted on, or null.
+    ///
+    /// A rider that RECORDED a UUID is answered by that UUID alone. Serials are
+    /// reassigned, so falling through to one when the recorded creature is gone
+    /// returned whatever inherited the number - and the repair path then hid that
+    /// creature, moved it onto the rider and handed it back from Dismount, which for
+    /// a Player meant a real character was flagged Ridden, teleported and stamped
+    /// with pet ownership. The serial answers only a link that never carried a UUID.
+    /// A resolved object that is deleted, or is a player, is refused outright.</summary>
+    private Character? ResolveMountNpc(Character rider)
+    {
+        if (rider.TryGetTag("MOUNT_NPC_UUID", out string? uuidStr) &&
+            Guid.TryParse(uuidStr, out Guid npcUuid) && npcUuid != Guid.Empty)
+            return Usable(_world.FindByUuid(npcUuid) as Character);
+
+        if (rider.TryGetTag("MOUNT_NPC_SERIAL", out string? serialStr) &&
+            uint.TryParse(serialStr, out uint npcSerial) && npcSerial != 0)
+            return Usable(_world.FindChar(new Serial(npcSerial)));
+
+        return null;
+
+        static Character? Usable(Character? npc) =>
+            npc is { IsDeleted: false, IsPlayer: false } ? npc : null;
+    }
+
+    /// <summary>A creature someone was riding has been deleted: break the rider's
+    /// half of the link. Source-X does this in DeleteCleanup (CChar.cpp:395) - it
+    /// clears the mount item's NPC uid, deletes the item and drops the ridden flag -
+    /// so the link is never left to be re-resolved against a reassigned serial.</summary>
+    public void OnMountNpcDeleted(Character npc)
+    {
+        if (!npc.TryGetTag(RiderUuidTag, out string? riderUuid) ||
+            !Guid.TryParse(riderUuid, out Guid uuid) || uuid == Guid.Empty)
+            return;
+
+        npc.RemoveTag(RiderUuidTag);
+        if (_world.FindByUuid(uuid) is not Character rider || rider.IsDeleted)
+            return;
+
+        var mountItem = rider.GetEquippedItem(Layer.Horse);
+        if (mountItem != null)
+        {
+            rider.Unequip(Layer.Horse);
+            _world.DeleteObject(mountItem);
+            mountItem.Delete();
+        }
+
+        rider.ClearStatFlag(StatFlag.OnHorse);
+        rider.RemoveTag("MOUNT_NPC_SERIAL");
+        rider.RemoveTag("MOUNT_NPC_UUID");
+        rider.RemoveTag("MOUNT_NPC_BODY");
+        rider.RemoveTag("MOUNT_NPC_BASE");
+        rider.RemoveTag("MOUNT_NPC_HUE");
+        rider.RemoveTag("MOUNT_NPC_NAME");
+    }
+
     /// <summary>
     /// Dismount the rider. Returns the original NPC (same object, all stats preserved).
     /// </summary>
@@ -183,13 +237,7 @@ public sealed class MountEngine
         if (!rider.IsMounted)
             return null;
 
-        Character? npc = null;
-        if (rider.TryGetTag("MOUNT_NPC_UUID", out string? uuidStr) &&
-            Guid.TryParse(uuidStr, out Guid npcUuid))
-            npc = _world.FindByUuid(npcUuid) as Character;
-        if (npc == null && rider.TryGetTag("MOUNT_NPC_SERIAL", out string? serialStr) &&
-            uint.TryParse(serialStr, out uint npcSerial) && npcSerial != 0)
-            npc = _world.FindChar(new Serial(npcSerial));
+        Character? npc = ResolveMountNpc(rider);
         if (npc != null && beforeDismount?.Invoke(npc) == true)
             return null;
 
@@ -213,6 +261,8 @@ public sealed class MountEngine
 
         if (npc == null)
             return null;
+
+        npc.RemoveTag(RiderUuidTag);
 
         // Source-X Use_Figurine pulls the pet out of ridden/idle space itself
         // (StatFlag_Clear(STATF_RIDDEN), CCharUse.cpp:1197-1198) — callers were

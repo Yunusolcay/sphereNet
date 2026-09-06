@@ -1322,6 +1322,10 @@ public partial class Character : ObjBase
     /// (called when a pet's ownership changes).</summary>
     public void InvalidateFollowerCount() => _curFollowerScanMs = 0;
 
+    /// <summary>A creature that was serving as somebody's mount is being deleted, so
+    /// the rider's half of the link can be broken (wired to MountEngine).</summary>
+    public static Action<Character>? MountedNpcDeletedHook;
+
     /// <summary>Mark the follower-count cache of whoever owns or controls this
     /// creature as dirty. Used where the creature stops counting towards their
     /// total without its ownership fields being rewritten - being deleted, above
@@ -2707,6 +2711,12 @@ public partial class Character : ObjBase
         // any one caller because dispel, expiry and every other removal path share
         // it, exactly as the reference shares its NPC cleanup.
         InvalidateKeeperFollowerCount();
+
+        // A creature taken out of play is Ridden - as a mount, a stabled pet or a
+        // shrunk one. Only a mount carries a rider link, and only that link needs
+        // breaking here; the hook itself is a no-op for the others.
+        if (IsStatFlag(StatFlag.Ridden))
+            MountedNpcDeletedHook?.Invoke(this);
 
         CombatState.ClearAttackers();
         MemoryState.Clear();

@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
 using SphereNet.Core.Enums;
 using SphereNet.Core.Interfaces;
 using SphereNet.Core.Types;
@@ -2646,11 +2646,39 @@ public sealed class ClientItemUseHandler
         _ => false
     };
 
+    /// <summary>The only commands a pet FRIEND may give. Source-X opens exactly
+    /// PC_FOLLOW, PC_STAY and PC_STOP to friends and sends every other verb to the
+    /// default arm, which requires NPC_IsOwnedBy (CCharNPCPet.cpp:129-152). Being a
+    /// friend was treated as full authority here, so a friend could make the pet drop
+    /// its cargo or transfer the pet to themselves.
+    ///
+    /// Note that COME and FOLLOW ME are NOT in the reference's friend set: PC_COME and
+    /// PC_FOLLOW_ME are separate commands (:38, :43) that fall to the owner-only
+    /// arm.</summary>
+    private static bool IsFriendPermittedPetVerb(string verb) =>
+        verb is "follow" or "stay" or "stop";
+
+    /// <summary>A new order supersedes whatever the pet was told last. Source-X starts
+    /// a fresh NPC action per command - NPCACT_FOLLOW_TARG for come/follow me
+    /// (CCharNPCPet.cpp:183), NPCACT_GOTO for go (:504) - so a pending GO cannot
+    /// outlive the order that replaced it. SphereNet kept GO_TARGET in a tag the pet
+    /// AI consults FIRST, so a Come after a Go changed the mode and then walked the
+    /// pet on to the old spot anyway.
+    ///
+    /// The GO verb manages these itself: it re-points GO_TARGET and deliberately keeps
+    /// the PREV_PET_MODE captured by the first GO, so the pet resumes what it was
+    /// doing before the detour rather than resuming the detour.</summary>
+    private static void SupersedePendingPetOrder(Character pet)
+    {
+        pet.RemoveTag("GO_TARGET");
+        pet.RemoveTag("PREV_PET_MODE");
+    }
+
     /// <summary>Source-X PC_*: target a single pet by name prefix.</summary>
     private bool DispatchNamedPet(string namePrefix, string verb)
     {
         if (_character == null) return false;
-        var pet = CollectCommandablePets(namePrefix).FirstOrDefault();
+        var pet = CollectCommandablePets(namePrefix, verb).FirstOrDefault();
         if (pet == null)
         {
             SysMessage(ServerMessages.Get(Msg.NpcPetFailure));
@@ -2664,7 +2692,7 @@ public sealed class ClientItemUseHandler
     private bool DispatchAllPets(string verb)
     {
         if (_character == null) return false;
-        var pets = CollectCommandablePets().ToList();
+        var pets = CollectCommandablePets(null, verb).ToList();
         if (pets.Count == 0)
         {
             SysMessage(ServerMessages.Get(Msg.NpcPetFailure));
@@ -2702,7 +2730,7 @@ public sealed class ClientItemUseHandler
     private bool ApplyPetVerb(Character pet, string verb)
     {
         if (_character == null) return false;
-        if (!pet.CanAcceptPetCommandFrom(_character))
+        if (!pet.CanAcceptPetCommandFrom(_character, IsFriendPermittedPetVerb(verb)))
         {
             SysMessage(ServerMessages.Get(Msg.NpcPetFailure));
             return false;
@@ -2729,6 +2757,7 @@ public sealed class ClientItemUseHandler
         switch (verb)
         {
             case "follow me":
+                SupersedePendingPetOrder(pet);
                 pet.PetAIMode = PetAIMode.Follow;
                 pet.FightTarget = Serial.Invalid; // an order calls the pet off its fight
                 pet.SetTag("FOLLOW_TARGET", _character.Uid.Value.ToString());
@@ -2739,6 +2768,7 @@ public sealed class ClientItemUseHandler
                 return true;
 
             case "come":
+                SupersedePendingPetOrder(pet);
                 pet.PetAIMode = PetAIMode.Come;
                 pet.FightTarget = Serial.Invalid; // an order calls the pet off its fight
                 pet.SetTag("FOLLOW_TARGET", _character.Uid.Value.ToString());
@@ -2786,12 +2816,14 @@ public sealed class ClientItemUseHandler
 
             case "stay":
             case "stop":
+                SupersedePendingPetOrder(pet);
                 pet.PetAIMode = PetAIMode.Stay;
                 pet.FightTarget = Serial.Invalid; // an order calls the pet off its fight
                 NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetSuccess));
                 return true;
 
             case "guard me":
+                SupersedePendingPetOrder(pet);
                 pet.PetAIMode = PetAIMode.Guard;
                 pet.SetTag("GUARD_TARGET", _character.Uid.Value.ToString());
                 NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetSuccess));
@@ -2953,8 +2985,10 @@ public sealed class ClientItemUseHandler
                 foreach (var petUid in petUids)
                 {
                     var pet = _world.FindChar(petUid);
+                    // Re-checked at the click, not just when the cursor opened:
+                    // ownership or friendship can be revoked while it is up.
                     if (pet == null || pet.IsDeleted || pet.IsDead || _character == null ||
-                        !pet.CanAcceptPetCommandFrom(_character))
+                        !pet.CanAcceptPetCommandFrom(_character, IsFriendPermittedPetVerb(verb)))
                     {
                         continue;
                     }
@@ -2969,7 +3003,7 @@ public sealed class ClientItemUseHandler
     private void ApplyPetTarget(Character pet, string verb, Serial uid, short x, short y, sbyte z)
     {
         if (_character == null) return;
-        if (!pet.CanAcceptPetCommandFrom(_character))
+        if (!pet.CanAcceptPetCommandFrom(_character, IsFriendPermittedPetVerb(verb)))
         {
             SysMessage(ServerMessages.Get(Msg.NpcPetFailure));
             return;
@@ -2991,6 +3025,7 @@ public sealed class ClientItemUseHandler
                     // master (ModernUO DoOrderNone behavior).
                     if (pet.PetAIMode != PetAIMode.Attack)
                         pet.SetTag("PREV_PET_MODE", ((int)pet.PetAIMode).ToString());
+                    SupersedePendingPetOrder(pet);
                     pet.SetTag("ATTACK_TARGET", victim.Uid.Value.ToString());
                     pet.FightTarget = victim.Uid;
                     pet.PetAIMode = PetAIMode.Attack;
@@ -3004,6 +3039,7 @@ public sealed class ClientItemUseHandler
             case "guard":
                 if (obj is Character guarded)
                 {
+                    SupersedePendingPetOrder(pet);
                     pet.SetTag("GUARD_TARGET", guarded.Uid.Value.ToString());
                     pet.PetAIMode = PetAIMode.Guard;
                     SysMessage(ServerMessages.GetFormatted(Msg.NpcPetTargGuardSuccess, pet.Name));
@@ -3015,6 +3051,7 @@ public sealed class ClientItemUseHandler
             case "follow":
                 if (obj is Character followee)
                 {
+                    SupersedePendingPetOrder(pet);
                     pet.SetTag("FOLLOW_TARGET", followee.Uid.Value.ToString());
                     pet.PetAIMode = PetAIMode.Follow;
                     SysMessage(ServerMessages.Get(Msg.NpcPetSuccess));
@@ -3124,7 +3161,7 @@ public sealed class ClientItemUseHandler
         return layer;
     }
 
-    private IEnumerable<Character> CollectCommandablePets(string? namePrefix = null)
+    private IEnumerable<Character> CollectCommandablePets(string? namePrefix, string verb)
     {
         if (_character == null)
             return Enumerable.Empty<Character>();
@@ -3135,7 +3172,7 @@ public sealed class ClientItemUseHandler
                 !p.IsDead &&
                 !p.IsDeleted &&
                 !p.IsStatFlag(StatFlag.Ridden) &&
-                p.CanAcceptPetCommandFrom(_character) &&
+                p.CanAcceptPetCommandFrom(_character, IsFriendPermittedPetVerb(verb)) &&
                 (string.IsNullOrEmpty(namePrefix) ||
                  p.Name.StartsWith(namePrefix, StringComparison.OrdinalIgnoreCase)));
     }

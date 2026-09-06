@@ -1003,6 +1003,62 @@ yazilmiyor). Marker `DecayTime`'i `WorldSaver` tarafindan kalan saniye olarak
 yazildigi icin 04C sinifindan bir saat-tasima riski kalmadi; yine de gercek yeniden
 baslatma + temizleme dongusu canli olarak calistirilmadi.
 
+### 06A-06D - pet komutu, ahir, mount kimligi, figurin (6 Eylul 2026)
+
+Kanit raporlari: [06A](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_06A_PET_KOMUT.md),
+[06B](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_06B_AHIR.md),
+[06C](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_06C_MOUNT_KIMLIK.md),
+[06D](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_06D_FIGURIN_SILME.md).
+Alti bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+- [x] **SX-06A-01 (P1)** - Pet arkadasligi sahip komutlari icin de yetki veriyordu.
+  (YAPILDI: `IsFriendPermittedPetVerb` ile fiil bazli matris. Referans arkadaslara
+  TAM OLARAK PC_FOLLOW/PC_STAY/PC_STOP acar (CCharNPCPet.cpp:129-152).
+  **Raporun kacirdigi ayrinti:** COME ve FOLLOW ME arkadas kumesinde DEGIL - PC_COME
+  (:38) ve PC_FOLLOW_ME (:43) ayri sabitler ve owner-only dala duser. Rapor bunu
+  "yalniz FOLLOW, STAY ve STOP" diye gecmisti; birebir uyguladim.
+  **Cursor yarisina karsi:** raporun uyardigi gibi yetki hem konusmada hem de hedef
+  tiklandiginda yeniden denetleniyor.)
+- [x] **SX-06A-02 (P2)** - Come emri eski Go hedefini iptal etmiyordu.
+  (YAPILDI: `SupersedePendingPetOrder` yeni her emirde GO_TARGET/PREV_PET_MODE
+  dusuruyor. Referans her komutta yeni NPC isi baslatir (:183 / :504).
+  **Raporun uyarisi karsilandi:** AI'daki Go onceligi TERSINE CEVRILMEDI - gercek Go
+  komutu bozulmasin diye. GO fiili PREV_PET_MODE'u kendi yonetmeye devam ediyor,
+  boylece ikinci bir GO detour modunu degil orijinal modu koruyor.)
+- [x] **SX-06B-01 (P1)** - Ahir onbellegi yeniden kullanilan owner UID'sini eski
+  sahip saniyordu. (YAPILDI: onbellek kaydi artik `(OwnerUuid, Pets)` tutuyor ve
+  yalnizca kuruldugu karaktere cevap veriyor.)
+- [x] **SX-06B-02 (P2)** - Ahirdan cikan pet eski Attack emrini yeniden basliyordu.
+  (YAPILDI: `PetStorage.Park` gecici emirleri dusuruyor.
+  **Raporun uyarisi:** kalici pet tag'leri toplu silinmedi - bonding, script durumu
+  ve slot override korunuyor.)
+- [x] **SX-06C-01 (P1)** - Mount baglantisi silinme ve UID yeniden kullaniminda yanlis
+  karaktere baglaniyordu. (YAPILDI: `ResolveMountNpc` - kaydedilmis UUID baglayici,
+  serial yalnizca UUID'siz eski kayit icin; Player/silinmis nesne reddediliyor.
+  Ayrica mount uzerine `MOUNT_RIDER_UUID` yaziliyor ve `OnMountNpcDeleted` binicinin
+  tarafini kopariyor - referansin DeleteCleanup'ta yaptigi (CChar.cpp:395).)
+- [x] **SX-06D-01 (P2)** - Figurin yok edilince pet yetim kaliyordu. (YAPILDI:
+  `Item.Delete` merkezi yolunda `FigurineDeletedHook`; `PetFigurine.OnFigurineDeleted`
+  yalnizca HALA O figurinde park edilmis peti siliyor. `Restore` figurini tuketmeden
+  once baglantiyi kopariyor - raporun "kosulsuz pet silme normal acilisi da yok
+  edebilir" uyarisi.)
+
+**06 kapanisi:** tam suite **2.518 basarili / 0 basarisiz** (+19). Alti duzeltme de
+gecici olarak kapatilarak 11 testin eski davranisi yakaladigi kanitlandi.
+
+**Ortak kok:** alti bulgunun ucu ayni sinifta - kaydedilmis UUID varken serial'a
+dusmek. `PetStorage.Resolve` ve `MountEngine.ResolveMountNpc` artik ayni kurali
+uyguluyor, boylece ahir/figurin/mount bir daha ayrisamaz.
+
+**Ilk denemede yakalanan tuzak:** iki 06A-02 testi ilk kapatma turunda GECTI - kapatma
+kosulunun polaritesini ters yazmisim, yani duzeltme hala aciktil. Polarite duzeltilip
+tekrarlandi ve iki test de kirmiziya dondu. Kapatma turunun kendisi de dogrulanmali.
+
+**Acik kalan:** `SOURCE_X_BOLUM_06E_TEKIL_PET_DURUMU.md` bu partide istenmedi.
+Ayrica raporlarin kendi kuyruklari: dismount yerlestirme basarisizligi, ayni mount'a
+iki rider, zaten park edilmis NPC'nin yeniden paketlenmesi, stable hedefinde gorus
+denetimi ve friend/unfriend/release fiillerinin ayri regresyonlari.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

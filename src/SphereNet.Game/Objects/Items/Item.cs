@@ -722,9 +722,16 @@ public class Item : ObjBase
         ItemType.WeaponMaceCrook or ItemType.WeaponMacePick or ItemType.WeaponAxe or
         ItemType.WeaponXBow or ItemType.WeaponThrowing or ItemType.WeaponWhip;
 
+    /// <summary>A figurine is being deleted, so the pet stored inside it can go with
+    /// it (wired to PetFigurine). Source-X ends the stored creature's lifecycle in
+    /// CItem::DeleteCleanup for IT_FIGURINE (CItem.cpp:209) - it is disconnected and
+    /// unreachable, so leaving it behind only strands it in the world tables.</summary>
+    public static Action<Item>? FigurineDeletedHook;
+
     public void Delete()
     {
         SpawnChar?.KillAll();
+        FigurineDeletedHook?.Invoke(this);
         _isDeleted = true;
         _contents.Clear();
     }

@@ -40,6 +40,7 @@ public static class PetStorage
 
         // Source-X Skill_Start(NPCACT_RIDDEN): a parked pet is not mid-fight.
         pet.FightTarget = Serial.Invalid;
+        ClearStandingOrders(pet);
 
         world.HideFromSector(pet);
         pet.SetStatFlag(StatFlag.Ridden);
@@ -82,6 +83,25 @@ public static class PetStorage
         return true;
     }
 
+    /// <summary>Drop the order a pet was carrying when it was taken out of play.
+    /// Clearing FightTarget alone was not enough: the order itself lived on in tags,
+    /// and the AI put the fight straight back on retrieval - a pet stabled mid-fight
+    /// came out swinging at its old victim with no new command given. Source-X ends
+    /// the creature's current job outright when it comes back out of a figurine
+    /// (Skill_Start(SKILL_NONE), CCharUse.cpp:1205), leaving it idle.
+    ///
+    /// Only the transient order is dropped. Bonding, script state and the
+    /// follower-slot override are the pet's own and must survive the stable.</summary>
+    private static void ClearStandingOrders(Character pet)
+    {
+        pet.RemoveTag("ATTACK_TARGET");
+        pet.RemoveTag("FOLLOW_TARGET");
+        pet.RemoveTag("GUARD_TARGET");
+        pet.RemoveTag("GO_TARGET");
+        pet.RemoveTag("PREV_PET_MODE");
+        pet.PetAIMode = PetAIMode.Follow;
+    }
+
     /// <summary>True when a parked pet is still present and usable.</summary>
     public static bool IsParked(Character pet) =>
         !pet.IsDeleted && pet.IsStatFlag(StatFlag.Ridden);
@@ -97,7 +117,12 @@ public static class PetStorage
     public static bool IsLink(string? raw) =>
         raw != null && raw.StartsWith(LinkPrefix + "|", StringComparison.Ordinal);
 
-    /// <summary>Resolve a link back to its pet: UUID first, serial as a fallback.
+    /// <summary>Resolve a link back to its pet. A link that RECORDED a UUID is
+    /// answered by that UUID alone: serials are reassigned, so falling through to one
+    /// when the recorded creature is gone hands back whatever inherited the number -
+    /// a different pet, or a player. The serial is consulted only for a link written
+    /// before UUIDs were recorded, which is the case the fallback existed for.
+    ///
     /// Returns null when the pet no longer exists (a GM removed it, or a save was
     /// rolled back), which callers report rather than silently conjuring a new one.</summary>
     public static Character? Resolve(string? raw, GameWorld world)
@@ -108,20 +133,15 @@ public static class PetStorage
         if (parts.Length < 3) return null;
 
         if (Guid.TryParse(parts[2], out var uuid) && uuid != Guid.Empty)
-        {
-            if (world.FindByUuid(uuid) is Character byUuid &&
-                !byUuid.IsDeleted && !byUuid.IsPlayer)
-                return byUuid;
-        }
+            return Usable(world.FindByUuid(uuid) as Character);
 
         if (uint.TryParse(parts[1], out uint serial) && serial != 0)
-        {
-            var bySerial = world.FindChar(new Serial(serial));
-            if (bySerial is { IsDeleted: false } && !bySerial.IsPlayer)
-                return bySerial;
-        }
+            return Usable(world.FindChar(new Serial(serial)));
 
         return null;
+
+        static Character? Usable(Character? pet) =>
+            pet is { IsDeleted: false, IsPlayer: false } ? pet : null;
     }
 
     /// <summary>Display name for a stable/figurine entry without waking the pet.</summary>

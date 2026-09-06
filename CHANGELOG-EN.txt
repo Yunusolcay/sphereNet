@@ -4,6 +4,67 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Pets: command authority, stale orders and stored-pet identity (06A-06D)
+----------------------------------------
+
+FIX - Being a pet's FRIEND granted full owner authority. Source-X opens exactly
+        PC_FOLLOW, PC_STAY and PC_STOP to friends and sends every other verb to the
+        arm that requires NPC_IsOwnedBy (CCharNPCPet.cpp:129-152), so a friend could
+        make the pet drop its cargo, or transfer the pet to themselves. Authority is
+        now decided per verb, at the speech command AND again when a target cursor is
+        clicked, since ownership can be revoked while the cursor is up. COME and
+        FOLLOW ME are owner-only: PC_COME and PC_FOLLOW_ME are separate commands in
+        the reference (:38, :43) and are not in its friend set.
+
+FIX - A new pet order did not cancel the last one. GO stores its destination in a tag
+        the pet AI consults before anything else, so a COME after a GO changed the
+        mode and then walked the pet on to the old spot regardless - the recall
+        looked simply ignored. Source-X starts a fresh NPC action per command
+        (NPCACT_FOLLOW_TARG at CCharNPCPet.cpp:183, NPCACT_GOTO at :504), so a pending
+        GO cannot outlive the order that replaced it. Every order now drops it. GO
+        itself still keeps the mode captured by the first GO, so the pet resumes what
+        it was doing before the detour rather than resuming the detour.
+
+FIX - The stable service was keyed on the owner's serial alone, and it outlives the
+        character holding that serial. Once a character was deleted and its number
+        handed to a new player, that player was shown - and could claim - the previous
+        owner's stabled pets. A cache entry now answers only for the character it was
+        built for; for anyone else the list is rebuilt from that character's own tags,
+        which for a new character is empty.
+
+FIX - A pet stabled mid-fight came back out swinging. Parking cleared its fight
+        target but not the order behind it, so the AI put the fight straight back on
+        retrieval with no new command given. Parking now drops the transient order -
+        attack, follow, guard and go targets and the pet's mode - leaving the pet idle
+        as the reference does when a creature comes back out (Skill_Start(SKILL_NONE),
+        CCharUse.cpp:1205). Bonding, script state and the follower-slot override are
+        the pet's own and are untouched.
+
+FIX - A stored pet reference that recorded a UUID fell back to the serial when that
+        UUID no longer resolved. Serials are reassigned, so the fallback answered with
+        whatever inherited the number. For a mount that was severe: the repair path
+        hid that creature, moved it onto the rider and re-owned it, and dismounting
+        handed it back - for a player, a real character flagged Ridden, teleported and
+        stamped with pet ownership. A recorded UUID is now authoritative and the
+        serial answers only a link that never carried one; a resolved object that is
+        deleted, or is a player, is refused outright. The same rule covers stable
+        entries and figurines, which shared the helper.
+
+FIX - Deleting the creature someone was riding left the rider's half of the link
+        intact, to be re-resolved later against a reassigned serial. Source-X breaks
+        it in DeleteCleanup (CChar.cpp:395); SphereNet now records the rider on the
+        mount so the same cleanup is possible, and clears the rider's tags, mount item
+        and OnHorse flag when the mount is deleted.
+
+FIX - Destroying a figurine orphaned the pet shrunk inside it. The creature stayed in
+        the world tables and in every save - parked, flagged Ridden, skipped by the AI
+        and unreachable by any normal route - along with its pack and cargo. Source-X
+        ends that creature's lifecycle with the figurine (CItem::DeleteCleanup for
+        IT_FIGURINE, CItem.cpp:209) and so does this, on the central delete path, so
+        the container and owner cases are covered too. A successful restore clears the
+        link first, so consuming the figurine cannot kill the pet that just came out
+        of it, and only a pet still parked in that figurine is ever taken.
+
 [2026-09-06] - Resources: REGEN is tenths on a curve, and a node lives one window (05C)
 ----------------------------------------
 

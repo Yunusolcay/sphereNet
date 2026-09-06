@@ -47,6 +47,32 @@ public static class PetFigurine
         return Store(npc, figurine, world);
     }
 
+    /// <summary>A figurine is being destroyed - by a script REMOVE, with the container
+    /// holding it, or with its owner. The pet shrunk inside it is parked: out of the
+    /// sector, flagged Ridden, skipped by the AI and unreachable by any normal route,
+    /// yet still carried in the world tables and still saved. Source-X ends that
+    /// creature's lifecycle with the figurine (CItem::DeleteCleanup for IT_FIGURINE,
+    /// CItem.cpp:209) rather than releasing it, and so does this.
+    ///
+    /// Only a pet that is still parked in THIS figurine is taken: a link left behind
+    /// by a pet already back in the world must not kill it, and the link resolves by
+    /// recorded UUID, so a reassigned serial cannot point the deletion at a creature
+    /// that was never in here.</summary>
+    public static void OnFigurineDeleted(Item figurine, GameWorld world)
+    {
+        if (!figurine.TryGetTag(SnapshotTag, out string? raw) || !PetStorage.IsLink(raw))
+            return;
+
+        figurine.RemoveTag(SnapshotTag);
+
+        var pet = PetStorage.Resolve(raw, world);
+        if (pet == null || !PetStorage.IsParked(pet))
+            return;
+
+        world.DeleteObject(pet);
+        pet.Delete();
+    }
+
     /// <summary>Park the creature and stamp the figurine that refers to it.</summary>
     private static bool Store(Character pet, Item figurine, GameWorld world)
     {
@@ -78,6 +104,10 @@ public static class PetFigurine
             if (parked == null || !PetStorage.Unpark(parked, owner, world, pos))
                 return null;
 
+            // Break the link BEFORE consuming the figurine: deleting one now takes
+            // the pet inside it along, and the pet that just came out is no longer
+            // inside it.
+            figurine.RemoveTag(SnapshotTag);
             world.DeleteObject(figurine);
             figurine.Delete();
             return parked;

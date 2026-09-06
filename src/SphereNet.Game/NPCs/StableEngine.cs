@@ -12,8 +12,12 @@ namespace SphereNet.Game.NPCs;
 /// </summary>
 public sealed class StableEngine
 {
-    // Stable storage: owner UID → list of stabled pet data
-    private readonly Dictionary<Serial, List<StabledPet>> _stabled = [];
+    // Stable storage: owner UID → the owner's identity and their stabled pets.
+    // The UUID rides along because a UID is reassigned once the character holding it
+    // is deleted, and this service outlives the character: keyed on the number alone,
+    // a brand new player who inherited the serial was shown - and could claim - the
+    // previous owner's stable.
+    private readonly Dictionary<Serial, (Guid OwnerUuid, List<StabledPet> Pets)> _stabled = [];
     private const string StableTagPrefix = "STABLED_PET.";
 
     public const int MaxStabledPets = 5;
@@ -177,11 +181,14 @@ public sealed class StableEngine
 
     private List<StabledPet> GetOwnerStableList(Character owner)
     {
-        if (_stabled.TryGetValue(owner.Uid, out var list))
-            return list;
+        // A cache entry answers only for the character it was built for. When the
+        // serial has been handed to someone else the entry is stale, and the list is
+        // rebuilt from THIS character's own tags - which for a new character is empty.
+        if (_stabled.TryGetValue(owner.Uid, out var cached) && cached.OwnerUuid == owner.Uuid)
+            return cached.Pets;
 
-        list = LoadOwnerStableList(owner);
-        _stabled[owner.Uid] = list;
+        var list = LoadOwnerStableList(owner);
+        _stabled[owner.Uid] = (owner.Uuid, list);
         return list;
     }
 

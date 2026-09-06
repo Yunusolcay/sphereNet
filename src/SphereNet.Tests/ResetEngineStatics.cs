@@ -128,6 +128,8 @@ public sealed class ResetEngineStaticsAttribute : BeforeAfterTestAttribute
         SphereNet.Game.Objects.Characters.Character.OnDamageActionInterrupt = null;
         SphereNet.Game.Objects.Characters.Character.ActiveSkillAborted = null;
         SphereNet.Game.Objects.Characters.Character.OnNpcSeeNewPlayer = null;
+        SphereNet.Game.Objects.Characters.Character.MountedNpcDeletedHook = null;
+        SphereNet.Game.Objects.Items.Item.FigurineDeletedHook = null;
         SphereNet.Game.Housing.House.OnRedeed = null;
         SphereNet.Game.Housing.HousingEngine.OnHouseCheck = null;
         SphereNet.Game.AI.NpcAI.PetFollowMaxDistance = 36;

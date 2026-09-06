@@ -3,6 +3,69 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Petler: komut yetkisi, kalan emirler ve saklanan pet kimligi (06A-06D)
+----------------------------------------
+
+FIX - Petin ARKADASI olmak tam sahip yetkisi veriyordu. Source-X arkadaslara tam
+        olarak PC_FOLLOW, PC_STAY ve PC_STOP komutlarini acar; diger butun fiilleri
+        NPC_IsOwnedBy isteyen dala gonderir (CCharNPCPet.cpp:129-152). Yani bir
+        arkadas petin yukunu yere biraktirabiliyor ya da peti kendine
+        devredebiliyordu. Yetki artik fiil bazinda karara baglaniyor; hem konusma
+        komutunda hem de hedef imleci tiklandiginda yeniden - imlec acikken sahiplik
+        kaldirilabilir. COME ve FOLLOW ME sahibe ozeldir: referansta PC_COME ve
+        PC_FOLLOW_ME ayri komutlardir (:38, :43) ve arkadas kumesinde degildir.
+
+FIX - Yeni bir pet emri oncekini iptal etmiyordu. GO hedefini, pet AI'sinin her
+        seyden once baktigi bir etikete yaziyor; bu yuzden GO'dan sonraki COME modu
+        degistirip peti yine eski noktaya yurutuyordu - geri cagirma basitce
+        yok sayilmis gibi gorunuyordu. Source-X her komutta yeni bir NPC isi baslatir
+        (COME/FOLLOW ME icin NPCACT_FOLLOW_TARG, CCharNPCPet.cpp:183; GO icin
+        NPCACT_GOTO, :504), yani bekleyen bir GO onun yerine gecen emirden uzun
+        yasayamaz. Artik her emir onu dusuruyor. GO'nun kendisi ilk GO'nun kaydettigi
+        modu koruyor; boylece pet detourdan once ne yapiyorsa ona doner, detoura
+        degil.
+
+FIX - Ahir servisi yalnizca sahibin serial'iyla anahtarlaniyordu ve o serial'i tasiyan
+        karakterden uzun yasiyor. Bir karakter silinip numarasi yeni bir oyuncuya
+        verildiginde, o oyuncu onceki sahibin ahirdaki petlerini goruyor ve geri
+        alabiliyordu. Bir onbellek kaydi artik yalnizca kurulmus oldugu karakter icin
+        cevap veriyor; baskasi icin liste o karakterin kendi etiketlerinden yeniden
+        kuruluyor - yeni bir karakterde bu bostur.
+
+FIX - Dovus sirasinda ahira birakilan pet geri alindiginda saldirarak ciiyordu. Park
+        etme yalniz dovus hedefini temizliyor, arkasindaki emri birakiyordu; AI da
+        yeni bir komut verilmeden dovusu geri koyuyordu. Park artik gecici emri de
+        dusuruyor - saldiri, takip, koruma ve gitme hedefleri ile petin modu - ve peti
+        referanstaki gibi bosta birakiyor (Skill_Start(SKILL_NONE),
+        CCharUse.cpp:1205). Bonding, script durumu ve follower-slot override petin
+        kendisine aittir; onlara dokunulmuyor.
+
+FIX - UUID kaydetmis bir saklanan pet referansi, o UUID cozulemedigi zaman serial'a
+        dusuyordu. Serial'lar yeniden atandigi icin bu fallback numarayi devralan
+        neyse onu donduruyordu. Mount tarafinda sonuc agirdi: onarim yolu o yaratigi
+        gizliyor, binicinin uzerine tasiyor ve sahiplendiriyordu; inme de onu geri
+        veriyordu - bir Player soz konusuysa gercek bir karakter Ridden isaretlenip
+        isinlaniyor ve pet sahipligiyle damgalaniyordu. Kaydedilmis UUID artik
+        baglayici; serial yalnizca hic UUID tasimamis bir baglantiya cevap veriyor.
+        Cozulen nesne silinmisse veya bir Player ise dogrudan reddediliyor. Ayni kural
+        yardimciyi paylasan ahir kayitlari ve figurinler icin de gecerli.
+
+FIX - Binilen yaratigin silinmesi, binicinin taraftaki baglantisini yerinde
+        birakiyordu; bu da sonradan yeniden atanmis bir serial uzerinden
+        cozulebiliyordu. Source-X bunu DeleteCleanup'ta koparir (CChar.cpp:395);
+        SphereNet artik biniciyi mount uzerinde kaydediyor ve mount silindiginde
+        binicinin etiketlerini, mount esyasini ve OnHorse bayragini temizliyor.
+
+FIX - Figurinin yok edilmesi, icine shrink edilmis peti yetim birakiyordu. Yaratik
+        dunya tablolarinda ve her save'de kaliyordu - park edilmis, Ridden isaretli,
+        AI tarafindan atlanan ve hicbir normal yoldan erisilemeyen - cantasi ve yuku
+        ile birlikte. Source-X o yaratigin yasam dongusunu figurinle birlikte
+        sonlandirir (IT_FIGURINE icin CItem::DeleteCleanup, CItem.cpp:209); burada da
+        oyle, hem de merkezi silme yolunda, boylece kap ve sahip uzerinden silinme
+        durumlari da kapsaniyor. Basarili bir Restore once baglantiyi kopariyor, yani
+        figurinin tuketilmesi az once icinden cikan peti olduremiyor; yalnizca hala O
+        figurinde park edilmis bir pet aliniyor.
+
 [2026-09-06] - Kaynaklar: REGEN egri ve onda saniye, dugum tek pencere yasar (05C)
 ----------------------------------------
 
