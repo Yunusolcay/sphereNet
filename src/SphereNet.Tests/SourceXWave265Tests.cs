@@ -69,7 +69,7 @@ public sealed class SourceXWave265Tests
         bandage.BaseId = 0x0E21;
         player.Backpack!.AddItem(bandage);
 
-        int startedSkill = -1;
+        long startedSkill = -1;
         // Return True to prove routing while short-circuiting before resolution.
         d.RegisterCharEvent("EVENTSPLAYER", "SkillStart",
             (_, a) => { startedSkill = a.N1; return TriggerResult.True; });
@@ -94,7 +94,7 @@ public sealed class SourceXWave265Tests
         notBandage.BaseId = 0x0F5E;
         player.Backpack!.AddItem(notBandage);
 
-        int startedSkill = -1;
+        long startedSkill = -1;
         d.RegisterCharEvent("EVENTSPLAYER", "SkillStart",
             (_, a) => { startedSkill = a.N1; return TriggerResult.True; });
 
@@ -110,7 +110,7 @@ public sealed class SourceXWave265Tests
     {
         var (client, player, _, d) = Setup();
 
-        int invokedVirtue = -1;
+        long invokedVirtue = -1;
         d.RegisterCharEvent("EVENTSPLAYER", "UserVirtueInvoke",
             (_, a) => { invokedVirtue = a.N1; return TriggerResult.Default; });
 

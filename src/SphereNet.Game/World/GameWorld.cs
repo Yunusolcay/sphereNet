@@ -51,6 +51,11 @@ public sealed class GameWorld
     private readonly ConcurrentDictionary<long, Region> _regionCache = new();
     private readonly ILogger<GameWorld> _logger;
     private readonly List<ObjBase> _timerFSnapshot = [];
+
+    /// <summary>The TIMERF jobs due this tick across ALL objects, so they can run in
+    /// one global due order (Source-X CWorldTicker.cpp:1051). Seq is the collection
+    /// order, used only as the tie-break for equal due times.</summary>
+    private readonly List<(ObjBase Obj, ObjBase.TimerFEntry Entry, int Seq)> _timerFDueBuffer = [];
     // Active-set of objects that currently hold at least one TIMERF entry, so the
     // per-tick sweep (TickTimerF) iterates only timer-bearing objects instead of the
     // whole world. Populated from ObjBase.AddTimerF via ResolveWorld; self-prunes on
@@ -1402,6 +1407,14 @@ public sealed class GameWorld
         _timerFSnapshot.Clear();
         _timerFSnapshot.AddRange(_objectsWithTimerF);
 
+        // Due order is GLOBAL, not per-object. Source-X keeps every timed object -
+        // each CTimedFunction included - in one time-sorted vector and ticks the
+        // selection in that order (CWorldTicker.cpp:1051 selection, :1129 execution,
+        // :1214 the TIMEDFUNCTIONS branch). Walking object-by-object ran a job due
+        // 10 seconds ago after one due 100ms ago purely because its owner came later
+        // in the active set, so two objects timed against each other could fire in
+        // the wrong order after a tick delay.
+        _timerFDueBuffer.Clear();
         foreach (var obj in _timerFSnapshot)
         {
             if (obj.IsDeleted || obj.TimerFEntries.Count == 0)
@@ -1409,20 +1422,35 @@ public sealed class GameWorld
                 _objectsWithTimerF.Remove(obj);
                 continue;
             }
-            // One at a time: the job is taken off the object immediately before it
-            // runs, not all of them up front. A callback that saves the world (or
-            // reads the object's own pending list) must still see the jobs that have
-            // not run yet - draining them all first made them vanish from that save
-            // and they could never be restored.
             foreach (var entry in obj.PeekDueTimerF(nowMs))
-            {
-                if (obj.IsDeleted)
-                    break;
-                // Gone already: an earlier callback in this same pass cancelled it.
-                if (!obj.RemoveTimerFEntry(entry))
-                    continue;
-                TimerFExpired?.Invoke(obj, entry);
-            }
+                _timerFDueBuffer.Add((obj, entry, _timerFDueBuffer.Count));
+        }
+        // List.Sort is not stable, so the collection order is the explicit tie-break:
+        // two jobs sharing a due time keep the order they were queued in.
+        _timerFDueBuffer.Sort(static (a, b) =>
+        {
+            int byDue = a.Entry.DueTickMs.CompareTo(b.Entry.DueTickMs);
+            return byDue != 0 ? byDue : a.Seq.CompareTo(b.Seq);
+        });
+
+        // One at a time: the job is taken off the object immediately before it runs,
+        // not all of them up front. A callback that saves the world (or reads the
+        // object's own pending list) must still see the jobs that have not run yet -
+        // draining them all first made them vanish from that save and they could
+        // never be restored. Peeking above does not remove anything.
+        foreach (var (obj, entry, _) in _timerFDueBuffer)
+        {
+            if (obj.IsDeleted)
+                continue;
+            // Gone already: an earlier callback in this same pass cancelled it.
+            if (!obj.RemoveTimerFEntry(entry))
+                continue;
+            TimerFExpired?.Invoke(obj, entry);
+        }
+        _timerFDueBuffer.Clear();
+
+        foreach (var obj in _timerFSnapshot)
+        {
             if (obj.IsDeleted || obj.TimerFEntries.Count == 0)
                 _objectsWithTimerF.Remove(obj);
         }

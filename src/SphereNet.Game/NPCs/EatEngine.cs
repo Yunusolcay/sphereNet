@@ -131,7 +131,7 @@ public static class EatEngine
             mana = (int)locals.GetInt("Mana");
             stam = (int)locals.GetInt("Stam");
             foodGain = (int)locals.GetInt("Food");
-            statsLimit = args.N1;
+            statsLimit = SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N1);
         }
 
         // Each local is a GAIN added to the stat it names, capped by ARGN1 when the

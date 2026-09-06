@@ -322,7 +322,7 @@ public class ItemInventoryRulesTests
         // test used to write the X coordinate into ARGN1, which is what that finding
         // was about - passing then proved nothing about the reference.
         Point3D seenPoint = default;
-        int seenTenths = -1;
+        long seenTenths = -1;
         dispatcher.RegisterItemEvent("EVENTSITEM", "DropOn_Ground", (_, args) =>
         {
             seenTenths = args.N1;

@@ -94,7 +94,7 @@ public sealed class SourceXWave248Tests
     public void TargetedSkill_UsesSkillOnPreselectedTarget_NoCursor()
     {
         var (client, player, _, d) = Setup();
-        int startedSkill = -1;
+        long startedSkill = -1;
         // Return True to prove routing while short-circuiting before resolution.
         d.RegisterCharEvent("EVENTSPLAYER", "SkillStart",
             (_, a) => { startedSkill = a.N1; return TriggerResult.True; });
@@ -119,7 +119,7 @@ public sealed class SourceXWave248Tests
     public void SpellSelect_0x1C_CastsSpellNotViewport()
     {
         var (client, player, _, d) = Setup();
-        int selectedSpell = -1;
+        long selectedSpell = -1;
         d.RegisterCharEvent("EVENTSPLAYER", "SpellSelect",
             (_, a) => { selectedSpell = a.N1; return TriggerResult.True; });
 

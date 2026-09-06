@@ -214,6 +214,9 @@ public sealed partial class GameClient : ITextConsole
     internal ILogger Log => _logger;
     public Account? Account => _account;
     public Character? Character => _character;
+
+    /// <summary>CTextConsole::GetChar — the character this console speaks for.</summary>
+    public SphereNet.Core.Interfaces.IScriptObj? GetSourceChar() => _character;
     public bool IsPlaying => _character != null && !_character.IsDeleted;
     public bool HasPendingTarget => Targets.CursorActive;
 

@@ -3,6 +3,84 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Gecikmeli is: vade sirasi, komut ayirma, verb sahipligi ve 64 bit argumanlar (12X/12Y)
+----------------------------------------
+
+FIX - Vade sirasi nesne basinaydi. Tick aktif kumeyi dolasip her nesnenin hazir islerini
+        bitirdikten sonra digerine geciyordu; boylece 10 saniye once vadesi gelen bir is,
+        sirf sahibi kumede sonra geldigi icin 100ms once vadesi gelenden sonra
+        calisiyordu. Referans, zamanli her nesneyi - her CTimedFunction dahil - tek bir
+        zaman sirali vektorde tutar ve secimi o sirayla tikler (CWorldTicker.cpp:1051
+        secim, :1129 yurutme, :1214 TIMEDFUNCTIONS dali). Hazir isler artik butun
+        nesnelerden toplanip vade zamanina gore, esitlikte toplama sirasi ayraciyla
+        siralaniyor ve tek listeden calisiyor. Her is yine calismadan hemen once
+        cikariliyor, boylece callback icinden alinan kayit bekleyenleri gormeye devam
+        ediyor.
+
+FIX - Gecikmeli payload yalniz bosluga gore bolunuyordu; "=" ve "," fonksiyon adina
+        yapisik kaliyor ve "TIMERF 0, f_capture=37" hicbir seye cozulmeyen
+        "f_capture=37" adli bir fonksiyon kuyruga aliyordu. Referans ham payload'i
+        saklar ve timer atesledigi anda uzerinde ParseKey calistirir
+        (CTimedFunction.cpp:88, CScript.cpp:336); Str_Parse'in varsayilan ayirici kumesi
+        "=, \t" seklindedir (CExpression.cpp:144). Ayirma artik bu ayiricilari, tirnak
+        ve parantez kurallariyla birlikte uygulayan tek bir ortak yardimciya gidiyor;
+        yalniz ilk ayirici yapisal oldugu icin "f_a 1,2,3" arguman dizesini koruyor.
+
+FIX - Ayni bosluk-temelli ayirma klasik yukleme yolunda da vardi; kayitli
+        "TimerFCall=f_mark=37" hicbir zaman calisamayacak bir is olarak geri
+        yukleniyordu. Artik canli yolla ayni yardimciyi kullaniyor
+        (CTimedFunctionHandler.cpp:185).
+
+FIX - Hicbir verb'in ve hicbir script fonksiyonunun sahiplenmedigi gecikmeli satir
+        hicbir sey yapmiyordu. Referans CScriptObj::r_Verb'e duser ve onun varsayilan
+        dali r_LoadVal'dir - yani property atamasi (CScriptObj.cpp:1481). Boylece
+        "NAME after" ve "TAG.FLAG after" artik alana ulasiyor. Ayni adim
+        TOPOBJ./CONT./LINK. referans zincirinde de eksikti.
+
+FIX - Adi taniyip sonra reddeden yerlesik verb, ayni adli script [FUNCTION] blogunu
+        calistiriyordu; cunku tek bir bool "boyle bir verb yok" ile "o verb reddetti"
+        durumlarini birlestiriyordu. Referans fonksiyon dalina yalnizca verb tablosu
+        aramasi isabetsiz kaldiginda ulasir (CObjBase.cpp:2134); bu yuzden paketteki
+        bir [FUNCTION UNEQUIP], motorun az once reddettigi satiri devralabiliyordu.
+        TryExecuteCommand artik ADIN verb tablosuna ait olup olmadigini bildiriyor -
+        bayrak her switch'in bittigi tek fall-through noktasinda temizleniyor - ve
+        sahiplenilen bir adin cevabi nihai.
+
+FIX - TOPOBJ./CONT./LINK. zinciri hedefini cozup orada yalnizca verb ve property
+        deniyordu; "TOPOBJ.f_mark 37" bu yuzden yutuluyordu - referans cozuluyor,
+        fonksiyon hic calismiyor ve satir basarili raporluyordu. Referans, kalan komutu
+        hedefin kendi r_Verb yoluna, fonksiyon adimi dahil, gonderir
+        (CScriptObj.cpp:1217, CObjBase.cpp:2138); zincir artik cozulen nesnede tam
+        sirayi calistiriyor.
+
+FIX - Cagiran karakteri gerektiren gecikmeli verb, bagli istemci yoksa reddediyordu;
+        cunku UNEQUIP, SUMMONTO ve CONTROL karakteri yalniz istemci arayuzunden
+        okuyordu. Referans gecikmeli cagriyi ust duzey KARAKTER'i SRC yaparak calistirir
+        ve bagli istemci sarti aramaz (CTimedFunction.cpp:43); karaktere pSrc->GetChar()
+        ile ulasir (CItem.cpp:3574). ITextConsole bu erisimciyi kazandi, istemcisiz
+        karakter icin duran konsol artik yanit veriyor ve uc verb bunun uzerinden
+        cozuyor - boylece bir NPC'nin veya cevrimdisi oyuncunun zamanli ekipman isi
+        tamamlaniyor.
+
+FIX - Script sayisal argumanlari 32 bit sinirlarina doyuruluyordu; 2147483648 script'e
+        2147483647 olarak ulasiyordu. Referansta ARGN1/2/3 int64'tur
+        (CScriptTriggerArgs.h:21); tasima artik uctan uca 64 bit ve motorun kendi int
+        alanlari kendi sinirlarinda, tasma yerine doyurarak daraltiyor.
+
+FIX - Harf iceren hex arguman sifir okunuyor VE ayristirma imlecini kilitliyordu;
+        "0A,2,3" 0,0,0 ve "01F,2,3" 1,0,0 veriyordu. Tarama yalnizca ASCII rakamlarinda
+        ilerliyordu; referans bastaki '0' karakterini hex ISARETCISI sayar ve ardindan
+        [0-9 A-F a-f] tuketir, isaret yorumunu anlamli nibble genisligi belirler
+        (CExpression.cpp:666). Ondalik yol da referanstaki gibi '.' gruplama ayiricisini
+        atliyor.
+
+FIX - Nesne basina 64 is siniri 65.'yi sessizce dusuruyor, klasik yukleyici de dusen isi
+        yuklenmis sayiyordu; sinirdan fazla is tasiyan bir kayit bunu iz birakmadan
+        kaybediyordu. AddTimerF artik isin kabul edilip edilmedigini bildiriyor;
+        referansta nesne basina sinir yoktur (CTimedFunctionHandler.cpp:103), bu yuzden
+        kayit geri yuklenirken sinir asiliyor - kayit otoritedir - sinir canli
+        zamanlamayi korumaya devam ediyor ve red artik yok sayilmak yerine loglaniyor.
+
 [2026-09-06] - Gecikmeli is: klasik kayitlar, callback ici kayit ve kimin adina calistigi (12V)
 ----------------------------------------
 

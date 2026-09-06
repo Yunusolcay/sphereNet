@@ -14,9 +14,9 @@ public sealed class TriggerArgs : ITriggerArgs
     public IScriptObj? Source { get; set; }
     public IScriptObj? Object1 { get; set; }
     public IScriptObj? Object2 { get; set; }
-    public int Number1 { get; set; }
-    public int Number2 { get; set; }
-    public int Number3 { get; set; }
+    public long Number1 { get; set; }
+    public long Number2 { get; set; }
+    public long Number3 { get; set; }
     public string ArgString
     {
         get => _argString;
@@ -37,7 +37,7 @@ public sealed class TriggerArgs : ITriggerArgs
 
     public TriggerArgs() { }
 
-    public TriggerArgs(IScriptObj? source, int n1 = 0, int n2 = 0, string argStr = "")
+    public TriggerArgs(IScriptObj? source, long n1 = 0, long n2 = 0, string argStr = "")
     {
         Source = source;
         Number1 = n1;
@@ -69,12 +69,9 @@ public sealed class TriggerArgs : ITriggerArgs
         {
             if (!StartsWithNumber(s, i) || !TryReadNumber(s, ref i, out long value))
                 return;
-            int truncated = value > int.MaxValue ? int.MaxValue
-                          : value < int.MinValue ? int.MinValue
-                          : (int)value;
-            if (slot == 1) Number1 = truncated;
-            else if (slot == 2) Number2 = truncated;
-            else Number3 = truncated;
+            if (slot == 1) Number1 = value;
+            else if (slot == 2) Number2 = value;
+            else Number3 = value;
             // Skip one argument separator, the way SKIP_ARGSEP does.
             while (i < s.Length && (s[i] == ',' || char.IsWhiteSpace(s[i]))) i++;
         }
@@ -84,32 +81,94 @@ public sealed class TriggerArgs : ITriggerArgs
         i < s.Length &&
         (char.IsAsciiDigit(s[i]) || (s[i] == '-' && i + 1 < s.Length && char.IsAsciiDigit(s[i + 1])));
 
+    /// <summary>Read one Sphere number, consuming exactly the characters it owns —
+    /// the port of <c>CExpression::GetSingle</c> (CExpression.cpp:646).
+    ///
+    /// A leading '0' is the HEX MARKER, not a digit: after it the scan consumes
+    /// <c>[0-9 A-F a-f]</c>. Scanning ASCII digits only stopped dead on the first
+    /// letter, so <c>0A,2,3</c> read as 0 and then left the cursor parked on 'A',
+    /// which killed ARGN2 and ARGN3 as well. Otherwise the number is decimal, and
+    /// '.' inside it is a grouping separator upstream skips.</summary>
     private static bool TryReadNumber(string s, ref int i, out long value)
     {
         value = 0;
         int start = i;
-        if (i < s.Length && s[i] == '-') i++;
-        int digitStart = i;
-        while (i < s.Length && char.IsAsciiDigit(s[i])) i++;
-        if (i == digitStart)
+        bool negative = i < s.Length && s[i] == '-';
+        if (negative) i++;
+        if (i >= s.Length || !char.IsAsciiDigit(s[i]))
         {
             i = start;
             return false;
         }
-        // A leading zero means hex in Sphere script (0A = 10), matching the number
-        // reading the rest of the engine does.
-        var span = s.AsSpan(digitStart, i - digitStart);
-        bool ok = span.Length > 1 && span[0] == '0'
-            ? long.TryParse(span, System.Globalization.NumberStyles.HexNumber, null, out value)
-            : long.TryParse(span, out value);
-        if (!ok)
+
+        if (s[i] == '0')
         {
-            i = start;
-            return false;
+            // HEX PATH. Consume the '0' marker, then every hex digit after it.
+            i++;
+            ulong acc = 0;
+            int significant = 0;          // significant nibbles, upstream's uiSig
+            bool seenNonZero = false;
+            while (i < s.Length)
+            {
+                int nibble = HexValue(s[i]);
+                if (nibble < 0) break;
+                i++;
+                uint digit = (uint)nibble;
+                if (!seenNonZero)
+                {
+                    if (digit == 0) continue;   // leading zeros carry no width
+                    seenNonZero = true;
+                    significant = 1;
+                    acc = digit;
+                }
+                else if (significant < 16)
+                {
+                    acc = (acc << 4) | digit;
+                    significant++;
+                }
+                // Past 16 nibbles upstream flags overflow but keeps consuming the
+                // token so the caller lands after it; the value is then unusable.
+            }
+            // "0", "0000" -> zero (:713).
+            // Width decides the sign reinterpretation: up to 8 significant nibbles
+            // is a signed 32-bit value widened to 64, beyond that a signed 64-bit
+            // one (:724-740). That is what makes 0FFFFFFFF read as -1.
+            value = !seenNonZero ? 0
+                  : significant <= 8 ? unchecked((int)(uint)acc)
+                  : unchecked((long)acc);
         }
-        if (s[start] == '-') value = -value;
+        else
+        {
+            // DECIMAL PATH. '.' is a grouping separator and is skipped (:741).
+            long acc = 0;
+            bool any = false;
+            while (i < s.Length)
+            {
+                char c = s[i];
+                if (c == '.') { i++; continue; }
+                if (!char.IsAsciiDigit(c)) break;
+                i++;
+                any = true;
+                // Guard the accumulation but keep consuming, the way upstream does.
+                if (acc <= (long.MaxValue - (c - '0')) / 10)
+                    acc = acc * 10 + (c - '0');
+            }
+            if (!any)
+            {
+                i = start;
+                return false;
+            }
+            value = acc;
+        }
+
+        if (negative) value = -value;
         return true;
     }
+
+    private static int HexValue(char c) =>
+        c >= '0' && c <= '9' ? c - '0' :
+        c >= 'A' && c <= 'F' ? c - 'A' + 10 :
+        c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
 
     public IReadOnlyList<string> GetArgv() => _argvCache ??= SplitArgString(_argString);
 

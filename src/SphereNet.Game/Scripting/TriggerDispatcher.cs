@@ -16,9 +16,11 @@ namespace SphereNet.Game.Scripting;
 /// </summary>
 public sealed class TriggerArgs
 {
-    public int N1 { get; set; }
-    public int N2 { get; set; }
-    public int N3 { get; set; }
+    // Source-X keeps ARGN1/2/3 as int64 (CScriptTriggerArgs.h:21); the engine's own
+    // int-typed fields narrow at their own boundary, not in transport.
+    public long N1 { get; set; }
+    public long N2 { get; set; }
+    public long N3 { get; set; }
     public string S1 { get; set; } = "";
     public IScriptObj? O1 { get; set; }
     public ITextConsole? ScriptConsole { get; set; }
@@ -135,7 +137,7 @@ public sealed class TriggerDispatcher
             ctx.Cancelled = true;
             return 0;
         }
-        dmg = Math.Max(0, hitArgs.N1);
+        dmg = SphereNet.Core.Types.ScriptNumber.ToEngineInt(Math.Max(0, hitArgs.N1));
 
         // Source-X @GetHit: SRC = the attacker, ARGN1 = damage (writable),
         // ARGN2 = damage type. LOCAL.ItemDamageLayer picks which worn piece
@@ -159,7 +161,7 @@ public sealed class TriggerDispatcher
             ctx.Cancelled = true;
             return 0;
         }
-        dmg = Math.Max(0, getHitArgs.N1);
+        dmg = SphereNet.Core.Types.ScriptNumber.ToEngineInt(Math.Max(0, getHitArgs.N1));
         // The char @GetHit script may redirect the armor-damage roll.
         ctx.ItemDamageLayer = (Layer)getHitLocals.GetInt("ItemDamageLayer");
 
@@ -171,7 +173,7 @@ public sealed class TriggerDispatcher
                 ctx.Cancelled = true;
                 return 0;
             }
-            dmg = Math.Max(0, wArgs.N1);
+            dmg = SphereNet.Core.Types.ScriptNumber.ToEngineInt(Math.Max(0, wArgs.N1));
         }
         // Script-final weapon wear / poison-spend knobs back into the context
         // for CombatEngine's post-trigger rolls; ArrowHandled hands the ammo
@@ -193,7 +195,7 @@ public sealed class TriggerDispatcher
                 ctx.Cancelled = true;
                 return 0;
             }
-            dmg = Math.Max(0, aArgs.N1);
+            dmg = SphereNet.Core.Types.ScriptNumber.ToEngineInt(Math.Max(0, aArgs.N1));
         }
         ctx.ItemDamageChance = (int)getHitLocals.GetInt("ItemDamageChance");
 
@@ -215,7 +217,7 @@ public sealed class TriggerDispatcher
         string? stage = GetSkillSectionStage(trigger);
         if (stage != null)
         {
-            var skillResult = FireSkillTrigger(args.N1, stage, ch, args);
+            var skillResult = FireSkillTrigger(SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N1), stage, ch, args);
             if (skillResult != TriggerResult.Default)
                 return skillResult;
         }

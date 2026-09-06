@@ -2450,7 +2450,7 @@ public sealed class ClientItemUseHandler
             if (_triggerDispatcher.FireItemTrigger(ore, ItemTrigger.Smelt, args) == TriggerResult.True)
                 return;
 
-            miningSkill = args.N1;
+            miningSkill = SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N1);
             skipSkillReq = args.N3 != 0;
             if (long.TryParse(locals.Get("resource.0.ID"), out long scriptedId) &&
                 scriptedId is > 0 and <= ushort.MaxValue)
@@ -2826,8 +2826,8 @@ public sealed class ClientItemUseHandler
             if (_triggerDispatcher.FireCharTrigger(_character, CharTrigger.Drink, args) == TriggerResult.True)
                 return false;
 
-            delayTenths = args.N1 > 0 ? args.N1 : 1;
-            consume = args.N2;
+            delayTenths = SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N1 > 0 ? args.N1 : 1);
+            consume = SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N2);
         }
 
         // Getting drunk is the drink's own doing, hook or no hook: a Liquor effect

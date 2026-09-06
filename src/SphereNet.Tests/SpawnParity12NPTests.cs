@@ -429,7 +429,7 @@ public sealed class SpawnParity12NPTests
         }
 
         Item? seenPoint = null;
-        int seenSeconds = -999;
+        long seenSeconds = -999;
         SpawnComponent.OnSpawnTrigger = (_, trigger, args) =>
         {
             if (trigger == ItemTrigger.DelObj)

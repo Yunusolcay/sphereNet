@@ -13,6 +13,15 @@ public interface ITextConsole
     void SysMessage(string text, ushort hue) => SysMessage(text);
     string GetName();
 
+    /// <summary>The character this console speaks for, when it has one — the port of
+    /// <c>CTextConsole::GetChar</c>. A console is not necessarily a client: Source-X
+    /// runs a delayed call with the top-level CHARACTER as SRC and never requires a
+    /// connected client (CTimedFunction.cpp:43), and <c>CItem::r_Verb</c> reaches the
+    /// character through <c>pSrc-&gt;GetChar()</c> (CItem.cpp:3574). Verbs that read
+    /// the character off the client interface alone silently refused for an NPC or an
+    /// offline player. Returns null for the server console.</summary>
+    IScriptObj? GetSourceChar() => null;
+
     /// <summary>
     /// Optional script bridge for Source-X style runtime verbs.
     /// Default implementation is no-op for non-game consoles.

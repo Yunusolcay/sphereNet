@@ -325,7 +325,7 @@ public sealed class PetParity06EHTests
         var (client, owner, pet, triggers) = FeedingBench(world);
         int fires = 0;
         Item? seen = null;
-        int seenN1 = -1;
+        long seenN1 = -1;
         triggers.RegisterCharEvent("EVENTSPET", "Eat", (_, a) =>
         {
             fires++;

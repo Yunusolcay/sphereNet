@@ -52,7 +52,7 @@ public class P1SkillEventTriggerTests
     {
         var world = CreateWorld();
         var (client, player, d, _) = Setup(world);
-        int eatN1 = -1;
+        long eatN1 = -1;
         d.RegisterCharEvent("EVENTSPLAYER", "Eat", (_, a) => { eatN1 = a.N1; return TriggerResult.Default; });
 
         player.Food = 0;
@@ -100,7 +100,7 @@ public class P1SkillEventTriggerTests
     {
         var world = CreateWorld();
         var (client, player, d, _) = Setup(world);
-        int menuSkill = -1;
+        long menuSkill = -1;
         d.RegisterCharEvent("EVENTSPLAYER", "SkillMenu", (_, a) => { menuSkill = a.N1; return TriggerResult.Default; });
 
         client.HandleUseSkill((int)SkillType.Tracking); // menu-kind skill
@@ -113,8 +113,8 @@ public class P1SkillEventTriggerTests
     {
         var world = CreateWorld();
         var (client, player, d, _) = Setup(world);
-        int requestedSkill = -1;
-        int currentSkill = -1;
+        long requestedSkill = -1;
+        long currentSkill = -1;
         d.RegisterCharEvent("EVENTSPLAYER", "SkillWait", (_, a) =>
         {
             requestedSkill = a.N1;

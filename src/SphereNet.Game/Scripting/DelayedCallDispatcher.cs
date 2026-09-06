@@ -63,12 +63,14 @@ public sealed class DelayedCallDispatcher
 
         var (src, console) = ResolveCaller(obj);
 
-        // The built-in verb wins the name. Running the script function first let a
-        // pack's [FUNCTION REMOVE] shadow the engine's own REMOVE, so a delayed
-        // command behaved differently from the same word typed directly.
+        // The built-in verb wins the name outright, and when it OWNS the name its
+        // answer is final - running the script function first let a pack's
+        // [FUNCTION REMOVE] shadow the engine's own REMOVE, and running it after a
+        // refusal let [FUNCTION UNEQUIP] pick up a line the engine had just declined.
+        bool nameOwned;
         try
         {
-            if (obj.TryExecuteCommand(payloadName, payloadArgs, console))
+            if (obj.TryExecuteCommand(payloadName, payloadArgs, console, out nameOwned))
                 return;
         }
         catch (Exception ex)
@@ -76,16 +78,34 @@ public sealed class DelayedCallDispatcher
             _onError?.Invoke(ex, payloadName);
             return;
         }
-
-        var runner = _resolveRunner();
-        if (runner == null)
+        if (nameOwned)
             return;
 
-        var args = new SphereNet.Scripting.Execution.TriggerArgs { Source = src };
-        args.InitFromRaw(payloadArgs);
+        var runner = _resolveRunner();
+        if (runner != null)
+        {
+            var args = new SphereNet.Scripting.Execution.TriggerArgs { Source = src };
+            args.InitFromRaw(payloadArgs);
+            try
+            {
+                if (runner.TryRunFunction(payloadName, obj, console, args, out _))
+                    return;
+            }
+            catch (Exception ex)
+            {
+                _onError?.Invoke(ex, payloadName);
+                return;
+            }
+        }
+
+        // Last step of Source-X's chain: neither a verb nor a function, so it is a
+        // property assignment (CScriptObj.cpp:1481 default -> r_LoadVal). Without it
+        // a delayed "NAME after" or "TAG.FLAG after" silently did nothing.
+        if (payloadArgs.Length == 0)
+            return;
         try
         {
-            runner.TryRunFunction(payloadName, obj, console, args, out _);
+            obj.TrySetProperty(payloadName, payloadArgs);
         }
         catch (Exception ex)
         {
@@ -114,5 +134,10 @@ public sealed class DelayedCallDispatcher
         public Core.Enums.PrivLevel GetPrivLevel() => character.PrivLevel;
         public string GetName() => character.Name;
         public void SysMessage(string text) { }
+
+        // The console SPEAKS FOR this character (CTextConsole::GetChar). Without it
+        // a verb that needs the caller - UNEQUIP, SUMMONTO, CONTROL - found nothing
+        // and refused, so an NPC's or an offline player's delayed call did nothing.
+        public IScriptObj? GetSourceChar() => character;
     }
 }

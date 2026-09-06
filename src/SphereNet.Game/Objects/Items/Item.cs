@@ -2312,8 +2312,11 @@ public class Item : ObjBase
         return base.TrySetProperty(key, value);
     }
 
-    public override bool TryExecuteCommand(string key, string args, ITextConsole source)
+    public override bool TryExecuteCommand(string key, string args, ITextConsole source, out bool nameOwned)
     {
+        // Assumed owned until the shared fall-through at the bottom of
+        // ObjBase.TryExecuteCommand says otherwise.
+        nameOwned = true;
         var upper = key.ToUpperInvariant();
 
         // Chained object dispatch (Source-X CScriptObj r_Verb ref heads):
@@ -2339,10 +2342,13 @@ public class Item : ObjBase
             };
             if (refObj == null)
                 return true;
-            if (refObj.TryExecuteCommand(chainTail, args, source))
-                return true;
-            if (args.Length > 0 && refObj.TrySetProperty(chainTail, args))
-                return true;
+            // The remainder is a whole verb line on the resolved object, so it gets
+            // the FULL r_Verb order there — verb, then script [FUNCTION], then
+            // property (CScriptObj.cpp:1217 hands the rest to the target's own
+            // r_Verb). Stopping at verb-then-property swallowed TOPOBJ.f_mark 37:
+            // the reference resolved, the function never ran, and the line returned
+            // true so nothing upstream retried it.
+            refObj.ExecuteVerbLine(chainTail, args, source);
             return true;
         }
 
@@ -2496,7 +2502,7 @@ public class Item : ObjBase
             // character's backpack, regardless of who currently wears it.
             case "UNEQUIP":
             {
-                var sourceChar = (source as IClientContext)?.Character;
+                var sourceChar = ResolveSourceCharacter(source);
                 var world = ResolveWorld?.Invoke();
                 if (sourceChar == null || world == null)
                     return false;
@@ -3174,7 +3180,7 @@ public class Item : ObjBase
             }
         }
 
-        return base.TryExecuteCommand(key, args, source);
+        return base.TryExecuteCommand(key, args, source, out nameOwned);
     }
 
     public bool TryFlipDisplay()

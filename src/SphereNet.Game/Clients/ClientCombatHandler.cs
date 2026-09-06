@@ -1079,7 +1079,7 @@ public sealed class ClientCombatHandler
                 _character.NextAttackTime = now + 250;
                 return;
             }
-            swingDelayTenths = Math.Clamp(hitTryArgs.N1, 1, short.MaxValue);
+            swingDelayTenths = (int)Math.Clamp(hitTryArgs.N1, 1L, short.MaxValue);
             swingDelayMs = swingDelayTenths * 100;
             animOverride = (int)hitTryLocals.GetInt("Anim", -1);
             long animDelay = hitTryLocals.GetInt("AnimDelay", 7);
@@ -1968,7 +1968,7 @@ public sealed class ClientCombatHandler
             var result = _triggerDispatcher.FireCharTrigger(_character, CharTrigger.Resurrect, rezArgs);
             if (result == TriggerResult.True)
                 return;
-            rezHitPct = rezArgs.N1;
+            rezHitPct = SphereNet.Core.Types.ScriptNumber.ToEngineInt(rezArgs.N1);
         }
 
         _character.Resurrect();
@@ -2205,7 +2205,7 @@ public sealed class ClientCombatHandler
             if (result == TriggerResult.True)
                 return;
             if (castArgs.N3 != seededWaitTenths && castArgs.N3 > 0)
-                castTimeOverrideMs = castArgs.N3 * 100;
+                castTimeOverrideMs = SphereNet.Core.Types.ScriptNumber.ToEngineInt(castArgs.N3 * 100);
             // VarMap removes a key set to "" — a cleared WOP means silence.
             string wopNow = castLocals.Get("WOP") ?? "";
             if (wopNow != seededWop)

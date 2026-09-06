@@ -129,7 +129,7 @@ public class SkillDelayTests
         TestHarness.AttachCharacter(client, player);
 
         var dispatcher = new TriggerDispatcher();
-        int cancelSkill = -1;
+        long cancelSkill = -1;
         dispatcher.RegisterCharEvent("EVENTSPLAYER", "SkillTargetCancel", (_, args) =>
         {
             cancelSkill = args.N1;

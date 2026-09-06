@@ -41,7 +41,7 @@ public class SkillStatChangeTriggerTests
             player.SetSkillLock(SkillType.Hiding, 0); // Up (gainable)
 
             var dispatcher = new TriggerDispatcher();
-            int skillArg = -1, valueArg = -1;
+            long skillArg = -1, valueArg = -1;
             dispatcher.RegisterCharEvent("EVENTSPLAYER", "SkillChange",
                 (_, a) => { skillArg = a.N1; valueArg = a.N2; return TriggerResult.Default; });
 
@@ -111,7 +111,7 @@ public class SkillStatChangeTriggerTests
             world.PlaceCharacter(player, new Point3D(100, 100, 0, 0));
 
             var dispatcher = new TriggerDispatcher();
-            int statArg = -1, valueArg = -1;
+            long statArg = -1, valueArg = -1;
             dispatcher.RegisterCharEvent("EVENTSPLAYER", "StatChange",
                 (_, a) => { statArg = a.N1; valueArg = a.N2; return TriggerResult.Default; });
 

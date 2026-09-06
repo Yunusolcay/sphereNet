@@ -4665,8 +4665,11 @@ public partial class Character : ObjBase
         return false;
     }
 
-    public override bool TryExecuteCommand(string key, string args, ITextConsole source)
+    public override bool TryExecuteCommand(string key, string args, ITextConsole source, out bool nameOwned)
     {
+        // Assumed owned until the shared fall-through at the bottom of
+        // ObjBase.TryExecuteCommand says otherwise.
+        nameOwned = true;
         if (key.Equals("SOUND", StringComparison.OrdinalIgnoreCase))
             return EmitScriptSound(args);
         if (key.Equals("NOTOUPDATE", StringComparison.OrdinalIgnoreCase) ||
@@ -5824,7 +5827,7 @@ public partial class Character : ObjBase
                     if (dest != null) { MoveTo(dest.GetTopLevelPosition()); return true; }
                     return false;
                 }
-                var srcChar = (source as IClientContext)?.Character;
+                var srcChar = ResolveSourceCharacter(source);
                 if (srcChar != null) { MoveTo(srcChar.Position); return true; }
                 return false;
             }
@@ -5842,7 +5845,7 @@ public partial class Character : ObjBase
             {
                 // Source-X CHV_CONTROL: the calling client takes control
                 // (ownership) of me. Mirrors the GM .CONTROL target result.
-                var gm = (source as IClientContext)?.Character;
+                var gm = ResolveSourceCharacter(source);
                 if (gm == null) return false;
                 TryAssignOwnership(gm, gm, summoned: false, enforceFollowerCap: false);
                 source.SysMessage($"You now control {Name}.");
@@ -5867,7 +5870,7 @@ public partial class Character : ObjBase
                 return true;
         }
 
-        return base.TryExecuteCommand(key, args, source);
+        return base.TryExecuteCommand(key, args, source, out nameOwned);
     }
 
     /// <summary>Parse a direction token — numeric 0-7 or a compass code

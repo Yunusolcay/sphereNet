@@ -2999,7 +2999,7 @@ TAG.DIALOG_SUBJECT_TOUCHED=1
             vendorStock.AddItem(rowB);
 
             var dispatcher = new TriggerDispatcher();
-            var seenN2 = new List<int>();
+            var seenN2 = new List<long>();
             var seenTotalCost = new List<long>();
             dispatcher.RegisterItemEvent("EVENTSITEM", "Buy", (_, args) =>
             {

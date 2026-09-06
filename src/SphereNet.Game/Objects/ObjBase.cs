@@ -52,6 +52,12 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
     /// including @Click/@AfterClick and the overhead label packet.</summary>
     public static Func<ObjBase, ITextConsole, bool>? OnScriptSingleClick;
 
+    /// <summary>Run a script [FUNCTION] by name on an object — the RES_FUNCTION step of
+    /// Source-X's CObjBase::r_Verb (CObjBase.cpp:2138). Wired by the host, which owns
+    /// the TriggerRunner; null in a headless world, where the step simply does not
+    /// exist. Returns true when a function with that name ran.</summary>
+    public static Func<ObjBase, string, string, ITextConsole?, bool>? RunScriptFunction;
+
     /// <summary>Broadcast a packet to nearby clients. Wired by the server host.</summary>
     public static Action<Point3D, int, PacketWriter, uint>? BroadcastNearby;
 
@@ -329,12 +335,18 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
 
     private const int MaxTimersPerObject = 64;
 
-    public void AddTimerF(long delayMs, string functionName, string args)
+    /// <summary>Queue a delayed call on this object. Returns false when the job was
+    /// NOT accepted — an empty name, or the per-object cap. The cap is a SphereNet
+    /// runaway-script guard: Source-X's CTimedFunctionHandler::Add
+    /// (CTimedFunctionHandler.cpp:103) has no per-object limit, so a caller
+    /// restoring authoritative data passes <paramref name="bypassCap"/> rather than
+    /// silently losing work. Callers that ignore the result get the old behaviour.</summary>
+    public bool AddTimerF(long delayMs, string functionName, string args, bool bypassCap = false)
     {
         if (string.IsNullOrWhiteSpace(functionName))
-            return;
-        if (_timerFEntries.Count >= MaxTimersPerObject)
-            return;
+            return false;
+        if (!bypassCap && _timerFEntries.Count >= MaxTimersPerObject)
+            return false;
         long due = Environment.TickCount64 + Math.Max(0, delayMs);
         _timerFEntries.Add(new TimerFEntry(due, functionName.Trim(), args.Trim()));
         // Register in the world's timer active-set so the per-tick sweep iterates
@@ -342,6 +354,7 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
         // resolver as the rest of ObjBase; a null resolver (no world) simply falls
         // back to the entry still being present should a scan ever run.
         ResolveWorld?.Invoke()?.TrackTimerFObject(this);
+        return true;
     }
 
     /// <summary>Parse a <c>TIMERF</c> / <c>TIMERFMS</c> argument string —
@@ -368,9 +381,15 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
         if (payload.StartsWith(',')) payload = payload[1..].TrimStart();
         if (string.IsNullOrWhiteSpace(payload))
             return;
-        int space = payload.IndexOfAny([' ', '\t']);
-        string functionName = space >= 0 ? payload[..space].Trim() : payload.Trim();
-        string functionArgs = space >= 0 ? payload[(space + 1)..].Trim() : "";
+        // The payload is a command line, so it splits on Source-X's argument
+        // separators ("=, \t", CExpression.cpp:144) and not on whitespace alone:
+        // upstream keeps the raw payload and only runs ParseKey over it when the
+        // timer fires (CTimedFunction.cpp:88). Splitting on space alone left the
+        // separator glued to the name, so "TIMERF 0, f_capture=37" queued a
+        // function called "f_capture=37" that resolved to nothing.
+        SphereNet.Scripting.Parsing.ScriptCommandLine.Split(
+            payload, out string functionName, out string functionArgs);
+        functionArgs = functionArgs.Trim();
 
         // A Sphere number: an expression, or hex when it leads with a zero. A value
         // that cannot be read - or a negative one - is refused rather than silently
@@ -478,8 +497,9 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
         var parts = value.Split('|', 3);
         if (parts.Length < 2 || !long.TryParse(parts[0], out long remainingMs))
             return false;
-        AddTimerF(remainingMs, parts[1], parts.Length > 2 ? parts[2] : "");
-        return true;
+        // A save is authoritative — restore past the live scheduling cap rather
+        // than dropping work the previous run legitimately held.
+        return AddTimerF(remainingMs, parts[1], parts.Length > 2 ? parts[2] : "", bypassCap: true);
     }
 
     /// <summary>The jobs due at <paramref name="nowMs"/>, in due order, WITHOUT taking
@@ -765,6 +785,14 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
                $"{Math.Abs(iLong / 60)}o {Math.Abs(iLong % 60)}'{(iLong >= 0 ? "E" : "W")}";
     }
 
+    /// <summary>The character a verb should act for, given the console that issued it —
+    /// the port of <c>pSrc-&gt;GetChar()</c> (CItem.cpp:3574). A connected client is one
+    /// case, not the only one: a delayed call runs with the top-level character as SRC
+    /// and no client at all (CTimedFunction.cpp:43), so reading the character off the
+    /// client interface alone made every such call refuse.</summary>
+    protected static Characters.Character? ResolveSourceCharacter(ITextConsole? source) =>
+        source?.GetSourceChar() as Characters.Character;
+
     /// <summary>ISTIMERF.&lt;name&gt; - milliseconds until that delayed job runs, or 0 when
     /// there is none (CObjBase.cpp:1499). It is a REMAINING TIME, not a yes/no.</summary>
     protected bool TryGetTimerFProperty(string upperKey, out string value)
@@ -777,8 +805,24 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
         return true;
     }
 
-    public virtual bool TryExecuteCommand(string key, string args, ITextConsole source)
+    public bool TryExecuteCommand(string key, string args, ITextConsole source) =>
+        TryExecuteCommand(key, args, source, out _);
+
+    /// <summary>Run a verb, reporting through <paramref name="nameOwned"/> whether the
+    /// NAME belongs to the verb table at all.
+    ///
+    /// Source-X needs that distinction: <c>CObjBase::r_Verb</c> looks the key up in
+    /// sm_szVerbKeys and, when it is there, the verb's own answer is final — a
+    /// same-named script [FUNCTION] is never tried (CObjBase.cpp:2134). Only an
+    /// UNKNOWN name falls through to the function and then to a property assignment.
+    /// A single bool conflated "no such verb" with "that verb refused", so a verb
+    /// that legitimately declined handed the line to a like-named pack function.
+    ///
+    /// The flag needs no per-case bookkeeping: it starts true and is cleared at the
+    /// one point every switch falls through to, at the bottom of this method.</summary>
+    public virtual bool TryExecuteCommand(string key, string args, ITextConsole source, out bool nameOwned)
     {
+        nameOwned = true;
         // Source-X compatibility: a bare TAG/CTAG/DTAG command with a dotted
         // suffix and no argument clears that entry.
         // Examples:
@@ -1127,7 +1171,28 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
                 return true;
             }
         }
+        // Nothing claimed the name: it is not a verb at all.
+        nameOwned = false;
         return false;
+    }
+
+    /// <summary>Run a whole verb LINE the way Source-X's r_Verb does: the verb table
+    /// owns its names outright, an unknown name goes to the script [FUNCTION]
+    /// (CObjBase.cpp:2138), and what neither claims becomes a property assignment
+    /// through CScriptObj::r_Verb's default branch -> r_LoadVal (CScriptObj.cpp:1481).
+    ///
+    /// This is the entry point for lines that arrive WITHOUT a script interpreter
+    /// around them - a delayed TIMERF payload, a TOPOBJ./CONT./LINK. chain - which
+    /// previously stopped after the verb table and lost both fallbacks.</summary>
+    public bool ExecuteVerbLine(string key, string args, ITextConsole source)
+    {
+        if (TryExecuteCommand(key, args, source, out bool owned))
+            return true;
+        if (owned)
+            return false;   // the verb owns the name and declined; upstream stops here
+        if (RunScriptFunction?.Invoke(this, key, args, source) == true)
+            return true;
+        return args.Length > 0 && TrySetProperty(key, args);
     }
 
     private bool TryMoveScriptObject(Point3D destination)

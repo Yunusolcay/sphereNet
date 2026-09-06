@@ -476,7 +476,7 @@ public sealed class SpawnComponent
                 : (int)Math.Max(0, (_nextSpawnTick - Environment.TickCount64) / 1000),
         };
         OnSpawnTrigger(_spawnItem, ItemTrigger.DelObj, args);
-        ApplyTriggerTimeout(args.N1);
+        ApplyTriggerTimeout(SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N1));
     }
 
     private void SetNextSpawnTime()
@@ -761,7 +761,7 @@ public sealed class SpawnComponent
                 : (int)Math.Max(0, (_nextSpawnTick - Environment.TickCount64) / 1000),
         };
         OnSpawnTrigger(_spawnItem, ItemTrigger.AddObj, args);
-        ApplyTriggerTimeout(args.N1);
+        ApplyTriggerTimeout(SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N1));
     }
 
     /// <summary>Apply the seconds a spawn trigger asked for; -1 parks the timer.</summary>
@@ -865,9 +865,11 @@ public sealed class SpawnTriggerArgs
     public Item? SpawnPoint { get; set; }
     public int SpawnDefIndex { get; set; }
     // Champion trigger payload (@Level ARGN1..3, candle @Del* ARGN1=reason).
-    public int N1 { get; set; }
-    public int N2 { get; set; }
-    public int N3 { get; set; }
+    // 64-bit like the ARGN transport they carry to and from (Source-X
+    // CScriptTriggerArgs.h:21); SpawnDefIndex stays an engine int.
+    public long N1 { get; set; }
+    public long N2 { get; set; }
+    public long N3 { get; set; }
 }
 
 /// <summary>
@@ -1164,7 +1166,7 @@ public sealed class ItemSpawnComponent
             N1 = _nextSpawnTick < 0 ? -1 : (int)Math.Max(0, remainingMs / 1000),
         };
         SpawnComponent.OnSpawnTrigger(_spawnItem, ItemTrigger.AddObj, args);
-        ApplyTriggerTimeout(args.N1);
+        ApplyTriggerTimeout(SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N1));
     }
 
     /// <summary>Every generated member goes through the same door as a live one, so the
@@ -1326,7 +1328,7 @@ public sealed class ItemSpawnComponent
                 : (int)Math.Max(0, (_nextSpawnTick - Environment.TickCount64) / 1000),
         };
         SpawnComponent.OnSpawnTrigger(_spawnItem, ItemTrigger.DelObj, args);
-        ApplyTriggerTimeout(args.N1);
+        ApplyTriggerTimeout(SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N1));
     }
 
     public void KillAll()

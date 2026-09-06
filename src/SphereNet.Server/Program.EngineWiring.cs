@@ -319,9 +319,9 @@ public static partial class Program
                 {
                     var args = new TriggerArgs { CharSrc = ch, N1 = skillId, N2 = difficulty, N3 = result };
                     var triggerResult = _triggerDispatcher.FireCharTrigger(ch, CharTrigger.SkillUseQuick, args);
-                    difficulty = args.N2;
+                    difficulty = SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N2);
                     if (triggerResult == TriggerResult.True) return -1;
-                    return Math.Clamp(args.N3, 0, 1);
+                    return (int)Math.Clamp(args.N3, 0L, 1L);
                 };
             }
             // @NPCSeeNewPlayer — install only when hooked so the per-NPC perception
@@ -366,8 +366,8 @@ public static partial class Program
                 {
                     var args = new TriggerArgs { CharSrc = ch, N1 = (int)skill, N2 = chance, N3 = skillMax };
                     bool cancel = _triggerDispatcher.FireCharTrigger(ch, CharTrigger.SkillGain, args) == TriggerResult.True;
-                    chance = args.N2;
-                    skillMax = args.N3;
+                    chance = SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N2);
+                    skillMax = SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N3);
                     return cancel;
                 };
             }
@@ -384,7 +384,7 @@ public static partial class Program
                 {
                     var args = new TriggerArgs { CharSrc = ch, N1 = (int)skill, N2 = newVal, N3 = newVal - oldVal };
                     bool cancel = _triggerDispatcher.FireCharTrigger(ch, CharTrigger.SkillChange, args) == TriggerResult.True;
-                    newVal = args.N2;
+                    newVal = SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N2);
                     return cancel;
                 };
             }
@@ -746,7 +746,7 @@ public static partial class Program
                 // sent the def index in N1 and never carried the answer back, so a
                 // handler that chose a different creature or item was ignored.
                 if (args.N1 == 0 && args.N2 == 0 && args.N3 == 0)
-                    args.SpawnDefIndex = targs.N1;
+                    args.SpawnDefIndex = SphereNet.Core.Types.ScriptNumber.ToEngineInt(targs.N1);
                 args.N1 = targs.N1;
                 args.N2 = targs.N2;
                 args.N3 = targs.N3;
@@ -951,6 +951,19 @@ public static partial class Program
                     return false;
                 gc.HandleSingleClick(obj.Uid.Value);
                 return true;
+            };
+            // The RES_FUNCTION step of Source-X's CObjBase::r_Verb (CObjBase.cpp:2138):
+            // an unknown verb name is looked up among the script [FUNCTION] blocks and
+            // run on the object, with the argument string prepared the normal way so
+            // ARGN1/2/3 arrive alongside ARGS (CScriptTriggerArgs.cpp:112).
+            ObjBase.RunScriptFunction = (obj, name, args, console) =>
+            {
+                var fnArgs = new SphereNet.Scripting.Execution.TriggerArgs
+                {
+                    Source = console?.GetSourceChar(),
+                };
+                fnArgs.InitFromRaw(args);
+                return _triggerRunner.TryRunFunction(name, obj, console, fnArgs, out _);
             };
             _commands.OnScriptParityWarning += (ch, verb, reason) =>
             {
@@ -1597,7 +1610,7 @@ public static partial class Program
                             new TriggerArgs { CharSrc = ch });
                     }
                 }
-                return args.N1;
+                return SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N1);
             };
 
             // A witness who noticed a crime (CrimeWitnessService.CheckCrimeSeen)
@@ -1798,7 +1811,7 @@ public static partial class Program
                     // (Source-X fSkipHardcoded) while keeping flee/magery/melee.
                     bool skipHardcoded = locals.Has("skiphardcoded") && locals.GetInt("skiphardcoded") != 0;
                     return new NpcAI.NpcFightDecision(
-                        res == TriggerResult.True, args.N2, forcedSkill, forcedSpell, skipHardcoded);
+                        res == TriggerResult.True, SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N2), forcedSkill, forcedSpell, skipHardcoded);
                 };
             if (_triggerDispatcher.IsCharTriggerUsed(CharTrigger.NPCActWander))
                 _npcAI.OnNpcActWander = npc =>
@@ -1834,7 +1847,7 @@ public static partial class Program
                         return SphereNet.Game.AI.NpcAI.FollowTriggerResult.Handled;
 
                     followArgs.Flee = args.N1 != 0;
-                    followArgs.MaxDistance = args.N2;
+                    followArgs.MaxDistance = SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N2);
                     followArgs.MoveAway = args.N3 != 0;
                     return SphereNet.Game.AI.NpcAI.FollowTriggerResult.Continue;
                 };
@@ -1884,7 +1897,7 @@ public static partial class Program
                         ? _triggerDispatcher.FireCharTrigger(npc, CharTrigger.NPCLookAtItem, args)
                         : TriggerResult.Default;
                     return new NpcAI.NpcLookDecision(
-                        res == TriggerResult.True, res == TriggerResult.False, args.N2);
+                        res == TriggerResult.True, res == TriggerResult.False, SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N2));
                 };
             if (npcSeeWantItemUsed)
                 _npcAI.OnNpcSeeWantItem = (npc, item) =>
@@ -1949,7 +1962,7 @@ public static partial class Program
                 var args = new TriggerArgs { CharSrc = target, O1 = weapon, ItemSrc = weapon, N1 = swingTenths };
                 if (_triggerDispatcher.FireCharTrigger(attacker, CharTrigger.HitTry, args) == TriggerResult.True)
                     return -1; // RETURN 1 aborts the swing
-                return Math.Max(1, args.N1);
+                return SphereNet.Core.Types.ScriptNumber.ToEngineInt(Math.Max(1, args.N1));
             };
             _npcAI.OnNpcHitCheck = (attacker, target, weapon, swingNoRange) =>
             {
@@ -2407,7 +2420,7 @@ public static partial class Program
                 // default) is a full block; a script may raise it for a partial block.
                 var args = new TriggerArgs { CharSrc = attacker, O1 = attacker, N1 = 0 };
                 _triggerDispatcher.FireCharTrigger(defender, CharTrigger.HitParry, args);
-                return Math.Max(0, args.N1);
+                return SphereNet.Core.Types.ScriptNumber.ToEngineInt(Math.Max(0, args.N1));
             };
 
             // Shared on-hit damage pipeline for both the player and NPC swing
@@ -2448,7 +2461,7 @@ public static partial class Program
                 ctx.ColdPercent = (int)locals.GetInt("DamagePercentCold");
                 ctx.PoisonPercent = (int)locals.GetInt("DamagePercentPoison");
                 ctx.EnergyPercent = (int)locals.GetInt("DamagePercentEnergy");
-                return triggerArgs.N1;
+                return SphereNet.Core.Types.ScriptNumber.ToEngineInt(triggerArgs.N1);
             };
 
             CombatEngine.OnDirectCharacterDamageApplied = (target, source, damage) =>
@@ -2957,14 +2970,14 @@ public static partial class Program
                 var args = new TriggerArgs { CharSrc = ch, N1 = delta };
                 if (_triggerDispatcher?.FireCharTrigger(ch, CharTrigger.FameChange, args) == TriggerResult.True)
                     return null;
-                return args.N1;
+                return SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N1);
             };
             SphereNet.Game.Objects.Characters.Character.OnKarmaChanging = (ch, delta) =>
             {
                 var args = new TriggerArgs { CharSrc = ch, N1 = delta };
                 if (_triggerDispatcher?.FireCharTrigger(ch, CharTrigger.KarmaChange, args) == TriggerResult.True)
                     return null;
-                return args.N1;
+                return SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N1);
             };
 
             // @ExpChange / @ExpLevelChange — N1 = proposed delta (script may
@@ -2974,7 +2987,7 @@ public static partial class Program
                 var args = new TriggerArgs { CharSrc = ch, N1 = delta };
                 if (_triggerDispatcher?.FireCharTrigger(ch, CharTrigger.ExpChange, args) == TriggerResult.True)
                     return null;
-                return args.N1;
+                return SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N1);
             };
             SphereNet.Game.Objects.Characters.Character.OnExpLevelChanged = (ch, level) =>
                 _triggerDispatcher?.FireCharTrigger(ch, CharTrigger.ExpLevelChange,
@@ -3012,7 +3025,7 @@ public static partial class Program
                 var args = new TriggerArgs { CharSrc = killer, N1 = proposed, N2 = 1, O1 = victim };
                 if (_triggerDispatcher?.FireCharTrigger(killer, CharTrigger.MurderMark, args) == TriggerResult.True)
                     return new SphereNet.Game.Objects.Characters.Character.MurderMarkDecision(null, false);
-                return new SphereNet.Game.Objects.Characters.Character.MurderMarkDecision(args.N1, args.N2 != 0);
+                return new SphereNet.Game.Objects.Characters.Character.MurderMarkDecision(SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N1), args.N2 != 0);
             };
 
             // Combat (attacker) list lifecycle — @CombatAdd / @CombatDelete fire on
@@ -3035,7 +3048,7 @@ public static partial class Program
             {
                 var args = new TriggerArgs { CharSrc = self, N1 = newKills, N2 = 0 };
                 _triggerDispatcher?.FireCharTrigger(self, CharTrigger.MurderDecay, args);
-                return args.N2;
+                return SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N2);
             };
 
             // Account resolution from character UID

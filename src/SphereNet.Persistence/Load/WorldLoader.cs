@@ -1652,13 +1652,26 @@ public sealed class WorldLoader
                 continue;
             }
 
-            // The saved line is a whole command: the name, then its arguments.
-            int split = command.IndexOfAny([' ', '\t']);
-            string name = split >= 0 ? command[..split] : command;
-            string args = split >= 0 ? command[(split + 1)..].Trim() : "";
+            // The saved line is a whole command: the name, then its arguments. It
+            // splits on Source-X's argument separators ("=, \t"), the same way the
+            // live TIMERF payload does — upstream runs the identical ParseKey over
+            // the restored string (CTimedFunctionHandler.cpp:185 -> CScript,
+            // CScript.cpp:336). Splitting on whitespace alone lost every job saved
+            // in the "TimerFCall=f_mark=37" form.
+            SphereNet.Scripting.Parsing.ScriptCommandLine.Split(
+                command, out string name, out string args);
+            args = args.Trim();
             if (name.Length == 0)
                 continue;
-            target.AddTimerF(Math.Max(0, elapsed), name, args);
+            // A save is authoritative: restore what it holds even past the live
+            // scheduling cap, which is a SphereNet guard with no upstream
+            // counterpart (CTimedFunctionHandler::Add, :103, has no per-object
+            // limit). Counting a dropped job as restored hid the loss entirely.
+            if (!target.AddTimerF(Math.Max(0, elapsed), name, args, bypassCap: true))
+            {
+                _logger.LogWarning("TIMERF: '{Call}' on 0x{Uid:X} was refused; dropped", command, uid);
+                continue;
+            }
             restored++;
         }
 

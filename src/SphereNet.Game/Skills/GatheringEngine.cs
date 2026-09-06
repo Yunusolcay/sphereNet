@@ -214,7 +214,7 @@ public sealed class GatheringEngine
                 if (_triggerDispatcher.FireResourceTrigger(resDef, "ResourceGather", ch, args) == TriggerResult.True)
                     return new GatherResult { Handled = true, Success = false };
 
-                reapAmount = args.N1;
+                reapAmount = SphereNet.Core.Types.ScriptNumber.ToEngineInt(args.N1);
                 // A local left at zero or holding something that is not an item id
                 // keeps the definition's own reap; the reference would build id 0.
                 long scriptItemId = locals.GetInt("ResourceID");

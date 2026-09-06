@@ -174,7 +174,7 @@ public class SkillAuditRegressionTests
         ch.PrivLevel = PrivLevel.GM;
         world.PlaceCharacter(ch, new Point3D(100, 100, 0, 0));
         TestHarness.AttachCharacter(client, ch);
-        int waitCurrent = -1, targetCancelled = -1;
+        long waitCurrent = -1, targetCancelled = -1;
         var dispatcher = new SphereNet.Game.Scripting.TriggerDispatcher();
         dispatcher.RegisterCharEvent("EVENTSPLAYER", "SkillWait", (_, args) =>
         {

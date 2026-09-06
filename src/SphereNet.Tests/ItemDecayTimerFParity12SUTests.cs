@@ -170,7 +170,7 @@ public sealed class ItemDecayTimerFParity12SUTests
         world.AddRegion(region);
 
         var dispatcher = new TriggerDispatcher();
-        int seenTenths = -1;
+        long seenTenths = -1;
         dispatcher.RegisterItemEvent("EVENTSITEM", "DropOn_Ground", (_, args) =>
         {
             seenTenths = args.N1;

@@ -444,7 +444,7 @@ public sealed class SpawnChampionParity12EITests
         var world = NewWorld();
         var stone = Spawner(world, res, ItemType.SpawnItem, "i_prize_a", maxCount: 2);
         stone.SpawnItem!.SetDelay(9, 9);
-        var seen = new List<int>();
+        var seen = new List<long>();
         SpawnComponent.OnSpawnTrigger = (_, trigger, args) =>
         {
             if (trigger == ItemTrigger.AddObj)

@@ -4,6 +4,81 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Delayed work: due order, command splitting, verb ownership and 64-bit args (12X/12Y)
+----------------------------------------
+
+FIX - Due order was per-object. The tick walked the active set and drained each
+        object's ready jobs before moving on, so a job due 10 seconds ago ran after one
+        due 100ms ago purely because its owner came later in the set. Upstream keeps
+        every timed object - each CTimedFunction included - in one time-sorted vector
+        and ticks the selection in that order (CWorldTicker.cpp:1051 selection, :1129
+        execution, :1214 the TIMEDFUNCTIONS branch). The ready jobs are now collected
+        across all objects, sorted by due time with the collection order as the
+        tie-break, and run from that single list. Each job is still removed immediately
+        before it runs, so a save taken mid-callback still sees the ones that have not.
+
+FIX - A delayed payload split on whitespace alone, so "=" and "," stayed glued to the
+        function name and "TIMERF 0, f_capture=37" queued a function called
+        "f_capture=37" that resolved to nothing. Upstream stores the raw payload and
+        runs ParseKey over it when the timer fires (CTimedFunction.cpp:88,
+        CScript.cpp:336), whose Str_Parse default separator set is "=, \t"
+        (CExpression.cpp:144). Splitting now goes through one shared helper that honours
+        those separators plus the quote and bracket rules, and only the first separator
+        is structural so "f_a 1,2,3" keeps its argument string intact.
+
+FIX - The same whitespace-only split existed on the classic load path, so a saved
+        "TimerFCall=f_mark=37" was restored as a job that could never run. It now uses
+        the same helper as the live path (CTimedFunctionHandler.cpp:185).
+
+FIX - A delayed line that no verb and no script function owned did nothing. Upstream
+        falls through to CScriptObj::r_Verb, whose default branch is r_LoadVal - a
+        property assignment (CScriptObj.cpp:1481) - so "NAME after" and "TAG.FLAG after"
+        now reach the field. The same step was missing on the TOPOBJ./CONT./LINK.
+        reference chain.
+
+FIX - A built-in verb that recognised the name and then declined fell through to a
+        like-named script [FUNCTION], because a single bool conflated "no such verb"
+        with "that verb refused". Upstream only reaches the function branch when the
+        verb table lookup misses (CObjBase.cpp:2134), so a pack's [FUNCTION UNEQUIP]
+        could pick up a line the engine had just refused. TryExecuteCommand now reports
+        whether the NAME belongs to the verb table, cleared at the single fall-through
+        every switch ends in, and an owned name's answer is final.
+
+FIX - A TOPOBJ./CONT./LINK. chain resolved its target and then only tried a verb and a
+        property there, so "TOPOBJ.f_mark 37" was swallowed - the reference resolved,
+        the function never ran, and the line reported success. Upstream hands the
+        remainder to the target's own r_Verb, function step included
+        (CScriptObj.cpp:1217, CObjBase.cpp:2138); the chain now runs the full order on
+        the resolved object.
+
+FIX - A delayed verb needing the calling character refused whenever no client was
+        attached, because UNEQUIP, SUMMONTO and CONTROL read the character off the
+        client interface alone. Upstream runs a delayed call with the top-level
+        CHARACTER as SRC and no connected-client requirement (CTimedFunction.cpp:43),
+        reaching it through pSrc->GetChar() (CItem.cpp:3574). ITextConsole gained that
+        accessor, the stand-in console for a clientless character now answers it, and
+        the three verbs resolve through it - so an NPC's or an offline player's timed
+        equipment work completes.
+
+FIX - Script numeric arguments saturated at the 32-bit bounds, so 2147483648 reached a
+        script as 2147483647. ARGN1/2/3 are int64 upstream (CScriptTriggerArgs.h:21);
+        the transport is now 64-bit end to end and the engine's own int fields narrow
+        at their own boundary, saturating rather than wrapping.
+
+FIX - A hex argument containing a letter read as zero AND stranded the parse cursor, so
+        "0A,2,3" delivered 0,0,0 and "01F,2,3" delivered 1,0,0. The scan advanced over
+        ASCII digits only; upstream treats a leading '0' as the hex MARKER and then
+        consumes [0-9 A-F a-f], with the significant-nibble width deciding the signed
+        reinterpretation (CExpression.cpp:666). The decimal path also skips '.' grouping
+        separators, as upstream does.
+
+FIX - The 64-jobs-per-object cap dropped the 65th silently, and the classic loader
+        counted the dropped job as restored, so a save holding more work than the cap
+        lost it with no trace. AddTimerF now reports whether the job was accepted;
+        upstream has no per-object limit (CTimedFunctionHandler.cpp:103), so restoring
+        a save bypasses the cap - a save is authoritative - while the cap still guards
+        live scheduling and a refusal is logged instead of ignored.
+
 [2026-09-06] - Delayed work: classic saves, mid-callback saves and who it runs as (12V)
 ----------------------------------------
 
