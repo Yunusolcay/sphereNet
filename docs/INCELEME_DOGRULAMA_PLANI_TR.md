@@ -1497,6 +1497,55 @@ gecici olarak kapatilarak 9 testin eski davranisi yakaladigi kanitlandi.
 tasirsa/silerse, save/load ile yarim surukleme, gercek cift tiklama girisi, makro
 listesinde ilk esya reddedilip sonrakinin kusanilmasi, dolu/silinmis baslangic cantasi.
 
+### 07Y - envanter/esya kullanimi toplu tur: 6 bulgu (6 Eylul 2026)
+
+Kanit raporu: [07Y](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07Y_ENVANTER_ESYA_TOPLU.md).
+Alti bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+- [x] **SX-07Y-01 (P2)** - Cikarma makrosu @Unequip'i atliyordu. (YAPILDI: trigger
+  makroda da calisiyor.
+  **BILINCLI SAPMA - kayit:** referans OnRemoveObj'de reddedemez ("It can not FAIL!"),
+  raporun kendisi de bunu veto sozlesmesi saymamak gerektigini yaziyor. Yine de RETURN 1
+  burada da ret sayiliyor: SphereNet'in pickup yolu bunu zaten yapiyor ve makroyu
+  notification'a birakmak, o reddi asmanin yolu olurdu. Parite turunda geri
+  "duzeltilmemeli"; degistirilecekse iki yol birlikte degistirilmeli.)
+- [x] **SX-07Y-02 (P2)** - Makas yalnizca tur alanini degistiriyordu. (YAPILDI: cikti
+  esyasi yaratiliyor, renk/adet tasiniyor, girdi siliniyor; kumas+giysi -> bandaj,
+  hide -> TDATA1 derisi ya da duz deri.
+  **Ayrica:** kanli bandaj makas dalindan cikarildi ve referanstaki su yolu eklendi
+  (dclick -> hedef -> su). Raporun isaret ettigi mevcut test
+  `Scissors_BloodyBandageStack_IsCleanedNotDeleted` uyduruk davranisi kodluyordu;
+  yerine uc test geldi (suda temizlenir / kuru hedefte temizlenmez / makas dokunmaz).
+  **Kapsam disi:** cloth bolt -> cloth (`ConvertBolttoCloth`) RESOURCES tanimi ister;
+  rapor da kanit saymamisti - dokunulmadi.)
+- [x] **SX-07Y-03 (P2)** - Aktif anahtar yolu yalniz `TAG.LINK == hedef UID` ariyordu.
+  (YAPILDI: `KeyFits` - kilit kodu hedefin kendisi VEYA baglandigi yapi; `HandleKeyUse`
+  ve `FindBackpackKeyFor` ayni cozumlemeyi paylasiyor. Test gercek
+  `HousingEngine.CreateHouseKey` ile uretilen anahtari kullaniyor.)
+- [x] **SX-07Y-04 (P2)** - Kova rengi yerine DYE_HUE etiketi uygulaniyordu. (YAPILDI:
+  kovanin kendi Hue'su otorite; eski kayitlardaki etiket yalnizca kovanin kendi rengi
+  yokken okunuyor - raporun istedigi "bayat etiket yeni rengi ezmesin" gecis kurali.)
+- [x] **SX-07Y-05 (P2)** - Boyamada sahiplik/uygunluk denetimi yoktu. (YAPILDI:
+  ust duzey sahip aktor olmali + Clothing/DYE/CAN_I_DYE; GM istisnasi korundu.)
+- [x] **SX-07Y-06 (P2)** - @Dye ARGN1 geri okunmuyordu. (YAPILDI: TriggerArgs yerelde
+  tutuluyor, N1 renge yaziliyor. **Ek:** referansin ARGN2 ses sozlesmesi de kuruldu -
+  0x23E ile beslenip script degistirebiliyor; rapor bunu olcmemisti.)
+
+**Mevcut testlerin duzeltilmesi:** raporun isaret ettigi iki beklenti referansa aykiriydi
+ve degistirildi - makasla kanli bandaj temizleme (yukarida) ve
+`GameClient_DyeVatApply_FiresDyeTriggerAndCanApplyHue`, ki normal oyuncunun YERDEKI genel
+bir nesneyi boyamasini bekliyordu. Ikincisi artik oyuncunun kendi cantasindaki giysiyi
+ve kovanin kendi rengini kullaniyor; @Dye tetiklenmesi iddiasi korundu.
+
+**07Y kapanisi:** tam suite **2.684 basarili / 0 basarisiz** (+22). Alti duzeltme de
+gecici olarak kapatilarak testlerin eski davranisi yakaladigi kanitlandi: birlesik
+kapatmada 16 kirmizi, ardindan yalniz 07Y-05 kapatilarak uc boyama-hedefi testi ayrica
+dogrulandi (birlesik kapatmada kova rengi de sifirlandigi icin o ucu gizliyordu).
+
+**Acik kalan:** cloth bolt donusumu; kova renk secici paketi (0x95) ve save/load; sac
+boyasinin dialog/harcama akisi; keyring icindeki anahtarlar ve legacy MORE/lock-code
+import'u; @Unequip'in bir makroda birden fazla katman ve nesne silme/tasima varyantlari.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

@@ -3,6 +3,52 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Esya kullanimi: cikarma makrosu, makas, bandaj, ev anahtari ve boya kovasi (07Y)
+----------------------------------------
+
+FIX - Ekipman cikarma makrosu @Unequip calistirmadan esyayi aliyordu; scriptin giyili
+        esya temizligi bu yolda hic isletilmiyordu. Source-X bunu OnRemoveObj'den
+        tetikler ve her cikarma oradan gecer (CCharAct.cpp:398). NOT: referans orada
+        reddedemez, ancak SphereNet'in pickup yolu RETURN 1'i eskiden beri ret sayiyor -
+        makro da artik ona uyuyor; boylece iki yol tek sozlesmeyi paylasiyor ve makro
+        reddi asmanin yolu olmuyor.
+
+FIX - Makas yalnizca hedefin tur alanini degistiriyordu: kumas, bolt turu yazilmis
+        kumas grafigiyle kaliyor ve hicbir zaman bandaj uretilmiyordu. Source-X keser -
+        cikti esyasini yaratir, rengi ve adedi tasir, girdiyi siler
+        (CClientTarg.cpp:2110). Kumas ve giysi artik bandaja (giysi, referansin olctugu
+        gibi agirligi kadar), deriler de deriye donusuyor; ozel bir hide tanimin kendi
+        TDATA1 derisi korunuyor.
+
+FIX - Kanli bandajlar makasla kesilmez, suda yikanir. Source-X bunlari
+        IT_BANDAGE_BLOOD altinda ele alir (CClientTarg.cpp:2244) ve makas dalinda hic
+        anmaz; SphereNet'in basari mesaji olarak kullandigi itemuse_bandage_clean ise
+        referansin "bunlari suda temizle" REDDIDIR. Kanli bandaja cift tiklamak artik
+        hedef soruyor ve su uzerinde tum yigini temizliyor; makas dokunmuyor.
+
+FIX - Ev anahtari hicbir seyi acmiyordu. Oyunun kendi anahtari ev multisinin kilit
+        kodunu tasir ve evin her kapisi bu kodu link uzerinden paylasir; aktif anahtar
+        yolu ise anahtarin dogrudan kapinin kendisini gostermesini istiyordu. Source-X
+        KILIT KODLARINI karsilastirir (Use_Key -> IsKeyLockFit, CItem.cpp:4278) -
+        cantadaki anahtari bulan kod zaten bu kurali kullaniyordu. Ikisi artik tek
+        cozumlemeyi paylasiyor; baska yerin anahtari yine hicbir seyi acmiyor.
+
+FIX - Boya kovasi, uzerinde tasidigi rengi degil ozel bir DYE_HUE etiketini
+        uyguluyordu; rengi scriptten veya kayittan gelen kova hicbir sey yapmiyor, bayat
+        etiket ise yanlis rengi uyguluyordu. Artik kovanin kendi rengi kaynak -
+        referanstaki gibi (CClientTarg.cpp:2331); kendi rengi olmayan eski kova
+        etiketini bir kez daha okuyor.
+
+FIX - Erisim mesafesindeki her sey boyanabiliyordu: boyanamaz altin, yerde duran bir
+        nesne, baska oyuncunun esyasi. Source-X aktorun ust duzey nesnenin sahibi
+        olmasini ve esyanin giysi ya da CAN_I_DYE olmasini ister; yetkili istisnasiyla
+        (CClientTarg.cpp:2302/2325).
+
+FIX - @Dye boyamayi veto edebiliyor ama rengini degistiremiyordu. Source-X SetHue
+        ARGN1'e rengi, ARGN2'ye sesi koyar ve script sona duserse ikisini de geri okur
+        (CObjBase.cpp:324); burada arguman nesnesi ataliyordu. Referansin caldigi boya
+        sesi de artik onlarla birlikte gonderiliyor.
+
 [2026-09-06] - Kusanma: obur el, suruklemenin sonu ve reddedilen esya (07V-07X)
 ----------------------------------------
 

@@ -4,6 +4,53 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Using things: unequip macro, scissors, bandages, house keys and the dye vat (07Y)
+----------------------------------------
+
+FIX - The unequip macro took gear off without running @Unequip, so a script's
+        worn-item cleanup never fired for that path. Source-X raises it from
+        OnRemoveObj, which every unequip passes through (CCharAct.cpp:398). NOTE: the
+        reference cannot refuse there, but SphereNet's pickup path has always treated
+        RETURN 1 as a refusal - the macro now honours it too, so the two paths keep
+        one contract and the macro is not a way around it.
+
+FIX - Scissors only rewrote the target's type field: cloth stayed cloth-shaped with a
+        bolt's type on it, and no bandage was ever produced. Source-X cuts - it creates
+        the output item, carries the hue and the count across and deletes the input
+        (CClientTarg.cpp:2110). Cloth and clothing now become bandages (clothing by its
+        weight, as the reference measures it) and hides become leather, honouring a
+        hide definition's own TDATA1 leather.
+
+FIX - Bloody bandages are washed in water, not cut with scissors. Source-X handles
+        them under IT_BANDAGE_BLOOD (CClientTarg.cpp:2244) and its scissors branch does
+        not mention them; the message SphereNet reported success with,
+        itemuse_bandage_clean, is the reference's "clean these in water" REFUSAL.
+        Double-clicking a bloody bandage now asks for a target and cleans the whole
+        pile on water; scissors leave it alone.
+
+FIX - A house key opened nothing. The game's own key carries the house multi's lock
+        code, which every door of the house shares through its link, but the active key
+        path demanded that the key name the door itself. Source-X matches LOCK CODES
+        (Use_Key -> IsKeyLockFit, CItem.cpp:4278) - the rule the pack search already
+        used. Both now share one resolution, and a key cut for somewhere else still
+        opens nothing.
+
+FIX - A dye vat handed out a private DYE_HUE tag rather than the colour it is wearing,
+        so a vat whose hue came from a script or a save applied nothing at all, and a
+        stale tag applied the wrong colour. The vat's own hue is the source, as it is
+        in the reference (CClientTarg.cpp:2331); an old vat with no hue of its own
+        still reads its tag once.
+
+FIX - Anything within reach could be dyed: undyeable gold, an object lying on the
+        ground, another player's goods. Source-X requires the actor to own the
+        top-level object and the item to be clothing or CAN_I_DYE, with a staff
+        exception (CClientTarg.cpp:2302/2325).
+
+FIX - @Dye could veto a dye but never change its colour. Source-X SetHue seeds ARGN1
+        with the colour and ARGN2 with the sound and takes both back when the script
+        falls through (CObjBase.cpp:324); the arguments were thrown away here. The
+        dye sound the reference plays is emitted with them.
+
 [2026-09-06] - Equipping: the other hand, the end of the drag, and a refused item (07V-07X)
 ----------------------------------------
 

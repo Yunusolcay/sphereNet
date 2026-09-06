@@ -864,6 +864,13 @@ public sealed class ClientItemUseHandler
                 SetPendingItemTarget(item, (serial, x, y, z, gfx) => HandleScissorsTarget(item, new Serial(serial)));
                 break;
 
+            // Source-X CClientUse.cpp:412 - a bloody bandage asks for a target and
+            // is cleaned by using it on water.
+            case ItemType.BandageBlood:
+                SysMessage(ServerMessages.Get("target_promt"));
+                SetPendingItemTarget(item, (serial, x, y, z, gfx) => UseBloodyBandage(item, serial, x, y));
+                break;
+
             case ItemType.Tracker:
                 SysMessage(ServerMessages.Get(Msg.ItemuseTrackerAttune));
                 SetPendingItemTarget(item, (serial, x, y, z, gfx) => item.SetTag("LINK", serial.ToString()));
@@ -2046,22 +2053,32 @@ public sealed class ClientItemUseHandler
         return $"{yLat}° {yMins}'{(south ? "S" : "N")}, {xLong}° {xMins}'{(east ? "E" : "W")}";
     }
 
+    /// <summary>Whether this key opens that lock.
+    ///
+    /// Source-X compares LOCK CODES rather than demanding the key name the target
+    /// object itself (Use_Key -> IsKeyLockFit, CItem.cpp:4278): a house key carries
+    /// the multi's code, which every door of the house shares through its link. The
+    /// active key path asked only for TAG.LINK == the target's own uid, so the game's
+    /// own house key opened nothing - while the pack search below already knew the
+    /// rule. One resolution now serves both.</summary>
+    private static bool KeyFits(Item key, Item locked)
+    {
+        uint code = key.Link.IsValid ? key.Link.Value : 0;
+        if (code == 0 && key.TryGetTag("LINK", out string? lk))
+            uint.TryParse(lk, out code);
+        if (code == 0) return false;
+
+        if (code == locked.Uid.Value) return true;
+        return locked.Link.IsValid && code == locked.Link.Value;
+    }
+
     private Item? FindBackpackKeyFor(Item locked)
     {
         if (_character?.Backpack == null) return null;
-        uint linkId = locked.Uid.Value;
-        // Source-X lock codes: a key matches the locked item itself OR the
-        // structure the lock belongs to (house door → the multi) — the house
-        // key's code is the multi uid, mirrored on every component's Link.
-        uint structId = locked.Link.IsValid ? locked.Link.Value : 0;
         foreach (var it in EnumerateContents(_character.Backpack, 0))
         {
             if (it.ItemType is not (ItemType.Key or ItemType.Keyring)) continue;
-            uint kv = it.Link.IsValid ? it.Link.Value : 0;
-            if (kv == 0 && it.TryGetTag("LINK", out string? lk))
-                uint.TryParse(lk, out kv);
-            if (kv != 0 &&
-                (kv == linkId || (structId != 0 && kv == structId)))
+            if (KeyFits(it, locked))
                 return it;
         }
         return null;
@@ -2257,7 +2274,18 @@ public sealed class ClientItemUseHandler
         _world.RemoveItem(ore);
     }
 
-    /// <summary>Source-X uses scissors to convert hides/cloth to leather/bolts.</summary>
+    private const ushort CleanBandageId = 0x0E21;   // ITEMID_BANDAGES1
+    private const ushort PlainLeatherId = 0x1067;   // ITEMID_LEATHER_1
+
+    /// <summary>Scissors: cloth and clothing become bandages, hides become leather.
+    ///
+    /// Source-X CUTS the target - it creates the OUTPUT item, carries the hue and
+    /// the count over and deletes the input (IT_SCISSORS, CClientTarg.cpp:2110).
+    /// SphereNet only rewrote the type field, so cloth stayed cloth-shaped with a
+    /// bolt's type on it and no bandage was ever produced. Bloody bandages are not
+    /// part of this branch at all: they are washed in water (see UseBloodyBandage).
+    /// A cloth bolt needs ConvertBolttoCloth, which reads the RESOURCES definition
+    /// - left alone rather than guessed at.</summary>
     private void HandleScissorsTarget(Item scissors, Serial target)
     {
         if (_character == null) return;
@@ -2266,15 +2294,114 @@ public sealed class ClientItemUseHandler
         // A locked-down / Move_Never fixture (a placed cloth/hide decoration) must
         // not be cut or type-converted by scissors.
         if (!ItemMoveRules.CanMove(_character, obj, out _)) { SysMessage(ServerMessages.Get(Msg.ItemuseCantthink)); return; }
+
+        ushort outId = CleanBandageId;
+        int outQty;
+        string message;
         switch (obj.ItemType)
         {
-            case ItemType.Hide: obj.ItemType = ItemType.Leather; SysMessage("You cut the hide into leather."); break;
-            case ItemType.Cloth: obj.ItemType = ItemType.ClothBolt; SysMessage("You cut the cloth into bolts."); break;
-            // Clean the bloody bandages (whole stack retained) rather than deleting
-            // them — the message says "clean", not "destroy".
-            case ItemType.BandageBlood: obj.ItemType = ItemType.Bandage; SysMessage(ServerMessages.Get(Msg.ItemuseBandageClean)); break;
-            default: SysMessage(ServerMessages.Get(Msg.ItemuseCantthink)); break;
+            case ItemType.Cloth:
+                outQty = Math.Max(1, (int)obj.Amount);
+                message = "You cut the cloth into bandages.";
+                break;
+            case ItemType.Clothing:
+                // Worth its weight in bandages, as the reference measures it.
+                outQty = obj.Weight / Item.WeightUnits;
+                message = "You cut the clothing into bandages.";
+                break;
+            case ItemType.Hide:
+                outId = ResolveHideOutput(obj);
+                outQty = Math.Max(1, (int)obj.Amount);
+                message = "You cut the hide into leather.";
+                break;
+            default:
+                SysMessage(ServerMessages.Get(Msg.ItemuseCantthink));
+                return;
         }
+
+        if (outQty <= 0)
+        {
+            SysMessage(ServerMessages.Get(Msg.ItemuseCantthink));
+            return;
+        }
+
+        var hue = obj.Hue;
+        _world.RemoveItem(obj);
+
+        var made = _world.CreateItem();
+        made.BaseId = outId;
+        made.Hue = hue;
+        made.Amount = (ushort)Math.Min(outQty, ushort.MaxValue);
+        PlaceItemInPack(_character, made);
+
+        BroadcastNearby?.Invoke(_character.Position, UpdateRange,
+            new PacketSound(0x0248, _character.X, _character.Y, _character.Z), 0);  // SOUND_SNIP
+        SysMessage(message);
+    }
+
+    /// <summary>What a hide cuts into. Source-X reads the hide definition's TDATA1
+    /// and falls back to plain leather (CClientTarg.cpp:2134), so a special hide
+    /// keeps producing its own leather.</summary>
+    private static ushort ResolveHideOutput(Item hide)
+    {
+        var def = DefinitionLoader.GetItemDef(hide.BaseId);
+        uint tdata1 = def?.TData1 ?? 0;
+        return tdata1 is > 0 and <= ushort.MaxValue ? (ushort)tdata1 : PlainLeatherId;
+    }
+
+    /// <summary>Bloody bandages are washed, not cut: they are used ON water
+    /// (IT_BANDAGE_BLOOD, CClientTarg.cpp:2244). SphereNet had no such path and
+    /// cleaned them with scissors instead, which the reference does not do - and it
+    /// used the "clean these in water" message to announce success.</summary>
+    private void UseBloodyBandage(Item bandages, uint targetSerial, short x, short y)
+    {
+        if (_character == null) return;
+
+        if (_world.FindObject(new Serial(targetSerial)) is Item targetItem)
+        {
+            if (!CanReachTargetItem(targetItem))
+            { SysMessage(ServerMessages.Get(Msg.ItemuseBandageReach)); return; }
+            if (targetItem.ItemType is not (ItemType.Water or ItemType.WaterWash))
+            { SysMessage(ServerMessages.Get(Msg.ItemuseBandageClean)); return; }
+        }
+        else
+        {
+            var spot = new Point3D(x, y, _character.Z, _character.MapIndex);
+            if (_character.PrivLevel < PrivLevel.GM &&
+                _character.Position.GetDistanceTo(spot) > 3)
+            { SysMessage(ServerMessages.Get(Msg.ItemuseBandageReach)); return; }
+            if (!IsWaterSpot(x, y))
+            { SysMessage(ServerMessages.Get(Msg.ItemuseBandageClean)); return; }
+        }
+
+        // The whole pile comes back clean, as the reference's SetID does.
+        bandages.BaseId = CleanBandageId;
+        bandages.ItemType = ItemType.Bandage;
+        Item.OnVisualUpdate?.Invoke(bandages);
+        if (bandages.ContainedIn.IsValid)
+            _netState.Send(new PacketContainerItem(
+                bandages.Uid.Value, bandages.DispIdFull, 0, bandages.Amount,
+                bandages.X, bandages.Y, bandages.ContainedIn.Value, bandages.Hue,
+                _netState.IsClientPost6017));
+    }
+
+    /// <summary>Water under a targeted tile - the land itself, or a static laid over
+    /// it (some shorelines and troughs are drawn as statics).</summary>
+    private bool IsWaterSpot(short x, short y)
+    {
+        var md = _world.MapData;
+        if (md == null) return false;
+        if (_character == null) return false;
+
+        byte map = _character.MapIndex;
+        if (md.GetLandTileData(md.GetTerrainTile(map, x, y).TileId).IsWet)
+            return true;
+        foreach (var st in md.GetStatics(map, x, y))
+        {
+            if (md.GetItemTileData(st.TileId).IsWet)
+                return true;
+        }
+        return false;
     }
 
     /// <summary>Source-X blade-on-corpse: carving through DeathEngine.CarveCorpse —
@@ -2527,8 +2654,7 @@ public sealed class ClientItemUseHandler
         var obj = target.IsValid ? _world.FindObject(target) as Item : null;
         if (obj == null || !CanReachTargetItem(obj)) { SysMessage(ServerMessages.Get(Msg.ItemuseKeyNolock)); return; }
 
-        bool linked = key.TryGetTag("LINK", out string? lk) && uint.TryParse(lk, out uint kv) && kv == obj.Uid.Value;
-        if (!linked) { SysMessage(ServerMessages.Get(Msg.ItemuseKeyNokey)); return; }
+        if (!KeyFits(key, obj)) { SysMessage(ServerMessages.Get(Msg.ItemuseKeyNokey)); return; }
 
         if (obj.ItemType == ItemType.ContainerLocked) obj.ItemType = ItemType.Container;
         else if (obj.ItemType == ItemType.Container) obj.ItemType = ItemType.ContainerLocked;
@@ -2543,8 +2669,52 @@ public sealed class ClientItemUseHandler
         var vat = target.IsValid ? _world.FindObject(target) as Item : null;
         if (vat == null || vat.ItemType != ItemType.DyeVat || !CanReachTargetItem(vat))
         { SysMessage(ServerMessages.Get(Msg.ItemuseDyeFail)); return; }
-        vat.SetTag("DYE_HUE", dye.Hue.ToString());
+        // The vat wears the colour it will hand out - that is what the reference
+        // reads when the vat is used (GetHue, CClientTarg.cpp:2331). A private tag
+        // gave the vat two different colours and left the visible one inert.
+        vat.Hue = dye.Hue;
+        vat.RemoveTag("DYE_HUE");   // a legacy vat's stale copy must not outrank it
+        Item.OnVisualUpdate?.Invoke(vat);
         SysMessage("You apply the dye to the vat.");
+    }
+
+    /// <summary>The colour a vat hands out. Its own hue is the authority; a vat
+    /// saved before that was true is read from its old DYE_HUE tag only while it
+    /// carries no hue of its own.</summary>
+    private static ushort ResolveVatHue(Item vat)
+    {
+        if (vat.Hue.Value != 0)
+            return vat.Hue.Value;
+        return vat.TryGetTag("DYE_HUE", out string? hueText) &&
+               ushort.TryParse(hueText, out ushort legacy) ? legacy : (ushort)0;
+    }
+
+    /// <summary>Whether this target may be dyed at all. Source-X requires the actor
+    /// to own the top-level object and the item to be CAN_I_DYE or clothing, with a
+    /// GM exception (CClientTarg.cpp:2302/2325). SphereNet asked only for reach, so
+    /// undyeable gold, a stranger's goods and anything lying nearby took the
+    /// colour.</summary>
+    private bool CanDyeTarget(Item dest)
+    {
+        if (_character == null) return false;
+        if (_character.PrivLevel >= PrivLevel.GM) return true;
+
+        if (!ReferenceEquals(dest.ResolveTopObject(), _character))
+        {
+            SysMessage(ServerMessages.Get(Msg.ItemuseDyeReach));
+            return false;
+        }
+
+        var def = DefinitionLoader.GetItemDef(dest.BaseId);
+        bool dyeable = dest.ItemType == ItemType.Clothing ||
+                       def?.Dye == true ||
+                       (def != null && (def.Can & Core.Enums.CanFlags.I_Dye) != 0);
+        if (!dyeable)
+        {
+            SysMessage(ServerMessages.Get(Msg.ItemuseDyeFail));
+            return false;
+        }
+        return true;
     }
 
     /// <summary>Apply a DyeVat hue to a target item.</summary>
@@ -2552,26 +2722,41 @@ public sealed class ClientItemUseHandler
     {
         var dest = target.IsValid ? _world.FindObject(target) as Item : null;
         if (dest == null || !CanReachTargetItem(dest)) { SysMessage(ServerMessages.Get(Msg.ItemuseDyeReach)); return; }
-        if (vat.TryGetTag("DYE_HUE", out string? hueText) && ushort.TryParse(hueText, out ushort hue))
-        {
-            if (_triggerDispatcher?.FireItemTrigger(dest, ItemTrigger.Dye, new TriggerArgs
-            {
-                CharSrc = _character,
-                ItemSrc = dest,
-                O1 = vat,
-                N1 = hue
-            }) == TriggerResult.True)
-                return;
+        if (!CanDyeTarget(dest)) return;
 
-            dest.Hue = new Core.Types.Color(hue);
-            // Broadcast the recolour to every nearby client. The view-delta only
-            // tracks GROUND items, so a worn/equipped item dyed this way would
-            // otherwise stay its old colour on observers (and self) until a full
-            // resync. OnVisualUpdate → SendItemVisualUpdate emits 0x2E for worn
-            // items, 0x1A for ground, 0x25 for the owner's pack.
-            Item.OnVisualUpdate?.Invoke(dest);
-            SysMessage("The item changes color.");
-        }
+        ushort hue = ResolveVatHue(vat);
+        if (hue == 0) return;
+
+        // Source-X SetHue seeds ARGN1 with the colour and ARGN2 with the sound, and
+        // takes BOTH back from the script when it falls through (CObjBase.cpp:324).
+        // The args object was thrown away here, so a script could veto the dye but
+        // never change what colour it produced.
+        var args = new TriggerArgs
+        {
+            CharSrc = _character,
+            ItemSrc = dest,
+            O1 = vat,
+            N1 = hue,
+            N2 = 0x23E,     // the reference's dye sound
+        };
+        if (_triggerDispatcher?.FireItemTrigger(dest, ItemTrigger.Dye, args) == TriggerResult.True)
+            return;
+
+        if (args.N1 is < 0 or > ushort.MaxValue)
+            return;
+        dest.Hue = new Core.Types.Color((ushort)args.N1);
+
+        if (args.N2 > 0 && _character != null)
+            BroadcastNearby?.Invoke(_character.Position, UpdateRange,
+                new PacketSound((ushort)args.N2, _character.X, _character.Y, _character.Z), 0);
+
+        // Broadcast the recolour to every nearby client. The view-delta only
+        // tracks GROUND items, so a worn/equipped item dyed this way would
+        // otherwise stay its old colour on observers (and self) until a full
+        // resync. OnVisualUpdate → SendItemVisualUpdate emits 0x2E for worn
+        // items, 0x1A for ground, 0x25 for the owner's pack.
+        Item.OnVisualUpdate?.Invoke(dest);
+        SysMessage("The item changes color.");
     }
 
     private void ApplyHairDye(Item dye)

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using SphereNet.Core.Enums;
@@ -70,8 +70,59 @@ public sealed class DropMergeScissorsTests
         Assert.Equal(4_000, dropped.Amount); // remainder preserved, not lost or duped
     }
 
+    // Bloody bandages are washed in water, not cut. Source-X handles them under
+    // IT_BANDAGE_BLOOD (CClientTarg.cpp:2244) and its scissors branch does not
+    // mention them at all - the message this expectation used to report success
+    // with, itemuse_bandage_clean, is the reference's "clean these in water"
+    // REFUSAL. The old test asserted the invented scissors behaviour.
     [Fact]
-    public void Scissors_BloodyBandageStack_IsCleanedNotDeleted()
+    public void BloodyBandageStack_IsCleanedInWater_WholeStackKept()
+    {
+        var (client, world, player) = Setup(PrivLevel.Player);
+        var pack = EquipBackpack(world, player);
+        var bloody = world.CreateItem();
+        bloody.BaseId = 0x0E20;
+        bloody.ItemType = ItemType.BandageBlood;
+        bloody.Amount = 5;
+        pack.AddItem(bloody);
+
+        var trough = world.CreateItem();
+        trough.ItemType = ItemType.Water;
+        world.PlaceItem(trough, player.Position);
+
+        client.HandleDoubleClick(bloody.Uid.Value);
+        Assert.True(client.HasPendingTarget);
+        client.HandleTargetResponse(0, client.ActiveTargetCursorId, trough.Uid.Value, 0, 0, 0, 0);
+
+        Assert.False(bloody.IsDeleted);
+        Assert.Equal(ItemType.Bandage, bloody.ItemType);
+        Assert.Equal(0x0E21, bloody.BaseId);            // the clean graphic, not just a retype
+        Assert.Equal(5, bloody.Amount);
+    }
+
+    [Fact]
+    public void BloodyBandageStack_IsNotCleanedOnDryLand()
+    {
+        var (client, world, player) = Setup(PrivLevel.Player);
+        var pack = EquipBackpack(world, player);
+        var bloody = world.CreateItem();
+        bloody.BaseId = 0x0E20;
+        bloody.ItemType = ItemType.BandageBlood;
+        bloody.Amount = 5;
+        pack.AddItem(bloody);
+
+        var rock = world.CreateItem();
+        rock.ItemType = ItemType.Normal;
+        world.PlaceItem(rock, player.Position);
+
+        client.HandleDoubleClick(bloody.Uid.Value);
+        client.HandleTargetResponse(0, client.ActiveTargetCursorId, rock.Uid.Value, 0, 0, 0, 0);
+
+        Assert.Equal(ItemType.BandageBlood, bloody.ItemType);
+    }
+
+    [Fact]
+    public void Scissors_DoNotCleanBloodyBandages()
     {
         var (client, world, player) = Setup(PrivLevel.Player);
         var pack = EquipBackpack(world, player);
@@ -84,11 +135,9 @@ public sealed class DropMergeScissorsTests
         pack.AddItem(bloody);
 
         client.HandleDoubleClick(scissors.Uid.Value);
-        Assert.True(client.HasPendingTarget);
         client.HandleTargetResponse(0, client.ActiveTargetCursorId, bloody.Uid.Value, 0, 0, 0, 0);
 
-        Assert.False(bloody.IsDeleted);
-        Assert.Equal(ItemType.Bandage, bloody.ItemType); // cleaned, whole stack kept
+        Assert.Equal(ItemType.BandageBlood, bloody.ItemType);
         Assert.Equal(5, bloody.Amount);
     }
 

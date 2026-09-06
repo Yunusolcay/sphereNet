@@ -3552,11 +3552,24 @@ TAG.DIALOG_SUBJECT_TOUCHED=1
         world.PlaceCharacter(player, new Point3D(100, 100, 0, 0));
         var vat = world.CreateItem();
         vat.ItemType = ItemType.DyeVat;
-        vat.SetTag("DYE_HUE", "1110");
+        // The vat's own hue is the colour it hands out (Source-X GetHue,
+        // CClientTarg.cpp:2331); the private DYE_HUE tag this used to carry was a
+        // second, invisible source of truth.
+        vat.Hue = new SphereNet.Core.Types.Color(1110);
         world.PlaceItem(vat, player.Position);
+
+        // A dye target must be the actor's own and dyeable: the reference requires
+        // the top-level owner to be the actor and the item to be clothing or
+        // CAN_I_DYE (CClientTarg.cpp:2302/2325). This used to dye a loose object off
+        // the ground, which is exactly what the rule refuses.
+        var pack = world.CreateItem();
+        pack.ItemType = ItemType.Container;
+        player.Backpack = pack;
+        player.Equip(pack, Layer.Pack);
         var dest = world.CreateItem();
+        dest.ItemType = ItemType.Clothing;
         dest.Hue = new SphereNet.Core.Types.Color(1);
-        world.PlaceItem(dest, player.Position);
+        Assert.True(pack.TryAddItem(dest));
 
         var dispatcher = new TriggerDispatcher();
         int dyeCount = 0;

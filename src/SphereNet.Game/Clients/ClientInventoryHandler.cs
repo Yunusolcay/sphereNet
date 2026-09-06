@@ -1707,6 +1707,20 @@ public sealed class ClientInventoryHandler
             if (item == null || !ItemMoveRules.CanMove(_character, item, out _))
                 continue;
 
+            // @Unequip belongs to the item leaving the layer, not to the path that
+            // took it off: Source-X fires it from OnRemoveObj, which every unequip
+            // goes through (CCharAct.cpp:398). This macro reached straight for
+            // Character.Unequip, so a script's worn-item cleanup never ran.
+            //
+            // DELIBERATE DEVIATION: the reference cannot refuse there ("This may be
+            // a delete etc. It can not FAIL!"), but SphereNet's own pickup path has
+            // long treated RETURN 1 as a refusal. Honouring it here too keeps one
+            // contract for script authors - and stops the macro being a way around
+            // the refusal the pickup path enforces.
+            if (_triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Unequip,
+                    new TriggerArgs { CharSrc = _character, ItemSrc = item }) == TriggerResult.True)
+                continue;
+
             _character.Unequip(layer);
             var removePkt = new PacketDeleteObject(item.Uid.Value);
             _netState.Send(removePkt);
