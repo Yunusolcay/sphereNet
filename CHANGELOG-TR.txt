@@ -3,6 +3,54 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Gemiler: guvertenin tasidigi, plank ve pilot (10A-10B)
+----------------------------------------
+
+FIX - Gemi sabit dunya dekorunu de surukluyordu. Source-X ATTR_STATIC esyalari multinin
+        tasidiklarinin disinda tutar (ListObjs, CCMultiMovable.cpp:200) - ve yalnizca o
+        bayragi: MOVE_NEVER sandik hala tasinir, ikisi birbirinin yerine gecmez.
+
+FIX - Kimin gemide oldugu, govdenin anchor'ina gore sabit bir pencereyle olculuyordu;
+        ayak izinde ama GUVERTENIN ALTINDA olan her sey suruklenirken, daha yuksek bir
+        gemi kendi yolcularini geride birakacakti. Referans guverte duzleminden olcer -
+        shipZ + max(3, yukseklik) - ve iki alttan bir oyuncu boyu ustune kadarini alir
+        (:142).
+
+FIX - Tanimi anchor'ina gore ortalanmamis govdede, uzak guverteki yolcu ve yuk arama
+        yaricapinin disinda kaliyor, hareket ve donuste geride birakiliyordu. Yaricap
+        anchor'a en uzak kenari kapsar, genisligin yarisini degil (GetDistanceMax,
+        CItemBase.cpp:1958).
+
+FIX - @Ship_Turn yalnizca govdeye ulasiyordu, hem de hicbir yon bilgisi olmadan.
+        Source-X onu tasidigi her esya icin calistirir - govde, bilesenler ve serbest
+        guverte yuku - ARGN1 yeni yon, ARGN2 onceki yon (:628).
+
+FIX - Buyulu gemi, dunyanin tavan ve tabaninda ayrilmis paya ucurulabiliyordu. Referans
+        hareketi hicbir sey kimildamadan once reddeder (MoveDelta, :284).
+
+FIX - Acik plank'a cift tiklama karari koordinat karsilastirmasiyla veriliyordu; kapagi
+        kapatmak isteyen yolcu onun uzerine yurutuluyor, KILITLI plank uzerinde duran ise
+        anahtarsiz kapatabiliyordu. Referans kullanicinin geminin region'i icinde olup
+        olmadigina bakar ve anahtar denetimini korur (IT_SHIP_PLANK, CCharUse.cpp:1810).
+
+FIX - Iskeleden gemiye binmek gizli oyuncuyu gizli birakiyordu. Referans binisi teleport
+        ile yapar, teleport ise gorunur kilar (:1827 -> CCharSpell.cpp:232 ->
+        CCharAct.cpp:3491).
+
+FIX - Gemi donerken acik plank'in uzerine yeni yonun KAPALI grafigi yaziliyor, geri
+        donulecek grafik olarak da eski yonunki hatirlaniyordu; sonrasinda kapatinca
+        yanlis tarafin parcasi gorunuyordu. Source-X acik duran plank icin yeni tarafin
+        acik grafigini secer (Face, CCMultiMovable.cpp:614).
+
+FIX - Dumene gecmek yalnizca geminin kendi alanina yaziliyordu; pilotu karakter
+        uzerinden okuyan hicbir sey kimseyi gormuyordu. Source-X pilota gemiye bagli bir
+        pilot esyasi giydirir ve dumen birakildiginda kaldirir (SetPilot, :212).
+
+FIX - Gemiyi deed'e cevirmek hic @Redeed calistirmiyordu; yalnizca ev yolu bagliydi.
+        Referans onu ESKI multi uzerinde, nesne argumani yeni deed ve ARGN1 deed grafigi
+        olacak sekilde calistirir (CItemMulti.cpp:1225). Referanstaki gibi bu bir
+        bildirimdir, redeed'i veto etmez.
+
 [2026-09-06] - Toplamasi gereken parti ve lonca durumu (09C-09D)
 ----------------------------------------
 

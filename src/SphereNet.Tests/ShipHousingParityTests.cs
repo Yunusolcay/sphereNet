@@ -297,9 +297,10 @@ public class ShipHousingParityTests
         var ship = engine.PlaceShip(owner, 0x4000, new Point3D(200, 200, 0, 0), Direction.North);
         Assert.NotNull(ship);
 
-        // A player standing on the deck.
+        // A player standing ON THE DECK - the plane the reference measures from, three
+        // above the hull for a ship of no height of its own.
         var intruder = world.CreateCharacter();
-        world.PlaceCharacter(intruder, new Point3D(200, 200, 0, 0));
+        world.PlaceCharacter(intruder, new Point3D(200, 200, 3, 0));
         Assert.Same(ship, engine.FindShipAt(intruder.Position)); // aboard
 
         Assert.True(engine.BanFromShip(ship!, intruder.Uid));

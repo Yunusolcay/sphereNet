@@ -2548,9 +2548,16 @@ public static partial class Program
                 var pos = ship.MultiItem.Position;
                 BroadcastNearby(pos, 18, new PacketSound(soundId, pos.X, pos.Y, pos.Z), 0);
             };
-            _shipEngine.OnShipTurned = ship =>
-                _triggerDispatcher?.FireItemTrigger(ship.MultiItem, ItemTrigger.ShipTurn,
-                    new TriggerArgs { ItemSrc = ship.MultiItem });
+            // Source-X runs @Ship_Turn once per item it moved - hull, components and
+            // loose deck cargo - with ARGN1 the new facing and ARGN2 the old one
+            // (CCMultiMovable.cpp:628). Only the hull used to hear about it, and with
+            // no directions at all.
+            _shipEngine.OnShipRedeed = (multi, deed, deedId) =>
+                _triggerDispatcher?.FireItemTrigger(multi, ItemTrigger.Redeed,
+                    new TriggerArgs { ItemSrc = multi, O1 = deed, N1 = deedId });
+            _shipEngine.OnShipTurned = (item, newDir, oldDir) =>
+                _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.ShipTurn,
+                    new TriggerArgs { ItemSrc = item, N1 = newDir, N2 = oldDir });
             // @RegionLeave / @RegionEnter — Source-X scopes these item triggers
             // to movable multis: they fire on the ship multi when a move step
             // crosses a region boundary, ARGO = the region, SRC = the pilot,

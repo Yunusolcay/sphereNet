@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using Microsoft.Extensions.Logging;
 using SphereNet.Core.Enums;
 using SphereNet.Core.Types;
@@ -342,6 +342,7 @@ public sealed class HousingShipIntegrityTests
         var ship = engine.PlaceShip(owner, 0x4000, new Point3D(400, 400, 0, 0), Direction.North)!;
         ship.Anchored = false;
         var rider = CreatePlayer(world, 400, 400);
+        world.MoveCharacter(rider, new Point3D(400, 400, 3, 0));   // on the deck
         rider.Direction = Direction.North;
         Assert.True(engine.Face(ship, Direction.East));
         Assert.Equal((ushort)0x4001, ship.MultiItem.BaseId);
@@ -525,7 +526,7 @@ public sealed class HousingShipIntegrityTests
             var ship = engine.PlaceShip(owner, 0x4000, new Point3D(200, 200, 0, 0), Direction.North)!;
             Guid uuid = ship.MultiItem.Uuid;
             var loose = world.CreateItem();
-            world.PlaceItem(loose, new Point3D(200, 200, 0, 0));
+            world.PlaceItem(loose, new Point3D(200, 200, 3, 0));   // on the deck
 
             var plan = engine.RemoveShip(ship.MultiItem.Uid, owner)!;
             Assert.Equal((ushort)0x14F1, plan.BaseId);

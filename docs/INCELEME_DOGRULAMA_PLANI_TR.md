@@ -1852,6 +1852,51 @@ iddia edildi.
 **Acik kalan:** parti sohbet filtresi ve davet hiz siniri; lonca savas/baris gump akisi;
 JoinTime alani; town tasi varyantlari; kirpma sinirlarinin yazma tarafinda uygulanmasi.
 
+### 10A-10B - gemi guvertesi, donus, plank, pilot ve redeed: 10 bulgu (6 Eylul 2026)
+
+Kanit raporlari: [10A](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_10A_GEMI_GUVERTE_DONUS.md),
+[10B](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_10B_PLANK_PILOT_REDEED.md).
+On bulgu da bagimsiz olarak dogrulandi; ikisi ayni alt sistemde oldugu icin tek turda
+uygulandi.
+
+- [x] **10A-1 (P2)** - ATTR_STATIC esyalar gemiyle tasiniyordu. (YAPILDI: `RidesNowhere`
+  yalnizca Static'i disliyor; MOVE_NEVER tasinmaya devam ediyor - raporun ozellikle
+  uyardigi ayrim.)
+- [x] **10A-2 (P2)** - Yukseklik govde tabanina gore olculuyordu. (YAPILDI: guverte
+  duzlemi `shipZ + max(3, DefHeight)`, pencere `-2..PLAYER_HEIGHT`.
+  **Mevcut uc test guncellendi:** `ShipHousingParityTests` ve `HousingShipIntegrityTests`
+  yolcu/yuku govdenin kendi Z'sine - yani guvertenin altina - koyuyordu; eski gevsek
+  pencere bunlari kabul ediyordu. Fixture'lar guverteye tasindi.)
+- [x] **10A-3 (P2)** - Asimetrik govdede uzak guverte arama yaricapinin disinda
+  kaliyordu. (YAPILDI: `DeckSearchRange` - anchor'a en uzak kenar; uc ayri formul tek
+  yardimciya indi.)
+- [x] **10A-4 (P2)** - @Ship_Turn yalnizca govdede ve argumansiz calisiyordu. (YAPILDI:
+  hook `(Item, newDir, oldDir)` oldu; govde + bilesenler + serbest yuk.
+  **Mevcut test guncellendi:** `ShipRedeedTriggerTests` tek argumanli hook'u sayiyordu.)
+- [x] **10A-5 (P3)** - Buyulu gemi dikey guvenlik payini asabiliyordu. (YAPILDI:
+  `MoveDelta`'da yonlu yukseklik siniri, hareketten once.)
+- [x] **10B-1 (P2)** - Acik plank karari koordinat karsilastirmasiydi, kilitli kapatma
+  denetimi yoktu. (YAPILDI: gemi region'i uzerinden ic/dis ayrimi + kilitli tarafta
+  anahtar denetimi.)
+- [x] **10B-2 (P2)** - Planktan binis Reveal yapmiyordu. (YAPILDI: binis sonrasi
+  Hidden/Invisible temizleniyor - referansin teleport sozlesmesi.
+  **Kapsam notu:** referansin Reveal'i script vetosu gibi istisnalara acik; SphereNet'te
+  o hook yok, bayraklar dogrudan temizleniyor.)
+- [x] **10B-3 (P2)** - Donuste acik plank kapali grafik aliyordu. (YAPILDI: acik plank
+  yeni tarafin acik grafigini aliyor, More1 yeni tarafin kapali grafigini tutuyor.)
+- [x] **10B-4 (P3)** - Pilot atamasi bagli esya olusturmuyordu. (YAPILDI: LAYER_HORSE
+  uzerinde gemiye bagli pilot esyasi; dumen birakilinca siliniyor.)
+- [x] **10B-5 (P2)** - Gemi redeed akisinda @Redeed yoktu. (YAPILDI: `OnShipRedeed`
+  hook'u ve sunucu baglantisi; eski multi, ARGO deed, ARGN1 deed grafigi.
+  **Sinir korundu:** raporun belirttigi gibi referansta bu bir veto degil - RETURN 1
+  gemiyi kurtarmiyor.)
+
+**10A-10B kapanisi:** tam suite **2.833 basarili / 0 basarisiz** (+22). On duzeltme de
+gecici olarak kapatilarak 15 testin eski davranisi yakaladigi kanitlandi.
+
+**Acik kalan:** gercek harita/carpisma ile binis; plank otomatik kapanma ve kayit/yukleme;
+pilot devri ve HS istemci gorunumu; redeed'in yolcu/sabit yuk varyantlari.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

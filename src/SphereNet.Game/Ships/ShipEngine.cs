@@ -75,7 +75,17 @@ public sealed class ShipEngine
     public Action<Ship>? OnShipStopped { get; set; }
 
     /// <summary>Called when a ship turns to a new facing (Source-X @ShipTurn).</summary>
-    public Action<Ship>? OnShipTurned { get; set; }
+    /// <summary>A turn happened: the item that turned, the new facing and the old
+    /// one. Source-X runs @Ship_Turn for EVERY item it moved - the hull, its components
+    /// and the loose deck cargo - with ARGN1 the new direction and ARGN2 the previous
+    /// one (Face, CCMultiMovable.cpp:628). Characters do not get an item trigger.</summary>
+    public Action<Item, int, int>? OnShipTurned { get; set; }
+
+    /// <summary>A ship is being turned back into its deed: the ship multi, the deed and
+    /// the deed's graphic. Source-X runs @Redeed on the OLD multi with the new deed as
+    /// the object argument and the deed id in ARGN1 (CItemMulti::Redeed,
+    /// CItemMulti.cpp:1225).</summary>
+    public Action<Item, Item, int>? OnShipRedeed { get; set; }
 
     /// <summary>Sailing sound (Source-X CCMultiMovable::SetMoveDir plays 0x12 or
     /// 0x13 on roughly one move command in ten). Args: ship, sound id.</summary>
@@ -334,6 +344,12 @@ public sealed class ShipEngine
         deed.SetTag("SHIP_MULTI_UUID", ship.MultiItem.Uuid.ToString("D"));
         deed.SetTag("SHIP_MULTI_BASEID", ship.MultiItem.BaseId.ToString());
 
+        // @Redeed belongs to the OLD multi, with the new deed as its object argument
+        // and the deed's graphic in ARGN1 (CItemMulti::Redeed, CItemMulti.cpp:1225).
+        // The server only wired the house redeed, so a ship's script never heard about
+        // it. As upstream, this is a notification: it does not veto the redeed.
+        OnShipRedeed?.Invoke(ship.MultiItem, deed, deed.BaseId);
+
         // Source-X ship Redeed: TransferAllItemsToMovingCrate — the hold's
         // cargo moves to a crate (owner's bank, else dropped with decay at
         // the ship's spot) instead of being deleted with the components.
@@ -558,8 +574,27 @@ public sealed class ShipEngine
             if (item == null) continue;
             if (componentIndex < newComponents.Count)
             {
+                bool plankWasOpen = item.ItemType == ItemType.ShipPlank;
+                uint plankSideType = plankWasOpen ? item.More2 : 0;
+
                 var component = newComponents[componentIndex];
                 item.BaseId = component.TileId;
+
+                // A plank standing OPEN stays open through the turn: Source-X re-picks
+                // the new side's open graphic and keeps the type (Face,
+                // CCMultiMovable.cpp:614). Writing the new heading's CLOSED art over it
+                // left an open plank looking shut - and the remembered graphic, still
+                // the old heading's, came back the next time it was closed.
+                if (plankWasOpen)
+                {
+                    item.More1 = item.BaseId;   // the new side's closed art to return to
+                    uint openArt = Definitions.DefinitionLoader.GetItemDef(item.BaseId)?.TData1 ?? 0;
+                    if (openArt is > 0 and <= ushort.MaxValue)
+                        item.BaseId = (ushort)openArt;
+                    item.ItemType = ItemType.ShipPlank;
+                    item.More2 = plankSideType;
+                }
+
                 _world.PlaceItem(item, new Point3D(
                     (short)(cx + component.DeltaX), (short)(cy + component.DeltaY),
                     (sbyte)(ship.MultiItem.Z + component.DeltaZ), ship.MultiItem.MapIndex));
@@ -603,7 +638,23 @@ public sealed class ShipEngine
         UpdateShipRegion(ship);
 
         ship.DirFace = newFacing;
-        OnShipTurned?.Invoke(ship);
+
+        if (OnShipTurned != null)
+        {
+            int newDir = (int)newFacing;
+            int oldDir = (int)oldFacing;
+            OnShipTurned(ship.MultiItem, newDir, oldDir);
+            foreach (var compUid in ship.Components)
+            {
+                if (_world.FindItem(compUid) is { IsDeleted: false } comp)
+                    OnShipTurned(comp, newDir, oldDir);
+            }
+            foreach (var cargo in deckItems)
+            {
+                if (cargo.IsDeleted || ship.Components.Contains(cargo.Uid)) continue;
+                OnShipTurned(cargo, newDir, oldDir);
+            }
+        }
         return true;
     }
 
@@ -750,10 +801,10 @@ public sealed class ShipEngine
             // --- Vertical movement (requires ATTR_MAGIC) ---
             case "SHIPUP":
                 if (!ship.MultiItem.IsAttr(ObjAttributes.Magic)) return false;
-                return MoveDelta(ship, 0, 0, 16); // PLAYER_HEIGHT = 16
+                return MoveDelta(ship, 0, 0, PlayerHeight);
             case "SHIPDOWN":
                 if (!ship.MultiItem.IsAttr(ObjAttributes.Magic)) return false;
-                return MoveDelta(ship, 0, 0, -16);
+                return MoveDelta(ship, 0, 0, -PlayerHeight);
 
             // --- Land (return to ground level, requires ATTR_MAGIC) ---
             case "SHIPLAND":
@@ -814,14 +865,44 @@ public sealed class ShipEngine
         Stop(ship);
         if (pilot == null || ship.Pilot == pilot.Uid)
         {
+            ReleasePilotMarker(ship);
             ship.Pilot = Serial.Invalid;
             return true;
         }
         if (ship.Anchored || pilot.IsMounted || pilot.IsStatFlag(StatFlag.Hovering) ||
             !ship.CanBoard(pilot.Uid) || FindShipAt(pilot.Position) != ship)
             return false;
+
+        ReleasePilotMarker(ship);
         ship.Pilot = pilot.Uid;
+
+        // Taking the wheel is worn, not just recorded: Source-X equips the pilot with a
+        // ship-pilot item linked back to the ship, on the mount layer (SetPilot,
+        // CCMultiMovable.cpp:212). Only the ship's own uid field was set here, so
+        // anything reading the pilot off the character - script or client - saw nobody
+        // at the wheel.
+        var marker = _world.CreateItem();
+        marker.BaseId = ShipPilotItemId;
+        marker.ItemType = ItemType.EqHorse;
+        marker.Name = ship.MultiItem.Name;
+        marker.Link = ship.MultiItem.Uid;
+        marker.SetAttr(ObjAttributes.Newbie | ObjAttributes.Move_Never);
+        pilot.Equip(marker, Layer.Horse);
         return true;
+    }
+
+    /// <summary>Take the wheel marker off whoever is holding it. The reference deletes
+    /// the item when the same pilot stands down (:212).</summary>
+    private void ReleasePilotMarker(Ship ship)
+    {
+        if (!ship.Pilot.IsValid) return;
+        if (_world.FindChar(ship.Pilot) is not { } previous) return;
+
+        var worn = previous.GetEquippedItem(Layer.Horse);
+        if (worn == null || worn.BaseId != ShipPilotItemId) return;
+
+        previous.Unequip(Layer.Horse);
+        _world.RemoveItem(worn);
     }
 
     /// <summary>
@@ -858,11 +939,14 @@ public sealed class ShipEngine
         var def = _multiDefs.Get(ship.MultiItem.BaseId);
         if (def != null)
         {
-            int range = Math.Max(Math.Abs(def.MaxX - def.MinX), Math.Abs(def.MaxY - def.MinY)) / 2 + 1;
-            foreach (var obj in _world.GetObjectsInRange(ship.MultiItem.Position, range))
+            foreach (var obj in _world.GetObjectsInRange(ship.MultiItem.Position, DeckSearchRange(def)))
             {
                 if (obj == ship.MultiItem) continue;
-                if (obj is Item it && ship.Components.Contains(it.Uid)) continue;
+                if (obj is Item it)
+                {
+                    if (ship.Components.Contains(it.Uid)) continue;
+                    if (RidesNowhere(it)) continue;
+                }
                 if (IsOnDeck(ship, def, obj))
                     result.Add(obj);
             }
@@ -877,8 +961,7 @@ public sealed class ShipEngine
         var def = _multiDefs.Get(ship.MultiItem.BaseId);
         if (def == null) return result;
 
-        int range = Math.Max(Math.Abs(def.MaxX - def.MinX), Math.Abs(def.MaxY - def.MinY)) / 2 + 1;
-        foreach (var ch in _world.GetCharsInRange(ship.MultiItem.Position, range))
+        foreach (var ch in _world.GetCharsInRange(ship.MultiItem.Position, DeckSearchRange(def)))
         {
             if (IsOnDeck(ship, def, ch))
                 result.Add(ch);
@@ -892,16 +975,39 @@ public sealed class ShipEngine
         var def = _multiDefs.Get(ship.MultiItem.BaseId);
         if (def == null) return result;
 
-        int range = Math.Max(Math.Abs(def.MaxX - def.MinX), Math.Abs(def.MaxY - def.MinY)) / 2 + 1;
-        foreach (var item in _world.GetItemsInRange(ship.MultiItem.Position, range))
+        foreach (var item in _world.GetItemsInRange(ship.MultiItem.Position, DeckSearchRange(def)))
         {
             if (item == ship.MultiItem) continue;
             if (item.ContainedIn.IsValid) continue;
+            if (RidesNowhere(item)) continue;
             if (IsOnDeck(ship, def, item))
                 result.Add(item);
         }
         return result;
     }
+
+    /// <summary>How far from the anchor the deck can reach.
+    ///
+    /// Source-X measures the distance to the FARTHEST edge from the anchor
+    /// (Multi_GetDistanceMax -> GetDistanceMax, CItemBase.cpp:1958). Halving the
+    /// width instead assumed the anchor sits in the middle, so on a hull whose
+    /// definition is not centred - anchor at one end - the passengers and cargo out on
+    /// the far deck fell outside the search and were left behind when the ship moved
+    /// or turned.</summary>
+    private static int DeckSearchRange(MultiDef def)
+    {
+        int dist = Math.Abs(def.MinX);
+        dist = Math.Max(dist, Math.Abs(def.MinY));
+        dist = Math.Max(dist, Math.Abs(def.MaxX + 1));
+        dist = Math.Max(dist, Math.Abs(def.MaxY + 1));
+        return dist + 1;
+    }
+
+    /// <summary>An item that stays where it is when the ship sails. Source-X excludes
+    /// ATTR_STATIC from the objects a multi carries (ListObjs,
+    /// CCMultiMovable.cpp:200) - and only that flag: a MOVE_NEVER item is still
+    /// carried, so the two must not be confused.</summary>
+    private static bool RidesNowhere(Item item) => item.IsAttr(ObjAttributes.Static);
 
     private bool IsOnDeck(Ship ship, MultiDef def, ObjBase obj)
     {
@@ -911,14 +1017,26 @@ public sealed class ShipEngine
         if (dx < def.MinX || dx > def.MaxX || dy < def.MinY || dy > def.MaxY)
             return false;
 
-        // Source-X CCMultiMovable::ListObjs also gates on Z: an object must sit
-        // near the deck plane to ride the ship. Without this, anything in the XY
-        // footprint at any height (a swimmer below the hull, a bird overhead, an
-        // item on a bridge above) was dragged along. Use a generous window around
-        // the ship anchor Z so genuine deck objects are never left behind.
-        int zdiff = obj.Z - ship.MultiItem.Z;
-        return zdiff >= -2 && zdiff <= 20;
+        // Source-X measures from the DECK PLANE, not from the hull's anchor:
+        // shipZ + max(3, height), with everything from two below it to a player's
+        // height above riding along (ListObjs, CCMultiMovable.cpp:142). Measuring from
+        // the anchor with a fixed window dragged along whatever sat under the deck and
+        // let a tall ship lose what stood on it.
+        int deckZ = ship.MultiItem.Z + Math.Max(3, (int)ship.MultiItem.DefHeight);
+        int zdiff = obj.Z - deckZ;
+        return zdiff >= -2 && zdiff <= PlayerHeight;
     }
+
+    /// <summary>PLAYER_HEIGHT (uofiles_macros.h:36).</summary>
+    private const int PlayerHeight = 16;
+
+    /// <summary>ITEMID_SHIP_PILOT - the marker Source-X hangs on the pilot.</summary>
+    private const ushort ShipPilotItemId = 0x3E96;
+
+    /// <summary>The world's vertical bounds (uofiles_macros.h:28).</summary>
+    private const int UoSizeZ = 127;
+    private const int UoSizeMinZ = -127;
+
 
     /// <summary>
     /// Check if terrain at position is water.
@@ -1010,6 +1128,15 @@ public sealed class ShipEngine
             y is < short.MinValue or > short.MaxValue ||
             z is < sbyte.MinValue or > sbyte.MaxValue)
             return false;
+
+        // Source-X keeps a margin at the top and the bottom of the world before it
+        // moves anything (MoveDelta, CCMultiMovable.cpp:284): a rise must stay clear
+        // of the ceiling by a player's height, and a descent must leave room under
+        // the hull. SphereNet only guarded the numeric overflow, so a magic ship
+        // could be flown into the reserved space at either end.
+        if (dz > 0 && z >= UoSizeZ - PlayerHeight - 1) return false;
+        if (dz < 0 && z <= UoSizeMinZ + 3) return false;
+
         return MoveTo(ship, new Point3D((short)x, (short)y, (sbyte)z, anchor.Map));
     }
 

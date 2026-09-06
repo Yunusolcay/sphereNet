@@ -86,14 +86,26 @@ public class ShipRedeedTriggerTests
         var world = CreateWorld();
         var (engine, ship) = MakeShip(world);
         ship.DirFace = Direction.North;
-        int turns = 0;
-        engine.OnShipTurned = _ => turns++;
+        // The hook now reports every item that turned, with the new facing and the old
+        // one (Source-X Face, CCMultiMovable.cpp:628), so the hull's own call is the
+        // one this test counts.
+        int hullTurns = 0;
+        int lastNew = -1, lastOld = -1;
+        engine.OnShipTurned = (item, newDir, oldDir) =>
+        {
+            if (item != ship.MultiItem) return;
+            hullTurns++;
+            lastNew = newDir;
+            lastOld = oldDir;
+        };
 
         Assert.True(engine.Face(ship, Direction.East));
-        Assert.Equal(1, turns);
+        Assert.Equal(1, hullTurns);
+        Assert.Equal((int)Direction.East, lastNew);
+        Assert.Equal((int)Direction.North, lastOld);
 
         Assert.True(engine.Face(ship, Direction.East)); // same facing → no rotation
-        Assert.Equal(1, turns);
+        Assert.Equal(1, hullTurns);
     }
 
     [Fact]

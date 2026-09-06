@@ -697,27 +697,48 @@ public sealed class ClientItemUseHandler
                 }
                 break;
             case ItemType.ShipPlank:
-                // An open plank: dclick from off the plank steps you aboard
-                // (Source-X teleports the user to the plank); standing on it,
-                // dclick swings it shut.
-                if (_character.Position.X != item.X || _character.Position.Y != item.Y)
+            {
+                // Which side of the rail the user is on decides this, and the answer is
+                // the ship's REGION, not whether they happen to stand on the plank
+                // itself (IT_SHIP_PLANK, CCharUse.cpp:1810). Comparing coordinates sent
+                // a passenger trying to shut the hatch walking onto it instead, and let
+                // anyone standing on a LOCKED plank close it without the key.
+                var shipEngine = Item.ResolveShipEngine?.Invoke();
+                var ship = shipEngine?.GetShip(item.Link) ?? shipEngine?.FindShipAt(item.Position);
+                bool aboard = ship != null && shipEngine?.FindShipAt(_character.Position) == ship;
+
+                if (aboard)
                 {
-                    var shipEngine = Item.ResolveShipEngine?.Invoke();
-                    var ship = shipEngine?.GetShip(item.Link) ?? shipEngine?.FindShipAt(item.Position);
-                    if (ship != null && _character.PrivLevel < PrivLevel.GM && !ship.CanBoard(_character.Uid))
+                    // Closing a plank whose side is locked needs the key, as opening it
+                    // does.
+                    if (item.More2 == (uint)ItemType.ShipSideLocked &&
+                        _character.PrivLevel < PrivLevel.GM &&
+                        FindBackpackKeyFor(item) == null)
                     {
-                        SysMessage(ServerMessages.Get(Msg.TillerNotyourship));
+                        SysMessage(ServerMessages.Get(Msg.ItemuseLocked));
+                        SysMessage(ServerMessages.Get(Msg.LockContNoKey));
                         break;
                     }
-                    _world.MoveCharacter(_character,
-                        new Point3D(item.X, item.Y, (sbyte)(item.Z + 3), item.MapIndex));
-                    SendSelfRedraw();
-                }
-                else
-                {
                     item.ClosePlank();
+                    break;
                 }
+
+                if (ship != null && _character.PrivLevel < PrivLevel.GM && !ship.CanBoard(_character.Uid))
+                {
+                    SysMessage(ServerMessages.Get(Msg.TillerNotyourship));
+                    break;
+                }
+                _world.MoveCharacter(_character,
+                    new Point3D(item.X, item.Y, (sbyte)(item.Z + 3), item.MapIndex));
+                // Stepping aboard is a teleport, and a teleport reveals: Source-X runs
+                // the plank boarding through Spell_Teleport, which ends in Reveal
+                // (CCharUse.cpp:1827 -> CCharSpell.cpp:232 -> CCharAct.cpp:3491). A
+                // hidden boarder used to stay hidden.
+                _character.ClearStatFlag(StatFlag.Hidden);
+                _character.ClearStatFlag(StatFlag.Invisible);
+                SendSelfRedraw();
                 break;
+            }
 
             // ---- doors ----
             case ItemType.Door:

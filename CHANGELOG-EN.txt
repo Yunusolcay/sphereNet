@@ -4,6 +4,57 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Ships: what the deck carries, and what a plank and a pilot are (10A-10B)
+----------------------------------------
+
+FIX - A ship carried away fixed world decor. Source-X excludes ATTR_STATIC items from
+        what a multi takes with it (ListObjs, CCMultiMovable.cpp:200) - and only that
+        flag: a MOVE_NEVER crate is still carried, so the two are not interchangeable.
+
+FIX - Who counts as aboard was measured from the hull's anchor with a fixed window, so
+        anything in the footprint but UNDER the deck was dragged along, and a taller
+        ship would have left its own passengers behind. The reference measures from the
+        deck plane - shipZ + max(3, height) - and takes what sits from two below it to a
+        player's height above (:142).
+
+FIX - On a hull whose definition is not centred on its anchor, passengers and cargo out
+        on the far deck fell outside the search and were left behind by a move or a
+        turn. The radius reaches the farthest edge from the anchor, not half the width
+        (GetDistanceMax, CItemBase.cpp:1958).
+
+FIX - @Ship_Turn reached only the hull, and with no directions at all. Source-X runs it
+        for every item it moved - hull, components and loose deck cargo - with the new
+        facing in ARGN1 and the previous one in ARGN2 (:628).
+
+FIX - A magic ship could be flown into the space the world reserves at its ceiling and
+        floor. The reference refuses the move before anything is moved (MoveDelta,
+        :284).
+
+FIX - Double-clicking an open plank decided what to do by comparing coordinates, so a
+        passenger trying to shut the hatch was walked onto it instead - and anyone
+        standing on a LOCKED plank could close it without the key. The reference asks
+        whether the user is inside the ship's region and keeps the key check
+        (IT_SHIP_PLANK, CCharUse.cpp:1810).
+
+FIX - Stepping aboard from the dock left a hidden player hidden. The reference boards
+        through a teleport, which reveals (:1827 -> CCharSpell.cpp:232 ->
+        CCharAct.cpp:3491).
+
+FIX - Turning a ship stamped the new heading's CLOSED graphic over an open plank, and
+        the graphic it remembered to return to was still the old heading's - so closing
+        it afterwards showed a piece of the wrong side. Source-X re-picks the new side's
+        open art for a plank that is standing open (Face, CCMultiMovable.cpp:614).
+
+FIX - Taking the wheel was only recorded in the ship's own field, so anything reading
+        the pilot off the character saw nobody there. Source-X equips the pilot with a
+        ship-pilot item linked back to the ship, and removes it when they stand down
+        (SetPilot, :212).
+
+FIX - Turning a ship back into its deed ran no @Redeed at all: only the house path was
+        wired. The reference fires it on the OLD multi with the new deed as its object
+        argument and the deed's graphic in ARGN1 (CItemMulti.cpp:1225). As upstream, it
+        is a notification and does not veto the redeed.
+
 [2026-09-06] - Party and guild state that has to add up (09C-09D)
 ----------------------------------------
 
