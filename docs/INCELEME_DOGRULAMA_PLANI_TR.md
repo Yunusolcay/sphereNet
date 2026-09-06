@@ -1163,6 +1163,53 @@ ama `ResurrectTarget` sozlesmesi hala void; genel sonuc iletimi ayri bir konu.
 Ayrica raporlarin kendi kuyruklari: bonding saati, MAXFOOD tanimlari, olu bonded
 release, resurrection trigger sonucu, hayalet LOS'unun yanlis aktorle denetlenmesi.
 
+### 06N-06O - MAXFOOD sinirlari ve pet devir temizligi (6 Eylul 2026)
+
+Kanit raporlari: [06N](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_06N_MAXFOOD_SINIRLARI.md),
+[06O](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_06O_PET_DEVIR_TEMIZLIGI.md).
+Uc bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi. 06N, bir onceki turda
+eklenen `Character.MaxFood` uzerinde - yani kendi yeni kodumun denetimi.
+
+- [x] **SX-06N-01 (P2)** - CHARDEF MAXFOOD=0 etkili kapasitede 60'a donusuyordu.
+  (YAPILDI: `CharDef.MaxFoodExplicit` eklendi; `Character.MaxFood` artik instance
+  etiketi (yalniz pozitif) -> acik CHARDEF MAXFOOD (sifir dahil) -> 60 sirasini
+  izliyor. Referans instance maksimumu 1'in altindayken tanima doner
+  (CCharStat.cpp:276) ve sifir maksimumda Use_Eat besleme reddeder (:934).
+  **Guvenlik olcumu - naif uygulama tehlikeliydi:** referans FOODTYPE'tan TURETILEN
+  maksimuma da doner. Canli pakette insan/elf/gargoyle chardef'leri
+  `FOODTYPE=t_food,t_drink,t_fruit,t_grain` yaziyor; sayisiz girdiler 1 turetiyor
+  (`DeriveMaxFood`, referansta `GetResQty()` varsayilani 1). O yari da uygulansaydi
+  HER OYUNCUNUN yiyecek tavani 1'e duserdi. Bu yuzden tanimdan yalnizca ACIK MAXFOOD
+  cozuluyor; turetilen yari bilincli sapma olarak kayda gecirildi.
+  Raporun kendisi de yalnizca acik MAXFOOD tanimlariyla (0/30/100) deney yapmisti.)
+- [x] **SX-06N-02 (P3)** - MAXFOOD>60 yaratik 60 toklukla doguyordu.
+  (YAPILDI: spawner artik MAXFOOD etiketini Food'dan ONCE yaziyor.
+  **Durust not:** bu bulgunun belirtisi zaten 06N-01 tarafindan cozuluyor - tavan
+  chardef'ten cozulunce spawn yolunda sira onemsizlesiyor. Kapatma turunda
+  `AHeartyDefinitionSpawnsAtItsFullCeiling` sira geri cevrildiginde de GECTI, bunu
+  fark edip sirayi bagimsiz sabitleyen ayri bir test yazdim
+  (`AnInstanceCeilingMustBeSetBeforeTheValueItCaps`). Yeniden siralama, tavani
+  yalnizca instance etiketinden gelen yaratiklar icin hala gerekli.)
+- [x] **SX-06O-01 (P2)** - Devredilen pet eski arkadaslari ve bonded durumunu
+  tasiyordu. (YAPILDI: `TryAssignOwnership` gercek sahip degisiminde `ClearFriends()`
+  ve `IsBonded = false` yapiyor - referans NPC_PetSetOwner uzerinden
+  NPC_PetClearOwners cagirir (CCharNPCPet.cpp:600 -> :558).
+  **Raporun uc kosulu da karsilandi:** temizlik kapasite kontrolunden SONRA
+  (reddedilen devir peti oldugu gibi birakiyor); AYNI sahibin yeniden atanmasinda
+  hicbir sey degismiyor (ahir/figurin/dismount yollari); yeni sahip kendi
+  arkadaslarini ekleyebiliyor.)
+
+**06N-06O kapanisi:** tam suite **2.563 basarili / 0 basarisiz** (+13). Duzeltmeler
+gecici olarak kapatilarak 4 testin eski davranisi yakaladigi kanitlandi; sirali
+kapatma turu ayrica 06N-02'nin testinin yetersiz oldugunu ortaya cikardi ve test
+guclendirildi.
+
+**Acik kalan:** raporun not ettigi `TickBonding` cagrisizligi - src icinde tanim
+disinda cagrilmiyor. Bunun eksik native davranis mi yoksa script tarafindan yonetilen
+tasarim mi oldugu Source-X script politikasi dogrulanmadan hata sayilmadi; ayni
+degerlendirme burada da gecerli, dokunulmadi. FOODTYPE-turetilen maksimum yarisi da
+yukarida kayitli bilincli sapma.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

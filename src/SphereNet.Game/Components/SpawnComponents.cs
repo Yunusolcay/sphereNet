@@ -245,10 +245,15 @@ public sealed class SpawnComponent
             if (charDef.NpcBrain != NpcBrainType.None)
                 ch.NpcBrain = charDef.NpcBrain;
 
-            if (charDef.MaxFood > 0)
+            if (charDef.MaxFoodExplicit || charDef.MaxFood > 0)
             {
-                ch.Food = charDef.MaxFood;
+                // The ceiling FIRST: the Food setter clamps to whatever MaxFood is at
+                // the time, so writing the value before the tag capped a MAXFOOD=100
+                // creature at the classic 60 and it spawned hungrier than its own
+                // definition allows. Source-X sets FOOD to Stat_GetMaxAdjusted after
+                // the definition is in place (CChar.cpp:321).
                 ch.SetTag("MAXFOOD", charDef.MaxFood.ToString());
+                ch.Food = charDef.MaxFood;
             }
             // The AI hunger counter is NpcFood (0-60), a SEPARATE meter from
             // the Food stat above — seed it fed like pet adoption does. A

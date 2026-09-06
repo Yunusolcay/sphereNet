@@ -72,6 +72,13 @@ public sealed class CharDef : BaseDef
     public int MoveRate { get; set; } = 100;
     public uint HireDayWage { get; set; }
     public ushort MaxFood { get; set; }
+
+    /// <summary>True when the definition wrote MAXFOOD itself, as opposed to the value
+    /// having been derived from FOODTYPE or left at the default. Source-X keeps no such
+    /// marker - its zero simply means zero - but SphereNet has to tell "this creature
+    /// eats nothing" apart from "this definition says nothing about food", because a
+    /// definition that says nothing still gets the classic ceiling.</summary>
+    public bool MaxFoodExplicit { get; private set; }
     public string Icon { get; set; } = "";
     public string Job { get; set; } = "";
     public int ThrowDam { get; set; }
@@ -185,7 +192,11 @@ public sealed class CharDef : BaseDef
             case "RANGEL": int.TryParse(value, out int rl); RangeMin = rl; break;
             case "MOVERATE": int.TryParse(value, out int mr); MoveRate = mr; break;
             case "HIREDAYWAGE": uint.TryParse(value, out uint hw); HireDayWage = hw; break;
-            case "MAXFOOD": ushort.TryParse(value, out ushort mf); MaxFood = mf; break;
+            case "MAXFOOD":
+                ushort.TryParse(value, out ushort mf);
+                MaxFood = mf;
+                MaxFoodExplicit = true;
+                break;
             case "ICON": Icon = value.Trim(); break;
             case "JOB": Job = value.Trim(); break;
             case "THROWDAM": int.TryParse(value, out int td); ThrowDam = td; TagDefs.Set("THROWDAM", value.Trim()); break;

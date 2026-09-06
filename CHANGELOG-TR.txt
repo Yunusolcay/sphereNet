@@ -3,6 +3,42 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Tanimdan gelen yiyecek tavanlari ve el degistiren pet (06N-06O)
+----------------------------------------
+
+FIX - MAXFOOD=0 yazan bir tanim, tavansizlik yerine klasik 60 tavanini aliyordu.
+        Source-X, instance maksimumu 1'in altindayken tanimin yiyecek maksimumuna
+        doner (Stat_GetMax, CCharStat.cpp:276) ve sifir maksimum, yaratigin hic
+        beslenemeyecegi anlamina gelir - Use_Eat onu dogrudan reddeder
+        (CCharUse.cpp:934). Yani "hicbir sey yemez" diye yazilmis bir yaratigin tam
+        istahi vardi ve yemek kabul ediyordu. Acikca yazilmis MAXFOOD artik sifir dahil
+        dikkate aliniyor; yiyecek hakkinda hicbir sey soylemeyen tanim klasik tavani
+        koruyor. Instance MAXFOOD hala oncelikli, ama yalnizca pozitif olani - referans
+        oradaki sifiri "atanmamis" olarak okur.
+
+        Kayda gecirilen sapma: referans FOODTYPE'tan TURETILEN maksimuma da doner.
+        Canli paket sayisiz FOODTYPE listeleri yazar (FOODTYPE=t_food,t_drink,...) ve
+        bunlar 1 turetir; o yariyi da uygulamak her insanin yiyecek havuzunu tek bir
+        puana dusurur ve oyuncu aclik modelini beraberinde gotururdu. Tanimdan yalnizca
+        acik MAXFOOD cozuluyor.
+
+FIX - Tanimi MAXFOOD'u 60'in uzerine cikaran yaratik 60 tokluk ile doguyordu. Spawner
+        baslangic yiyecegini tavandan once yaziyordu ve Food setter'i yazim anindaki
+        MaxFood'a kirpiyor. Tavani tanimdan cozmek bu yoldaki tehlikeyi ortadan
+        kaldiriyor; spawner'in yazim sirasi da duzeltildi ve tavani yalnizca instance
+        etiketinden gelen bir yaratigi koruyan sey odur.
+
+FIX - Devredilen pet, onceki sahibinin arkadaslarini ve eski bagini koruyordu. Sahiplik
+        yeni sahibe geciyor ama FRIEND_ baglantilari kaliyordu; boylece eski sahibin
+        arkadaslari artik kendilerine ait olmayan bir pete komut vermeye devam ediyor,
+        yeni sahip de hic kazanmadigi bir bagi devraliyordu. Source-X devri
+        NPC_PetSetOwner uzerinden yapar; sahip ayniysa hicbir seye dokunmadan doner,
+        farkliysa once NPC_PetClearOwners cagirir (CCharNPCPet.cpp:600) ve
+        MEMORY_IPET | MEMORY_FRIEND ile bagi temizler (:558). Ayni sey artik yalnizca
+        GERCEK sahip degisiminde yapiliyor: ahirdan alma, figurin acma ve inme gibi
+        AYNI sahibi yeniden atayan yollar hicbir seyi degistirmiyor, follower
+        kapasitesi yuzunden reddedilen bir devir de peti oldugu gibi birakiyor.
+
 [2026-09-06] - Zehirli yemekler ve bandajin diriltmeden once denetledikleri (06I-06M)
 ----------------------------------------
 

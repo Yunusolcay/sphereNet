@@ -4,6 +4,43 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Food ceilings from the definition, and a pet that changes hands (06N-06O)
+----------------------------------------
+
+FIX - A definition that declares MAXFOOD=0 got the classic ceiling of 60 instead of
+        none. Source-X falls back to the definition's food maximum whenever the
+        instance one is below 1 (Stat_GetMax, CCharStat.cpp:276), and a maximum of zero
+        means the creature cannot be fed at all - Use_Eat refuses it outright
+        (CCharUse.cpp:934). A creature written to eat nothing therefore had a full
+        appetite and accepted meals. An explicitly written MAXFOOD is now honoured,
+        zero included, while a definition that says nothing about food keeps the
+        classic ceiling; an instance MAXFOOD still wins, and only a positive one, since
+        the reference reads a zero there as "unset".
+
+        Recorded divergence: the reference also falls back to the maximum DERIVED from
+        FOODTYPE. The live pack writes bare FOODTYPE lists (FOODTYPE=t_food,t_drink,
+        ...), which derive 1, so honouring that half would collapse every human's food
+        pool to a single point and take the player hunger model with it. Only an
+        explicit MAXFOOD is resolved from the definition.
+
+FIX - A creature whose definition raises MAXFOOD above 60 spawned at 60. The spawner
+        wrote the starting food before the ceiling, and the Food setter clamps to
+        whatever MaxFood is at the time of the write. Resolving the ceiling from the
+        definition removes the hazard from that path, and the spawner's order was
+        corrected as well, which is what still protects a creature whose ceiling comes
+        only from an instance tag.
+
+FIX - A transferred pet kept the previous owner's friends and its old bond. Ownership
+        moved to the new owner, but the FRIEND_ links stayed, so the old owner's
+        friends went on commanding a pet that was no longer theirs, and the new owner
+        inherited a bond they never earned. Source-X routes a transfer through
+        NPC_PetSetOwner, which returns untouched when the owner is unchanged and
+        otherwise calls NPC_PetClearOwners first (CCharNPCPet.cpp:600) - clearing
+        MEMORY_IPET | MEMORY_FRIEND and the bond (:558). The same now happens on a
+        genuine change of owner only: re-assigning the SAME owner, which stable
+        retrieval, figurine restore and dismount all do, changes nothing, and a
+        transfer refused by the follower cap leaves the pet exactly as it was.
+
 [2026-09-06] - Poisoned meals, and what a bandage checks before it raises the dead (06I-06M)
 ----------------------------------------
 

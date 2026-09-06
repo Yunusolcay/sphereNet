@@ -1573,10 +1573,34 @@ public partial class Character : ObjBase
     /// keeps the per-creature value in the MAXFOOD tag, which the spawner stamps from
     /// the chardef, and falls back to the classic 60 when a creature sets none - the
     /// constant is not spread across every creature.</summary>
-    public ushort MaxFood =>
-        TryGetTag("MAXFOOD", out string? raw) && ushort.TryParse(raw, out ushort max) && max > 0
-            ? max
-            : (ushort)60;
+    public ushort MaxFood
+    {
+        get
+        {
+            // An instance MAXFOOD wins, and only a POSITIVE one: Source-X falls back to
+            // the definition whenever the instance maximum is below 1
+            // (Stat_GetMax, CCharStat.cpp:276).
+            if (TryGetTag("MAXFOOD", out string? raw) &&
+                ushort.TryParse(raw, out ushort instanceMax) && instanceMax > 0)
+                return instanceMax;
+
+            // A definition that wrote MAXFOOD is taken at its word, ZERO INCLUDED - a
+            // creature declared to eat nothing has no room for food, and the reference
+            // refuses to feed it at all (Use_Eat, CCharUse.cpp:934). Reading that zero
+            // as "nothing was said, use 60" gave such a creature a full appetite.
+            var def = DefinitionLoader.GetCharDef(CharDefIndex);
+            if (def is { MaxFoodExplicit: true })
+                return def.MaxFood;
+
+            // Deliberate divergence, recorded: the reference would fall back to the
+            // definition's FOODTYPE-derived maximum here too. The live pack writes
+            // bare FOODTYPE lists (FOODTYPE=t_food,t_drink,...), which derive 1, so
+            // honouring that half would collapse every human's food pool to a single
+            // point and take the whole player hunger model with it. Only an explicit
+            // MAXFOOD is honoured; the classic ceiling stands otherwise.
+            return 60;
+        }
+    }
     public bool IsHungry => _food <= 0;
 
     // NPC
@@ -1897,6 +1921,23 @@ public partial class Character : ObjBase
             return false;
         }
 
+        // A REAL change of owner takes the old owner's relationships with it. Source-X
+        // routes a transfer through NPC_PetSetOwner, which returns untouched when the
+        // owner is the same and otherwise calls NPC_PetClearOwners first
+        // (CCharNPCPet.cpp:600) - clearing MEMORY_IPET|MEMORY_FRIEND and the bond
+        // (:558). Without it a transferred pet still took orders from the previous
+        // owner's friends and carried a bond its new owner never earned.
+        //
+        // Only on a genuine change, and only after the cap check above has passed: the
+        // paths that re-assign the SAME owner - stable retrieval, figurine restore,
+        // dismount - must not reset anything, and a refused transfer must leave the pet
+        // exactly as it was.
+        if (ownerUid.IsValid && _npcMaster.IsValid && _npcMaster != ownerUid)
+        {
+            ClearFriends();
+            IsBonded = false;
+        }
+
         SetOwnerControllerRaw(ownerUid, controllerUid, mirrorLegacySummon: summoned);
         if (owner != null)
             SetTag("OWNER_UUID", owner.Uuid.ToString("D"));
@@ -1925,21 +1966,25 @@ public partial class Character : ObjBase
         return true;
     }
 
+    /// <summary>Drop every FRIEND_ link this creature carries.</summary>
+    private void ClearFriends()
+    {
+        var toRemove = new List<string>();
+        foreach (var kvp in Tags.GetAll())
+        {
+            if (kvp.Key.StartsWith("FRIEND_", StringComparison.OrdinalIgnoreCase))
+                toRemove.Add(kvp.Key);
+        }
+
+        foreach (var key in toRemove)
+            RemoveTag(key);
+    }
+
     public void ClearOwnership(bool clearFriends = false)
     {
         SetOwnerControllerRaw(Serial.Invalid, Serial.Invalid, mirrorLegacySummon: false);
         if (clearFriends)
-        {
-            var toRemove = new List<string>();
-            foreach (var kvp in Tags.GetAll())
-            {
-                if (kvp.Key.StartsWith("FRIEND_", StringComparison.OrdinalIgnoreCase))
-                    toRemove.Add(kvp.Key);
-            }
-
-            foreach (var key in toRemove)
-                RemoveTag(key);
-        }
+            ClearFriends();
 
         ClearStatFlag(StatFlag.Pet);
 
