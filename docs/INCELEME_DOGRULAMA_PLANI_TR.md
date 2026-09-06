@@ -1673,6 +1673,43 @@ testleri yesil kalmisti - eski kod baligi silip filetoyu cantaya koydugu icin
 sonrasi yenilenme; cikrik anim durumunun kayittan donmesi; yatak rulosunun 1F24-1F27
 ailesi; top atisi hasari; DEFAULTSEED'in gercek paketle cozulmesi.
 
+### 08C - antrenman, icki ve iletisim: 6 bulgu (6 Eylul 2026)
+
+Kanit raporu: [08C](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_08C_EGITIM_ICECEK_ILETISIM.md).
+Alti bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+- [x] **08C-1 (P2)** - Yankesicilik antrenman esyasi calinabiliyordu. (YAPILDI:
+  `TrainOnPickpocketDip` - yer/mesafe/binek/antrenman siniri, rulo ve `SetAnim`; esya
+  yerinde kaliyor.
+  **Kapsam notu:** referans bunu iki asamali NPCACT_TRAINING isi olarak kurar
+  (baslat/bitir); SphereNet'te oyuncu icin o eylem makinesi yok, bu yuzden rulo ve
+  animasyon tek adimda - antrenman zamanlamasi acik kaldi.)
+- [x] **08C-2 (P2)** - Ok hedefinden muhimmat geri alinamiyordu. (YAPILDI:
+  `GatherButteAmmo`, beceriye yonlenmeden once.)
+- [x] **08C-3 (P2)** - Yirtilan ag uydurma kaynak birakiyordu. (YAPILDI: yalnizca silme.
+  **Mevcut test guncellendi:** `ParityWaveH3Tests.Web_Struggle_DestroysWebLeavesSilk...`
+  bu uydurma ciktiyi bekliyordu - raporun isaret ettigi yanlis beklenti.)
+- [x] **08C-4 (P2)** - @Drink sozlesmesi yoktu. (YAPILDI: yeni `CharTrigger.Drink`,
+  ARGN1/ARGN2/LOCAL.BottleId ve geri okuma; veto icmeyi durduruyor.
+  **Kapsam:** referansin ELSEIF/HALFBAKED dallarindaki bos-kap adedi SphereNet'in
+  `TriggerResult`'inda karsiliksiz - acik kaldi.)
+- [x] **08C-5 (P2)** - Alkol sarhosluk etkisi baslatmiyordu. (YAPILDI: `SpellType.Liquor`
+  dogrudan etkisi, gucu rand(300)+10.)
+- [x] **08C-6 (P2)** - Kristal genel hedef imleci kullaniyordu. (YAPILDI:
+  `SetPendingItemTarget` - kaynak dogrulamasi ve @TargOn_Item korumasi devreye giriyor.)
+
+**08C kapanisi:** tam suite **2.749 basarili / 0 basarisiz** (+13). Alti duzeltme de
+gecici olarak kapatilarak 9 testin (+1 guncellenen mevcut testin) eski davranisi
+yakaladigi kanitlandi.
+
+**Kendi testimi duzelttim:** ilk kapatma kosusunda yankesicilik testleri yesil kalmisti -
+tezgahta `SkillHandlers` bagli olmadigi icin eski yol zaten hicbir sey yapmiyordu.
+Tezgaha gercek beceri hattini bagladim; ancak o zaman eski davranis (esyanin cantaya
+gitmesi) testleri kirmiziya cevirdi.
+
+**Acik kalan:** antrenman isinin zamanlamasi ve tamamlanma kazanimi; @Drink'in bos-kap
+uretimi; kristalin kendi kendine baglanmasi ve hedef turu kurallari.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

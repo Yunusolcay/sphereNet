@@ -3,6 +3,39 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Antrenman, icki ve baglanti (08C)
+----------------------------------------
+
+FIX - Yankesicilik antrenman esyasi, uzerinde calisilirken CALINABILIYORDU. Cift tiklama
+        siradan Stealing becerisine yonlendiriliyordu; basarili sonucta esyanin kendisi
+        hirsizin cantasina gidiyordu - sabit olani bile. Source-X onu antrenman araci
+        sayar: yerde ve bir kare icinde, binekte degilken, antrenman siniri asilmamisken
+        rulo atilir ve esya yerinde kalir (Use_Train_PickPocketDip, CCharUse.cpp:397).
+
+FIX - Ok hedefi biriken muhimmati hic geri vermiyordu. Hedefe bitisik durmak, baska
+        hicbir sey olmadan once icindekileri verir (Use_Train_ArcheryButte,
+        CCharUse.cpp:453) - tur MORE1'de, adet MORE2'de, ikisi de sonra sifirlanir.
+        SphereNet dogrudan beceriye gidiyordu; scriptin veya eski kaydin hedefe koydugu
+        oklar geri alinamiyordu.
+
+FIX - Yirtilan ag, referansin uretmedigi bir "spider silk" birakiyordu: IT_WEB hasar dali
+        agi yalnizca siler (CItem.cpp:5886) ve SphereNet'in ipek icin kullandigi grafik
+        (0x0DF8) aslinda yundur.
+
+FIX - Icmede hicbir icme hook'u calismiyordu; yerine @Eat tetikleniyordu. Source-X'in
+        kendi @Drink'i vardir: ARGN1 etki gecikmesi, ARGN2 tuketilecek miktar, LOCAL.
+        BottleId bos kap; hepsi geri okunur ve RETURN 1 icmeyi durdurur (Use_Drink,
+        CCharUse.cpp:1003).
+
+FIX - Alkol kimseyi sarhos etmiyordu; icki yalnizca doyuruyor ve "hic" dedirtiyordu.
+        Referans icene her ickide ayri guclendirilen bir Liquor etkisi koyar (:1031).
+
+FIX - Iletisim kristali genel hedef imleciyle baglaniyordu, yani kristalin kendisi
+        yeniden denetlenmiyordu: imlec acikken el degistiren veya silinen kristal yine
+        imleci acan tarafindan baglaniyor, @TargOn_Item hic calismiyordu. Artik
+        referansin esya kullanim hedeflemesindeki esya-bagli imlecten geciyor
+        (CClientTarg.cpp:1683).
+
 [2026-09-06] - Bicaklar, toplar, cikriklar ve yatak rulolari (08B)
 ----------------------------------------
 

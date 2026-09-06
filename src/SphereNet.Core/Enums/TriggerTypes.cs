@@ -105,6 +105,7 @@ public enum CharTrigger : short
     DeathCorpse,
     Destroy,
     Dismount,
+    Drink,
     Eat,
     EffectAdd,
     EnvironChange,

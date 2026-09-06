@@ -4,6 +4,41 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Practising, drinking and linking (08C)
+----------------------------------------
+
+FIX - A pickpocket dip could be STOLEN by practising on it. The double-click was routed
+        into the ordinary Stealing skill, which on success carried the dip itself into
+        the thief's pack - a fixed one included. Source-X treats it as a training aid:
+        on the ground within a tile, not while mounted, not past the practice cap, rolled
+        against and left exactly where it stands (Use_Train_PickPocketDip,
+        CCharUse.cpp:397).
+
+FIX - An archery butte never gave its ammunition back. Standing right against it hands
+        over what is stuck in it before anything else happens (Use_Train_ArcheryButte,
+        CCharUse.cpp:453) - the kind in MORE1, the count in MORE2, both cleared
+        afterwards. SphereNet went straight to the skill, so arrows a script or a legacy
+        save had left in a butte could not be recovered.
+
+FIX - A torn web left a "spider silk" behind that the reference does not create: its
+        IT_WEB damage branch simply deletes the web (CItem.cpp:5886), and the graphic
+        SphereNet used for the silk (0x0DF8) is wool.
+
+FIX - Drinking ran no drink hook at all - it fired @Eat instead. Source-X has its own
+        @Drink, carrying the effect delay in ARGN1, the amount to consume in ARGN2 and
+        the empty bottle in LOCAL.BottleId, and reads them back, with RETURN 1 stopping
+        the drink (Use_Drink, CCharUse.cpp:1003).
+
+FIX - Alcohol did not make anyone drunk: the drink fed the drinker and said "hic". The
+        reference puts a Liquor effect on the drinker, of a strength rolled per drink
+        (:1031).
+
+FIX - A communication crystal was linked through the generic target cursor, so nothing
+        re-checked the crystal itself: one that changed hands or was destroyed while the
+        cursor was open was still linked by whoever opened it, and @TargOn_Item never
+        ran. It now goes through the item-bound cursor the reference's own use targeting
+        implies (CClientTarg.cpp:1683).
+
 [2026-09-06] - Blades, cannons, wheels and bedrolls (08B)
 ----------------------------------------
 

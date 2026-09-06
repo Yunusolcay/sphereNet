@@ -32,8 +32,12 @@ public class ParityWaveH3Tests
         return world;
     }
 
+    // A torn web leaves NOTHING behind: the reference's IT_WEB damage branch calls
+    // Delete() and creates no resource (CItem.cpp:5886). The "silk" this expectation
+    // used to demand came from a stale comment in Use_Item_Web, and the graphic it
+    // named (0x0DF8) is wool.
     [Fact]
-    public void Web_Struggle_DestroysWebLeavesSilk_AndUnfreezes()
+    public void Web_Struggle_DestroysWeb_AndUnfreezes()
     {
         var world = CreateWorld();
         var loggerFactory = LoggerFactory.Create(_ => { });
@@ -59,8 +63,8 @@ public class ParityWaveH3Tests
 
         Assert.True(web.IsDeleted);
         Assert.False(player.IsStatFlag(StatFlag.Freeze));
-        Assert.Contains(world.GetItemsInRange(new Point3D(100, 100, 0, 0), 0),
-            i => i.BaseId == 0x0DF8); // spider silk left behind
+        Assert.DoesNotContain(world.GetItemsInRange(new Point3D(100, 100, 0, 0), 0),
+            i => i.BaseId == 0x0DF8);
     }
 
     [Fact]

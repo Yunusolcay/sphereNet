@@ -1023,6 +1023,7 @@ public sealed class TriggerDispatcher
         CharTrigger.FameChange => "FameChange",
         CharTrigger.KarmaChange => "KarmaChange",
         CharTrigger.Hunger => "Hunger",
+        CharTrigger.Drink => "Drink",
         CharTrigger.Eat => "Eat",
         CharTrigger.Follow => "Follow",
         CharTrigger.Jail => "Jailed", // Source-X CChar sm_szTrigName: @Jailed (not @Jail)

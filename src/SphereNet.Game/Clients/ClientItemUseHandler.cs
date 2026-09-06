@@ -1017,12 +1017,11 @@ public sealed class ClientItemUseHandler
                 item.HitsCur -= Math.Max(1, (int)_character.Str);
                 if (item.HitsCur <= 0)
                 {
-                    var webPos = item.Position;
+                    // A destroyed web is simply gone: the reference's IT_WEB damage
+                    // branch calls Delete() and creates nothing (CItem.cpp:5886). The
+                    // "silk" this used to leave behind came from a stale comment in
+                    // Use_Item_Web, and the graphic it used (0x0DF8) is wool, not silk.
                     _world.RemoveItem(item);
-                    var silk = _world.CreateItem();
-                    silk.BaseId = 0x0DF8; // spider silk
-                    silk.Amount = 1;
-                    _world.PlaceItemWithDecay(silk, webPos);
                     if (_character.IsStatFlag(StatFlag.Freeze))
                     {
                         _character.ClearStatFlag(StatFlag.Freeze);
@@ -1535,12 +1534,8 @@ public sealed class ClientItemUseHandler
                     SysMessage(ServerMessages.Get(Msg.DrinkCantmove));
                     break;
                 }
-                // @Eat (Source-X) — drinking also feeds the @Eat hook. N1 = hunger.
-                if (_triggerDispatcher?.FireCharTrigger(_character, CharTrigger.Eat,
-                        new TriggerArgs { CharSrc = _character, ItemSrc = item, O1 = item, N1 = 2 }) == TriggerResult.True)
+                if (!DrinkBooze(item))
                     break;
-                _character.Food = (ushort)Math.Min(_character.Food + 2, 60);
-                SysMessage("*hic!*");
                 // Consume exactly one bottle (Use_Drink wConsume=1), never the whole
                 // stack — a single drink used to delete every ale in the pile.
                 ConsumeOneOnUse(item);
@@ -1649,9 +1644,16 @@ public sealed class ClientItemUseHandler
                 break;
             }
             case ItemType.TrainPickpocket:
-                RouteSkillTarget(SkillType.Stealing, item.Uid);
+                TrainOnPickpocketDip(item);
                 break;
             case ItemType.ArcheryButte:
+                // Standing right against the butte collects what is stuck in it,
+                // BEFORE any thought of shooting (Use_Train_ArcheryButte,
+                // CCharUse.cpp:453). SphereNet went straight to the skill, so ammunition
+                // the butte had swallowed - from a script or a legacy save - could never
+                // be pulled back out.
+                if (GatherButteAmmo(item))
+                    break;
                 RouteSkillTarget(SkillType.Archery, item.Uid);
                 break;
 
@@ -1752,7 +1754,12 @@ public sealed class ClientItemUseHandler
                 // crystal's relay partner (m_uidLink). Speech near this crystal is
                 // then relayed to the linked one (SpeechEngine.OnItemHear).
                 SysMessage("Target the communication crystal to link to.");
-                _client.SetPendingTarget((serial, _, _, _, _) =>
+                // Bound to the crystal, so the shared target path re-checks that the
+                // SOURCE still exists, is still where it was and still answers
+                // @TargOn_Item (CClientTarg.cpp:1683). The generic cursor skipped all
+                // three, so a crystal that had changed hands mid-cursor was still
+                // linked by its old holder.
+                SetPendingItemTarget(item, (serial, _, _, _, _) =>
                 {
                     var partner = _world.FindItem(new Serial(serial));
                     if (partner == null || partner.ItemType != ItemType.CommCrystal)
@@ -1767,7 +1774,7 @@ public sealed class ClientItemUseHandler
                     }
                     item.Link = partner.Uid;
                     SysMessage("Linked.");
-                }, 0);
+                }, cursorType: 0);
                 break;
 
             // ---- portcullis ----
@@ -2704,6 +2711,122 @@ public sealed class ClientItemUseHandler
             BroadcastNearby?.Invoke(bedroll.Position, UpdateRange,
                 new PacketWorldItem(bedroll.Uid.Value, bedroll.DispIdFull, bedroll.Amount,
                     bedroll.X, bedroll.Y, bedroll.Z, bedroll.Hue), 0);
+    }
+
+    /// <summary>Drink something alcoholic.
+    ///
+    /// Source-X runs its own @Drink hook first - ARGN1 the effect delay, ARGN2 how much
+    /// to consume, LOCAL.BottleId the empty it leaves, ARGO the drink - and reads them
+    /// back, with RETURN 1 stopping the drink entirely (Use_Drink, CCharUse.cpp:1003).
+    /// SphereNet fired @Eat instead, so nothing scripted for drinking could reach it.
+    /// The drink then makes the drinker DRUNK: a Liquor effect that strengthens and
+    /// lengthens if one is already running (:1031). SphereNet only fed the drinker and
+    /// said "hic".
+    ///
+    /// Returns whether the bottle should be consumed.</summary>
+    private bool DrinkBooze(Item drink)
+    {
+        if (_character == null) return false;
+
+        var def = DefinitionLoader.GetItemDef(drink.BaseId);
+        int delayTenths = (int)(def?.TData2 ?? 0);
+        if (delayTenths <= 0) delayTenths = 1500;       // the reference's booze default
+        int consume = 1;
+        ushort bottleId = ResolvePlantId(def?.TData1 ?? 0, def?.TData1Name);
+
+        if (_triggerDispatcher != null)
+        {
+            var locals = new SphereNet.Scripting.Variables.VarMap();
+            locals.SetInt("BottleId", bottleId);
+            var args = new TriggerArgs
+            {
+                CharSrc = _character,
+                ItemSrc = drink,
+                O1 = drink,
+                N1 = delayTenths,
+                N2 = consume,
+                Locals = locals,
+            };
+            if (_triggerDispatcher.FireCharTrigger(_character, CharTrigger.Drink, args) == TriggerResult.True)
+                return false;
+
+            delayTenths = args.N1 > 0 ? args.N1 : 1;
+            consume = args.N2;
+        }
+
+        // Getting drunk is the drink's own doing, hook or no hook: a Liquor effect
+        // whose strength is rand(300)+10, which the reference lengthens and
+        // strengthens when the drinker already has one running (:1031).
+        _client.Spells?.ApplyDirectEffect(_character, _character,
+            SphereNet.Core.Enums.SpellType.Liquor, Random.Shared.Next(300) + 10);
+
+        _character.Food = (ushort)Math.Min(_character.Food + 2, 60);
+        SysMessage("*hic!*");
+        return consume > 0;
+    }
+
+    /// <summary>Source-X SKILLPRACTICEMAX default: a training aid is only useful up
+    /// to 30.0 skill (CServerConfig).</summary>
+    private const int SkillPracticeMax = 300;
+
+    /// <summary>Practise stealing on the dip.
+    ///
+    /// The item is a TRAINING AID, not loot: Source-X asks for a ground item within one
+    /// tile, refuses a mounted trainee and anyone already past the practice cap, then
+    /// rolls the skill and leaves the dip exactly where it stands
+    /// (Use_Train_PickPocketDip, CCharUse.cpp:397). SphereNet routed the double-click
+    /// into the ordinary Stealing skill, which on success carried the dip itself into
+    /// the thief's pack - a fixed one included.</summary>
+    private void TrainOnPickpocketDip(Item dip)
+    {
+        if (_character == null) return;
+
+        if (dip.ContainedIn.IsValid || _character.Position.GetDistanceTo(dip.Position) > 1)
+        {
+            SysMessage(ServerMessages.Get(Msg.ItemusePickpocketToofar));
+            return;
+        }
+        if (_character.IsMounted)
+        {
+            SysMessage(ServerMessages.Get(Msg.ItemusePickpocketMount));
+            return;
+        }
+        if (_character.GetSkill(SkillType.Stealing) > SkillPracticeMax)
+        {
+            SysMessage(ServerMessages.Get(Msg.ItemusePickpocketSkill));
+            return;
+        }
+
+        BroadcastNearby?.Invoke(dip.Position, UpdateRange,
+            new PacketSound(0x0057, dip.X, dip.Y, dip.Z), 0);   // SOUND_RUSTLE
+
+        int difficulty = Random.Shared.Next(40);
+        bool ok = SkillEngine.UseQuick(_character, SkillType.Stealing, difficulty);
+        SysMessage(ServerMessages.Get(ok
+            ? Msg.ItemusePickpocketSuccess
+            : Msg.ItemusePickpocketFail));
+        dip.SetAnim((ushort)(ok ? dip.DispIdFull : dip.DispIdFull + 1), 3000);
+    }
+
+    /// <summary>Take back the arrows and bolts a butte has collected. Reports whether
+    /// there was anything to take (Use_Train_ArcheryButte, CCharUse.cpp:459): MORE1 is
+    /// the ammunition kind, MORE2 how much, and both are cleared once it is handed
+    /// over.</summary>
+    private bool GatherButteAmmo(Item butte)
+    {
+        if (_character == null) return false;
+        if (_character.Position.GetDistanceTo(butte.Position) >= 2) return false;
+        if (butte.More2 == 0 || butte.More1 == 0) return false;
+
+        var ammo = _world.CreateItem();
+        ammo.BaseId = (ushort)Math.Clamp(butte.More1, 1u, ushort.MaxValue);
+        ammo.Amount = (ushort)Math.Clamp(butte.More2, 1u, ushort.MaxValue);
+        PlaceItemInPack(_character, ammo);
+
+        butte.More1 = 0;
+        butte.More2 = 0;
+        SysMessage(ServerMessages.Get(Msg.ItemuseArchbutteGather));
+        return true;
     }
 
     /// <summary>Source-X blade-on-corpse: carving through DeathEngine.CarveCorpse —
