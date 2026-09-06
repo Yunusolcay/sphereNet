@@ -148,6 +148,7 @@ public enum CharTrigger : short
     NPCSeeNewPlayer,
     NPCSeeWantItem,
     NPCSpecialAction,
+    PartyAdd,
     PartyDisband,
     PartyInvite,
     PartyLeave,

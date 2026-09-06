@@ -4,6 +4,38 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Party invitations and membership (09B)
+----------------------------------------
+
+FIX - An accept or decline settled whichever invitation had arrived LAST, not the one
+        the client named. Two invitations in flight meant a late answer to the first
+        joined the second inviter's party, and a decline went to the wrong person. The
+        protocol carries the inviter's uid and Source-X settles that invitation
+        (receive.cpp:2708 -> AcceptEvent, CParty.cpp:443); an answer to an invitation
+        that is no longer pending now settles nothing and consumes nothing.
+
+FIX - Nothing re-checked, at the moment of acceptance, that the inviter could still see
+        the player accepting - two hundred tiles apart still joined. The reference asks
+        CanSee there (:457).
+
+FIX - PARTY_AUTODECLINEINVITE did nothing: neither invitation path read it, so a player
+        who had turned invitations off still received them. Source-X leaves before the
+        invitation is sent (CClientTarg.cpp:2455).
+
+FIX - @PartyAdd never ran. Source-X fires it on the character joining, before any
+        membership changes, and RETURN 1 stops the join (CParty.cpp:481) - the
+        conditions between invitation and acceptance are re-judged there.
+
+FIX - Removing a member ignored @PartyRemove's answer and never ran @PartyLeave at all,
+        so a script could not keep anyone in the party. Both stages refuse the removal
+        upstream (RemoveMember, CParty.cpp:315).
+
+FIX - A leader leaving through the standard client command handed the leadership on
+        instead of disbanding. RemoveMember's fDisband defaults to true and the packet
+        handler does not override it (receive.cpp:2673; CParty.h:92), so the party ends
+        with its disband notifications; passing the leadership on is a separate,
+        explicitly requested move.
+
 [2026-09-06] - Chat channels: switching, passwords, voice and the list (09A)
 ----------------------------------------
 

@@ -1048,6 +1048,7 @@ public sealed class TriggerDispatcher
         CharTrigger.NPCRestock => "NPCRestock",
         CharTrigger.NPCSeeWantItem => "NPCSeeWantItem",
         CharTrigger.NPCLostTeleport => "NPCLostTeleport",
+        CharTrigger.PartyAdd => "PartyAdd",
         CharTrigger.PartyDisband => "PartyDisband",
         CharTrigger.PartyInvite => "PartyInvite",
         CharTrigger.PartyLeave => "PartyLeave",

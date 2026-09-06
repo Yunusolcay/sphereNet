@@ -2736,6 +2736,12 @@ public sealed class ClientWorldFeaturesHandler
                     { SysMessage(ServerMessages.Get("party_notleader")); return; }
                     if (_partyManager.FindParty(target.Uid) != null)
                     { SysMessage(ServerMessages.Get("party_join_failed")); return; }
+                    // A player who has turned invitations off is never asked: Source-X
+                    // reads PARTY_AUTODECLINEINVITE and leaves before the invite is
+                    // even sent (CClientTarg.cpp:2455). Neither entry point read it, so
+                    // the preference did nothing at all.
+                    if (HasAutoDeclinedParties(target))
+                    { SysMessage(ServerMessages.Get("party_join_failed")); return; }
 
                     // Fire @PartyInvite trigger on target
                     if (_triggerDispatcher?.FireCharTrigger(target, CharTrigger.PartyInvite,
@@ -2767,16 +2773,37 @@ public sealed class ClientWorldFeaturesHandler
                         SysMessage(ServerMessages.Get("party_notleader"));
                         break;
                     }
-                    // Fire @PartyRemove trigger on removed member
+                    // Both stages can refuse, and both are consulted BEFORE anyone
+                    // leaves: Source-X runs PartyRemove and then PartyLeave, either of
+                    // which stops the removal with RETURN 1 (RemoveMember,
+                    // CParty.cpp:315). SphereNet fired the first one, ignored its
+                    // answer and never ran the second.
                     var removedChar = _world.FindChar(new Serial(removeUid));
                     if (removedChar != null)
-                        _triggerDispatcher?.FireCharTrigger(removedChar, CharTrigger.PartyRemove,
-                            new TriggerArgs { CharSrc = _character });
+                    {
+                        if (_triggerDispatcher?.FireCharTrigger(removedChar, CharTrigger.PartyRemove,
+                                new TriggerArgs { CharSrc = _character }) == TriggerResult.True)
+                            break;
+                        if (_triggerDispatcher?.FireCharTrigger(removedChar, CharTrigger.PartyLeave,
+                                new TriggerArgs { CharSrc = _character }) == TriggerResult.True)
+                            break;
+                    }
 
                     // Snapshot members before the leave, which may disband the
                     // party (drops to a single member).
                     var membersBefore = party.Members.ToList();
-                    _partyManager.Leave(removeSerial);
+
+                    // The standard client command DISBANDS when the leader is the one
+                    // leaving: RemoveMember's fDisband defaults to true and the packet
+                    // handler does not override it (receive.cpp:2673; CParty.h:92).
+                    // Passing the leader down the ordinary leave path promoted the next
+                    // member instead, so the rest of the party carried on without the
+                    // disband notifications - handing the leadership on is a separate,
+                    // explicitly requested move.
+                    if (removeSerial == party.Master)
+                        _partyManager.Disband(removeSerial);
+                    else
+                        _partyManager.Leave(removeSerial);
                     SysMessage(ServerMessages.GetFormatted("party_leave_1",
                         removedChar?.Name ?? "A member"));
 
@@ -2858,20 +2885,46 @@ public sealed class ClientWorldFeaturesHandler
 
             case 8: // Accept invite
             {
+                // The client says WHOSE invitation it is answering; Source-X reads that
+                // uid out of the packet and settles that invitation (receive.cpp:2708 ->
+                // AcceptEvent, CParty.cpp:443). SphereNet used whichever invite arrived
+                // last, so a late answer to one invitation joined somebody else's party.
+                uint answeredUid = data.Length >= 5
+                    ? (uint)((data[1] << 24) | (data[2] << 16) | (data[3] << 8) | data[4])
+                    : 0;
+
                 if (_character.TryGetTag("PARTY_INVITE_FROM", out string? inviterStr) &&
                     uint.TryParse(inviterStr, out uint inviterUid) &&
                     _character.TryGetTag("PARTY_INVITE_TIME", out string? inviteTimeStr) &&
                     long.TryParse(inviteTimeStr, out long inviteTime))
                 {
+                    if (answeredUid != 0 && answeredUid != inviterUid)
+                    {
+                        // An answer to an invitation that is no longer the pending one
+                        // settles nothing - and must not consume the one that is.
+                        SysMessage(ServerMessages.Get("party_join_failed"));
+                        break;
+                    }
+
                     _character.RemoveTag("PARTY_INVITE_FROM");
                     _character.RemoveTag("PARTY_INVITE_TIME");
                     var inviterSerial = new Serial(inviterUid);
                     var inviter = _world.FindChar(inviterSerial);
                     var inviterParty = _partyManager.FindParty(inviterSerial);
                     long now = Environment.TickCount64;
+                    // The inviter must still be able to SEE the one accepting: the
+                    // reference re-checks CanSee at this point rather than trusting the
+                    // moment the invitation went out (CParty.cpp:457).
                     bool validInvite = inviteTime >= 0 && inviteTime <= now && now - inviteTime <= 120_000 &&
                         inviter != null && inviter.IsPlayer && !inviter.IsDeleted && !inviter.IsDead &&
-                        (inviterParty == null || inviterParty.Master == inviterSerial);
+                        (inviterParty == null || inviterParty.Master == inviterSerial) &&
+                        CanStillSee(inviter, _character);
+                    // @PartyAdd runs on the one joining, before any membership changes,
+                    // and RETURN 1 stops the join (CParty.cpp:481).
+                    if (validInvite && _triggerDispatcher?.FireCharTrigger(
+                            _character, CharTrigger.PartyAdd,
+                            new TriggerArgs { CharSrc = inviter }) == TriggerResult.True)
+                        validInvite = false;
                     // Honour AcceptInvite's result — it fails if already partied
                     // or the inviter's party is gone. Don't claim success blindly.
                     if (validInvite && _partyManager.AcceptInvite(inviterSerial, _character.Uid))
@@ -2896,8 +2949,12 @@ public sealed class ClientWorldFeaturesHandler
 
             case 9: // Decline invite
             {
+                uint declinedUid = data.Length >= 5
+                    ? (uint)((data[1] << 24) | (data[2] << 16) | (data[3] << 8) | data[4])
+                    : 0;
                 if (_character.TryGetTag("PARTY_INVITE_FROM", out string? declineInviterStr) &&
-                    uint.TryParse(declineInviterStr, out uint declineInviterUid))
+                    uint.TryParse(declineInviterStr, out uint declineInviterUid) &&
+                    (declinedUid == 0 || declinedUid == declineInviterUid))
                 {
                     // Notify the inviter their invitation was declined. Previously this
                     // sent a null packet (null!) — a NullReferenceException waiting in the
@@ -2905,6 +2962,13 @@ public sealed class ClientWorldFeaturesHandler
                     string declineNote = ServerMessages.GetFormatted("party_decline_1", _character.Name ?? "Someone");
                     SendToChar?.Invoke(new Serial(declineInviterUid),
                         new PacketSpeechUnicodeOut(0xFFFFFFFF, 0xFFFF, 6, 0x0035, 3, "TRK", "System", declineNote));
+                }
+                else if (declinedUid != 0)
+                {
+                    // Answering an invitation that is no longer pending leaves the one
+                    // that is alone.
+                    SysMessage(ServerMessages.Get("party_join_failed"));
+                    break;
                 }
                 _character.RemoveTag("PARTY_INVITE_FROM");
                 _character.RemoveTag("PARTY_INVITE_TIME");
@@ -2914,6 +2978,26 @@ public sealed class ClientWorldFeaturesHandler
                 break;
             }
         }
+    }
+
+    /// <summary>Whether this player has turned party invitations off. Source-X reads
+    /// PARTY_AUTODECLINEINVITE and does not even send the invite (CClientTarg.cpp:2455).
+    /// </summary>
+    private static bool HasAutoDeclinedParties(Character target) =>
+        target.TryGetTag("PARTY_AUTODECLINEINVITE", out string? raw) &&
+        long.TryParse(raw, out long value) && value != 0;
+
+    /// <summary>Source-X CanSee between two characters at the moment an invitation is
+    /// answered (CParty.cpp:457): same map, within view, and not concealed from the
+    /// viewer.</summary>
+    private static bool CanStillSee(Character viewer, Character target)
+    {
+        if (viewer == target) return true;
+        if (target.IsDeleted || viewer.MapIndex != target.MapIndex) return false;
+        if (viewer.Position.GetDistanceTo(target.Position) > UpdateRange) return false;
+
+        bool concealed = target.IsStatFlag(StatFlag.Hidden) || target.IsInvisible;
+        return !concealed || viewer.AllShow || viewer.PrivLevel >= PrivLevel.Counsel;
     }
 
     /// <summary>Send party member list update to all members.</summary>

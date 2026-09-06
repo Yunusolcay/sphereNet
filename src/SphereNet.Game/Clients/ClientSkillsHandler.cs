@@ -847,6 +847,11 @@ public sealed class ClientSkillsHandler
         var party = _partyManager.FindParty(_character.Uid);
         if (party != null && (party.Master != _character.Uid || party.IsFull)) return;
         if (_partyManager.FindParty(target.Uid) != null) return;
+        // The same preference the protocol path honours: a player who has turned
+        // invitations off is not asked (Source-X CClientTarg.cpp:2455).
+        if (target.TryGetTag("PARTY_AUTODECLINEINVITE", out string? autoDecline) &&
+            long.TryParse(autoDecline, out long declines) && declines != 0)
+            return;
         if (_triggerDispatcher?.FireCharTrigger(target, CharTrigger.PartyInvite,
             new TriggerArgs { CharSrc = _character }) == TriggerResult.True)
             return;

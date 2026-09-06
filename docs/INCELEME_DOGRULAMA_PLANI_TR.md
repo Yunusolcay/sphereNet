@@ -1779,6 +1779,34 @@ gecici olarak kapatilarak 9 testin eski davranisi yakaladigi kanitlandi.
 ici tutarsizlik (`RemoveVoice(true)`); parolanin uc durumlari; sohbet penceresi yeniden
 acildiginda liste tazeligi.
 
+### 09B - parti davetleri ve uyelik yasam dongusu: 6 bulgu (6 Eylul 2026)
+
+Kanit raporu: [09B](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_09B_PARTI_DAVET_UYELIK.md).
+Alti bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+- [x] **09B-1 (P2)** - Kabul/ret yanitindaki davetci kimligi yok sayiliyordu. (YAPILDI:
+  paketteki UID bekleyen davetle eslestiriliyor; uyusmazlikta bekleyen davet tuketilmiyor.
+  Ret yolu da ayni eslestirmeyi yapiyor.)
+- [x] **09B-2 (P2)** - Kabulde gorunurluk yeniden denetlenmiyordu. (YAPILDI:
+  `CanStillSee` - ayni harita, gorus mesafesi ve gizlenme kurallari.)
+- [x] **09B-3 (P2)** - PARTY_AUTODECLINEINVITE okunmuyordu. (YAPILDI: her iki davet
+  girisinde de - protokol Add ve `HandlePartyInvite`.)
+- [x] **09B-4 (P2)** - Katilimda @PartyAdd yoktu. (YAPILDI: yeni `CharTrigger.PartyAdd`,
+  uyelik degismeden once; veto katilimi durduruyor.)
+- [x] **09B-5 (P2)** - @PartyRemove vetosu yok sayiliyor, @PartyLeave hic calismiyordu.
+  (YAPILDI: iki asama da cikarmadan ONCE ve ikisi de reddedebiliyor.)
+- [x] **09B-6 (P2)** - Liderin protokolle ayrilmasi partiyi dagitmiyordu. (YAPILDI:
+  lider kendisini cikardiginda `Disband`.
+  **Ayrim korundu:** `PartyManager.Leave`'in lider devri davranisi kaldirilmadi -
+  referansta fDisband=false ile desteklenen ayri bir yol; `Party_LeavePromotesNewMaster`
+  testi bu yuzden gecerli kaliyor ve degistirilmedi.)
+
+**09B kapanisi:** tam suite **2.793 basarili / 0 basarisiz** (+13). Alti duzeltme de
+gecici olarak kapatilarak 10 testin eski davranisi yakaladigi kanitlandi.
+
+**Acik kalan:** davet hiz siniri; baglanti kesilmesi (09C'de); parti sohbet filtresi;
+dagitma vetosunun sirasi (09C-1).
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

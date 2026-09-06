@@ -3,6 +3,36 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Parti davetleri ve uyelik (09B)
+----------------------------------------
+
+FIX - Kabul veya ret, istemcinin adini verdigi daveti degil EN SON gelen daveti
+        sonuclandiriyordu. Iki davet siradayken ilkine verilen gec cevap ikinci
+        davetcinin partisine katiyor, ret de yanlis kisiye gidiyordu. Protokol davetcinin
+        UID'sini tasir ve Source-X o daveti sonuclandirir (receive.cpp:2708 ->
+        AcceptEvent, CParty.cpp:443); artik bekleyen olmayan bir davete verilen cevap ne
+        bir sey sonuclandiriyor ne de bekleyeni tuketiyor.
+
+FIX - Kabul aninda davetcinin kabul edeni hala GOREBILDIGI yeniden denetlenmiyordu; iki
+        yuz kare uzakta bile katilim gerceklesiyordu. Referans orada CanSee sorar (:457).
+
+FIX - PARTY_AUTODECLINEINVITE hicbir sey yapmiyordu: iki davet yolunun ikisi de bu
+        etiketi okumuyordu, yani davetleri kapatmis oyuncu yine davet aliyordu. Source-X
+        davet gonderilmeden once cikar (CClientTarg.cpp:2455).
+
+FIX - @PartyAdd hic calismiyordu. Source-X onu katilan karakterde, uyelik degismeden
+        once calistirir ve RETURN 1 katilimi durdurur (CParty.cpp:481) - davetle kabul
+        arasinda degisen kosullar orada yeniden degerlendirilir.
+
+FIX - Uye cikarma @PartyRemove'un yanitini gormezden geliyor, @PartyLeave'i ise hic
+        calistirmiyordu; script kimseyi partide tutamiyordu. Referansta iki asama da
+        cikarmayi reddedebilir (RemoveMember, CParty.cpp:315).
+
+FIX - Liderin standart istemci komutuyla ayrilmasi, partiyi dagitmak yerine liderligi
+        devrediyordu. RemoveMember'in fDisband parametresi varsayilan olarak true'dur ve
+        paket isleyicisi bunu degistirmez (receive.cpp:2673; CParty.h:92); parti dagilma
+        bildirimleriyle biter. Liderligi devretmek ayri ve acikca istenen bir islemdir.
+
 [2026-09-06] - Sohbet kanallari: gecis, parola, ses ve liste (09A)
 ----------------------------------------
 
