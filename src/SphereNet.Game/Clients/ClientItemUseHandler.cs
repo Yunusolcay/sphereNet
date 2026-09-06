@@ -1682,20 +1682,7 @@ public sealed class ClientItemUseHandler
 
             // ---- beehive / seed / pitcher ----
             case ItemType.BeeHive:
-                if (Random.Shared.Next(100) < 60)
-                {
-                    var honey = _world.CreateItem();
-                    honey.BaseId = 0x09EC; // jar of honey
-                    honey.ItemType = ItemType.Food;
-                    honey.Name = "jar of honey";
-                    PlaceItemInPack(_character, honey);
-                    SysMessage("You gather some honey from the hive.");
-                }
-                else
-                {
-                    _character.ApplyPoison(1); // lesser poison from bee stings
-                    SysMessage("You are stung by angry bees!");
-                }
+                UseBeeHive(item);
                 break;
             case ItemType.Seed:
                 SysMessage("Select where to plant the seed.");
@@ -1706,7 +1693,7 @@ public sealed class ClientItemUseHandler
                 break;
             case ItemType.PitcherEmpty:
                 SysMessage("Select a water source to fill the pitcher.");
-                SetPendingItemTarget(item, (serial, x, y, z, gfx) => FillPitcher(item, x, y));
+                SetPendingItemTarget(item, (serial, x, y, z, gfx) => FillPitcher(item, serial, x, y));
                 break;
 
             // ---- raw materials ----
@@ -1857,13 +1844,45 @@ public sealed class ClientItemUseHandler
         }
 
         var def = DefinitionLoader.GetItemDef(item.BaseId);
-        ushort fruitId = 0;
-        if (def != null)
+        ushort growId = ResolvePlantId(def?.TData2 ?? 0, def?.TData2Name);
+        ushort fruitId = ResolvePlantId(def?.TData3 ?? 0, def?.TData3Name);
+        // MORE2 is SphereNet's per-instance fruit override, which the growth-timer
+        // drop already honours (Source-X m_itCrop.m_ridFruitOverride).
+        ushort fruitOverride = (ushort)Math.Clamp(item.More2, 0u, ushort.MaxValue);
+        int amount = 1;
+
+        // @ResourceTest comes FIRST and may rewrite the stage and the fruit:
+        // ARGN1 = the growth id, ARGN2 = the fruit id, ARGN3 = the per-instance fruit
+        // override (Plant_Use, CItemPlant.cpp:38). RETURN 1 abandons the harvest.
+        if (_triggerDispatcher != null)
         {
-            if (def.TData3 != 0) fruitId = (ushort)def.TData3;
-            else if (!string.IsNullOrEmpty(def.TData3Name) && Item.ResolveDefName != null)
-                fruitId = Item.ResolveDefName(def.TData3Name);
+            var test = new TriggerArgs
+            {
+                CharSrc = _character,
+                ItemSrc = item,
+                N1 = growId,
+                N2 = fruitId,
+                N3 = fruitOverride,
+            };
+            if (_triggerDispatcher.FireItemTrigger(item, ItemTrigger.ResourceTest, test) == TriggerResult.True)
+                return;
+            growId = ClampToId(test.N1);
+            fruitId = ClampToId(test.N2);
+            fruitOverride = ClampToId(test.N3);
         }
+
+        // A stage that still has somewhere to grow is not ripe - and an unripe plant
+        // yields nothing AND is not reset (:52). SphereNet looked only at whether a
+        // fruit was defined, so a crop whose TDATA2 and TDATA3 are both set could be
+        // reaped in mid-growth.
+        if (growId != 0)
+        {
+            SysMessage("That is not ripe yet.");
+            return;
+        }
+
+        if (fruitOverride != 0)
+            fruitId = fruitOverride;
         if (fruitId == 0)
         {
             SysMessage("There is nothing to harvest yet.");
@@ -1872,7 +1891,31 @@ public sealed class ClientItemUseHandler
 
         var fruit = _world.CreateItem();
         fruit.BaseId = fruitId;
-        fruit.ItemType = ItemType.Food;
+
+        // @ResourceGather then carries the amount and the produce itself: ARGN1 = the
+        // amount, ARGO = the fruit (:73). RETURN 1 destroys the produce and leaves the
+        // plant standing - no crop reset. (The reference's HALFBAKED branch, which
+        // drops the produce at the reaper's feet, has no equivalent return value in
+        // SphereNet's interpreter and is left for that gap to be closed first.)
+        if (_triggerDispatcher != null)
+        {
+            var gather = new TriggerArgs
+            {
+                CharSrc = _character,
+                ItemSrc = fruit,
+                O1 = fruit,
+                N1 = amount,
+            };
+            var answer = _triggerDispatcher.FireItemTrigger(item, ItemTrigger.ResourceGather, gather);
+            amount = gather.N1 > 0 ? (int)gather.N1 : 1;
+            if (answer == TriggerResult.True)
+            {
+                _world.RemoveItem(fruit);
+                return;
+            }
+        }
+
+        fruit.Amount = (ushort)Math.Clamp(amount, 1, ushort.MaxValue);
         PlaceItemInPack(_character, fruit);
 
         BroadcastNearby?.Invoke(_character.Position, UpdateRange,
@@ -1886,24 +1929,108 @@ public sealed class ClientItemUseHandler
         SysMessage("You harvest the plant.");
     }
 
-    /// <summary>Fill an empty pitcher from a water source (Source-X
-    /// CChar::Use_Item on IT_PITCHER_EMPTY).</summary>
-    private void FillPitcher(Item pitcher, short x, short y)
+    /// <summary>A plant stage/fruit id from an ITEMDEF, numeric or by defname.</summary>
+    private static ushort ResolvePlantId(uint tdata, string? tdataName)
+    {
+        if (tdata != 0) return (ushort)tdata;
+        if (!string.IsNullOrEmpty(tdataName) && Item.ResolveDefName != null)
+            return Item.ResolveDefName(tdataName);
+        return 0;
+    }
+
+    private static ushort ClampToId(long value) =>
+        value is > 0 and <= ushort.MaxValue ? (ushort)value : (ushort)0;
+
+    /// <summary>Whether a seed can go into the ground here. Source-X looks for an
+    /// IT_DIRT dynamic item, static or terrain tile at the spot
+    /// (Use_Seed -> IsItemTypeNear, CWorldMap.cpp:663).</summary>
+    private bool HasSoilAt(short x, short y)
+    {
+        if (_character == null) return false;
+        byte map = _character.MapIndex;
+        var spot = new Point3D(x, y, _character.Z, map);
+
+        foreach (var there in _world.GetItemsInRange(spot, 0))
+        {
+            if (there.ItemType == ItemType.Dirt)
+                return true;
+        }
+
+        var md = _world.MapData;
+        if (md == null) return false;
+
+        foreach (var st in md.GetStatics(map, x, y))
+        {
+            if (DefinitionLoader.GetItemDef(st.TileId)?.Type == ItemType.Dirt)
+                return true;
+        }
+
+        // The reference reads the terrain's own type from the pack's tile-type table;
+        // SphereNet classifies the land tile by its tiledata instead (the same source
+        // its P.TYPE property uses).
+        return SphereNet.Game.Objects.ObjBase.ClassifyTerrainType(
+            md.GetLandTileData(md.GetTerrainTile(map, x, y).TileId)) == "t_dirt";
+    }
+
+    /// <summary>Take honey - or a sting - from a hive.
+    ///
+    /// Source-X keeps the hive's stock in MORE1 and spends it: an empty hive gives
+    /// nothing, a full one rolls honey, beeswax or a sting, and only a product costs
+    /// a unit. Either way the hive goes quiet for 15 minutes, and its own tick
+    /// refills it up to five (CCharUse.cpp:1692; CItem.cpp:6380). SphereNet rolled a
+    /// flat 60% honey with no stock and no timer at all, so a hive was an endless
+    /// supply.</summary>
+    private void UseBeeHive(Item hive)
     {
         if (_character == null) return;
-        var here = new Point3D(x, y, _character.Z, _character.MapIndex);
-        if (_character.Position.GetDistanceTo(here) > 3)
+
+        ushort made = 0;
+        if (hive.More1 == 0)
         {
-            SysMessage(ServerMessages.Get(Msg.ItemuseToofar));
-            return;
+            SysMessage("The hive is empty.");
         }
-        var md = _world.MapData;
-        bool water = md != null &&
-            md.GetLandTileData(md.GetTerrainTile(_character.MapIndex, x, y).TileId).IsWet;
-        if (!water)
+        else
         {
-            SysMessage("That is not a water source.");
-            return;
+            made = Random.Shared.Next(3) switch
+            {
+                1 => 0x09EC,    // ITEMID_JAR_HONEY
+                2 => 0x1423,    // ITEMID_BEE_WAX
+                _ => (ushort)0, // stung
+            };
+        }
+
+        if (made != 0)
+        {
+            var product = _world.CreateItem();
+            product.BaseId = made;
+            PlaceItemInPack(_character, product);
+            hive.More1 -= 1;
+            SysMessage("You gather from the hive.");
+        }
+        else if (hive.More1 != 0)
+        {
+            SysMessage("You are stung by angry bees!");
+            SphereNet.Game.Combat.CombatEngine.ApplyScriptDamage(
+                _character, Random.Shared.Next(5),
+                SphereNet.Game.Combat.DamageType.Poison | SphereNet.Game.Combat.DamageType.General);
+        }
+
+        hive.SetTimeout(Environment.TickCount64 + Item.BeeHiveRefillMs);
+    }
+
+    /// <summary>Fill an empty pitcher from a water source (Source-X
+    /// CChar::Use_Item on IT_PITCHER_EMPTY).</summary>
+    private void FillPitcher(Item pitcher, uint targetSerial, short x, short y)
+    {
+        if (_character == null) return;
+        switch (ResolveWaterTarget(targetSerial, x, y))
+        {
+            case WaterTarget.OutOfReach:
+                SysMessage(ServerMessages.Get(Msg.ItemuseToofar));
+                return;
+            case WaterTarget.NotWater:
+                SysMessage("That is not a water source.");
+                return;
         }
         var def = DefinitionLoader.GetItemDef(pitcher.BaseId);
         ushort fullId = def != null && def.TData1 != 0 ? (ushort)def.TData1 : (ushort)0x1F9D;
@@ -1930,6 +2057,15 @@ public sealed class ClientItemUseHandler
             return;
         }
 
+        // Source-X Use_Seed asks for soil before it spends anything, and a staff
+        // member is the exception (CCharUse.cpp:1488). SphereNet planted on bare
+        // rock, water or a floor.
+        if (_character.PrivLevel < PrivLevel.GM && !HasSoilAt(here.X, here.Y))
+        {
+            SysMessage("You need to plant that in soil.");
+            return;
+        }
+
         var def = DefinitionLoader.GetItemDef(seed.BaseId);
         ushort cropId = 0;
         if (def != null)
@@ -1942,6 +2078,25 @@ public sealed class ClientItemUseHandler
         {
             SysMessage("You cannot plant that here.");
             return;
+        }
+
+        // What is already growing there decides the outcome: a tree or foliage
+        // refuses the planting outright, while an existing crop is REPLACED rather
+        // than stacked on top of (:1503). SphereNet piled a second crop onto the
+        // same tile and left trees standing.
+        var standing = _world.GetItemsInRange(new Point3D(x, y, z, _character.MapIndex), 0).ToArray();
+        foreach (var there in standing)
+        {
+            if (there.ItemType is ItemType.Tree or ItemType.Foliage)
+            {
+                SysMessage("There is already a tree here.");
+                return;
+            }
+        }
+        foreach (var there in standing)
+        {
+            if (there.ItemType == ItemType.Crops)
+                _world.RemoveItem(there);
         }
 
         var crop = _world.CreateItem();
@@ -2357,21 +2512,14 @@ public sealed class ClientItemUseHandler
     {
         if (_character == null) return;
 
-        if (_world.FindObject(new Serial(targetSerial)) is Item targetItem)
+        switch (ResolveWaterTarget(targetSerial, x, y))
         {
-            if (!CanReachTargetItem(targetItem))
-            { SysMessage(ServerMessages.Get(Msg.ItemuseBandageReach)); return; }
-            if (targetItem.ItemType is not (ItemType.Water or ItemType.WaterWash))
-            { SysMessage(ServerMessages.Get(Msg.ItemuseBandageClean)); return; }
-        }
-        else
-        {
-            var spot = new Point3D(x, y, _character.Z, _character.MapIndex);
-            if (_character.PrivLevel < PrivLevel.GM &&
-                _character.Position.GetDistanceTo(spot) > 3)
-            { SysMessage(ServerMessages.Get(Msg.ItemuseBandageReach)); return; }
-            if (!IsWaterSpot(x, y))
-            { SysMessage(ServerMessages.Get(Msg.ItemuseBandageClean)); return; }
+            case WaterTarget.OutOfReach:
+                SysMessage(ServerMessages.Get(Msg.ItemuseBandageReach));
+                return;
+            case WaterTarget.NotWater:
+                SysMessage(ServerMessages.Get(Msg.ItemuseBandageClean));
+                return;
         }
 
         // The whole pile comes back clean, as the reference's SetID does.
@@ -2383,6 +2531,33 @@ public sealed class ClientItemUseHandler
                 bandages.Uid.Value, bandages.DispIdFull, 0, bandages.Amount,
                 bandages.X, bandages.Y, bandages.ContainedIn.Value, bandages.Hue,
                 _netState.IsClientPost6017));
+    }
+
+    private enum WaterTarget { Water, NotWater, OutOfReach }
+
+    /// <summary>What the player actually pointed at. Source-X resolves this through
+    /// CanTouchStatic (CCharStatus.cpp:1434), which answers with the TYPE of the
+    /// dynamic item, the static or the terrain that was targeted - so a water trough
+    /// standing on dry ground is water. SphereNet threw the target's serial away and
+    /// looked only at the land tile beneath the coordinates.</summary>
+    private WaterTarget ResolveWaterTarget(uint targetSerial, short x, short y)
+    {
+        if (_character == null) return WaterTarget.NotWater;
+
+        if (_world.FindObject(new Serial(targetSerial)) is Item targetItem)
+        {
+            if (!CanReachTargetItem(targetItem))
+                return WaterTarget.OutOfReach;
+            return targetItem.ItemType is ItemType.Water or ItemType.WaterWash
+                ? WaterTarget.Water
+                : WaterTarget.NotWater;
+        }
+
+        var spot = new Point3D(x, y, _character.Z, _character.MapIndex);
+        if (_character.PrivLevel < PrivLevel.GM &&
+            _character.Position.GetDistanceTo(spot) > 3)
+            return WaterTarget.OutOfReach;
+        return IsWaterSpot(x, y) ? WaterTarget.Water : WaterTarget.NotWater;
     }
 
     /// <summary>Water under a targeted tile - the land itself, or a static laid over

@@ -1184,7 +1184,7 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
     /// terrain item-type). Water/rock come from the tile flags; the natural
     /// ground kind is read from the tiledata name, defaulting to t_grass for
     /// plain walkable land.</summary>
-    private static string ClassifyTerrainType(MapData.Tiles.LandTileData ld)
+    internal static string ClassifyTerrainType(MapData.Tiles.LandTileData ld)
     {
         if (ld.IsWet) return "t_water";
         string n = (ld.Name ?? "").ToLowerInvariant();

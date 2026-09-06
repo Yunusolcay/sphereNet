@@ -1546,6 +1546,50 @@ dogrulandi (birlesik kapatmada kova rengi de sifirlandigi icin o ucu gizliyordu)
 boyasinin dialog/harcama akisi; keyring icindeki anahtarlar ve legacy MORE/lock-code
 import'u; @Unequip'in bir makroda birden fazla katman ve nesne silme/tasima varyantlari.
 
+### 07Z - tarim, kovan ve su: 6 bulgu (6 Eylul 2026)
+
+Kanit raporu: [07Z](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07Z_TARIM_KAYNAK_TOPLU.md).
+Alti bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+- [x] **SX-07Z-01 (P2)** - Ekimde toprak/agac/mevcut bitki kurallari yoktu. (YAPILDI:
+  `HasSoilAt` + agac reddi + mevcut cropun DEGISTIRILMESI; GM istisnasi korundu.
+  **Uyarlama notu:** referans toprak aramasini script paketinin TILETYPE tablosundan
+  yapar (grass genelde t_dirt DEGILDIR; pakette t_dirt 0x3573 ailesi statiktir).
+  SphereNet'te bu tablo yok, bu yuzden sirayla: karedeki dinamik `t_dirt` esya ->
+  statiklerin ITEMDEF turu -> `ObjBase.ClassifyTerrainType` (P.TYPE ile ayni kaynak).
+  `ClassifyTerrainType` bu yuzden internal yapildi.)
+- [x] **SX-07Z-02 (P2)** - TDATA2 buyume asamasi denetlenmiyordu. (YAPILDI: grow id
+  sifir degilse "olgun degil" - urun de yok, reset de yok.)
+- [x] **SX-07Z-03 (P2)** - @ResourceTest/@ResourceGather hic calismiyordu. (YAPILDI:
+  iki asama, referans sirasi ve read-back ile; ResourceGather vetosunda urun siliniyor
+  ve crop reset EDILMIYOR.
+  **Kapatilamayan yari, kayda gecirildi:** referansin `HALFBAKED` donusu (urunu ayaga
+  dusurme) SphereNet'in `TriggerResult`'inda yok; o bosluk kapanmadan uygulanamaz.
+  **Raporun otesinde:** ARGN3 (ornege ozel meyve gecersiz kilmasi) icin SphereNet'in
+  karsiligi zaten vardi - `PlantDropFruit` MORE2'yi okuyor; hasat yolu da artik ayni
+  degeri besliyor.)
+- [x] **SX-07Z-04 (P2)** - Urun zorla Food yapiliyordu. (YAPILDI: tur tanimdan geliyor.
+  **Raporun ayri saymadigi ikinci yol da kapatildi:** `Item.PlantDropFruit` zamanlayici
+  yolunda ayni atama vardi; iki yol farkli tur uretmesin diye birlikte duzeltildi. Bu
+  nedenle `SourceXWave270Tests` mature-stage testi urunu Food yerine kendi grafigiyle
+  sayacak sekilde guncellendi - raporun "bu beklenti de incelenmeli" notu.)
+- [x] **SX-07Z-05 (P2)** - Kovan stok/zamanlayici tanimiyordu. (YAPILDI: MORE1 stogu,
+  3'lu zar (bal/balmumu/sokma), 15 dk timeout ve tick'te 5'e kadar dolum.
+  **Sapma notu:** sokma referansta `OnTakeDamage(rand(5), POISON|GENERAL)`; SphereNet'te
+  eskiden `ApplyPoison(1)` vardi - referansin hasar yolu (`ApplyScriptDamage`) alindi.)
+- [x] **SX-07Z-06 (P2)** - Surahi hedefteki su nesnesini gormuyordu. (YAPILDI:
+  `ResolveWaterTarget` - dinamik su esyasi / statik / arazi; kanli bandaj yolu da ayni
+  yardimciyi kullaniyor.)
+
+**07Z kapanisi:** tam suite **2.704 basarili / 0 basarisiz** (+20). Alti duzeltme de
+gecici olarak kapatilarak 14 testin eski davranisi yakaladigi kanitlandi; ardindan yalniz
+@ResourceTest asamasi kapatilarak iki trigger testi ayrica dogrulandi (birlesik kapatmada
+olgunluk denetimi de kapali oldugu icin biri gizleniyordu).
+
+**Acik kalan:** HALFBAKED donusu; gercek statik toprak ve farkli kat/LOS ile ekim;
+ResourceTest'in nesneyi silmesi; kovanda balmumu/sokma dallarinin kontrollu RNG ile
+dogrulanmasi ve save/load; gercek statik MUL su.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

@@ -3,6 +3,40 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Tarim, kovan ve su kenari (07Z)
+----------------------------------------
+
+FIX - Tohum her zemine ekilebiliyordu: ciplak kaya, doseme, hatta agacin durdugu kare;
+        ustelik ayni noktaya ikinci crop yiginlanabiliyordu. Source-X hicbir sey
+        harcamadan once toprak arar, agac veya foliage bulunan zemini reddeder ve mevcut
+        cropu ustune eklemek yerine DEGISTIRIR (Use_Seed, CCharUse.cpp:1467). Yetkili
+        orada oldugu gibi her yere ekebiliyor.
+
+FIX - Bitki, buyumesi surerken hasat edilebiliyordu. Yalnizca meyve tanimi olup olmadigi
+        denetleniyordu; TDATA2 ve TDATA3'u birlikte tanimli bir bitki urununu veriyor ve
+        hasat edilmis gibi sifirlaniyordu. Source-X buyumeye devam eden asamayi reddeder;
+        olgunlasmamis bitki ne hasat edilir ne sifirlanir (Plant_Use, CItemPlant.cpp:52).
+
+FIX - Hasatta hicbir script asamasi calismiyordu. Source-X once @ResourceTest calistirir -
+        buyume asamasi, meyve ve ornege ozel meyve gecersiz kilmasi ile - ve ucunu de geri
+        okur; boylece script hasadi olgunlastirabilir veya baska urune yoneltebilir. Sonra
+        @ResourceGather miktar ve urunun kendisiyle calisir; RETURN 1 urunu yok eder ve
+        bitkiyi yerinde birakir (:38/:73).
+
+FIX - Bitkiden cikan her sey yiyecege cevriliyordu; tarladan toplanan pamuk yenebiliyordu.
+        Urun artik kendi tanimindaki turu koruyor (CreateScript, :65); ayni sey buyume
+        zamanlayicisinin dusurdugu urun icin de gecerli.
+
+FIX - Ari kovani sonsuz kaynakti: stok ve zamanlayici olmadan duz %60 bal zari. Source-X
+        stogu MORE1'de tutar ve harcar - bos kovan hicbir sey vermez, dolu kovan bal,
+        balmumu veya sokma atar, yalnizca urun bir stok goturur - sonra 15 dakika dinlenir
+        ve kendi tick'inde bese kadar dolar (CCharUse.cpp:1692; CItem.cpp:6380).
+
+FIX - Surahi yalnizca islak araziden doldurulabiliyordu: oyuncunun tikladigi hedef
+        atiliyordu, bu yuzden kuru zeminde duran su tekne veya legeni hicbir sey
+        doldurmuyordu. Source-X hedefi CanTouchStatic ile kendi cozer
+        (CClientTarg.cpp:2340). Ayni cozumleme kanli bandaj yikamasina da hizmet ediyor.
+
 [2026-09-06] - Esya kullanimi: cikarma makrosu, makas, bandaj, ev anahtari ve boya kovasi (07Y)
 ----------------------------------------
 

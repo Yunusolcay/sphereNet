@@ -4,6 +4,42 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Farming, the hive and the water's edge (07Z)
+----------------------------------------
+
+FIX - A seed went into any ground at all: bare rock, a floor, even a tile a tree was
+        already standing on, and a second crop could be stacked onto the first.
+        Source-X asks for soil before it spends anything, refuses ground a tree or
+        foliage holds, and REPLACES an existing crop rather than piling another on it
+        (Use_Seed, CCharUse.cpp:1467). Staff still plant anywhere, as they do there.
+
+FIX - A crop could be reaped in mid-growth. Only the presence of a fruit definition
+        was checked, so a plant whose TDATA2 and TDATA3 are both set gave its produce
+        and reset as though it had been harvested. Source-X refuses a stage that still
+        has somewhere to grow, and an unripe plant is neither harvested nor reset
+        (Plant_Use, CItemPlant.cpp:52).
+
+FIX - Reaping ran no script stage at all. Source-X runs @ResourceTest first, carrying
+        the growth stage, the fruit and the per-instance fruit override, and reads all
+        three back - so a script can ripen or re-aim a harvest - then @ResourceGather
+        with the amount and the produce itself, where RETURN 1 destroys the produce and
+        leaves the plant standing (:38/:73).
+
+FIX - Everything a plant yielded was turned into food, so cotton picked from a field
+        could be eaten. The produce keeps the type its own definition gives it
+        (CreateScript, :65); this applies to the growth timer's own drop as well.
+
+FIX - A beehive was an endless supply: a flat 60% honey roll with no stock and no
+        timer. Source-X keeps the stock in MORE1 and spends it - an empty hive gives
+        nothing, a stocked one rolls honey, beeswax or a sting, and only a product
+        costs a unit - then rests 15 minutes and refills to five on its own tick
+        (CCharUse.cpp:1692; CItem.cpp:6380).
+
+FIX - A pitcher could only be filled from wet land: the target the player actually
+        clicked was thrown away, so a water trough or basin standing on dry ground
+        filled nothing. Source-X resolves the target itself through CanTouchStatic
+        (CClientTarg.cpp:2340). The same resolution now serves the bloody-bandage wash.
+
 [2026-09-06] - Using things: unequip macro, scissors, bandages, house keys and the dye vat (07Y)
 ----------------------------------------
 

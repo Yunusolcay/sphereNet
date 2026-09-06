@@ -776,6 +776,11 @@ public class Item : ObjBase
     /// block (e.g. clearing a combat-bonus freeze) would otherwise never run.</summary>
     public static Action<Item, Characters.Character>? OnItemUnequipped;
 
+    /// <summary>How long a hive rests between refills, and how much it holds
+    /// (Source-X 15 minutes, up to 5).</summary>
+    public const long BeeHiveRefillMs = 15 * 60 * 1000;
+    public const uint BeeHiveMaxHoney = 5;
+
     public void RemoveFromWorld()
     {
         var world = ResolveWorld?.Invoke();
@@ -3092,6 +3097,13 @@ public class Item : ObjBase
                 case ItemType.LightLit:
                     OnLightBurnTick();
                     break;
+                case ItemType.BeeHive:
+                    // Source-X CItem::_OnTick IT_BEE_HIVE (CItem.cpp:6380): the hive
+                    // tops itself back up to five and sleeps another 15 minutes.
+                    if (More1 < BeeHiveMaxHoney)
+                        More1 += 1;
+                    SetTimeout(Environment.TickCount64 + BeeHiveRefillMs);
+                    break;
             }
         }
 
@@ -3391,7 +3403,9 @@ public class Item : ObjBase
         if (world == null) return;
         var fruit = world.CreateItem();
         fruit.BaseId = fruitId;
-        fruit.ItemType = ItemType.Food;
+        // The produce keeps the type its own definition gives it. Source-X builds it
+        // with CreateScript (CItemPlant.cpp:65) and does not turn everything a plant
+        // yields into food - cotton and hay are not edible.
         world.PlaceItemWithDecay(fruit, Position);
     }
 

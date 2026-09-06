@@ -87,13 +87,16 @@ public sealed class SourceXWave270Tests
         var world = LoadCropDefsAndWorld();
         var crop = PlaceCrop(world, 0x3186); // start at the mature stage
 
+        // The produce is counted by its own graphic, not by a forced Food type: a
+        // plant yields what its definition says (Source-X CreateScript,
+        // CItemPlant.cpp:65), and this fixture's fruit is t_fruit.
         int fruitBefore = world.GetItemsInRange(crop.Position, 2)
-            .Count(i => i.ItemType == ItemType.Food);
+            .Count(i => i.BaseId == 0x09D0);
 
         crop.PlantOnTick();
 
         int fruitAfter = world.GetItemsInRange(new Point3D(100, 100, 0, 0), 2)
-            .Count(i => i.ItemType == ItemType.Food);
+            .Count(i => i.BaseId == 0x09D0);
         Assert.True(fruitAfter > fruitBefore, "a fruit should drop on the ground");
         Assert.Equal((ushort)0x0C85, crop.BaseId);           // reset to stage 1
         Assert.True(crop.IsAttr(ObjAttributes.Invis));       // hidden regrow plot
