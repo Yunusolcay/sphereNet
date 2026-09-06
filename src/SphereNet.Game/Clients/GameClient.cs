@@ -217,6 +217,34 @@ public sealed partial class GameClient : ITextConsole
     public bool IsPlaying => _character != null && !_character.IsDeleted;
     public bool HasPendingTarget => Targets.CursorActive;
 
+    /// <summary>A disconnect changes the party like any other departure, so the people
+    /// still connected are told: Source-X takes the same RemoveMember path when a
+    /// character disconnects (SetDisconnected, CChar.cpp:528 -> CParty.cpp:296), which
+    /// sends the new member list, the leader change and the map pins. SphereNet mutated
+    /// the membership in memory and sent nothing, so the rest of the party went on
+    /// showing a member - or a leader - who had gone.</summary>
+    private void LeavePartyOnDisconnect()
+    {
+        if (_character == null || _partyManager == null)
+            return;
+
+        var party = _partyManager.FindParty(_character.Uid);
+        if (party == null)
+            return;
+
+        var membersBefore = party.Members.ToList();
+        _partyManager.Leave(_character.Uid);
+
+        uint[] remaining = party.Members.Select(m => m.Value).ToArray();
+        foreach (var uid in membersBefore)
+        {
+            if (uid == _character.Uid)
+                continue;
+            SendToChar?.Invoke(uid, new PacketPartyRemoveMember(_character.Uid.Value, remaining));
+            SendToChar?.Invoke(uid, new PacketWaypointRemove(_character.Uid.Value));
+        }
+    }
+
     /// <summary>Called when the network connection is closed. Marks character as offline.</summary>
     public void OnDisconnect()
     {
@@ -256,7 +284,7 @@ public sealed partial class GameClient : ITextConsole
             _systemHooks?.DispatchClient("disconnect", _character, _account);
             AbortActiveTradeOnDisconnect();
             ChatOnDisconnect();
-            _partyManager?.Leave(_character.Uid);
+            LeavePartyOnDisconnect();
             EngineTags.StripEphemeral(_character);
             if (linger)
                 _character.SetTag("CLIENT_LINGER_UNTIL",

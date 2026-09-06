@@ -59,7 +59,11 @@ public class PetPartyTriggerTests
     }
 
     [Fact]
-    public void PartyDisband_RemovingLastMember_FiresOnFormerMembers()
+    // @PartyDisband is asked BEFORE the party comes apart, on the member left holding
+    // it, and RETURN 1 stops that stage (Source-X Disband, CParty.cpp:375). The old
+    // expectation had it fired afterwards on every former member, with the party
+    // already empty - too late to refuse and with nothing left to describe.
+    public void PartyDisband_RemovingLastMember_AsksTheMemberLeftHoldingIt()
     {
         var world = CreateWorld();
         var (client, master) = NewClient(world, 1702);
@@ -81,7 +85,31 @@ public class PetPartyTriggerTests
         byte[] data = [2, (byte)(u >> 24), (byte)(u >> 16), (byte)(u >> 8), (byte)u];
         client.HandleExtendedCommand(0x0006, data);
 
-        Assert.Contains(master.Uid.Value, disbanded);
-        Assert.Contains(member.Uid.Value, disbanded);
+        Assert.Equal([master.Uid.Value], disbanded);
+        Assert.Null(pm.FindParty(master.Uid));
+    }
+
+    [Fact]
+    public void PartyDisband_Veto_KeepsThePartyTogether()
+    {
+        var world = CreateWorld();
+        var (client, master) = NewClient(world, 1703);
+        var member = world.CreateCharacter();
+        member.IsPlayer = true;
+        world.PlaceCharacter(member, new Point3D(101, 100, 0, 0));
+
+        var pm = new PartyManager();
+        pm.AcceptInvite(master.Uid, member.Uid);
+
+        var d = new TriggerDispatcher();
+        d.RegisterCharEvent("EVENTSPLAYER", "PartyDisband", (_, _) => TriggerResult.True);
+        client.SetEngines(triggerDispatcher: d, partyManager: pm);
+
+        uint u = member.Uid.Value;
+        byte[] data = [2, (byte)(u >> 24), (byte)(u >> 16), (byte)(u >> 8), (byte)u];
+        client.HandleExtendedCommand(0x0006, data);
+
+        Assert.NotNull(pm.FindParty(master.Uid));
+        Assert.True(pm.FindParty(master.Uid)!.IsMember(member.Uid));
     }
 }

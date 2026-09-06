@@ -1807,6 +1807,51 @@ gecici olarak kapatilarak 10 testin eski davranisi yakaladigi kanitlandi.
 **Acik kalan:** davet hiz siniri; baglanti kesilmesi (09C'de); parti sohbet filtresi;
 dagitma vetosunun sirasi (09C-1).
 
+### 09C-09D - parti/lonca tutarliligi ve lonca kayitlari: 11 bulgu (6 Eylul 2026)
+
+Kanit raporlari: [09C](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_09C_PARTI_LONCA_TUTARLILIK.md),
+[09D](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_09D_LONCA_KAYIT_ILISKILER.md).
+Onbir bulgu da bagimsiz olarak dogrulandi; ikisi ayni alt sistemde oldugu icin tek turda
+uygulandi.
+
+- [x] **09C-1 (P2)** - PartyDisband vetosu dagitmadan SONRA calisiyordu. (YAPILDI: dagitma
+  oncesinde, partiyi elinde tutan uyede; veto dagitmayi durduruyor.
+  **Mevcut test guncellendi:** `PetPartyTriggerTests.PartyDisband_RemovingLastMember_...`
+  her eski uyede tetiklenmesini bekliyordu.)
+- [x] **09C-2 (P2)** - Baglanti kesilmesi parti guncellemesi gondermiyordu. (YAPILDI:
+  `LeavePartyOnDisconnect` - kalanlar yeni listeyi ve waypoint kaldirmayi aliyor.)
+- [x] **09C-3 (P2)** - Script ekleme uyelik butunlugunu korumuyordu. (YAPILDI: iki komut
+  da UID'yi karaktere cozuyor; siradan ekleme baska partideki kisiyi reddediyor.)
+- [x] **09C-4 (P2)** - Lider degisince MEMBER.0 eski lideri gosteriyordu. (YAPILDI:
+  `SetMaster` lideri listenin basina tasiyor.)
+- [x] **09C-5 (P2)** - MEMBER.COUNT alt sinir gibi yorumlaniyordu. (YAPILDI: tam rol
+  esitligi; parametresiz sorgu hepsini sayiyor.)
+- [x] **09C-6 (P2)** - Uye ayrilinca secim yapilmiyordu. (YAPILDI: `GuildManager.MemberLeft`
+  - cikarma + `ElectMaster`; lonca gump'inin Leave dali oradan geciyor.)
+- [x] **09D-1 (P2)** - Dagitilan lonca eski etiketlerden geri geliyordu. (YAPILDI:
+  `RemoveGuild(stoneUid, world)` tasin GUILD.* etiketlerini de temizliyor.)
+- [x] **09D-2 (P2)** - Silinen tasin loncasi manager'da yasiyordu. (YAPILDI:
+  `OnStoneDeleted`, sunucunun `ObjectDeleting` kancasina baglandi.)
+- [x] **09D-3 (P2)** - Uyesiz lonca savasini surduruyordu. (YAPILDI: son tam uye
+  ayrilinca ilisikiler iki yonde de temizleniyor - manager iki tarafi da gordugu icin bu
+  is `MemberLeft`'te.)
+- [x] **09D-4 (P2)** - Unvandaki gercek ters cizgi kayboluyordu. (YAPILDI: kacis
+  karakteri de kacisliyor (`\\e`); eski kayitlardaki taninmayan ciftler oldugu gibi
+  korunuyor.)
+- [x] **09D-5 (P2)** - ABBREV/CHARTER yuklemede sessizce kirpiliyordu. (YAPILDI: okuma
+  tarafindaki kirpma kaldirildi - sinir gerekiyorsa yazma tarafinda olmali.)
+
+**09C-09D kapanisi:** tam suite **2.811 basarili / 0 basarisiz** (+18). Onbir duzeltme de
+gecici olarak kapatilarak 15 testin eski davranisi yakaladigi kanitlandi.
+
+**Kendi testimi duzelttim:** script ekleme testleri once `TrySetProperty` cagiriyordu;
+PARTY.* bir KOMUT (`TryExecuteCommand`), dolayisiyla hicbir sey calismiyor ve iki olumsuz
+iddia bosuna geciyordu. Dogru giris noktasina cevrildi ve komutun true dondugu de
+iddia edildi.
+
+**Acik kalan:** parti sohbet filtresi ve davet hiz siniri; lonca savas/baris gump akisi;
+JoinTime alani; town tasi varyantlari; kirpma sinirlarinin yazma tarafinda uygulanmasi.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

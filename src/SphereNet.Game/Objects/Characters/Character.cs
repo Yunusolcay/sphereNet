@@ -6282,14 +6282,22 @@ public partial class Character : ObjBase
             }
             case "ADDMEMBER":
             {
+                // Both script commands resolve the uid to a real character first
+                // (CParty.cpp:767 -> CharFind), and the ordinary add refuses someone who
+                // already belongs to a party, as AcceptEvent does (:443). Without either
+                // check the same uid could sit in two member lists at once, and a uid
+                // that belongs to nobody could take up a place.
                 if (pm == null) return true;
                 if (uint.TryParse(args.Trim().TrimStart('0').TrimStart('x', 'X'),
                     System.Globalization.NumberStyles.HexNumber, null, out uint targetUid))
                 {
-                    var party = pm.FindParty(Uid);
-                    if (party == null)
-                        party = pm.CreateParty(Uid);
-                    party.AddMember(new Serial(targetUid));
+                    var target = new Serial(targetUid);
+                    if (ResolveWorld?.Invoke()?.FindChar(target) == null)
+                        return true;
+                    if (pm.FindParty(target) != null)
+                        return true;    // already in a party of their own
+                    var party = pm.FindParty(Uid) ?? pm.CreateParty(Uid);
+                    party.AddMember(target);
                 }
                 return true;
             }
@@ -6299,7 +6307,10 @@ public partial class Character : ObjBase
                 if (uint.TryParse(args.Trim().TrimStart('0').TrimStart('x', 'X'),
                     System.Globalization.NumberStyles.HexNumber, null, out uint targetUid))
                 {
-                    pm.ForceAddMember(Uid, new Serial(targetUid));
+                    var target = new Serial(targetUid);
+                    if (ResolveWorld?.Invoke()?.FindChar(target) == null)
+                        return true;
+                    pm.ForceAddMember(Uid, target);
                 }
                 return true;
             }

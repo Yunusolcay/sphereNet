@@ -74,11 +74,19 @@ public sealed class PartyDef
 
     public bool GetLootFlag(Serial uid) => _lootRights.Contains(uid);
 
-    /// <summary>Change party master.</summary>
+    /// <summary>Change party master.
+    ///
+    /// Source-X moves the new leader to the FRONT of the member list (SetMaster,
+    /// CParty.cpp:62): the list is what indexed access and the member packets read, so
+    /// leaving it alone made PARTY.MEMBER.0 and PARTY.MASTER name two different
+    /// people.</summary>
     public void SetMaster(Serial uid)
     {
-        if (_members.Contains(uid))
-            _master = uid;
+        if (!_members.Contains(uid))
+            return;
+        _master = uid;
+        _members.Remove(uid);
+        _members.Insert(0, uid);
     }
 
     // --- TAG system ---

@@ -204,11 +204,16 @@ public sealed class GuildDef
         newMaster.Priv = GuildPriv.Master;
     }
 
-    /// <summary>Count members with at least the given priv level. -1 = all.</summary>
-    public int GetMemberCount(int minPriv)
+    /// <summary>How many members hold exactly this role; -1 counts them all.
+    ///
+    /// Source-X compares GetPriv() to the requested value (CItemStone::r_WriteVal
+    /// member.count, CItemStone.cpp:461). Treating the parameter as a MINIMUM turned
+    /// the roles into a ladder, so a candidate query counted masters and members too
+    /// and every script tally came out inflated.</summary>
+    public int GetMemberCount(int priv)
     {
-        if (minPriv < 0) return _members.Count;
-        return _members.Count(m => (byte)m.Priv >= minPriv && (byte)m.Priv < 100);
+        if (priv < 0) return _members.Count;
+        return _members.Count(m => (byte)m.Priv == priv);
     }
 
     /// <summary>Add a character directly as a full member.</summary>
@@ -276,6 +281,9 @@ public sealed class GuildDef
 
     public GuildRelation? GetRelation(Serial otherStoneUid) =>
         _relations.GetValueOrDefault(otherStoneUid);
+
+    /// <summary>The stones this guild holds a relation record for.</summary>
+    public IEnumerable<Serial> RelationStones => _relations.Keys;
 
     /// <summary>Declare war on another guild (sets WeDeclaredWar).</summary>
     public void DeclareWar(Serial otherGuildStone)
@@ -422,11 +430,80 @@ public sealed class GuildManager
         return guild;
     }
 
-    public void RemoveGuild(Serial stoneUid)
+    public void RemoveGuild(Serial stoneUid) => RemoveGuild(stoneUid, null);
+
+    /// <summary>Take a guild out of the world. When the stone survives, the tags that
+    /// would rebuild the guild on the next load go with it: a disbanded guild that left
+    /// its GUILD.NAME / GUILD.MEMBERS behind came back at the next world load, with its
+    /// old master and membership intact.</summary>
+    public void RemoveGuild(Serial stoneUid, World.GameWorld? world)
     {
         if (!_guilds.Remove(stoneUid)) return;
         foreach (var guild in _guilds.Values)
             guild.RemoveRelation(stoneUid);
+
+        if (world?.FindItem(stoneUid) is { } stone)
+            ClearGuildTags(stone);
+    }
+
+    private static readonly string[] GuildTagKeys =
+    [
+        "GUILD.NAME", "GUILD.ABBREV", "GUILD.ISTOWN", "GUILD.WEB", "GUILD.CHARTER",
+        "GUILD.ALIGN", "GUILD.MAXHOUSES", "GUILD.MAXSHIPS", "GUILD.MEMBERS",
+        "GUILD.RELATIONS", "GUILD.WARS", "GUILD.ALLIES",
+    ];
+
+    private static void ClearGuildTags(Objects.Items.Item stone)
+    {
+        foreach (var key in GuildTagKeys)
+            stone.RemoveTag(key);
+    }
+
+    /// <summary>A member has left a guild.
+    ///
+    /// Source-X takes the membership record out and holds a fresh election
+    /// (CStoneMember.cpp:400 -> ElectMaster, CItemStone.cpp:1135): the departing
+    /// member's vote goes with them, and so do the votes that were loyal to them.
+    /// SphereNet promoted whoever came next in the list instead, which is not
+    /// necessarily who the remaining votes support.
+    ///
+    /// When the last FULL member goes, the guild is at war with nobody: the reference
+    /// forces peace on a stone with no members (CItemStone.cpp:1226 -> WeDeclarePeace,
+    /// :1494), on both sides of every declaration.</summary>
+    public bool MemberLeft(GuildDef guild, Serial charUid)
+    {
+        if (!guild.RemoveMember(charUid))
+            return false;
+
+        guild.ElectMaster();
+
+        if (guild.GetMemberCount((int)GuildPriv.Member) + guild.GetMemberCount((int)GuildPriv.Master) == 0)
+            ClearRelationsBothWays(guild);
+        return true;
+    }
+
+    /// <summary>Drop every war and alliance this guild is part of, from both ends.</summary>
+    private void ClearRelationsBothWays(GuildDef guild)
+    {
+        foreach (var otherStone in guild.RelationStones.ToArray())
+        {
+            guild.RemoveRelation(otherStone);
+            if (_guilds.TryGetValue(otherStone, out var other))
+                other.RemoveRelation(guild.StoneUid);
+        }
+    }
+
+    /// <summary>The guild whose stone this is has gone from the world.
+    ///
+    /// Source-X ties the membership records to the stone's own lifetime (CItemStone
+    /// destructor, CItemStone.cpp:30). SphereNet keeps the guild in a manager beside
+    /// the world, so deleting the stone left a guild nobody could reach still answering
+    /// membership questions.</summary>
+    public void OnStoneDeleted(Serial stoneUid)
+    {
+        if (_guilds.TryGetValue(stoneUid, out var guild))
+            ClearRelationsBothWays(guild);
+        RemoveGuild(stoneUid);
     }
 
     public bool DeclareWar(Serial fromStoneUid, Serial toStoneUid)
@@ -470,6 +547,37 @@ public sealed class GuildManager
     }
 
     public IEnumerable<GuildDef> GetAllGuilds() => _guilds.Values;
+
+    // A member title is free text and the record uses ':' and ',' as separators, so
+    // both are escaped. The escape CHARACTER has to be escaped as well, or a title that
+    // genuinely contains a backslash comes back as a separator: "Ranger\camp" used to
+    // load as "Ranger:amp".
+    private static string EscapeField(string? text) =>
+        (text ?? "").Replace("\\", "\\e").Replace(":", "\\c").Replace(",", "\\m");
+
+    private static string UnescapeField(string raw)
+    {
+        var sb = new System.Text.StringBuilder(raw.Length);
+        for (int i = 0; i < raw.Length; i++)
+        {
+            if (raw[i] != '\\' || i + 1 >= raw.Length)
+            {
+                sb.Append(raw[i]);
+                continue;
+            }
+            char code = raw[++i];
+            sb.Append(code switch
+            {
+                'c' => ':',
+                'm' => ',',
+                'e' => '\\',
+                // An older save wrote no escape for the backslash itself; keep the pair
+                // as it stands rather than losing a character.
+                _ => "\\" + code,
+            });
+        }
+        return sb.ToString();
+    }
 
     // --- Save/Load via item TAGs (guild stone items) ---
 
@@ -523,7 +631,7 @@ public sealed class GuildManager
             // free-text title, otherwise a comma in a player-set title splits the
             // record on load and drops the trailing members.
             var memberStrs = guild.Members.Select(m =>
-                $"0{m.CharUid.Value:X}:{(byte)m.Priv}:{m.Title?.Replace(":", "\\c").Replace(",", "\\m") ?? ""}:{m.AccountGold}:{(m.LoyalTo == Serial.Invalid ? "0" : $"0{m.LoyalTo.Value:X}")}:{(m.ShowAbbrev ? "1" : "0")}");
+                $"0{m.CharUid.Value:X}:{(byte)m.Priv}:{EscapeField(m.Title)}:{m.AccountGold}:{(m.LoyalTo == Serial.Invalid ? "0" : $"0{m.LoyalTo.Value:X}")}:{(m.ShowAbbrev ? "1" : "0")}");
             stone.SetTag("GUILD.MEMBERS", string.Join(",", memberStrs));
 
             // Relations: uid:wewar:theywar:weally:theyally
@@ -577,16 +685,15 @@ public sealed class GuildManager
                               item.ItemType == Core.Enums.ItemType.StoneTown,
             };
 
+            // What the write side accepted, the read side keeps: cutting the
+            // abbreviation to four characters and the charter to two hundred here
+            // silently changed data that had been stored in full, so a guild's text
+            // shrank every time the world was loaded. Any limit belongs where the text
+            // is set, not where it is read back.
             if (item.TryGetTag("GUILD.ABBREV", out string? abbrev))
-            {
-                var safeAbbrev = (abbrev ?? "").Trim();
-                guild.Abbreviation = safeAbbrev[..Math.Min(4, safeAbbrev.Length)];
-            }
+                guild.Abbreviation = (abbrev ?? "").Trim();
             if (item.TryGetTag("GUILD.CHARTER", out string? charter))
-            {
-                var safeCharter = charter ?? "";
-                guild.Charter = safeCharter[..Math.Min(200, safeCharter.Length)];
-            }
+                guild.Charter = charter ?? "";
             if (item.TryGetTag("GUILD.WEB", out string? web))
                 guild.WebUrl = web ?? "";
             if (item.TryGetTag("GUILD.ALIGN", out string? alignStr) &&
@@ -627,7 +734,7 @@ public sealed class GuildManager
                         priv != (byte)GuildPriv.Master && priv != (byte)GuildPriv.Accepted)
                         continue;
                     claimedCharacters.Add(uid);
-                    string title = segs.Length > 2 ? segs[2].Replace("\\c", ":").Replace("\\m", ",") : "";
+                    string title = segs.Length > 2 ? UnescapeField(segs[2]) : "";
 
                     var member = guild.AddRecruit(new Serial(uid));
                     member.Priv = (GuildPriv)priv;

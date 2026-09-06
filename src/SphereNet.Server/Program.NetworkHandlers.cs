@@ -77,6 +77,12 @@ public static partial class Program
         if (obj.IsItem)
         {
             _systemHooks.DispatchItem("delete", obj);
+            // A guild lives on its stone: Source-X ties the membership records to the
+            // stone's own lifetime (CItemStone destructor, CItemStone.cpp:30). Nothing
+            // connected the world's deletion to the separate guild manager here, so a
+            // deleted stone left a guild nobody could reach still answering membership
+            // questions - and still at war.
+            _guildManager?.OnStoneDeleted(obj.Uid);
             MarkNearbyClientsRefresh(obj.Position);
         }
         else if (obj is Character ch && !ch.IsPlayer)

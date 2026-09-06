@@ -4,6 +4,61 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Party and guild state that has to add up (09C-09D)
+----------------------------------------
+
+FIX - @PartyDisband was fired after the party had already been taken apart, on every
+        former member, with nothing left to describe and no way to refuse. Source-X asks
+        it at the top of Disband, on the member left holding the party, and RETURN 1
+        stops that stage (CParty.cpp:375).
+
+FIX - A disconnect changed the party in memory and told nobody: the members still
+        connected went on showing a member - or a leader - who had gone. Source-X takes
+        the ordinary removal path when a character disconnects (SetDisconnected,
+        CChar.cpp:528 -> :296), which sends the new member list and clears the map pins.
+
+FIX - The script party-add commands did not check who they were adding. The ordinary
+        add put someone into a second party without leaving the first, and the forced
+        one accepted a uid belonging to nobody, which then took up a place. Both resolve
+        the uid to a real character upstream, and the ordinary add refuses someone who
+        already belongs to a party (CParty.cpp:767/:443).
+
+FIX - Changing the party leader left the member list alone, so PARTY.MASTER and
+        PARTY.MEMBER.0 named two different people. Source-X moves the new leader to the
+        front of the list (SetMaster, CParty.cpp:62), which is what indexed access and
+        the member packets read.
+
+FIX - A guild's MEMBER.COUNT.n counted every role AT OR ABOVE the one asked for, so a
+        candidate tally included members and masters and every script count came out
+        inflated. The reference compares the role exactly (CItemStone.cpp:461).
+
+FIX - A guild member leaving promoted whoever came next in the list instead of holding
+        an election, so the leadership could pass to someone the remaining votes did not
+        support. Source-X elects on every membership removal (CStoneMember.cpp:400 ->
+        ElectMaster, CItemStone.cpp:1135).
+
+FIX - A guild whose last full member left kept its wars, on both sides. The reference
+        forces peace on a stone with no members (CItemStone.cpp:1226 -> WeDeclarePeace,
+        :1494).
+
+FIX - Deleting a guild stone left the guild running: membership questions still
+        answered, wars still standing. The records live and die with the stone upstream
+        (CItemStone.cpp:30).
+
+FIX - A disbanded guild came back at the next world load. Disbanding removed the
+        manager's record but left the stone's GUILD.NAME / GUILD.MEMBERS tags, which
+        rebuilt it - master, membership and all.
+
+FIX - A member title containing a backslash was mangled on load: ':' and ',' were
+        escaped but the escape character itself was not, so "Ranger\camp" came back as
+        "Ranger:amp". The encoding is lossless now, and an older save's unescaped
+        backslash is kept rather than eaten.
+
+FIX - A guild's abbreviation and charter were silently trimmed to four and two hundred
+        characters WHEN LOADED, so text that had been accepted and stored in full shrank
+        every time the world was loaded. What the write side accepts, the read side now
+        keeps.
+
 [2026-09-06] - Party invitations and membership (09B)
 ----------------------------------------
 

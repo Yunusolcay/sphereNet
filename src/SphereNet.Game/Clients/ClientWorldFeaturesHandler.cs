@@ -1297,7 +1297,7 @@ public sealed class ClientWorldFeaturesHandler
                     if (mch != null)
                         StampStoneMemory(mch, stone, add: false);
                 }
-                _guildManager.RemoveGuild(stone.Uid);
+                _guildManager.RemoveGuild(stone.Uid, _world);
                 SysMessage(ServerMessages.Get("guild_disbanded"));
                 break;
             }
@@ -1314,7 +1314,7 @@ public sealed class ClientWorldFeaturesHandler
                     SysMessage(ServerMessages.Get("msg_insufficient_priv"));
                     break;
                 }
-                guild.RemoveMember(_character.Uid);
+                _guildManager.MemberLeft(guild, _character.Uid);
                 StampStoneMemory(_character, stone, add: false);
                 SysMessage(ServerMessages.Get("guild_left"));
                 break;
@@ -2793,6 +2793,25 @@ public sealed class ClientWorldFeaturesHandler
                     // party (drops to a single member).
                     var membersBefore = party.Members.ToList();
 
+                    // @PartyDisband is asked BEFORE the party is taken apart, on the
+                    // member who would be left holding it: Source-X runs it at the top
+                    // of Disband and RETURN 1 stops that stage (CParty.cpp:375).
+                    // SphereNet fired it afterwards, on every former member, with the
+                    // party already empty - too late to refuse and with nothing left to
+                    // describe.
+                    bool willDisband = removeSerial == party.Master || party.MemberCount <= 2;
+                    if (willDisband)
+                    {
+                        var lastStanding = _world.FindChar(
+                            party.Master == removeSerial
+                                ? membersBefore.FirstOrDefault(m => m != removeSerial)
+                                : party.Master);
+                        if (lastStanding != null &&
+                            _triggerDispatcher?.FireCharTrigger(lastStanding, CharTrigger.PartyDisband,
+                                new TriggerArgs { CharSrc = _character }) == TriggerResult.True)
+                            break;
+                    }
+
                     // The standard client command DISBANDS when the leader is the one
                     // leaving: RemoveMember's fDisband defaults to true and the packet
                     // handler does not override it (receive.cpp:2673; CParty.h:92).
@@ -2821,11 +2840,6 @@ public sealed class ClientWorldFeaturesHandler
                             foreach (var otherUid in membersBefore)
                                 if (otherUid != formerUid)
                                     SendToChar?.Invoke(formerUid, new PacketWaypointRemove(otherUid.Value));
-                            // @PartyDisband (Source-X) — fires on each former member.
-                            var formerChar = _world.FindChar(formerUid);
-                            if (formerChar != null)
-                                _triggerDispatcher?.FireCharTrigger(formerChar, CharTrigger.PartyDisband,
-                                    new TriggerArgs { CharSrc = formerChar });
                         }
                     }
                     else

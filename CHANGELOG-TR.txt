@@ -3,6 +3,58 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Toplamasi gereken parti ve lonca durumu (09C-09D)
+----------------------------------------
+
+FIX - @PartyDisband parti zaten dagitildiktan sonra, her eski uyede, anlatacak bir sey
+        kalmamisken ve reddetme imkani olmadan calisiyordu. Source-X onu Disband'in
+        basinda, partiyi elinde tutan uyede sorar; RETURN 1 o asamayi durdurur
+        (CParty.cpp:375).
+
+FIX - Baglanti kesilmesi partiyi bellekte degistirip kimseye haber vermiyordu; bagli
+        kalanlar gitmis bir uyeyi - ya da lideri - gostermeye devam ediyordu. Source-X
+        baglanti kesilirken siradan cikarma yolunu izler (SetDisconnected, CChar.cpp:528
+        -> :296); bu yol yeni uye listesini gonderir ve harita isaretlerini temizler.
+
+FIX - Script parti ekleme komutlari kimi ekledigini denetlemiyordu. Siradan ekleme,
+        kisiyi ilk partisinden cikarmadan ikinci bir partiye koyuyor; zorunlu ekleme ise
+        kimseye ait olmayan bir UID'yi kabul edip yer isgal ediyordu. Referansta ikisi de
+        UID'yi gercek bir karaktere cozer ve siradan ekleme zaten partide olani reddeder
+        (CParty.cpp:767/:443).
+
+FIX - Parti liderini degistirmek uye listesine dokunmuyordu; PARTY.MASTER ile
+        PARTY.MEMBER.0 farkli kisileri gosteriyordu. Source-X yeni lideri listenin basina
+        tasir (SetMaster, CParty.cpp:62); indeksli erisim ve uye paketleri o listeyi okur.
+
+FIX - Loncanin MEMBER.COUNT.n sorgusu istenen rolu VE USTUNU sayiyordu; aday sayimi
+        uyeleri ve lideri de kapsiyor, script sayimlari sisiyordu. Referans rolu tam
+        esitlikle karsilastirir (CItemStone.cpp:461).
+
+FIX - Ayrilan lonca uyesi yerine secim yapilmadan listedeki siradaki kisi lider
+        oluyordu; yonetim, kalan oylarin desteklemedigi birine gecebiliyordu. Source-X
+        her uyelik silinmesinde secim yapar (CStoneMember.cpp:400 -> ElectMaster,
+        CItemStone.cpp:1135).
+
+FIX - Son tam uyesi ayrilan lonca savaslarini iki yonde de surduruyordu. Referans uyesiz
+        tasta zorunlu barisi uygular (CItemStone.cpp:1226 -> WeDeclarePeace, :1494).
+
+FIX - Lonca tasi silindiginde lonca calismaya devam ediyordu: uyelik sorgulari
+        yanitlaniyor, savaslar duruyordu. Referansta kayitlar tasla birlikte yasar ve
+        biter (CItemStone.cpp:30).
+
+FIX - Dagitilan lonca bir sonraki dunya yuklemesinde geri geliyordu. Dagitma manager
+        kaydini siliyor ama tasin GUILD.NAME / GUILD.MEMBERS etiketlerini birakiyordu; o
+        etiketler loncayi lideri ve uyeligiyle yeniden kuruyordu.
+
+FIX - Ters egik cizgi iceren uye unvani yuklemede bozuluyordu: ':' ve ',' kacisliyordu
+        ama kacis karakterinin kendisi kacislanmiyordu; "Ranger\camp" unvani
+        "Ranger:amp" olarak donuyordu. Kodlama artik kayipsiz; eski kayitlardaki
+        kacislanmamis ters cizgi de yenmek yerine korunuyor.
+
+FIX - Loncanin kisaltmasi ve tuzugu YUKLEMEDE sessizce dort ve iki yuz karaktere
+        kirpiliyordu; kabul edilip tam olarak saklanmis metin her dunya yuklemesinde
+        kisaliyordu. Yazma tarafinin kabul ettigini okuma tarafi artik koruyor.
+
 [2026-09-06] - Parti davetleri ve uyelik (09B)
 ----------------------------------------
 
