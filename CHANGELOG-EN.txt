@@ -4,6 +4,39 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Smelting ore and mending gear (08A)
+----------------------------------------
+
+FIX - Every ore smelted into iron. The ingot an ore yields is named by the ore
+        definition's TDATA1 (Skill_Mining_Smelt, CCharSkill.cpp:1150), which was never
+        read - only a local SMELT_TO tag was, and everything else became iron carrying
+        the ore's hue. The explicit tag still wins; the definition is now the fallback
+        ahead of plain iron.
+
+FIX - A failed smelt burned the whole pile. The reference loses rand(amount/2)+1 of
+        it (:1247), so ten ore cost at most five, not all ten.
+
+FIX - @Smelt was reduced to a veto. Source-X hands it the smelter's Mining skill in
+        ARGN1, the number of resource kinds in ARGN2, a skip-the-minimum-skill flag in
+        ARGN3 and the produce in LOCAL.resource.0.ID / .amount, then reads all of it
+        back (:1138/:1196). SphereNet passed the ore COUNT as ARGN1 and threw the rest
+        away, so a script could refuse a smelt but never steer it.
+
+FIX - @Create ran on the wrong item. The new ingots were merged into whatever pile was
+        already in the pack and the trigger fired on the MERGED result, so a creation
+        script that recoloured four new ingots recoloured the ten that were already
+        there with them. Source-X builds the ingot and bounces it afterwards
+        (:1260/:1284).
+
+FIX - A repair needed no anvil and no materials: a smith mended anything anywhere for
+        free. Source-X looks for an anvil within two tiles and spends half the damage
+        percentage of what the piece is made of, tested before the work and spent after
+        it (Use_Repair, CCharUse.cpp:781/794/854).
+
+FIX - A repair skipped Arms Lore entirely. The reference identifies the piece with it
+        first, and failing that ends the repair before the craft skill is rolled at all
+        (:764); the gain is applied afterwards, negative on that failure.
+
 [2026-09-06] - Farming, the hive and the water's edge (07Z)
 ----------------------------------------
 

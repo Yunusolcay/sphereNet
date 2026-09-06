@@ -2329,26 +2329,59 @@ public sealed class ClientItemUseHandler
             return;
         }
 
-        int amount = Math.Max(1, (int)ore.Amount);
-        if (_triggerDispatcher?.FireItemTrigger(ore, ItemTrigger.Smelt, new TriggerArgs
-        {
-            CharSrc = _character,
-            ItemSrc = ore,
-            O1 = forge,
-            N1 = amount,
-            S1 = ServerMessages.Get(Msg.MiningSmelt),
-        }) == TriggerResult.True)
-            return;
+        int oreQty = Math.Max(1, (int)ore.Amount);
+        ushort ingotId = ResolveSmeltIngotId(ore);
+        int perOre = 1;
 
-        if (!SkillEngine.UseQuick(_character, SkillType.Mining, 30))
+        // Source-X @Smelt arguments (Skill_Mining_Smelt, CCharSkill.cpp:1138):
+        // ARGN1 = the smelter's Mining skill, ARGN2 = how many kinds of resource the
+        // ore yields, ARGN3 = skip the minimum-skill requirement, and the produce
+        // itself in LOCAL.resource.0.ID / .amount - all of it read back afterwards.
+        // SphereNet passed the ore COUNT as ARGN1, nothing else, and threw the args
+        // away, so a script could veto a smelt but never steer it.
+        int miningSkill = _character.GetSkill(SkillType.Mining);
+        bool skipSkillReq = false;
+        if (_triggerDispatcher != null)
         {
-            ConsumeOreStack(ore);
+            var locals = new SphereNet.Scripting.Variables.VarMap();
+            locals.SetInt("resource.0.ID", ingotId);
+            locals.SetInt("resource.0.amount", perOre);
+            var args = new TriggerArgs
+            {
+                CharSrc = _character,
+                ItemSrc = ore,
+                O1 = forge,
+                N1 = miningSkill,
+                N2 = 1,             // an ore yields exactly one kind of resource
+                N3 = 0,
+                S1 = ServerMessages.Get(Msg.MiningSmelt),
+                Locals = locals,
+            };
+            if (_triggerDispatcher.FireItemTrigger(ore, ItemTrigger.Smelt, args) == TriggerResult.True)
+                return;
+
+            miningSkill = args.N1;
+            skipSkillReq = args.N3 != 0;
+            if (long.TryParse(locals.Get("resource.0.ID"), out long scriptedId) &&
+                scriptedId is > 0 and <= ushort.MaxValue)
+                ingotId = (ushort)scriptedId;
+            if (long.TryParse(locals.Get("resource.0.amount"), out long scriptedQty) && scriptedQty > 0)
+                perOre = (int)Math.Min(scriptedQty, ushort.MaxValue);
+        }
+
+        if (!skipSkillReq && !SkillEngine.UseQuick(_character, SkillType.Mining, 30))
+        {
+            // A failed smelt costs part of the pile, not all of it: the reference
+            // loses rand(amount/2)+1 (CCharSkill.cpp:1247). SphereNet deleted the
+            // whole stack, so one unlucky roll burned ten ore.
+            int lost = Random.Shared.Next(oreQty / 2) + 1;
+            ConsumeOreAmount(ore, lost);
             SysMessage(ServerMessages.GetFormatted(Msg.MiningNothing, ore.GetName()));
             return;
         }
 
         var oreHue = ore.Hue;
-        ushort ingotId = ResolveSmeltIngotId(ore);
+        int amount = oreQty * Math.Max(1, perOre);
         ConsumeOreStack(ore);
 
         var ingot = _world.CreateItem();
@@ -2365,6 +2398,17 @@ public sealed class ClientItemUseHandler
             : (oreHue.Value != 0 ? "ingot" : "iron ingot");
         ingot.Amount = (ushort)Math.Min(amount, ushort.MaxValue);
 
+        // @Create belongs to the item that was just made, BEFORE it is handed over
+        // and possibly merged into a pile that was already there: Source-X builds the
+        // ingot with CreateScript and only bounces it afterwards (CCharSkill.cpp:1260
+        // / :1284). Firing it on the merged result re-ran the creation script over the
+        // player's existing ingots - a callback that recoloured the new ingots
+        // recoloured the old ones with them.
+        _triggerDispatcher?.FireItemTrigger(ingot, ItemTrigger.Create,
+            new TriggerArgs { CharSrc = _character, ItemSrc = ingot });
+        if (ingot.IsDeleted)
+            return;
+
         var pack = _character.Backpack;
         if (pack != null && (_character.PrivLevel >= PrivLevel.GM || _character.CanCarry(ingot)))
         {
@@ -2379,33 +2423,30 @@ public sealed class ClientItemUseHandler
                     actual.Amount, actual.X, actual.Y,
                     pack.Uid.Value, actual.Hue,
                     _netState.IsClientPost6017));
-
-                _triggerDispatcher?.FireItemTrigger(actual, ItemTrigger.Create,
-                    new TriggerArgs { CharSrc = _character, ItemSrc = actual });
                 return;
             }
         }
 
         _world.PlaceItemWithDecay(ingot, _character.Position);
-        _triggerDispatcher?.FireItemTrigger(ingot, ItemTrigger.Create,
-            new TriggerArgs { CharSrc = _character, ItemSrc = ingot });
     }
 
-    /// <summary>Resolve the ingot id an ore smelts into. Custom ore can name a
-    /// non-standard ingot via TAG.SMELT_TO on the ore item or its itemdef; standard
-    /// ore falls back to the iron ingot graphic (0x1BF2), the ore hue is carried
-    /// over by the caller so coloured ore yields its coloured ingot.</summary>
+    /// <summary>Resolve the ingot id an ore smelts into.
+    ///
+    /// Source-X reads it from the ore definition's TDATA1 (m_ttOre.m_idIngot,
+    /// CItemBase.h:145; Skill_Mining_Smelt, CCharSkill.cpp:1150), so a custom ore
+    /// yields the ingot its own definition names. SphereNet knew only about the local
+    /// TAG.SMELT_TO override and turned everything else into iron, carrying just the
+    /// hue across. The explicit tag still wins - packs may already rely on it - and
+    /// the native definition is the fallback ahead of plain iron.</summary>
     private static ushort ResolveSmeltIngotId(Item ore)
     {
+        var def = DefinitionLoader.GetItemDef(ore.BaseId);
+
         string? raw = null;
         if (ore.TryGetTag("SMELT_TO", out string? itemTag) && !string.IsNullOrWhiteSpace(itemTag))
             raw = itemTag;
-        else
-        {
-            var def = DefinitionLoader.GetItemDef(ore.BaseId);
-            if (def != null && def.TagDefs.Has("SMELT_TO"))
-                raw = def.TagDefs.Get("SMELT_TO");
-        }
+        else if (def != null && def.TagDefs.Has("SMELT_TO"))
+            raw = def.TagDefs.Get("SMELT_TO");
 
         if (!string.IsNullOrWhiteSpace(raw))
         {
@@ -2416,7 +2457,27 @@ public sealed class ClientItemUseHandler
             if (ok && id != 0)
                 return id;
         }
-        return 0x1BF2;
+
+        ushort native = ResolvePlantId(def?.TData1 ?? 0, def?.TData1Name);
+        return native != 0 ? native : (ushort)0x1BF2;
+    }
+
+    /// <summary>Take part of a pile of ore, telling the client what is left.</summary>
+    private void ConsumeOreAmount(Item ore, int lost)
+    {
+        if (lost >= ore.Amount)
+        {
+            ConsumeOreStack(ore);
+            return;
+        }
+
+        ore.Amount -= (ushort)lost;
+        if (ore.ContainedIn.IsValid)
+            _netState.Send(new PacketContainerItem(
+                ore.Uid.Value, ore.DispIdFull, 0, ore.Amount, ore.X, ore.Y,
+                ore.ContainedIn.Value, ore.Hue, _netState.IsClientPost6017));
+        else
+            SendWorldItem(ore);
     }
 
     private void ConsumeOreStack(Item ore)

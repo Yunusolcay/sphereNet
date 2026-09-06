@@ -1526,6 +1526,20 @@ public static class ActiveSkillEngine
             return false;
         }
 
+        // Arms Lore comes first and is its own stage: the smith has to recognise the
+        // piece before working on it, and failing that ends the repair before the
+        // craft skill is ever rolled (Use_Repair, CCharUse.cpp:764). SphereNet went
+        // straight to the craft skill, so a smith with no Arms Lore repaired anyway.
+        // The gain is applied afterwards, as the reference does - negative on the
+        // failure that stops here.
+        int armsLoreDiff = sink.Random.Next(30);
+        if (!SkillEngine.UseQuick(ch, SkillType.ArmsLore, armsLoreDiff, allowGain: false))
+        {
+            SkillEngine.GainExperience(ch, SkillType.ArmsLore, -armsLoreDiff);
+            sink.SysMessage(ServerMessages.Get(Msg.RepairUnk));
+            return false;
+        }
+
         // Source-X Use_Repair: only items that actually have hitpoints can be
         // repaired. Inventing (and persisting) a 50-point pool here permanently
         // turned a never-wearing item into breakable gear.
@@ -1548,9 +1562,32 @@ public static class ActiveSkillEngine
         // quarter of that level), rolled against THAT craft skill. Success is
         // a FULL repair; failure has a 1/6 chance to lower max durability and
         // otherwise a 1/3 chance to chip a point.
+        // Work needs an anvil within two tiles (:781) - the reference looks for a
+        // dynamic item, a static or the terrain of that type.
+        if (!HasAnvilNearby(sink, ch))
+        {
+            sink.SysMessage(ServerMessages.Get(Msg.RepairAnvil));
+            return false;
+        }
+
         int damagePercent = (maxHits - curHits) * 100 / Math.Max(1, maxHits);
+
+        // Raw materials: half the damage percentage of what the piece is made of,
+        // tested before any work is done and spent afterwards (:794/:854). SphereNet
+        // repaired out of thin air and charged nothing at all.
+        var recipe = sink.Crafting?.TryGetRecipe(target.BaseId)
+            ?? (def != null ? sink.Crafting?.GetRecipe(def.Id.Index) : null);
+        if (recipe != null &&
+            !Crafting.CraftingEngine.TryConsumeResourcePart(ch, recipe, damagePercent / 2, test: true))
+        {
+            sink.SysMessage(ServerMessages.Get(Msg.RepairLack2));
+            return false;
+        }
+
         var (repairSkill, skillLevel) = ResolveRepairSkill(def);
         int difficulty = Math.Max(skillLevel * damagePercent / 100, skillLevel / 4);
+
+        SkillEngine.GainExperience(ch, SkillType.ArmsLore, armsLoreDiff);
 
         if (!SkillEngine.UseQuick(ch, repairSkill, difficulty))
         {
@@ -1569,12 +1606,48 @@ public static class ActiveSkillEngine
             {
                 sink.SysMessage(ServerMessages.Get(Msg.Repair4));
             }
+
+            // A botched repair still costs materials, on a random part of the damage
+            // (:850/:854).
+            if (recipe != null)
+                Crafting.CraftingEngine.TryConsumeResourcePart(
+                    ch, recipe, sink.Random.Next(damagePercent) / 2, test: false);
             return false;
         }
 
         target.HitsCur = maxHits; // Source-X: success restores to full
+        if (recipe != null)
+            Crafting.CraftingEngine.TryConsumeResourcePart(ch, recipe, damagePercent / 2, test: false);
         sink.SysMessage(ServerMessages.GetFormatted(Msg.RepairMsg, "You repair", target.Name ?? "the item"));
         return true;
+    }
+
+    /// <summary>An anvil within two tiles - dynamic item, static or terrain, as
+    /// Source-X FindItemTypeNearby searches (CWorldMap.cpp:663).</summary>
+    private static bool HasAnvilNearby(IActiveSkillSink sink, Character ch)
+    {
+        foreach (var near in sink.World.GetItemsInRange(ch.Position, 2))
+        {
+            if (near.ItemType == ItemType.Anvil)
+                return true;
+        }
+
+        var md = sink.World.MapData;
+        if (md == null) return false;
+
+        for (short dx = -2; dx <= 2; dx++)
+        {
+            for (short dy = -2; dy <= 2; dy++)
+            {
+                short x = (short)(ch.X + dx), y = (short)(ch.Y + dy);
+                foreach (var st in md.GetStatics(ch.MapIndex, x, y))
+                {
+                    if (DefinitionLoader.GetItemDef(st.TileId)?.Type == ItemType.Anvil)
+                        return true;
+                }
+            }
+        }
+        return false;
     }
 
     /// <summary>The item's SKILLMAKE main craft skill and its level on the

@@ -56,6 +56,7 @@ public sealed partial class GameClient
         public Character Self { get; }
         public Random Random => System.Random.Shared;
         public Game.World.GameWorld World => _client.World;
+        public Crafting.CraftingEngine? Crafting => _client.CraftE;
 
         public void SysMessage(string text) => _client.SysMessage(text);
         public void ObjectMessage(Objects.ObjBase target, string text) => _client.ObjectMessage(target, text);

@@ -1590,6 +1590,46 @@ olgunluk denetimi de kapali oldugu icin biri gizleniyordu).
 ResourceTest'in nesneyi silmesi; kovanda balmumu/sokma dallarinin kontrollu RNG ile
 dogrulanmasi ve save/load; gercek statik MUL su.
 
+### 08A - eritme ve onarim: 6 bulgu (6 Eylul 2026)
+
+Kanit raporu: [08A](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_08A_ERITME_ONARIM_TOPLU.md).
+Alti bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+- [x] **SX-08A-01 (P2)** - Madenin native TDATA1 kulce tanimi okunmuyordu. (YAPILDI:
+  oncelik acikca belirlendi - ornek/def TAG.SMELT_TO > ITEMDEF TDATA1 > duz demir;
+  raporun "onceligi acik olmali" notu.)
+- [x] **SX-08A-02 (P2)** - Basarisiz eritme butun yigini siliyordu. (YAPILDI:
+  `ConsumeOreAmount` ile rand(adet/2)+1 kismi kayip + istemci bildirimi.)
+- [x] **SX-08A-03 (P2)** - @Smelt sozlesmesi eksikti. (YAPILDI: ARGN1 Mining becerisi,
+  ARGN2 kaynak cesit sayisi, ARGN3 minimum-beceri atlatma, LOCAL.resource.0.ID/.amount;
+  hepsi geri okunuyor ve verim `adet x perOre` olarak uygulaniyor.
+  **Mevcut test guncellendi:** `ItemUseParityTests` @Smelt vetosu ARGN1'i maden ADEDI
+  bekliyordu - raporun isaret ettigi yanlis beklenti.)
+- [x] **SX-08A-04 (P2)** - @Create birlesmis eski yiginda calisiyordu. (YAPILDI: trigger
+  yeni kulcede, teslim/istifleme oncesinde.)
+- [x] **SX-08A-05 (P2)** - Onarim ors ve kaynak kosullarini atliyordu. (YAPILDI:
+  `HasAnvilNearby` (2 kare; dinamik + statik) ve `CraftingEngine.TryConsumeResourcePart`
+  ile test-once/tuket-sonra.
+  **Yapisal karar:** kaynak muhasebesi zaten CraftingEngine'de vardi; statik bir engine
+  hook'u eklemek yerine `IActiveSkillSink.Crafting` (varsayilani null) ile veriliyor -
+  yeni global durum yok, `ResetEngineStatics`'e ekleme gerekmiyor.)
+- [x] **SX-08A-06 (P2)** - Onarimda Arms Lore asamasi yoktu. (YAPILDI: uretim
+  becerisinden ONCE; basarisizlikta negatif kazanim ve erken cikis, basarida kazanim
+  uretim rulosundan hemen once - referans sirasi.
+  **Mevcut iki test guncellendi:** ikisi de orssuz/Arms Lore'suz basari bekliyordu.)
+
+**08A kapanisi:** tam suite **2.718 basarili / 0 basarisiz** (+14). Alti duzeltme de
+gecici olarak kapatilarak 10 testin eski davranisi yakaladigi kanitlandi.
+
+**Yeni testlerde belirsizligi kaldirma:** onarim/eritme rulolari `Character.OnSkillUseQuick`
+ile sabitlendi (raporun kendi yontemi). Bunu once yapmamistim; `ASmithWhoCannotIdentify...`
+filtreli kosuda gecip tam suitede kizardi - 0 beceriyle bile can egrisi ara sira basari
+veriyor.
+
+**Acik kalan:** cok cesitli kaynak veren esyalarin eritilmesi (RESOURCES listesi >1);
+gem ciktisi; kulce SKILLMAKE minimum-beceri araligi; onarimda kismi/coklu kaynak,
+statik ors ve ic ice cantalar; skillgain miktarlari.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

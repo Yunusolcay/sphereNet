@@ -60,6 +60,11 @@ public interface IActiveSkillSink : IInfoSkillSink
     /// <summary>Open a successfully snooped container for the acting client.</summary>
     void OpenContainer(Item container) { }
 
+    /// <summary>The crafting engine, for the RESOURCES a repair spends
+    /// (Source-X Use_Repair -> ResourceConsumePart). Null in bare test contexts,
+    /// where the repair falls back to charging nothing.</summary>
+    Crafting.CraftingEngine? Crafting => null;
+
     /// <summary>
     /// Resurrect a dead character through the full client pipeline (ghost→alive body,
     /// corpse restore, equipment re-equip, client packet sync). Falls back to

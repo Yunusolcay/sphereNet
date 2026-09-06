@@ -312,6 +312,34 @@ public sealed class CraftingEngine
         };
     }
 
+    /// <summary>Take (or just test for) a PART of what a recipe needs, the way
+    /// Source-X ResourceConsumePart does (CContainer.cpp:534): each entry is scaled
+    /// by a percentage, and a test reports the first entry that falls short instead
+    /// of spending anything. Repair uses it for half the damage percentage.</summary>
+    public static bool TryConsumeResourcePart(Character ch, CraftRecipe recipe,
+        int percent, bool test)
+    {
+        if (percent <= 0)
+            return true;
+
+        foreach (var res in recipe.Resources)
+        {
+            int need = res.Amount * percent / 100;
+            if (need <= 0)
+                continue;
+            if (test)
+            {
+                if (CountResource(ch, res) < need)
+                    return false;
+            }
+            else
+            {
+                ConsumeResource(ch, res, need);
+            }
+        }
+        return true;
+    }
+
     /// <summary>Count a recipe resource in the character's backpack — by item TYPE
     /// (RES_TYPEDEF) or by specific item id.</summary>
     private static int CountResource(Character ch, CraftResource res)

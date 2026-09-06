@@ -3,6 +3,38 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Maden eritme ve esya onarimi (08A)
+----------------------------------------
+
+FIX - Her maden demire eriyordu. Madenin verecegi kulce, maden tanimindaki TDATA1 ile
+        belirlenir (Skill_Mining_Smelt, CCharSkill.cpp:1150); bu alan hic okunmuyordu -
+        yalnizca yerel SMELT_TO etiketi okunuyor, geri kalan her sey madenin rengini
+        tasiyan demire donusuyordu. Acik etiket yine oncelikli; tanim artik duz demirin
+        onunde yedek olarak devrede.
+
+FIX - Basarisiz eritme yiginin tamamini yakiyordu. Referans rand(adet/2)+1 kadar
+        kaybeder (:1247); on madenin en fazla besi gider, hepsi degil.
+
+FIX - @Smelt yalnizca veto destegine indirgenmisti. Source-X ARGN1'e eritenin Mining
+        becerisini, ARGN2'ye kac cesit kaynak cikacagini, ARGN3'e minimum-beceri
+        atlatma isaretini ve urunu LOCAL.resource.0.ID / .amount alanlarina koyar; sonra
+        hepsini geri okur (:1138/:1196). SphereNet ARGN1 olarak maden ADEDINI geciyor ve
+        gerisini atiyordu; script eritmeyi reddedebiliyor ama yonlendiremiyordu.
+
+FIX - @Create yanlis nesnede calisiyordu. Yeni kulceler once cantadaki mevcut yiginla
+        birlestiriliyor, trigger BIRLESMIS sonuc uzerinde calisiyordu; dort yeni kulceyi
+        renklendiren bir uretim scripti oradaki on kulceyi de renklendiriyordu. Source-X
+        kulceyi olusturur ve teslimi sonra yapar (:1260/:1284).
+
+FIX - Onarim ne ors ne malzeme istiyordu: usta her yerde bedavaya tamir ediyordu.
+        Source-X iki kare icinde ors arar ve esyanin yapildigi malzemenin hasar
+        yuzdesinin yarisini harcar; is oncesinde test edilir, sonrasinda tuketilir
+        (Use_Repair, CCharUse.cpp:781/794/854).
+
+FIX - Onarim Arms Lore asamasini tumuyle atliyordu. Referans esyayi once onunla tanir;
+        basarisiz olursa uretim becerisi hic atilmadan onarim biter (:764). Kazanim
+        sonra uygulanir, o basarisizlikta negatif olarak.
+
 [2026-09-06] - Tarim, kovan ve su kenari (07Z)
 ----------------------------------------
 

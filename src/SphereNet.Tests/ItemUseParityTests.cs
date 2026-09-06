@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
 using SphereNet.Core.Enums;
 using SphereNet.Core.Types;
 using SphereNet.Game.Accounts;
@@ -68,6 +68,14 @@ public class ItemUseParityTests
         damaged.HitsCur = 10;
         damaged.Name = "damaged armor";
         pack.AddItem(damaged);
+
+        // Source-X Use_Repair recognises the piece with Arms Lore first and needs an
+        // anvil within two tiles (CCharUse.cpp:764/781); neither was modelled when
+        // this test was written.
+        player.SetSkill(SkillType.ArmsLore, 1000);
+        var anvil = world.CreateItem();
+        anvil.ItemType = ItemType.Anvil;
+        world.PlaceItem(anvil, player.Position);
 
         client.SetEngines(skillHandlers: new SkillHandlers(world));
         client.HandleDoubleClick(tool.Uid.Value);
@@ -165,13 +173,22 @@ public class ItemUseParityTests
 
         var dispatcher = new TriggerDispatcher();
         int smeltCount = 0;
+        player.SetSkill(SkillType.Mining, 700);
         dispatcher.RegisterItemEvent("EVENTSITEM", "Smelt", (_, args) =>
         {
             smeltCount++;
             Assert.Same(player, args.CharSrc);
             Assert.Same(ore, args.ItemSrc);
             Assert.Same(forge, args.O1);
-            Assert.Equal(2, args.N1);
+            // Source-X seeds ARGN1 with the smelter's MINING SKILL, ARGN2 with the
+            // number of resource kinds the ore yields, and the produce itself in
+            // LOCAL.resource.0 (Skill_Mining_Smelt, CCharSkill.cpp:1138). The ore
+            // count used to be passed as ARGN1, which is not the reference's
+            // contract.
+            Assert.Equal(700, args.N1);
+            Assert.Equal(1, args.N2);
+            Assert.NotNull(args.Locals);
+            Assert.Equal("1", args.Locals!.Get("resource.0.amount"));
             return TriggerResult.True;
         });
         client.SetEngines(triggerDispatcher: dispatcher);

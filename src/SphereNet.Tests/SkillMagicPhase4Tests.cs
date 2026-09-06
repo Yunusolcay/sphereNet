@@ -187,7 +187,14 @@ public class SkillMagicPhase4Tests
         var world = CreateWorld();
         var smith = world.CreateCharacter();
         smith.SetSkill(SkillType.Tinkering, 2000);
+        // Arms Lore identifies the piece before any work begins, and the work needs
+        // an anvil within two tiles (Source-X Use_Repair, CCharUse.cpp:764/781).
+        smith.SetSkill(SkillType.ArmsLore, 1000);
         world.PlaceCharacter(smith, new Point3D(100, 100, 0, 0));
+
+        var anvil = world.CreateItem();
+        anvil.ItemType = ItemType.Anvil;
+        world.PlaceItem(anvil, new Point3D(100, 100, 0, 0));
 
         var item = world.CreateItem();
         item.BaseId = 0x13BB;
