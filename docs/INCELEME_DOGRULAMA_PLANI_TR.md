@@ -2181,6 +2181,57 @@ grubuna donusu ve hic tanimlanmamis seviyenin -1 kaldigini dogruluyor.
 gecisi; Champion mum decay'inin seviye dususuyle etkilesimi; esya spawn'inda PILE ile
 kota etkilesimi.
 
+### 12J-12M - spawn gruplari, uyelik ve yapilandirma kaliciligi: 17 bulgu (6 Eylul 2026)
+
+Kanit raporlari: [12J](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12J_SPAWN_TANIM_PRESPAWN_PILE.md),
+[12K](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12K_SPAWN_KAPANIS_KOTA_RESET.md),
+[12L](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12L_SPAWN_TICK_UYELIK_TEMPLATE.md),
+[12M](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12M_SPAWN_CANLI_KAYIT_SINIRLARI.md).
+On yedi bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+- [x] **12J-1..12J-5 (P2)** - Grup agirlik bicimi ve WEIGHT anahtari; @PreSpawn tur
+  seciminin host koprusunde kaybolmasi; PILE'in istiflenmeyen esyaya uygulanmasi;
+  sayisal kimligin 16 bite kirpilmasi; PILE'in kayitta kaybolmasi. (YAPILDI.)
+- [x] **12K-1..12K-3 (P2)** - STOP durumunun kayitta kaybolmasi; canli AMOUNT'un etkin
+  kotaya ulasmamasi; RESET'in ev dalinda yutulmasi. (YAPILDI.)
+- [x] **12L-1..12L-5 (P2/P3)** - Esya STOP'unun normal tick'i kapsamamasi; ADDOBJ'un
+  onceki uyeligi birakmamasi; TEMPLATE hedefinin uretilmemesi; KillAll sirasinda
+  yeniden giren DelObj'in temizligi kesmesi; harita kenarinda konum yedeginin
+  denenmemesi. (YAPILDI.)
+- [x] **12M-1..12M-4 (P1/P2)** - Canli ADDOBJ'un oyuncu ve dolu kota kabul etmesi;
+  baslangicta ADDOBJ satirlarinin kapasiteye sayilmasi; NPC MORE2'nin kapasite
+  sayilmasi; ayri TIMELO/TIMEHI/MAXDIST alanlarinin uygulanmamasi. (YAPILDI.)
+
+**Onceki turun kendi acigi (rapor yakaladi):** 12L-1'de bildirilen esya STOP tick
+kontrolu, gecen turda yazdigim `edit()` cagrisinda bir assertion patlayinca TAMAMI geri
+sarildigi icin hic uygulanmamisti; ayni cagrinin ikinci yarisini elle uygulayip birincisi
+uygulanmis sanmisim. Simdi uygulandi ve testle sabitlendi.
+
+**12M-1, gecen turun sonucu:** canli ADDOBJ'yi bagladigim yerde denetimsiz
+`RegisterExisting` kullanmistim; rapor bunu P1 olarak isaretledi ve hakliydi - artik
+denetimli `AddObj` var, `RegisterExisting` yalnizca yukleme yolunda.
+
+**Bilincli kararlar:**
+- **Ters grup sirasi korundu:** Source-X sirasi (kaynak,agirlik) birincil; eski
+  SphereNet okumasina gore yazilmis paketler bozulmasin diye (agirlik,kaynak) da kabul
+  ediliyor - hangi yarinin sayi oldugundan ayirt ediliyor.
+- **TEMPLATE acilimi ilk ITEM girdisini aliyor:** tam template semantigi (CONTAINER,
+  ic ice, rastgele havuz) bu turda kapsanmadi; acik kalan olarak yazildi.
+
+**12J-12M kapanisi:** tam suite **2.984 basarili / 0 basarisiz** (+21). On yedi duzeltme
+gecici olarak kapatilarak 17 testin eski davranisi yakaladigi kanitlandi. 12M-2'nin
+`Program.WorldBootstrap` yarisi test projesinden erisilemiyor; testi bunun dayandigi
+bilesen sozlesmesini (yeniden baglama kapasiteyi buyutmez) sabitliyor ve bunu acikca
+soyluyor.
+
+**Tur ici duzeltilen zayif test:** harita kenari testi once gercek RNG'ye dayaniyordu -
+uc denemeden ikisi zaten geciyordu; bilesenin `_rand`'i en dusuk degeri veren biriyle
+degistirildi, boylece isabetsizlik kesin.
+
+**Acik kalan:** tam TEMPLATE semantigi (CONTAINER/ic ice/rastgele); grup -> grup gecisi;
+yukleme sirasinda ileri UID referansi; spawn kapasitesinin 250 sinirinin Source-X uint16
+sozlesmesiyle uzlastirilmasi.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

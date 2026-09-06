@@ -798,6 +798,16 @@ public sealed class WorldSaver
                 w.WriteProperty("ADDOBJ", $"0{uid.Value:x}");
         }
 
+        // The spawner's own configuration, which upstream writes alongside its members
+        // (r_Write, CCSpawn.cpp:1119). PILE and the stopped state had nowhere to live,
+        // so a staff-set pile size went back to one and a spawner that had been turned
+        // off came back running on the next restart.
+        if (item.SpawnItem != null && item.SpawnItem.Pile > 1)
+            w.WriteProperty("PILE", item.SpawnItem.Pile.ToString());
+        bool spawnStopped = item.SpawnChar?.IsStopped ?? item.SpawnItem?.IsStopped ?? false;
+        if (spawnStopped)
+            w.WriteProperty("SPAWNSTOPPED", "1");
+
         item.MigrateRuneFromTags();
 
         foreach (var (key, val) in item.Tags.GetAll())

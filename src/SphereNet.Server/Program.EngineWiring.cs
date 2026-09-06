@@ -682,6 +682,22 @@ public static partial class Program
                 }
             };
 
+            // One owner per spawned object: handing an object to a second spawner
+            // releases it from the first (AddObj, CCSpawn.cpp:621). Without it the
+            // object sat in two member lists and the ORIGINAL spawner's STOP still
+            // destroyed what the script thought it had moved away.
+            SphereNet.Game.Components.SpawnComponent.ReleaseFromPreviousSpawner =
+                (obj, newSpawner) =>
+                {
+                    if (!obj.TryGetTag("SPAWN_POINT_UUID", out string? prevRaw) ||
+                        !Guid.TryParse(prevRaw, out Guid prevUuid) ||
+                        _world.FindByUuid(prevUuid) is not Item prev ||
+                        prev.Uuid == newSpawner.Uuid)
+                        return;
+                    prev.SpawnChar?.DelObj(obj.Uid);
+                    prev.SpawnItem?.DelObj(obj.Uid);
+                };
+
             // Wire spawn trigger dispatch (@PreSpawn, @Spawn, @AddObj, @DelObj)
             SphereNet.Game.Components.SpawnComponent.OnSpawnTrigger = (item, trigger, args) =>
             {
@@ -714,6 +730,12 @@ public static partial class Program
                 // seconds the script left there and re-arms the spawner with it
                 // (CCSpawn.cpp:648/571). The bridge built its own args object and threw
                 // the modified numbers away on the way back.
+                // @PreSpawn picks WHAT is spawned by rewriting ARGN1, and upstream
+                // rebuilds the resource id from it (CCSpawn.cpp:310/387). The bridge
+                // sent the def index in N1 and never carried the answer back, so a
+                // handler that chose a different creature or item was ignored.
+                if (args.N1 == 0 && args.N2 == 0 && args.N3 == 0)
+                    args.SpawnDefIndex = targs.N1;
                 args.N1 = targs.N1;
                 args.N2 = targs.N2;
                 args.N3 = targs.N3;

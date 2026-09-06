@@ -194,18 +194,13 @@ public static partial class Program
                 if (maxDist != null && int.TryParse(maxDist, out int dist))
                     item.SpawnChar.SpawnRange = dist;
 
-                // Classic Sphere SPAWNID convention: each ADDOBJ line is a spawn
-                // slot, so the ADDOBJ count raises MaxCount. Source-X MORE1/AMOUNT
-                // spawners take their cap from AMOUNT instead and must NOT do this
-                // (the general re-link below never touches MaxCount), or a save that
-                // over-accumulated would lock the inflated count in permanently.
-                string? spawnSlots = item.Tags.Get("ADDOBJ");
-                if (!string.IsNullOrEmpty(spawnSlots))
-                {
-                    int slots = spawnSlots.Split(',', System.StringSplitOptions.TrimEntries | System.StringSplitOptions.RemoveEmptyEntries).Length;
-                    if (slots > item.SpawnChar.MaxCount)
-                        item.SpawnChar.MaxCount = slots;
-                }
+                // The ADDOBJ lines are MEMBERS, never slots. Upstream keeps the two
+                // apart: AMOUNT is the capacity and ADDOBJ/AddObj is the membership
+                // (CCSpawn.cpp:585/938). Counting the lines into MaxCount meant a save
+                // carrying stale or duplicated uids - which need not resolve to
+                // anything at all - permanently widened the spawner, and every restart
+                // could widen it again. The relink pass below restores the members
+                // themselves and leaves the capacity alone.
 
                 // Tags override MOREP — reset timer with final values
                 item.SpawnChar.ResetTimer(loadedTimeout);

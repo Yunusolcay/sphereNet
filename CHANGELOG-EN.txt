@@ -4,6 +4,80 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Spawn groups, membership rules and what a spawner remembers (12J-12M)
+----------------------------------------
+
+FIX - A spawn group's weights were read backwards. Source-X writes the member as
+        ID=<resource>,<weight> (CRandGroupDef.cpp:79), so the weight on a normal entry
+        was dropped and a 9:1 group became 1:1. The WEIGHT key, which restates the
+        weight of the member above it (:95), was ignored altogether. The reversed
+        "weight,resource" order a pack may have been written against is still accepted.
+
+FIX - @PreSpawn chooses WHAT is spawned by rewriting ARGN1, and the component already
+        reads that back - but the server's trigger bridge built its own arguments and
+        dropped the answer, so a handler picking a creature or item by region or event
+        was ignored (CCSpawn.cpp:310/387).
+
+FIX - PILE set an amount on objects that do not stack, leaving a single item carrying a
+        quantity every other rule denies it. Upstream gates it on the type being
+        stackable (:329).
+
+FIX - A numeric spawn id was masked to 16 bits, so the same definition resolved to two
+        different targets depending on whether it was written as a name or a number - a
+        chardef at 0x12345 became 0x2345. A resource index is 20 bits
+        (CResourceID.h:112).
+
+FIX - A spawner's PILE and its stopped state were never written to the save, so a
+        staff-set pile size went back to one and a spawner that had been switched off
+        came back running on the next restart. Upstream writes both (:1119/:1233).
+
+FIX - AMOUNT on a spawner is its CAPACITY and upstream routes it to the component
+        (:938). Writing only the item field meant raising a spawner's capacity looked
+        accepted and produced nothing extra.
+
+FIX - RESET reported success on every item type while only ever acting on a custom
+        house, so a spawner's RESET left every creature it had standing. It is claimed
+        by the house branch only when the item really is one.
+
+FIX - A stopped item spawner still produced on an ordinary tick: STOP parks the timer at
+        -1, which any "is it due" comparison reads as long overdue, so the stopped flag
+        has to be tested as well.
+
+FIX - Handing a creature to a second spawner left it in both member lists, and the
+        FIRST spawner's teardown then destroyed what the script thought it had moved.
+        Upstream releases it from the previous owner before linking it (:621).
+
+FIX - A TEMPLATE target was accepted and then handed to the itemdef path, which found
+        nothing, so a spawner aimed at a template produced no items at all. The kind of
+        resource is remembered now and the template is expanded (CItem.cpp:555).
+
+FIX - A @DelObj script that removed members while a teardown was walking the list threw
+        out of the middle of it and left the internal guard stuck, after which nothing
+        fired @DelObj again. The sweep walks a snapshot, always releases the guard, and
+        a re-entrant DelObj stands aside as upstream's does (:512).
+
+FIX - An item spawner near the map edge skipped whole cycles: a scatter that landed off
+        the map deleted the item instead of falling back to the spawner's own square
+        (:353).
+
+FIX - A live ADDOBJ accepted anything: a player could be enrolled as a spawn child -
+        whom the next STOP would then delete - and the member count could run past the
+        configured capacity. The live path applies the checks upstream applies
+        (:585); the unchecked form stays where it belongs, in load-time relinking.
+
+FIX - The startup pass counted a save's ADDOBJ lines into the capacity, so stale or
+        duplicated membership entries - which need not resolve to anything - permanently
+        widened a spawner, and every restart could widen it again. AMOUNT is the
+        capacity; ADDOBJ is the membership.
+
+FIX - MORE2 on a char spawner is the CURRENT member count, read-only upstream - its
+        setter refuses and points at ADDOBJ (:1042). Treating it as the capacity let an
+        old save's population counter widen a spawner configured for one.
+
+FIX - The separate TIMELO / TIMEHI / MAXDIST fields a save writes alongside MOREP were
+        re-applied on exactly one path, a SPAWNID char spawner, so every other shape
+        came up on engine defaults with the values plainly in the file (:1124).
+
 [2026-09-06] - Spawners and champions: what a script may retarget, and what may be destroyed (12E-12I)
 ----------------------------------------
 

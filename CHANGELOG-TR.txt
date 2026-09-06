@@ -3,6 +3,80 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Spawn gruplari, uyelik kurallari ve spawn'in hatirladiklari (12J-12M)
+----------------------------------------
+
+FIX - Spawn grubunun agirliklari ters okunuyordu. Source-X uyeyi
+        ID=<kaynak>,<agirlik> olarak yazar (CRandGroupDef.cpp:79); normal girdideki
+        agirlik dusuyor ve 9:1 grup 1:1 oluyordu. Ustundeki uyenin agirligini yeniden
+        belirleyen WEIGHT anahtari (:95) ise tumden yok sayiliyordu. Bir paketin
+        yazilmis olabilecegi ters "agirlik,kaynak" sirasi hala kabul ediliyor.
+
+FIX - @PreSpawn NEYIN uretilecegini ARGN1'i degistirerek secer ve bilesen bunu zaten
+        geri okuyor - ama sunucunun tetikleyici koprusu kendi argumanlarini kurup cevabi
+        dusuruyordu; bolgeye ya da etkinlige gore yaratik/esya secen handler yok
+        sayiliyordu (CCSpawn.cpp:310/387).
+
+FIX - PILE, istiflenmeyen nesnelere de miktar veriyordu; tek bir esya, baska her kuralin
+        reddettigi bir miktari tasiyordu. Referans bunu turun istiflenebilirligine
+        baglar (:329).
+
+FIX - Sayisal spawn kimligi 16 bite kirpiliyordu; ayni tanim, adla mi sayiyla mi
+        yazildigina gore iki farkli hedefe cozuluyordu - 0x12345'teki chardef 0x2345
+        oluyordu. Kaynak indeksi 20 bittir (CResourceID.h:112).
+
+FIX - Spawn'in PILE degeri ve durdurulmus olma durumu kayda hic yazilmiyordu; staff'in
+        ayarladigi yigin boyutu bire donuyor, kapatilmis spawn sonraki acilista yeniden
+        calisir haldeydi. Referans ikisini de yazar (:1119/:1233).
+
+FIX - Spawn uzerinde AMOUNT KAPASITEDIR ve referans bunu bilesene yonlendirir (:938).
+        Yalnizca esya alanini yazmak, kapasiteyi yukseltmeyi kabul edilmis gosterip
+        hicbir sey degistirmiyordu.
+
+FIX - RESET her esya turunde basari donerken yalnizca ozel eve etki ediyordu; spawn'daki
+        RESET urettigi butun yaratiklari yerinde birakiyordu. Artik yalnizca esya
+        gercekten ozel evse ev dali sahipleniyor.
+
+FIX - Durdurulmus esya spawn'i normal tick'te hala uretiyordu: STOP timer'i -1'e park
+        eder, bu da her "vakti geldi mi" karsilastirmasinda cok gecikmis gorunur; bu
+        yuzden durdurma bayraginin da denetlenmesi gerekir.
+
+FIX - Bir yaratigi ikinci spawn'a vermek onu iki uye listesinde birakiyordu ve ILK
+        spawn'in temizligi, scriptin tasidigini sandigi seyi yok ediyordu. Referans
+        baglamadan once onceki sahibinden ayirir (:621).
+
+FIX - TEMPLATE hedefi kabul edilip itemdef yoluna veriliyor, orada hicbir sey
+        bulunamiyor ve template'e yonelen spawn hic esya uretmiyordu. Artik kaynagin
+        turu hatirlaniyor ve template aciliyor (CItem.cpp:555).
+
+FIX - Temizlik listeyi gezerken uye kaldiran bir @DelObj scripti, temizligin ortasinda
+        istisna atip ic guard'i takili birakiyordu; sonrasinda hicbir sey @DelObj
+        tetiklemiyordu. Supurme artik anlik goruntu uzerinde yuruyor, guard her durumda
+        birakiliyor ve yeniden giren DelObj referanstaki gibi kenara cekiliyor (:512).
+
+FIX - Harita kenarindaki esya spawn'i tur cevrimlerini bos geciyordu: harita disina
+        dusen dagilim, spawn tasinin kendi karesine donmek yerine esyayi siliyordu
+        (:353).
+
+FIX - Canli ADDOBJ her seyi kabul ediyordu: bir oyuncu spawn cocugu olarak
+        kaydedilebiliyor - sonraki STOP onu siliyordu - ve uye sayisi yapilandirilmis
+        kapasiteyi asabiliyordu. Canli yol artik referansin uyguladigi denetimleri
+        uyguluyor (:585); denetimsiz bicim ait oldugu yerde, yukleme sirasindaki yeniden
+        baglamada kaliyor.
+
+FIX - Baslangic gecisi kayittaki ADDOBJ satirlarini kapasiteye sayiyordu; eskimis ya da
+        tekrarlanan uyelik girdileri - ki hicbir seye cozulmek zorunda degiller - spawn'i
+        kalici olarak genisletiyor ve her acilis yeniden genisletebiliyordu. AMOUNT
+        kapasitedir, ADDOBJ uyeliktir.
+
+FIX - NPC spawn'inda MORE2 MEVCUT uye sayisidir ve referansta salt okunurdur; setter'i
+        reddedip ADDOBJ'yi gosterir (:1042). Bunu kapasite saymak, eski kaydin nufus
+        sayacinin bir kisilik spawn'i genisletmesine izin veriyordu.
+
+FIX - Kaydin MOREP ile birlikte yazdigi ayri TIMELO / TIMEHI / MAXDIST alanlari tek bir
+        yolda - SPAWNID'li NPC spawn'inda - yeniden uygulaniyordu; diger butun bicimler
+        degerler dosyada apacik dururken motor varsayilanlariyla aciliyordu (:1124).
+
 [2026-09-06] - Spawn ve Champion: scriptin neyi degistirebilecegi, neyin yok edilebilecegi (12E-12I)
 ----------------------------------------
 

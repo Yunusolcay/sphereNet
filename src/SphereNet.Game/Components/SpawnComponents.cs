@@ -448,21 +448,32 @@ public sealed class SpawnComponent
     /// <summary>Remove all spawned creatures from the world.</summary>
     public void KillAll()
     {
+        // Walk a SNAPSHOT and always clear the guard: a @DelObj script that runs its own
+        // DELOBJ during the sweep used to mutate the list being enumerated, which threw
+        // out of the middle of the teardown and left _killingChildren stuck true - after
+        // which nothing fired @DelObj again. Upstream's DelObj simply returns while a
+        // teardown is in progress (CCSpawn.cpp:512).
         _killingChildren = true;
-        foreach (var uid in _spawnedUids)
+        try
         {
-            var ch = _world.FindChar(uid);
-            if (ch == null || ch.IsDeleted) continue;
-            ch.ClearStatFlag(StatFlag.Spawned);
-            OnSpawnTrigger?.Invoke(_spawnItem, ItemTrigger.DelObj,
-                new SpawnTriggerArgs { SpawnedChar = ch, SpawnDefIndex = ch.CharDefIndex });
-            if (!ch.IsDead)
-                ch.Kill();
-            _world.DeleteObject(ch);
-            ch.Delete();
+            foreach (var uid in _spawnedUids.ToArray())
+            {
+                var ch = _world.FindChar(uid);
+                if (ch == null || ch.IsDeleted) continue;
+                ch.ClearStatFlag(StatFlag.Spawned);
+                OnSpawnTrigger?.Invoke(_spawnItem, ItemTrigger.DelObj,
+                    new SpawnTriggerArgs { SpawnedChar = ch, SpawnDefIndex = ch.CharDefIndex });
+                if (!ch.IsDead)
+                    ch.Kill();
+                _world.DeleteObject(ch);
+                ch.Delete();
+            }
+            _spawnedUids.Clear();
         }
-        _spawnedUids.Clear();
-        _killingChildren = false;
+        finally
+        {
+            _killingChildren = false;
+        }
     }
 
     /// <summary>Release a spawned NPC from this spawner without harming it - the
@@ -476,6 +487,9 @@ public sealed class SpawnComponent
     /// player's character object.</summary>
     public void DelObj(Serial uid)
     {
+        // A teardown is already walking the list; leave it alone (CCSpawn.cpp:512).
+        if (_killingChildren)
+            return;
         if (!_spawnedUids.Remove(uid))
             return;
 
@@ -607,7 +621,11 @@ public sealed class SpawnComponent
 
         if (uint.TryParse(spawnId, System.Globalization.NumberStyles.HexNumber, null, out uint raw))
         {
-            _charDefId = (int)(raw & 0xFFFF);
+            // A RESOURCE index is 20 bits (RES_INDEX_MASK, CResourceID.h:112), not the
+            // 16 of a body graphic. Masking to 0xFFFF meant the same definition
+            // resolved to two different targets depending on whether it was named or
+            // written as a number - a chardef at 0x12345 became 0x2345.
+            _charDefId = (int)(raw & SpawnResourceLimits.IndexMask);
             _spawnGroup = null;
             _spawnItem.More1 = (uint)_charDefId;
         }
@@ -628,11 +646,48 @@ public sealed class SpawnComponent
         _spawnItem.MoreP = new Core.Types.Point3D((short)minMin, (short)maxMin, (sbyte)Math.Clamp(_spawnRange, 0, 127), mp.Map);
     }
 
+    /// <summary>Link a uid without asking questions. LOAD-TIME only: while a save is
+    /// being read the object may not exist yet, which is exactly the case upstream's
+    /// AddObj carves out (CCSpawn.cpp:585). Live callers want
+    /// <see cref="AddObj"/>.</summary>
     public void RegisterExisting(Serial uid)
     {
         if (!_spawnedUids.Contains(uid))
             _spawnedUids.Add(uid);
     }
+
+    /// <summary>Take an existing creature into this spawner, the way a running server
+    /// does it (AddObj, CCSpawn.cpp:585): the quota has to have room, the object has to
+    /// be an NPC, and a creature that belongs to another spawner is released from it
+    /// first so it has exactly one owner. Returns false when nothing was linked.
+    ///
+    /// Without these an errant script uid could enroll a PLAYER as a spawn child - and
+    /// the next STOP would delete them - or push the live population past the capacity
+    /// the spawner is configured for.</summary>
+    public bool AddObj(Serial uid)
+    {
+        if (_spawnedUids.Contains(uid))
+            return true;                       // already ours
+        if (!IsChampion && _spawnedUids.Count >= _maxCount)
+            return false;                      // full
+
+        var ch = _world.FindChar(uid);
+        if (ch == null || ch.IsDeleted || ch.IsPlayer)
+            return false;                      // char spawns take NPCs only
+
+        // One owner: release it from whoever had it before.
+        ReleaseFromPreviousSpawner?.Invoke(ch, _spawnItem);
+
+        _spawnedUids.Add(uid);
+        ch.SetStatFlag(StatFlag.Spawned);
+        ch.SetTag("SPAWN_POINT_UUID", _spawnItem.Uuid.ToString("D"));
+        return true;
+    }
+
+    /// <summary>Detach an object from the spawner that currently owns it, so a live
+    /// AddObj transfers rather than duplicating the membership (:621). Wired by the
+    /// world, which is the only thing that can find the other spawner.</summary>
+    public static Action<Objects.ObjBase, Item>? ReleaseFromPreviousSpawner;
 
     /// <summary>Force an immediate spawn tick (for SPAWNRESET).</summary>
     public void ForceSpawn()
@@ -701,6 +756,13 @@ public sealed class SpawnComponent
 }
 
 /// <summary>Trigger args specific to spawn events.</summary>
+/// <summary>Source-X RES_INDEX_MASK: a resource index is 20 bits wide
+/// (CResourceID.h:112).</summary>
+internal static class SpawnResourceLimits
+{
+    public const uint IndexMask = 0xFFFFF;
+}
+
 public sealed class SpawnTriggerArgs
 {
     public Character? SpawnedChar { get; set; }
@@ -728,6 +790,9 @@ public sealed class ItemSpawnComponent
     // char spawner's _charDefId). Truncating it to ushort made an item spawner that
     // targets a named itemdef resolve the wrong def (or none) and spawn nothing.
     private int _itemDefId;
+    /// <summary>Is the target a TEMPLATE rather than a plain ITEMDEF?</summary>
+    private bool _isTemplate;
+    public bool IsTemplateTarget { get => _isTemplate; set => _isTemplate = value; }
     private int _maxCount = 1;
     private int _spawnRange = 2;
     private int _pile = 1;
@@ -782,6 +847,11 @@ public sealed class ItemSpawnComponent
     {
         CleanupDeleted();
 
+        // A stopped spawner produces nothing, whichever way it is reached: STOP parks
+        // the timer at -1 (r_Verb, CCSpawn.cpp:1260), and a negative parked timer is
+        // always "in the past" against a comparison, so the flag has to be tested too.
+        if (_stopped) return;
+        if (_nextSpawnTick < 0) return;
         if (currentTick < _nextSpawnTick) return;
         if (_spawnedUids.Count >= _maxCount) return;
         if (_itemDefId == 0) return;
@@ -828,6 +898,19 @@ public sealed class ItemSpawnComponent
             return;
         }
 
+        // A TEMPLATE is a recipe, not an itemdef: expand it and take its first item as
+        // the thing that is spawned (CreateTemplate, CItem.cpp:555).
+        if (_isTemplate)
+        {
+            var expanded = ExpandTemplate(defIndex);
+            if (expanded <= 0)
+            {
+                SetNextSpawnTime();
+                return;
+            }
+            defIndex = expanded;
+        }
+
         var item = _world.CreateItem();
         var idef = DefinitionLoader.GetItemDef(defIndex);
         if (!ItemDefHelper.ApplyInstanceMetadata(item, defIndex))
@@ -852,7 +935,10 @@ public sealed class ItemSpawnComponent
                 ? idef.Name
                 : $"Spawned_{defIndex:X}";
 
-        if (_pile > 1)
+        // PILE only means anything for a stackable type (GenerateItem,
+        // CCSpawn.cpp:329). Setting an amount on a single object left its quantity
+        // field disagreeing with the stacking rules that govern it everywhere else.
+        if (_pile > 1 && item.IsStackable)
             item.Amount = (ushort)Math.Max(1, _rand.Next(1, _pile + 1));
 
         short dx = (short)_rand.Next(-_spawnRange, _spawnRange + 1);
@@ -888,10 +974,12 @@ public sealed class ItemSpawnComponent
         // event item the script had deliberately placed straight back to the spawner.
         if (item.Position == beforeTrigger)
         {
-            if (!_world.PlaceItem(item, pos))
+            // The scattered point first, then the spawner's own square, and only if
+            // BOTH fail is the item dropped (GenerateItem, CCSpawn.cpp:353). Giving up
+            // on the first miss made a spawner near the map edge skip whole cycles.
+            if (!_world.PlaceItem(item, pos) &&
+                !_world.PlaceItem(item, _spawnItem.Position))
             {
-                // Out-of-bounds placement — delete instead of leaving an orphan item
-                // with no sector (Source-X deletes on placement failure).
                 _world.DeleteObject(item);
                 item.Delete();
                 return;
@@ -899,6 +987,24 @@ public sealed class ItemSpawnComponent
         }
         _spawnedUids.Add(item.Uid);
         FireAddObj(item);
+    }
+
+    /// <summary>The itemdef a TEMPLATE resolves to. SphereNet already expands template
+    /// bodies for loot and vendor stock; a spawner needs the same first entry.</summary>
+    private static int ExpandTemplate(int templateIndex)
+    {
+        var tdef = DefinitionLoader.GetTemplateDef(templateIndex);
+        if (tdef == null) return 0;
+        foreach (var entry in tdef.ItemEntries)
+        {
+            var rid = DefinitionLoader.StaticResources?.ResolveDefName(entry.DefName);
+            if (rid is { IsValid: true, Type: ResType.ItemDef })
+                return rid.Value.Index;
+            if (int.TryParse(entry.DefName, System.Globalization.NumberStyles.HexNumber,
+                    null, out int raw) && raw > 0)
+                return raw;
+        }
+        return 0;
     }
 
     public void ForceSpawn() => _nextSpawnTick = 0;
@@ -939,12 +1045,33 @@ public sealed class ItemSpawnComponent
     /// <summary>Members of this spawner, for the save file.</summary>
     public IReadOnlyList<Serial> SpawnedUids => _spawnedUids;
 
-    /// <summary>Link an item that already exists to this spawner (load-time ADDOBJ,
-    /// and the live script setter).</summary>
+    /// <summary>Link a uid without asking questions. LOAD-TIME only, when the object
+    /// may not exist yet (CCSpawn.cpp:585).</summary>
     public void RegisterExisting(Serial uid)
     {
         if (!_spawnedUids.Contains(uid))
             _spawnedUids.Add(uid);
+    }
+
+    /// <summary>Take an existing ITEM into this spawner, with the checks a running
+    /// server applies: room in the quota, the object really is an item, and one owner
+    /// only (:585/:621).</summary>
+    public bool AddObj(Serial uid)
+    {
+        if (_spawnedUids.Contains(uid))
+            return true;
+        if (_spawnedUids.Count >= _maxCount)
+            return false;
+
+        var item = _world.FindItem(uid);
+        if (item == null || item.IsDeleted)
+            return false;
+
+        SpawnComponent.ReleaseFromPreviousSpawner?.Invoke(item, _spawnItem);
+
+        _spawnedUids.Add(uid);
+        item.SetTag("SPAWN_POINT_UUID", _spawnItem.Uuid.ToString("D"));
+        return true;
     }
 
     /// <summary>Point this spawner at a named ITEMDEF or TEMPLATE (SPAWNID).</summary>
@@ -953,10 +1080,17 @@ public sealed class ItemSpawnComponent
         var rid = resources.ResolveDefName(spawnId.Trim());
         if (rid.IsValid && rid.Type is ResType.ItemDef or ResType.Template)
         {
+            // Which KIND of resource it is has to be remembered, not just the index:
+            // a TEMPLATE is expanded, an ITEMDEF is instantiated (CreateTemplate,
+            // CItem.cpp:555). Storing the index alone meant a template target was
+            // accepted and then handed to the itemdef path, which found nothing and
+            // produced no item at all.
+            _isTemplate = rid.Type == ResType.Template;
             _itemDefId = rid.Index;
             _spawnItem.More1 = (uint)rid.Index;
             return;
         }
+        _isTemplate = false;
         if (uint.TryParse(spawnId.Trim(), System.Globalization.NumberStyles.HexNumber,
                 null, out uint raw) && raw != 0)
         {

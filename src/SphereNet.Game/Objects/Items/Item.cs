@@ -1792,7 +1792,16 @@ public class Item : ObjBase
                 return true;
             }
             case "AMOUNT":
-                if (ushort.TryParse(value, out ushort av)) Amount = av;
+                if (ushort.TryParse(value, out ushort av))
+                {
+                    Amount = av;
+                    // On a SPAWNER, AMOUNT is the capacity and upstream routes it to
+                    // the component (SetAmount, CCSpawn.cpp:938/123). Writing only the
+                    // item field left the live quota where it was, so raising a
+                    // spawner's capacity looked accepted and changed nothing.
+                    if (SpawnChar != null) SpawnChar.MaxCount = av;
+                    if (SpawnItem != null) SpawnItem.MaxCount = av;
+                }
                 return true;
             case "MAXAMOUNT":
                 // Per-item stack cap (Source-X SetMaxAmount). The getter gates on
@@ -2013,14 +2022,16 @@ public class Item : ObjBase
                 // did not count the NPC the script had just handed it and promptly
                 // spawned another one over its own quota. During a load the uid may
                 // not exist yet, which is what the relink pass is for.
+                // AddObj, not RegisterExisting: the live path checks the type, the
+                // quota and single ownership (CCSpawn.cpp:585). RegisterExisting is the
+                // unchecked LOAD-time form, and using it here let a stray uid enroll a
+                // player - whom the next STOP would then delete - and let the member
+                // count run past the configured capacity.
                 if (TryParseSpawnUid(value.Trim(), out uint addUid))
                 {
                     var addSerial = new Serial(addUid);
-                    var addWorld = ResolveWorld?.Invoke();
-                    if (addWorld?.FindChar(addSerial) is { IsDeleted: false })
-                        SpawnChar?.RegisterExisting(addSerial);
-                    else if (addWorld?.FindItem(addSerial) is { IsDeleted: false })
-                        SpawnItem?.RegisterExisting(addSerial);
+                    if (SpawnChar != null) SpawnChar.AddObj(addSerial);
+                    else SpawnItem?.AddObj(addSerial);
                 }
                 return true;
             }
@@ -2234,12 +2245,20 @@ public class Item : ObjBase
                 }
             }
         }
+        // PILE and the stopped flag arrive from a save BEFORE the component exists,
+        // so they are always kept as tags too; the initialisation reads them back.
+        if (upper is "PILE" or "SPAWNSTOPPED")
+        {
+            SetTag(upper, value.Trim());
+            if (upper == "PILE" && SpawnItem != null && int.TryParse(value, out int pileNow))
+                SpawnItem.Pile = pileNow;
+            return true;
+        }
         if (SpawnItem != null)
         {
             switch (upper)
             {
-                case "PILE":
-                    if (int.TryParse(value, out int pv)) SpawnItem.Pile = pv;
+                case "SPAWNRANGE_UNUSED":
                     return true;
                 case "SPAWNRANGE": // MAXDIST alias handled in the spawner-property case above
                     if (int.TryParse(value, out int isr)) SpawnItem.SpawnRange = isr;
@@ -2631,19 +2650,20 @@ public class Item : ObjBase
                 }
                 return true;
             }
-            case "RESET":
+            // RESET on a CUSTOM HOUSE clears its design. On anything else it belongs
+            // to the spawn verb table further down (r_Verb, CCSpawn.cpp:1251), which
+            // this case used to swallow: it returned true for every item type, so a
+            // spawner's RESET reported success and left every creature standing.
+            case "RESET" when _type == ItemType.MultiCustom:
             {
                 // Reset design to foundation — clear all design entries
-                if (_type == ItemType.MultiCustom)
+                foreach (var (k, _) in Tags.GetAll().ToArray())
                 {
-                    foreach (var (k, _) in Tags.GetAll().ToArray())
-                    {
-                        if (k.StartsWith("DESIGN_", StringComparison.OrdinalIgnoreCase))
-                            Tags.Remove(k);
-                    }
-                    int rev = int.TryParse(Tags.Get("HOUSE_REVISION") ?? "0", out int r) ? r : 0;
-                    Tags.Set("HOUSE_REVISION", (rev + 1).ToString());
+                    if (k.StartsWith("DESIGN_", StringComparison.OrdinalIgnoreCase))
+                        Tags.Remove(k);
                 }
+                int rev = int.TryParse(Tags.Get("HOUSE_REVISION") ?? "0", out int r) ? r : 0;
+                Tags.Set("HOUSE_REVISION", (rev + 1).ToString());
                 return true;
             }
             case "REVERT":
@@ -3709,18 +3729,19 @@ public class Item : ObjBase
                     SpawnChar.SetFromDefName(spawnDef, resources);
             }
             SpawnChar.ApplyMoreP();
+            ApplySpawnFieldTags(SpawnChar.SetDelay, v => SpawnChar.SpawnRange = v);
 
+            // AMOUNT is the capacity. MORE2 on a CHAR spawner is the CURRENT member
+            // count, read-only upstream - its setter refuses outright and points at
+            // ADDOBJ instead (CCSpawn.cpp:1042). Treating it as the capacity let an old
+            // save's population counter widen a spawner that was configured for one.
             if (_amount > 1)
                 SpawnChar.MaxCount = _amount;
-            else if (_more2 != 0)
-            {
-                ushort maxCount = (ushort)(_more2 & 0xFFFF);
-                if (maxCount > 0)
-                    SpawnChar.MaxCount = maxCount;
-            }
 
             SpawnChar.ResetTimer(preservedTimeoutMs);
             RelinkSpawnedChildrenFromTag(world);
+            if (Tags.Get("SPAWNSTOPPED") == "1")
+                SpawnChar.Stop();
         }
         else if (effType == ItemType.SpawnItem)
         {
@@ -3747,6 +3768,14 @@ public class Item : ObjBase
             // the amount and then stopped, so a spawner asking for nine minutes and
             // seven tiles quietly kept the engine defaults.
             SpawnItem.ApplyMoreP();
+            ApplySpawnFieldTags(SpawnItem.SetDelay, v => SpawnItem.SpawnRange = v);
+            if (int.TryParse(Tags.Get("PILE"), out int loadedPile) && loadedPile > 0)
+                SpawnItem.Pile = loadedPile;
+            // A spawner that was stopped stays stopped across a restart: upstream keeps
+            // it off by having no timer at all, and this initialisation would otherwise
+            // schedule it a fresh one.
+            if (Tags.Get("SPAWNSTOPPED") == "1")
+                SpawnItem.Stop();
 
             SpawnItem.ResetTimer(preservedTimeoutMs);
             RelinkSpawnedItemsFromTag(world);
@@ -3762,6 +3791,25 @@ public class Item : ObjBase
     /// both kinds and writes it for both (r_Write, CCSpawn.cpp:1094), so an item
     /// spawner that forgot its children came back under quota and topped itself up
     /// again on every restart.</summary>
+    /// <summary>Apply the separate TIMELO / TIMEHI / MAXDIST fields a save writes
+    /// alongside MOREP (r_Write, CCSpawn.cpp:1124). They arrive as properties before
+    /// the component exists and were only re-applied on one narrow path - a SPAWNID
+    /// char spawner - so every other shape came up on the engine defaults even with the
+    /// values plainly in the file.</summary>
+    private void ApplySpawnFieldTags(Action<int, int> setDelay, Action<int> setRange)
+    {
+        bool haveLo = int.TryParse(Tags.Get("TIMELO"), out int lo);
+        bool haveHi = int.TryParse(Tags.Get("TIMEHI"), out int hi);
+        if (haveLo || haveHi)
+        {
+            int min = haveLo && lo > 0 ? lo : 1;
+            int max = haveHi && hi > 0 ? hi : min;
+            setDelay(min, Math.Max(min, max));
+        }
+        if (int.TryParse(Tags.Get("MAXDIST"), out int md) && md >= 0)
+            setRange(md);
+    }
+
     private void RelinkSpawnedItemsFromTag(World.GameWorld world)
     {
         if (SpawnItem == null) return;
