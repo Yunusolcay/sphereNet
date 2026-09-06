@@ -48,6 +48,16 @@ public class SpellCastSourceTests
         caster.PrivLevel = PrivLevel.GM;
         caster.MaxMana = caster.Mana = 100;
         world.PlaceCharacter(caster, new Point3D(100, 100, 0, 0));
+
+        // A wand or scroll must be ON the caster to pay for a cast (Source-X
+        // Spell_CanCast, CCharSpell.cpp:2422), so these fixtures need somewhere for
+        // the source to live rather than leaving it floating unowned.
+        var pack = world.CreateItem();
+        pack.ItemType = ItemType.Container;
+        pack.BaseId = 0x0E75;
+        caster.Backpack = pack;
+        caster.Equip(pack, Layer.Pack);
+
         return (engine, caster);
     }
 
@@ -62,6 +72,7 @@ public class SpellCastSourceTests
         wand.More1 = (uint)SpellType.Strength;
         wand.SetTag("CHARGES", "3");
 
+        Assert.True(caster.Backpack!.TryAddItem(wand));
         caster.SetTag("WAND_UID", wand.Uid.Value.ToString());
         caster.BeginCast(SpellType.Strength, caster.Uid, caster.Position);
 
@@ -84,6 +95,7 @@ public class SpellCastSourceTests
         wand.More1 = (uint)SpellType.Strength;
         wand.SetTag("CHARGES", "3");
 
+        Assert.True(caster.Backpack!.TryAddItem(wand));
         caster.SetTag("WAND_UID", wand.Uid.Value.ToString());
         caster.BeginCast(SpellType.Strength, caster.Uid, caster.Position);
 
@@ -104,6 +116,7 @@ public class SpellCastSourceTests
         scroll.ItemType = ItemType.Scroll;
         scroll.Amount = 1;
 
+        Assert.True(caster.Backpack!.TryAddItem(scroll));
         caster.SetTag("SCROLL_UID", scroll.Uid.Value.ToString());
         caster.BeginCast(SpellType.Strength, caster.Uid, caster.Position);
 

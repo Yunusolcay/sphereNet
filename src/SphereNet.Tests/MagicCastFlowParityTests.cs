@@ -122,8 +122,20 @@ public sealed class MagicCastFlowParityTests
         caster.PrivLevel = PrivLevel.GM;
         caster.MaxMana = 100;
         caster.Mana = 25; // below full cost (40), above the scroll half (20)
-        caster.SetTag("SCROLL_UID", "0");
         world.PlaceCharacter(caster, new Point3D(100, 100, 0, 0));
+
+        // A real scroll on the caster: the discount is priced off the RESOLVED
+        // source now, not off the bare presence of the tag.
+        var pack = world.CreateItem();
+        pack.ItemType = ItemType.Container;
+        pack.BaseId = 0x0E75;
+        caster.Backpack = pack;
+        caster.Equip(pack, Layer.Pack);
+        var scroll = world.CreateItem();
+        scroll.ItemType = ItemType.Scroll;
+        scroll.More1 = (uint)SpellType.Heal;
+        Assert.True(pack.TryAddItem(scroll));
+        caster.SetTag("SCROLL_UID", scroll.Uid.Value.ToString());
 
         int castTime = engine.CastStart(caster, SpellType.Heal, caster.Uid, caster.Position);
         Assert.True(castTime > 0, "scroll cast demanded the FULL mana cost at start");

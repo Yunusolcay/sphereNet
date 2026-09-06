@@ -3,6 +3,45 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Buyu: cast kaynaginin yeniden cozulmesi ve hedef dogrulama (04A)
+----------------------------------------
+
+FIX - Cast KAYNAGI, esyanin kendisinden degil bir etiketin varligindan karara
+        baglaniyordu. Source-X kaynagi tamamlanmada yeniden cozer
+        (m_Act_Prv_UID.ObjFind(), CCharSpell.cpp:2882) ve ayni isaretciyi
+        Spell_CanCast'e verir (:3010); bu da bos kaynagi (:2330) ve ust-duzey
+        sahibi caster olmayan kaynagi (:2422) reddeder. Bu yuzden cast suresi
+        icinde yok edilen bir parsomen hala yarim-mana, reagent'siz indirimi
+        satin aliyordu; baskasina verilen parsomen ise YENI sahibinin cantasindan
+        tuketiliyordu. Kaynak artik yeniden cozuluyor ve caster'in uzerinde
+        olmak zorunda. GM istisnasi yok: referans bu testi PRIV_GM
+        kisayolundan once yapar (:2429).
+
+FIX - Yalnizca elde tutulan bir asa fiyati belirliyordu. Asa testi o an kusanmis
+        tek/cift el esyasina bakiyordu, yani oyuncu cast suresi boyunca bir asa
+        kusanip siradan bir buyuyu asa fiyatina bitirebiliyordu - mana yok,
+        zorluk 10, reagent yok. Oyuncunun kaynagi artik yalnizca gercekten
+        etkinlestirdigi seydir. NPC'ler kaynak kaydetmez (asayi AI verir), bu
+        yuzden kusanmis-asa okumasi yalnizca onlarda korundu ve fiyatlari
+        degismedi.
+
+FIX - Fizzle, mana-yetersiz ve reagent-yetersiz dallari cast durumunu temizliyor
+        ama kaynak etiketlerini birakmiyordu; ClearCastState onlara dokunmaz.
+        WAND_UID ve SCROLL_UID caster'in uzerinde kaliyordu, yani BIR SONRAKI
+        cast indirimi devraliyor ve o parsomeni tuketiyordu. Uc dal da artik
+        etiketleri birakiyor.
+
+FIX - Gecersiz hedef yalnizca maliyetler alindiktan sonra reddediliyordu.
+        Source-X Spell_CastDone'i Spell_TargCheck ile acar (CCharSpell.cpp:2878)
+        ve reagent/mana/sarj tuketimine 130 satir sonra ulasir (:3010); SphereNet
+        ise hedefi sonradan cozup mesaj basiyor ama yine de @SpellSuccess'e basari
+        bildiriyordu. Olen (:2740), harita degistiren, menzil disina cikan veya yok
+        olan hedef (:2728, TARG_XYZ istisnasiyla) artik once yakalaniyor; gorus
+        hatti reddi de ayni yoldan geciyor. Bu bir iade degildir: basarisizlik
+        ABORT olarak fiyatlanir - CCharSkill.cpp:3000 bunu SKTRIG_ABORT'a cevirir
+        ve Spell_CastFail MANALOSSABORT / REAGENTLOSSABORT uzerinden isler
+        (CCharSpell.cpp:3316).
+
 [2026-09-06] - Dovus: era'ya gore hiz stat'i ve okculuk bekleme suresi (03C)
 ----------------------------------------
 

@@ -713,6 +713,52 @@ korumalı eşyanın ayrıca kurtarılması beklentisi Source-X kuralı değil.
 SphereNet'in çantayla birlikte taşıması bu açıdan uyumlu. Bu nedenle G04 için
 recursive ölüm koruması uygulanmamalı; shard kuralı istenirse ayrı tasarım kararıdır.
 
+### 04A — buyu kaynagi ve hedefi (6 Eylul 2026)
+
+[04A kanit raporu](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_04A_BUYU.md).
+Iki bulgu da bagimsiz olarak dogrulandi ve uygulandi.
+
+- [x] **SX-04A-01 (P1)** — Buyunun KAYNAGI tamamlanmada yeniden cozulmuyordu.
+  (YAPILDI: `TryResolveCastSource`, Source-X'in `m_Act_Prv_UID.ObjFind()`
+  (CCharSpell.cpp:2882) ve ayni isaretciyi `Spell_CanCast`'e verme (:3010)
+  modelini kuruyor. Kaynak yoksa (:2330) ya da ust-duzey sahibi caster degilse
+  (:2422) buyu basarisiz. `ConsumeCastSource` artik cozulmus nesneyi aliyor, yani
+  baskasinin cantasindaki parsomen tuketilemiyor.
+  **GM istisnasi yok:** referans bu kontrolu PRIV_GM kisayolundan ONCE yapar
+  (:2422 vs :2429), bu yuzden `IsItemAccessible`'in GM bypass'i kullanilmadi.
+  **Raporda olmayan tehlike 1:** `IsCastingWithWand` tag'e degil, O AN KUSANMIS
+  esyaya bakiyordu — oyuncu cast suresi boyunca bir asa kusanip siradan bir
+  buyuyu asa fiyatina (mana 0, zorluk 10, reagent yok) bitirebiliyordu. Oyuncu
+  icin artik yalnizca ETKINLESTIRILEN kaynak sayiliyor; NPC'ler kaynak
+  etiketlemedigi icin onlarda kusanmis-asa okumasi korundu.
+  **Raporda olmayan tehlike 2:** `ClearCastState` kaynak etiketlerini temizlemiyor,
+  ve fizzle / mana-yetersiz / reagent-yetersiz dallari yalnizca onu cagiriyordu —
+  WAND_UID/SCROLL_UID caster'in uzerinde kaliyor ve BIR SONRAKI cast o parsomeni
+  tuketiyordu. Uc dal da artik etiketleri birakiyor.)
+- [x] **SX-04A-02 (P2)** — Gecersiz hedef, maliyetler alindiktan SONRA reddediliyordu.
+  (YAPILDI: hedef denetimi fizzle/mana/reagent/kaynak tuketiminin ONUNE tasindi;
+  Source-X `Spell_CastDone`'i `Spell_TargCheck` ile acar (CCharSpell.cpp:2878) ve
+  tuketime 130 satir sonra ulasir (:3010). Olu hedef (:2740), harita/menzil ve
+  "hedef gerekli" (:2728, TARG_XYZ istisnasiyla) kontrolleri orada.
+  **Bedava degil:** basarisizlik `FailCastAtCompletion` uzerinden ABORT olarak
+  fiyatlaniyor — CCharSkill.cpp:3000 false donusu SKTRIG_ABORT'a cevirir ve
+  `Spell_CastFail(fAbort)` MANALOSSABORT/REAGENTLOSSABORT'u uygular (:3316).
+  Kosulsuz iade referanstan ayri bir sapma olurdu; rapor da bunu uyariyordu.
+  LOS reddi de ayni yola baglandi.)
+
+**04A kapanisi:** tam suite **2.419 basarili / 0 basarisiz** (+12). Her iki
+duzeltme gecici olarak geri alinarak testlerin eski davranisi yakaladigi
+kanitlandi (kaynak kapisi 3 test, hedef on-denetimi 5 test).
+Sozlesme degisikligi nedeniyle guncellenen mevcut testler:
+`SpellCastSourceTests` (asa/parsomen artik caster'in cantasinda) ve
+`MagicCastFlowParityTests.ScrollCast_ChecksAndConsumesTheSameHalvedCost`
+(`SCROLL_UID="0"` hayalet UID'si yerine gercek parsomen) — indirim artik
+etiketin varligindan degil cozulmus kaynaktan fiyatlaniyor.
+
+**Acik kalan (04B adaylari):** asa sarj kontrolu (Source-X :2437 sarj yoksa
+reddeder; SphereNet CHARGES etiketi olmayan asayi sinirsiz sayar), `ATTR_MAGIC`
+kapisi (:2415) ve `CastStart`'in yalniz Layer.OneHanded'a bakan asa okumasi.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

@@ -4,6 +4,42 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Magic: cast source re-resolution and target validation (04A)
+----------------------------------------
+
+FIX - The cast SOURCE was decided from the presence of a tag rather than from the
+        item itself. Source-X re-resolves it at completion (m_Act_Prv_UID.ObjFind(),
+        CCharSpell.cpp:2882) and hands that same resolved pointer to Spell_CanCast
+        (:3010), which refuses a null source (:2330) and one whose top-level owner is
+        not the caster (:2422). A scroll destroyed during the cast time therefore
+        still bought the half-mana, no-reagent discount, and a scroll handed to
+        another player was consumed out of the new owner's pack. The source is now
+        re-resolved and must still be on the caster. There is no GM bypass, because
+        the reference makes this test before its PRIV_GM shortcut (:2429).
+
+FIX - A wand merely held decided the price. The wand test read the currently equipped
+        one/two-handed item, so a player could equip a wand during the cast time and
+        finish an ordinary spell at wand rates - no mana, difficulty 10, no reagents.
+        A player's source is now only what they actually activated. NPCs never record
+        a source (their AI hands them the wand), so the wielded-wand reading is kept
+        for them alone and their pricing is unchanged.
+
+FIX - The fizzle, insufficient-mana and insufficient-reagent paths cleared the cast
+        state but not the source tags, and ClearCastState does not touch them. WAND_UID
+        and SCROLL_UID were left on the caster, so the NEXT cast inherited the discount
+        and consumed that scroll. All three paths now drop the tags.
+
+FIX - An invalid target was rejected only after the costs had been taken. Source-X
+        opens Spell_CastDone with Spell_TargCheck (CCharSpell.cpp:2878) and reaches
+        the reagent/mana/charge consumption 130 lines later (:3010), while SphereNet
+        re-resolved the target afterwards, emitted a message, and still reported
+        success to @SpellSuccess. A target that died (:2740), changed map, walked out
+        of range or vanished (:2728, with the TARG_XYZ exception) is now caught first,
+        and the line-of-sight refusal takes the same route. This is not a refund: the
+        failure is priced as an abort, which CCharSkill.cpp:3000 turns into
+        SKTRIG_ABORT and Spell_CastFail prices through MANALOSSABORT / REAGENTLOSSABORT
+        (CCharSpell.cpp:3316).
+
 [2026-09-06] - Combat: swing-speed stat per era and the archery settle time (03C)
 ----------------------------------------
 

@@ -243,42 +243,92 @@ public sealed class SpellEngine
     private static bool IsMagicFlag(MagicConfigFlags flag) =>
         (Character.MagicFlags & (int)flag) != 0;
 
-    private static bool IsCastingWithWand(Character caster)
+    private static bool IsWieldingWand(Character caster)
     {
         var weapon = caster.GetEquippedItem(Layer.OneHanded)
                   ?? caster.GetEquippedItem(Layer.TwoHanded);
         return weapon?.ItemType == ItemType.Wand;
     }
 
+    /// <summary>What a cast is being paid for FROM.</summary>
+    private enum CastSourceKind { Self, Wand, Scroll }
+
+    private Item? FindTaggedItem(string? raw) =>
+        uint.TryParse(raw, out uint uid) ? _world?.FindItem(new Serial(uid)) : null;
+
+    /// <summary>Source-X: "magic items must be on your person to use"
+    /// (CCharSpell.cpp:2422) - the source's TOP-LEVEL owner must be the caster.
+    /// Deliberately no GM bypass: the reference makes this test BEFORE its PRIV_GM
+    /// shortcut (:2429), so a GM cannot cast off someone else's scroll either.</summary>
+    private bool IsCastSourceOnPerson(Character caster, Item item)
+    {
+        var current = item;
+        for (int depth = 0; depth < 16; depth++)
+        {
+            if (!current.ContainedIn.IsValid) return false;   // lying in the world
+            if (current.ContainedIn == caster.Uid) return true;
+            var parent = _world?.FindItem(current.ContainedIn);
+            if (parent == null) return false;
+            current = parent;
+        }
+        return false;
+    }
+
+    /// <summary>Re-resolve the cast source at the moment it is needed, the way
+    /// Source-X re-reads m_Act_Prv_UID at completion (CCharSpell.cpp:2882) and hands
+    /// that same resolved pointer to Spell_CanCast (:3010). Answering from the TAG
+    /// alone meant a scroll that had been destroyed, dropped or given away during the
+    /// cast time still bought its owner the half-mana, no-reagent discount, and the
+    /// consumption then took the scroll out of whoever's pack it had reached.
+    ///
+    /// Returns false when a source was claimed but is no longer usable: Spell_CanCast
+    /// rejects a null source (:2330) and one that is not on the caster (:2422).</summary>
+    private bool TryResolveCastSource(Character caster, out CastSourceKind kind, out Item? source)
+    {
+        source = null;
+        kind = CastSourceKind.Self;
+
+        if (caster.TryGetTag("WAND_UID", out string? wandStr))
+        {
+            kind = CastSourceKind.Wand;
+            source = FindTaggedItem(wandStr);
+        }
+        else if (caster.TryGetTag("SCROLL_UID", out string? scrollStr))
+        {
+            kind = CastSourceKind.Scroll;
+            source = FindTaggedItem(scrollStr);
+        }
+        else
+        {
+            // Nothing was recorded, so the caster is spending their own power. NPCs
+            // never tag - their AI hands them the wand directly - so the wielded-wand
+            // reading survives for them alone. For a PLAYER a wand merely held is not
+            // a cast source: reading equipment here let a player swap a wand in during
+            // the cast time and finish an ordinary spell at wand prices.
+            if (!caster.IsPlayer && IsWieldingWand(caster))
+                kind = CastSourceKind.Wand;
+            return true;
+        }
+
+        return source != null && !source.IsDeleted && IsCastSourceOnPerson(caster, source);
+    }
+
     /// <summary>Consume the wand charge / spell scroll that initiated this cast,
     /// once the cast has committed to success. The player path tags WAND_UID /
     /// SCROLL_UID at double-click (instead of decrementing immediately); NPC wand
     /// casts consume their own charge in the AI. Both tags are cleared here.</summary>
-    private void ConsumeCastSource(Character caster)
+    private void ConsumeCastSource(Character caster, CastSourceKind kind, Item? source)
     {
-        if (caster.TryGetTag("WAND_UID", out string? wandStr))
-        {
-            caster.RemoveTag("WAND_UID");
-            if (uint.TryParse(wandStr, out uint wuid))
-            {
-                var wand = _world?.FindItem(new Serial(wuid));
-                if (wand != null && !wand.IsDeleted)
-                    ConsumeWandCharge(wand);
-            }
-        }
+        ClearCastSourceTags(caster);
+        if (source == null || source.IsDeleted)
+            return;
 
-        if (caster.TryGetTag("SCROLL_UID", out string? scrollStr))
+        if (kind == CastSourceKind.Wand)
+            ConsumeWandCharge(source);
+        else if (kind == CastSourceKind.Scroll)
         {
-            caster.RemoveTag("SCROLL_UID");
-            if (uint.TryParse(scrollStr, out uint suid))
-            {
-                var scroll = _world?.FindItem(new Serial(suid));
-                if (scroll != null && !scroll.IsDeleted)
-                {
-                    if (scroll.Amount > 1) scroll.Amount--;
-                    else _world?.RemoveItem(scroll);
-                }
-            }
+            if (source.Amount > 1) source.Amount--;
+            else _world?.RemoveItem(source);
         }
     }
 
@@ -348,7 +398,8 @@ public sealed class SpellEngine
         return region == null || !region.IsFlag(RegionFlag.Underground);
     }
 
-    private void ApplyCastResourceLoss(Character caster, SpellDef def, bool wand, bool fizzle, bool abort)
+    private void ApplyCastResourceLoss(Character caster, SpellDef def, bool wand, bool scroll,
+        bool fizzle, bool abort)
     {
         if (caster.PrivLevel >= PrivLevel.GM)
             return;
@@ -356,8 +407,8 @@ public sealed class SpellEngine
         // A scroll cast owes no reagents whether it succeeds, fizzles or is aborted:
         // Source-X gates Calc_SpellReagentsConsume on the cast source being the
         // caster themselves, and calls it with that same source on every path
-        // (CCharSpell.cpp:3380/3398).
-        bool scroll = caster.TryGetTag("SCROLL_UID", out _);
+        // (CCharSpell.cpp:3380/3398). The caller passes the RESOLVED source rather
+        // than the raw tag, so a scroll that no longer exists cannot buy the exemption.
         bool takeReagents = !wand && !scroll &&
             Character.ReagentsRequiredEnabled && HasRequiredReagents(caster, def);
         if (fizzle && !Character.ReagentLossFail) takeReagents = false;
@@ -377,6 +428,21 @@ public sealed class SpellEngine
             ConsumeReagents(caster, def);
     }
 
+    /// <summary>A cast that reached its completion but cannot legally resolve.
+    /// Source-X returns false from Spell_CastDone, which CCharSkill.cpp:3000 turns
+    /// into SKTRIG_ABORT and prices through Spell_CastFail(fAbort = true) - so this
+    /// is NOT an unconditional refund, it is the configured abort cost
+    /// (MANALOSSABORT / REAGENTLOSSABORT, CCharSpell.cpp:3316).</summary>
+    private bool FailCastAtCompletion(Character caster, SpellDef def, CastSourceKind kind, string message)
+    {
+        ApplyCastResourceLoss(caster, def, kind == CastSourceKind.Wand,
+            kind == CastSourceKind.Scroll, fizzle: false, abort: true);
+        ClearCastSourceTags(caster);
+        ClearCastState(caster);
+        OnSysMessage?.Invoke(caster, message);
+        return false;
+    }
+
     private void InterruptCast(Character caster, string reason)
     {
         SpellDef? def = null;
@@ -384,7 +450,11 @@ public sealed class SpellEngine
             def = _spells.Get(spell);
 
         if (def != null)
-            ApplyCastResourceLoss(caster, def, IsCastingWithWand(caster), fizzle: false, abort: true);
+        {
+            TryResolveCastSource(caster, out CastSourceKind kind, out _);
+            ApplyCastResourceLoss(caster, def, kind == CastSourceKind.Wand,
+                kind == CastSourceKind.Scroll, fizzle: false, abort: true);
+        }
 
         // An aborted wand/scroll cast must not leave its source tag behind, or the
         // next cast would consume the charge/scroll on success.
@@ -689,6 +759,12 @@ public sealed class SpellEngine
         Serial targetUid = caster.CastTargetUid;
         Point3D targetPos = caster.CastTargetPos;
 
+        // Source-X re-resolves the cast source at completion and refuses the cast if
+        // it is gone or no longer on the caster (CCharSpell.cpp:2882 -> :3010).
+        if (!TryResolveCastSource(caster, out CastSourceKind sourceKind, out Item? castSource))
+            return FailCastAtCompletion(caster, def, sourceKind,
+                ServerMessages.Get(Msg.SpellEnchantActivate));
+
         // LOS check BEFORE consuming resources
         if (_world != null &&
             caster.PrivLevel < PrivLevel.GM &&
@@ -699,18 +775,39 @@ public sealed class SpellEngine
         {
             int losDist = Math.Max(Math.Abs(caster.X - targetPos.X), Math.Abs(caster.Y - targetPos.Y));
             if (losDist > 0 && !_world.CanSeeLOS(caster.Position, targetPos))
+                return FailCastAtCompletion(caster, def, sourceKind, "Target not in line of sight.");
+        }
+
+        // Source-X opens Spell_CastDone with Spell_TargCheck (CCharSpell.cpp:2878)
+        // and only reaches the reagent/mana/charge consumption 130 lines later
+        // (:3010). SphereNet re-resolved the target AFTER those costs were taken, so
+        // a target that died, walked away or vanished during the cast time was paid
+        // for in full and still reported success to @SpellSuccess.
+        if (def.IsFlag(SpellFlag.TargChar) || def.IsFlag(SpellFlag.TargObj))
+        {
+            var preTarget = _world?.FindChar(targetUid);
+            if (preTarget != null)
             {
-                ClearCastState(caster);
-                OnSysMessage?.Invoke(caster, "Target not in line of sight.");
-                return false;
+                // :2740 - a ghost is not a legal target unless the spell says so.
+                if (preTarget.IsDead && !def.IsFlag(SpellFlag.TargDead))
+                    return FailCastAtCompletion(caster, def, sourceKind,
+                        ServerMessages.Get(Msg.SpellTargDead));
+                if (preTarget.MapIndex != caster.MapIndex ||
+                    caster.Position.GetDistanceTo(preTarget.Position) > 12)
+                    return FailCastAtCompletion(caster, def, sourceKind, "That is too far away.");
             }
+            // :2728 - "need a target". A spell that may also be aimed at the ground
+            // (TARG_XYZ) is allowed to complete without one.
+            else if (_world?.FindItem(targetUid) == null && !def.IsFlag(SpellFlag.TargXYZ))
+                return FailCastAtCompletion(caster, def, sourceKind,
+                    ServerMessages.Get(Msg.SpellTargObj));
         }
 
         var primarySkill = def.GetPrimarySkill();
         int skillVal = caster.GetSkill(primarySkill);
         int difficulty = def.GetDifficulty();
-        bool castWithWand = IsCastingWithWand(caster);
-        bool castFromScroll = caster.TryGetTag("SCROLL_UID", out _);
+        bool castWithWand = sourceKind == CastSourceKind.Wand;
+        bool castFromScroll = sourceKind == CastSourceKind.Scroll;
         if (castWithWand) difficulty = 10;          // reference: wand = minimal difficulty
         else if (castFromScroll) difficulty /= 2;   // reference: scroll = half difficulty
 
@@ -729,7 +826,8 @@ public sealed class SpellEngine
 
         if (fizzled)
         {
-            ApplyCastResourceLoss(caster, def, castWithWand, fizzle: true, abort: false);
+            ApplyCastResourceLoss(caster, def, castWithWand, castFromScroll, fizzle: true, abort: false);
+            ClearCastSourceTags(caster);
             ClearCastState(caster);
             OnSysMessage?.Invoke(caster, ServerMessages.Get(Msg.SpellGenFizzles));
             return false;
@@ -744,6 +842,7 @@ public sealed class SpellEngine
         else if (castFromScroll) manaCost /= 2;     // reference: scrolls cost half mana
         if (caster.Mana < manaCost)
         {
+            ClearCastSourceTags(caster);
             ClearCastState(caster);
             OnSysMessage?.Invoke(caster, "You lack the mana to cast that spell.");
             return false;
@@ -761,6 +860,7 @@ public sealed class SpellEngine
             // The reagents were there when the cast began and are not there now:
             // the spell cannot be paid for, so it does not happen. Source-X fails the
             // whole cast the same way when its re-check at CastDone cannot pay.
+            ClearCastSourceTags(caster);
             ClearCastState(caster);
             OnSysMessage?.Invoke(caster, "You lack the reagents to cast that spell.");
             return false;
@@ -772,7 +872,7 @@ public sealed class SpellEngine
         // success (passed fizzle + mana). Moving this off the double-click / client
         // success path means a charge/scroll is never lost to an interrupted,
         // cancelled or fizzled cast, and NPC/precast casts consume correctly too.
-        ConsumeCastSource(caster);
+        ConsumeCastSource(caster, sourceKind, castSource);
 
         // Clear cast state
         ClearCastState(caster);
