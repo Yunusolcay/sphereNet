@@ -1909,6 +1909,10 @@ public partial class Character : ObjBase
         return false;
     }
 
+    /// <summary>Detach this creature from the spawner that produced it. Wired by the
+    /// world, which is the only thing that can find the spawn point from here.</summary>
+    public static Action<Character>? ReleaseFromSpawner;
+
     public bool TryAssignOwnership(Character? owner, Character? controller = null,
         bool summoned = false, bool enforceFollowerCap = false)
     {
@@ -1937,6 +1941,13 @@ public partial class Character : ObjBase
             ClearFriends();
             IsBonded = false;
         }
+
+        // A creature that becomes somebody's pet stops being a spawn child: upstream
+        // clears its home and calls DelObj on the spawner that made it
+        // (NPC_PetSetOwner, CCharNPCPet.cpp:614). Without it the old spawn point still
+        // counted the pet against its quota AND still destroyed it on the next STOP.
+        if (ownerUid.IsValid && _npcMaster != ownerUid)
+            ReleaseFromSpawner?.Invoke(this);
 
         SetOwnerControllerRaw(ownerUid, controllerUid, mirrorLegacySummon: summoned);
         if (owner != null)

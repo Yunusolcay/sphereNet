@@ -34,6 +34,7 @@ public sealed class ResetEngineStaticsAttribute : BeforeAfterTestAttribute
         SphereNet.Game.Objects.Items.Item.CreateTriggerHook = null;
         SphereNet.Game.Components.ChampionComponent.ResolveGameClockMs = null;
         SphereNet.Game.Components.SpawnComponent.ReleaseFromPreviousSpawner = null;
+        SphereNet.Game.Objects.Characters.Character.ReleaseFromSpawner = null;
         SphereNet.Game.Objects.Items.Item.OnItemUnequipped = null;
         SphereNet.Game.Objects.Items.Item.ItemsMaxAmount = 60000;
         SphereNet.Game.Objects.Characters.Character.BroadcastNearby = null;

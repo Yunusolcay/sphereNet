@@ -3748,16 +3748,18 @@ public class Item : ObjBase
             if (SpawnItem == null)
                 SpawnItem = new ItemSpawnComponent(this, world);
 
-            if (_more1 != 0)
+            // Resolve the target by NAME when the save carries one, so the kind of
+            // resource - ITEMDEF or TEMPLATE - is recovered along with the index
+            // (SPAWNID setter, CCSpawn.cpp:943). Taking MORE1 as a bare index left a
+            // template spawner looking like an itemdef spawner after a restart, and it
+            // produced nothing at all.
+            string? itemTarget = Tags.Get("SPAWNID");
+            if (string.IsNullOrWhiteSpace(itemTarget))
+                itemTarget = Tags.Get("MORE1_DEFNAME");
+            if (!string.IsNullOrWhiteSpace(itemTarget))
+                SpawnItem.SetFromDefName(itemTarget.Trim(), resources);
+            else if (_more1 != 0)
                 SpawnItem.ItemDefId = (int)_more1; // full index — named itemdefs hash above 0xFFFF
-            else if (TryGetTag("MORE1_DEFNAME", out string? itemDefName) &&
-                     !string.IsNullOrWhiteSpace(itemDefName))
-            {
-                // Same legacy-save defname fallback as the char spawner above.
-                var rid = resources.ResolveDefName(itemDefName.Trim());
-                if (rid.IsValid && rid.Type == Core.Enums.ResType.ItemDef)
-                    SpawnItem.ItemDefId = rid.Index; // full 24-bit index, not (ushort)
-            }
 
             if (_amount > 1)
                 SpawnItem.MaxCount = _amount;

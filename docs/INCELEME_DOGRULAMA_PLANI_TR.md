@@ -2232,6 +2232,58 @@ degistirildi, boylece isabetsizlik kesin.
 yukleme sirasinda ileri UID referansi; spawn kapasitesinin 250 sinirinin Source-X uint16
 sozlesmesiyle uzlastirilmasi.
 
+### 12N-12P - spawn'dan ayrilma, kimlik yasam dongusu ve olay sozlesmeleri: 14 bulgu (6 Eylul 2026)
+
+Kanit raporlari: [12N](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12N_SPAWN_PET_OLUM_UID.md),
+[12O](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12O_GRUP_TEMPLATE_CANLI_TETIKLEYICI.md),
+[12P](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12P_SPAWN_UYELIK_EVENT_ZAMAN.md).
+On dort bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+- [x] **12N-1 (P1)** - Evcillestirilen pet spawn uyeliginde kaliyordu. (YAPILDI:
+  `Character.ReleaseFromSpawner` hook'u; yalnizca GERCEK sahip degisiminde, kota
+  denetimi gectikten sonra.)
+- [x] **12N-2 (P2)** - Save'in olu-uye temizligi timer'i acmiyordu. (YAPILDI:
+  `CleanupDead` uye kaybinda yeniden zamanliyor.)
+- [x] **12N-3 (P1)** - Silinen NPC'nin UID'si yeniden kullanilinca eski spawn yeni
+  nesneyi siliyordu. (YAPILDI: silme callback'i uyeligi UID serbest kalmadan kaldiriyor
+  - bu, 12E-2'de eklenen `NotifySpawnerOfDeletedMember` yolunun ayni koku; pet devri de
+  ayni kapiya baglandi.)
+- [x] **12N-4 (P3)** - Uretilen esya OWNED/MOVE_ALWAYS tasiyordu. (YAPILDI.)
+- [x] **12O-1..12O-5 (P2)** - Sifir agirlik, sayisal grup uyesi, TEMPLATE kapsayicisi,
+  TEMPLATE turunun kayittan geri gelmemesi, canli ADDOBJ'un event tetiklememesi.
+  (YAPILDI.)
+- [x] **12P-1..12P-5 (P2/P3)** - Home/HOMEDIST devri, DELOBJ sonrasi SPAWNITEM baginin
+  kalmasi, @DelObj payload'i ve sure geri uygulamasi, genel @Create sirasi, son slotta
+  timer parki. (YAPILDI.)
+
+**Bilincli kararlar:**
+- **`SpawnTriggerArgs.SpawnPoint` eklendi:** @DelObj'un O1'i cocuk degil SPAWN NOKTASIDIR;
+  mevcut `SpawnedChar`/`SpawnedItem` alanlari da doldurulmaya devam ediyor, boylece
+  cocugu okuyan koprular bozulmadi.
+- **TEMPLATE kapsayicisi tek seviye:** CONTAINER + onu izleyen ITEM satirlari
+  uygulaniyor; ic ice kap ve rastgele havuz hala acik.
+- **Genel @Create ertelendi, tanim scripti degil:** referans ikisini ayirir; SphereNet'te
+  ikisi tek `OnNpcScriptInit` hook'unda oldugu icin hook'un TAMAMI yerlestirme sonrasina
+  alindi. Tanim K/V alanlari zaten daha once uygulaniyor, ama CHARDEF'in kendi
+  @Create/@NPCRestock govdesi de artik yerlestirme sonrasinda calisiyor - referansta
+  erken calisan bu yari icin bilincli sapma, acik kalan olarak yazildi.
+
+**12N-12P kapanisi:** tam suite **3.002 basarili / 0 basarisiz** (+18). On dort duzeltme
+gecici olarak kapatilarak 15 testin eski davranisi yakaladigi kanitlandi.
+
+**Mevcut test yeniden kuruldu:** `SpawnChampionParity12EITests.AddObjIsHandedTheTimer...`
+tetikleyicinin her cagrida pozitif saniye gorecegini varsayiyordu; 12P-5 ile son slotta
+park -1 gosteriyor. Test artik ilk uyede gercek sureyi, son uyede -1'i ve her iki
+durumda scriptin yazdiginin uygulandigini dogruluyor.
+
+**Tur ici duzeltilen kendi hatam:** NPC `DelObj`'ta timer'i tetikleyiciden SONRA
+kuruyordum, bu yuzden script her zaman -1 goruyordu; referans once timeout'u kurar sonra
+tetikler (:551/:568). Sira duzeltildi.
+
+**Acik kalan:** ic ice TEMPLATE kaplari ve rastgele havuz; CHARDEF'in kendi @Create
+govdesinin yerlestirmeden once calismasi; grup -> grup gecisi; yuklemede ileri UID
+referansi.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

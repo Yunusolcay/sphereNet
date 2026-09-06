@@ -3,6 +3,67 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Spawn'dan ayrilmak: evcillestirme, silme ve spawn'in tetikledikleri (12N-12P)
+----------------------------------------
+
+FIX - Bir yaratigi evcillestirmek onu spawn'in defterinde birakiyordu; eski spawn
+        noktasi peti hala kotasina sayiyor VE sonraki durdurmada yok ediyordu. Referans
+        sahiplik el degistirirken home'u temizler ve DelObj cagirir (NPC_PetSetOwner,
+        CCharNPCPet.cpp:614). Ayni sahibin yeniden atanmasi yine hicbir seyi degistirmez.
+
+FIX - Tek yaratigi dunya kaydi sirasinda olen spawn bos ve durmus kaliyordu: kaydin
+        kendi olu-uye temizligi uyeyi cikariyor ama zamanlamayi acmiyordu ve hicbir
+        normal tick onu yeniden baslatmiyordu. Uye kaybi, nerede fark edilirse edilsin
+        timer'i yeniden kuruyor (CCSpawn.cpp:509).
+
+FIX - Uretilen esya, taniminin veya create scriptinin verdigi ATTR_OWNED ve
+        ATTR_MOVE_ALWAYS bayraklarini koruyordu. Referans spawn tetikleyicisinden once
+        tam olarak bu ikisini temizler, baskasina dokunmaz (:340).
+
+FIX - Grup uyesinin sifir agirligi bire yukseltiliyordu; "devre disi" ile "nadir" ayni
+        ayar oluyordu. Sifir agirlik uyeyi cekilisin disinda birakir
+        (CRandGroupDef.cpp:229).
+
+FIX - Sayisal chardef ile yazilan grup uyesi - ID=0200,9 - agirlik saniliyordu; grup
+        "9" adli bir yaratik ariyor ve hicbir sey uretmiyordu. Hangi yarinin agirlik
+        oldugunu ikincisi belirler (:79) ve sayisal uye kendi kaynak indeksi olarak
+        cozulur.
+
+FIX - Template'in CONTAINER satiri kutuyu uretip tarifin icine koydugu her seyi
+        dusuruyordu. CONTAINER'i izleyen ITEM satirlari onun icine girer
+        (CItem.cpp:628/642).
+
+FIX - Template hedefli esya spawn'i yeniden acilista itemdef spawn'i olarak geliyor ve
+        hicbir sey uretmiyordu: kaydedilen hedef duz indeks olarak aliniyor ve HANGI TUR
+        kaynagi adlandirdigi kayboluyordu. Hedef yuklemede yine adiyla cozuluyor
+        (CCSpawn.cpp:943).
+
+FIX - Canli ADDOBJ ile mevcut bir yaratigi/esyayi kaydetmek @AddObj'i hic
+        tetiklemiyordu; scriptin kendi kayitlari onun icin calismiyordu (:648).
+
+FIX - Yeni bir spawn'a verilen yaratik eskisinin home ve dolasim mesafesini koruyordu;
+        hala eskiden yasadigi yerdeymis gibi davraniyordu. AddObj ikisini de yeni spawn
+        noktasindan kurar (:631). Reddedilen kayit ikisine de dokunmaz.
+
+FIX - Bir yaratik serbest birakildiktan sonra ona hangi spawn'in sahip oldugu
+        soruldugunda hala eskisini soyluyordu: uyelik temizleniyor ama bag
+        temizlenmiyordu (:542, CObjBase.cpp:1608).
+
+FIX - @DelObj'a nesne olarak cocuk, ARGN1 olarak da ya hicbir sey ya da bir tanim
+        indeksi veriliyor, geri yazdigi ise atiliyordu. Referans ona SPAWN NOKTASINI ve
+        kalan timer'i saniye olarak verir ve scriptin biraktigi degerle spawn'i yeniden
+        kurar (:568).
+
+FIX - Genel yaratik-olusturma eventi, yaratik yerlestirilmeden ve spawn'a baglanmadan
+        once calisiyordu; konumunu ya da spawn'ini okuyan script ikisini de goremiyordu.
+        Referans tanimin kendi scriptini erken, genel zinciri ise yerlestirme ve
+        baglanmadan sonra calistirir (CCharNPC.cpp:296, CCSpawn.cpp:466).
+
+FIX - Spawn'in son slotunun dolmasi, uye canli kayitla ya da esya uretimiyle geldiginde
+        timer'i parketmiyordu; dolu spawn zamanlanmis kaliyordu. Park, ekleme
+        tetikleyicisinden once olur; tetikleyici sonra kendi araligini secebilir
+        (:643/:648).
+
 [2026-09-06] - Spawn gruplari, uyelik kurallari ve spawn'in hatirladiklari (12J-12M)
 ----------------------------------------
 

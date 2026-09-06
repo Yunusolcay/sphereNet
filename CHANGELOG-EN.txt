@@ -4,6 +4,65 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Leaving a spawner: taming, deletion and the events a spawner fires (12N-12P)
+----------------------------------------
+
+FIX - Taming a creature left it on its spawner's books, so the old spawn point still
+        counted the pet against its quota AND destroyed it on the next stop. Upstream
+        clears the home and calls DelObj as ownership changes hands (NPC_PetSetOwner,
+        CCharNPCPet.cpp:614). Re-assigning the same owner still changes nothing.
+
+FIX - A spawner whose only creature died during a world save was left empty and parked:
+        the save's own dead-member sweep removed it without re-opening the schedule, and
+        no ordinary tick ever restarted it. Losing a member re-arms the timer wherever
+        the loss is noticed (CCSpawn.cpp:509).
+
+FIX - A spawned item kept the ATTR_OWNED and ATTR_MOVE_ALWAYS its definition or its
+        create script had set. Upstream strips exactly those two, and nothing else,
+        before the spawn trigger runs (:340).
+
+FIX - A group member's weight of zero was raised to one, so "disabled" and "rare" were
+        the same setting; a zero weight takes a member out of the draw
+        (CRandGroupDef.cpp:229).
+
+FIX - A group member written as a numeric chardef - ID=0200,9 - was mistaken for a
+        weight, and the group then looked for a creature called "9" and spawned nothing.
+        Which half is the weight is decided by the second one (:79), and a numeric member
+        resolves as the resource index it is.
+
+FIX - A template's CONTAINER row produced the box and dropped everything the recipe put
+        in it. The ITEM rows that follow a CONTAINER go inside it (CItem.cpp:628/642).
+
+FIX - A template-targeted item spawner came back from a restart as an itemdef spawner
+        and produced nothing: the saved target was taken as a bare index, losing which
+        KIND of resource it named. The target is resolved by name again on load
+        (CCSpawn.cpp:943).
+
+FIX - Enrolling an existing creature or item through a live ADDOBJ never fired @AddObj,
+        so a script's own bookkeeping did not run for it (:648).
+
+FIX - A creature handed to a new spawner kept the home and wander distance of the old
+        one, so it behaved as though it still lived where it used to. AddObj sets both
+        from the new spawn point (:631). A refused enrolment leaves them untouched.
+
+FIX - After a creature was released, asking it which spawner owned it still named the
+        old one: the membership was cleared but the link was not (:542, CObjBase.cpp:1608).
+
+FIX - @DelObj was handed the child as its object and either nothing or a definition
+        index as ARGN1, and whatever it wrote back was discarded. Upstream hands it the
+        SPAWN POINT and the remaining timer in seconds, and re-arms the spawner from what
+        the script leaves there (:568).
+
+FIX - The general creature-create event ran before the creature was placed or attached,
+        so a script reading its position or its spawner saw neither. Upstream runs the
+        definition's own script early and the general chain after placement and
+        attachment (CCharNPC.cpp:296, CCSpawn.cpp:466).
+
+FIX - Filling a spawner's last slot did not park its timer when the member arrived
+        through a live enrolment or an item generation, so a full spawner stayed
+        scheduled. The pause happens before the add trigger, which may then choose its
+        own interval (:643/:648).
+
 [2026-09-06] - Spawn groups, membership rules and what a spawner remembers (12J-12M)
 ----------------------------------------
 

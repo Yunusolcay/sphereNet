@@ -444,12 +444,12 @@ public sealed class SpawnChampionParity12EITests
         var world = NewWorld();
         var stone = Spawner(world, res, ItemType.SpawnItem, "i_prize_a", maxCount: 2);
         stone.SpawnItem!.SetDelay(9, 9);
-        int seen = -999;
+        var seen = new List<int>();
         SpawnComponent.OnSpawnTrigger = (_, trigger, args) =>
         {
             if (trigger == ItemTrigger.AddObj)
             {
-                seen = args.N1;
+                seen.Add(args.N1);
                 args.N1 = 111;
             }
             return TriggerResult.Default;
@@ -457,7 +457,13 @@ public sealed class SpawnChampionParity12EITests
         try { stone.SpawnItem.RespawnNow(); }
         finally { SpawnComponent.OnSpawnTrigger = null; }
 
-        Assert.True(seen >= 0, $"the trigger should be handed the remaining seconds, saw {seen}");
+        Assert.Equal(2, seen.Count);
+        // The first member leaves room, so the trigger is shown the seconds that
+        // remain. The LAST one fills the quota, and upstream parks the timer before
+        // the trigger runs (CCSpawn.cpp:643), so -1 is what it should see there.
+        Assert.True(seen[0] >= 0, $"a spawner with room should show its remaining seconds, saw {seen[0]}");
+        Assert.Equal(-1, seen[1]);
+        // Either way the script's own answer is what ends up armed.
         long remainingMs = stone.Timeout - Environment.TickCount64;
         Assert.InRange(remainingMs, 100_000, 112_000); // ~111 s, not the 9-minute default
     }

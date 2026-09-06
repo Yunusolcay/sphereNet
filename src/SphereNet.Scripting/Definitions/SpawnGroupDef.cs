@@ -37,9 +37,10 @@ public sealed class SpawnGroupDef : ResourceLink
                 // alternative Source-X syntax produced a flat list.
                 if (Members.Count > 0 && int.TryParse(arg.Trim(), out int newWeight))
                 {
+                    newWeight = Math.Max(0, newWeight);
                     var last = Members[^1];
-                    TotalWeight += Math.Max(1, newWeight) - last.Weight;
-                    Members[^1] = (last.CharDefName, Math.Max(1, newWeight));
+                    TotalWeight += newWeight - last.Weight;
+                    Members[^1] = (last.CharDefName, newWeight);
                 }
                 break;
             default:
@@ -68,22 +69,31 @@ public sealed class SpawnGroupDef : ResourceLink
         int weight = 1;
         string charDefName;
 
-        if (parts.Length >= 2 && !string.IsNullOrWhiteSpace(parts[0]) &&
-            !int.TryParse(parts[0], out _) && int.TryParse(parts[1], out int rw))
+        // Which half is the weight is decided by the SECOND part, not the first: the
+        // Source-X form is <resource>,<weight>, and a resource may perfectly well be
+        // written as a number (ID=0200,9). Testing the FIRST part meant a numeric
+        // chardef was mistaken for a weight, and the group then looked for a creature
+        // called "9" and spawned nothing at all.
+        if (parts.Length >= 2 && int.TryParse(parts[1], out int rw))
         {
-            // Source-X order: chardef, weight.
             charDefName = parts[0];
-            weight = Math.Max(1, rw);
+            weight = rw;
         }
         else if (parts.Length >= 2 && int.TryParse(parts[0], out int w))
         {
-            weight = Math.Max(1, w);
+            // The reversed order an older SphereNet pack may have been written against,
+            // recognisable because the second half is NOT a number.
+            weight = w;
             charDefName = parts[1];
         }
         else
         {
             charDefName = parts[0];
         }
+        // A weight of zero is a real setting: it takes the member out of the draw
+        // without removing it from the group (GetRandMemberIndex, CRandGroupDef.cpp:229).
+        // Raising it to one meant "disabled" and "rare" were the same thing.
+        weight = Math.Max(0, weight);
 
         if (string.IsNullOrWhiteSpace(charDefName))
             return;
@@ -98,18 +108,24 @@ public sealed class SpawnGroupDef : ResourceLink
     /// </summary>
     public string? SelectRandomMember(Random rng)
     {
-        if (Members.Count == 0)
+        if (Members.Count == 0 || TotalWeight <= 0)
             return null;
 
         int roll = rng.Next(TotalWeight);
         int cumulative = 0;
         foreach (var (charDefName, weight) in Members)
         {
+            if (weight <= 0)
+                continue;               // taken out of the draw
             cumulative += weight;
             if (roll < cumulative)
                 return charDefName;
         }
 
-        return Members[^1].CharDefName;
+        // Fall back to the last member that is actually in the draw.
+        for (int i = Members.Count - 1; i >= 0; i--)
+            if (Members[i].Weight > 0)
+                return Members[i].CharDefName;
+        return null;
     }
 }

@@ -686,6 +686,17 @@ public static partial class Program
             // releases it from the first (AddObj, CCSpawn.cpp:621). Without it the
             // object sat in two member lists and the ORIGINAL spawner's STOP still
             // destroyed what the script thought it had moved away.
+            // A creature that becomes a pet stops being a spawn child (NPC_PetSetOwner,
+            // CCharNPCPet.cpp:614).
+            SphereNet.Game.Objects.Characters.Character.ReleaseFromSpawner = ch =>
+            {
+                if (!ch.TryGetTag("SPAWN_POINT_UUID", out string? raw) ||
+                    !Guid.TryParse(raw, out Guid spawnUuid) ||
+                    _world.FindByUuid(spawnUuid) is not Item spawner)
+                    return;
+                spawner.SpawnChar?.DelObj(ch.Uid);
+            };
+
             SphereNet.Game.Components.SpawnComponent.ReleaseFromPreviousSpawner =
                 (obj, newSpawner) =>
                 {

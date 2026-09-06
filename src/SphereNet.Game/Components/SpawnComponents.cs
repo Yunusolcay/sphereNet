@@ -128,6 +128,8 @@ public sealed class SpawnComponent
             SetNextSpawnTime();
     }
 
+    private Character? pendingScriptInit;
+
     private void SpawnOne()
     {
         // A spawner has to be standing in the world. Upstream leaves GenerateChar
@@ -144,14 +146,16 @@ public sealed class SpawnComponent
             if (string.IsNullOrEmpty(memberName))
                 return;
 
-            if (_resources != null)
-            {
-                var rid = _resources.ResolveDefName(memberName);
-                if (rid.IsValid && rid.Type == ResType.CharDef)
-                    defIndex = rid.Index;
-                else
-                    return;
-            }
+            if (_resources == null)
+                return;
+            var rid = _resources.ResolveDefName(memberName);
+            if (rid.IsValid && rid.Type == ResType.CharDef)
+                defIndex = rid.Index;
+            else if (int.TryParse(memberName, System.Globalization.NumberStyles.HexNumber,
+                         null, out int numericMember) && numericMember > 0)
+                // A member may name its CHARDEF by index rather than by defname
+                // (ResourceGetID(RES_CHARDEF, ...), CRandGroupDef.cpp:79).
+                defIndex = numericMember & (int)SpawnResourceLimits.IndexMask;
             else
                 return;
         }
@@ -289,7 +293,14 @@ public sealed class SpawnComponent
             // script bodies, and only the GM .add path used to run them:
             // every gem-spawned monster had an empty pack and dropped
             // nothing. Wired by the host to the trigger dispatcher.
-            OnNpcScriptInit?.Invoke(ch);
+            // Deferred: this runs the CHARDEF's own @Create/@NPCRestock AND the
+            // general EVENTSPET @Create chain, and upstream splits those - the
+            // definition's own script runs early (NPC_LoadScript, CCharNPC.cpp:265)
+            // while the general Create chain runs AFTER the creature is placed and
+            // attached to the spawner (NPC_CreateTrigger, :296, called from
+            // GenerateChar, CCSpawn.cpp:466). Running it here showed a script an
+            // unplaced creature at 0,0 that belonged to no spawner yet.
+            pendingScriptInit = ch;
         }
         else
         {
@@ -346,9 +357,17 @@ public sealed class SpawnComponent
             return null;
         }
         _spawnedUids.Add(ch.Uid);
+        // The last slot parks the timer before @AddObj can restate it (:643/:648).
+        if (!IsChampion && _spawnedUids.Count >= _maxCount)
+            PauseTimer();
 
         // @AddObj — notify script that NPC was registered
-        OnSpawnTrigger?.Invoke(_spawnItem, ItemTrigger.AddObj, new SpawnTriggerArgs { SpawnedChar = ch });
+        FireAddObj(ch);
+
+        // Now that the creature stands in the world and belongs to this spawner, the
+        // general Create chain can read both.
+        if (pendingScriptInit != null)
+            OnNpcScriptInit?.Invoke(pendingScriptInit);
 
         _world.OnNpcSpawned?.Invoke(ch);
         return ch;
@@ -412,6 +431,7 @@ public sealed class SpawnComponent
     public void CleanupDead()
     {
         if (_killingChildren) return;
+        int before = _spawnedUids.Count;
         _spawnedUids.RemoveAll(uid =>
         {
             var ch = _world.FindChar(uid);
@@ -423,13 +443,40 @@ public sealed class SpawnComponent
             }
             return false;
         });
+        // Losing a member re-opens the schedule, wherever the loss is noticed. Upstream
+        // does the removal and the timer together in DelObj (CCSpawn.cpp:509); here the
+        // save path calls this instead, and a spawner whose only creature died during a
+        // world save was left empty AND parked, so no ordinary tick ever restarted it.
+        if (!_stopped && _spawnedUids.Count < before &&
+            _spawnedUids.Count < _maxCount && _nextSpawnTick < 0)
+            SetNextSpawnTime();
     }
 
     private void FireDelObj(Character ch)
     {
         if (_killingChildren) return;
         ch.ClearStatFlag(StatFlag.Spawned);
-        OnSpawnTrigger?.Invoke(_spawnItem, ItemTrigger.DelObj, new SpawnTriggerArgs { SpawnedChar = ch });
+        // The link has to go with the membership, or a script asking the creature which
+        // spawner owns it still gets the old one (DelObj -> SetSpawn(nullptr),
+        // CCSpawn.cpp:542; the SPAWNITEM read answers 0 with no link, CObjBase.cpp:1608).
+        ch.RemoveTag("SPAWN_POINT_UUID");
+        ch.RemoveTag("SPAWNITEM");
+        if (OnSpawnTrigger == null) return;
+
+        // @DelObj is about the SPAWNER: O1 is the spawn point and ARGN1 the remaining
+        // timer in seconds, which the script may change (:568). It used to receive the
+        // child as O1 and either nothing or a definition index as ARGN1, and whatever it
+        // wrote was thrown away.
+        var args = new SpawnTriggerArgs
+        {
+            SpawnedChar = ch,
+            SpawnPoint = _spawnItem,
+            N1 = _nextSpawnTick < 0
+                ? -1
+                : (int)Math.Max(0, (_nextSpawnTick - Environment.TickCount64) / 1000),
+        };
+        OnSpawnTrigger(_spawnItem, ItemTrigger.DelObj, args);
+        ApplyTriggerTimeout(args.N1);
     }
 
     private void SetNextSpawnTime()
@@ -493,12 +540,15 @@ public sealed class SpawnComponent
         if (!_spawnedUids.Remove(uid))
             return;
 
+        // Re-open the schedule FIRST: upstream sets the timeout and only then fires
+        // @DelObj with the resulting seconds (CCSpawn.cpp:551/568), so the value the
+        // script is shown - and may overwrite - is a real one rather than the parked -1.
+        if (_spawnedUids.Count < _maxCount && _nextSpawnTick < 0 && !_stopped)
+            SetNextSpawnTime();
+
         var ch = _world.FindChar(uid);
         if (ch != null && !ch.IsDeleted)
             FireDelObj(ch);
-
-        if (_spawnedUids.Count < _maxCount && _nextSpawnTick < 0 && !_stopped)
-            SetNextSpawnTime();
     }
 
     /// <summary>Source-X RESET verb: kill all + immediate respawn.</summary>
@@ -681,7 +731,49 @@ public sealed class SpawnComponent
         _spawnedUids.Add(uid);
         ch.SetStatFlag(StatFlag.Spawned);
         ch.SetTag("SPAWN_POINT_UUID", _spawnItem.Uuid.ToString("D"));
+        ch.SetTag("SPAWNITEM", $"0{_spawnItem.Uid.Value:X}");
+        // The creature belongs HERE now: its home and how far it may wander come from
+        // this spawner (AddObj, CCSpawn.cpp:631). Leaving the old ones meant a creature
+        // handed to a new point still behaved as if it lived at the old one.
+        ch.Home = _spawnItem.Position;
+        ch.HomeDist = (short)Math.Clamp(_spawnRange, 0, short.MaxValue);
+
+        // The last slot parks the timer, and it happens BEFORE the trigger so a script
+        // that wants a different interval can still say so (:643).
+        if (!IsChampion && _spawnedUids.Count >= _maxCount)
+            PauseTimer();
+        FireAddObj(ch);
         return true;
+    }
+
+    /// <summary>Run @AddObj for a member and take the timer back out of it: upstream
+    /// hands the trigger the remaining timer in seconds and applies whatever it leaves
+    /// there (CCSpawn.cpp:648).</summary>
+    private void FireAddObj(Character ch)
+    {
+        if (OnSpawnTrigger == null) return;
+        var args = new SpawnTriggerArgs
+        {
+            SpawnedChar = ch,
+            SpawnDefIndex = ch.CharDefIndex,
+            N1 = _nextSpawnTick < 0
+                ? -1
+                : (int)Math.Max(0, (_nextSpawnTick - Environment.TickCount64) / 1000),
+        };
+        OnSpawnTrigger(_spawnItem, ItemTrigger.AddObj, args);
+        ApplyTriggerTimeout(args.N1);
+    }
+
+    /// <summary>Apply the seconds a spawn trigger asked for; -1 parks the timer.</summary>
+    private void ApplyTriggerTimeout(int seconds)
+    {
+        if (seconds < 0)
+        {
+            PauseTimer();
+            return;
+        }
+        _nextSpawnTick = Environment.TickCount64 + seconds * 1000L;
+        _spawnItem.SetTimeout(_nextSpawnTick);
     }
 
     /// <summary>Detach an object from the spawner that currently owns it, so a live
@@ -767,6 +859,10 @@ public sealed class SpawnTriggerArgs
 {
     public Character? SpawnedChar { get; set; }
     public Item? SpawnedItem { get; set; }
+
+    /// <summary>The SPAWN POINT, when the event is about the spawner rather than the
+    /// child - @DelObj hands O1 the spawn item (CCSpawn.cpp:568).</summary>
+    public Item? SpawnPoint { get; set; }
     public int SpawnDefIndex { get; set; }
     // Champion trigger payload (@Level ARGN1..3, candle @Del* ARGN1=reason).
     public int N1 { get; set; }
@@ -910,6 +1006,7 @@ public sealed class ItemSpawnComponent
             }
             defIndex = expanded;
         }
+        int templateSource = _isTemplate ? _itemDefId : 0;
 
         var item = _world.CreateItem();
         var idef = DefinitionLoader.GetItemDef(defIndex);
@@ -956,6 +1053,13 @@ public sealed class ItemSpawnComponent
         SetNextSpawnTime();
 
         item.SetTag("SPAWN_POINT_UUID", _spawnItem.Uuid.ToString("D"));
+        // Upstream strips exactly these two before @Spawn runs (GenerateItem,
+        // CCSpawn.cpp:340): a spawned item belongs to nobody and does not carry the
+        // always-movable override its definition may declare. Everything else the
+        // definition or its @Create set is left alone.
+        item.ClearAttr(ObjAttributes.Owned);
+        item.ClearAttr(ObjAttributes.Move_Always);
+
         // Where the item sat before @Spawn ran, so a position the trigger CHOSE can be
         // told apart from the one it left alone.
         var beforeTrigger = item.Position;
@@ -985,8 +1089,10 @@ public sealed class ItemSpawnComponent
                 return;
             }
         }
-        _spawnedUids.Add(item.Uid);
-        FireAddObj(item);
+        // A container the template opened gets the rows that followed it.
+        if (templateSource > 0)
+            FillTemplateContents(item, templateSource);
+        RegisterGenerated(item);
     }
 
     /// <summary>The itemdef a TEMPLATE resolves to. SphereNet already expands template
@@ -997,14 +1103,46 @@ public sealed class ItemSpawnComponent
         if (tdef == null) return 0;
         foreach (var entry in tdef.ItemEntries)
         {
-            var rid = DefinitionLoader.StaticResources?.ResolveDefName(entry.DefName);
-            if (rid is { IsValid: true, Type: ResType.ItemDef })
-                return rid.Value.Index;
-            if (int.TryParse(entry.DefName, System.Globalization.NumberStyles.HexNumber,
-                    null, out int raw) && raw > 0)
-                return raw;
+            int idx = ResolveTemplateEntry(entry.DefName);
+            if (idx > 0) return idx;
         }
         return 0;
+    }
+
+    private static int ResolveTemplateEntry(string defName)
+    {
+        var rid = DefinitionLoader.StaticResources?.ResolveDefName(defName);
+        if (rid is { IsValid: true, Type: ResType.ItemDef })
+            return rid.Value.Index;
+        return int.TryParse(defName, System.Globalization.NumberStyles.HexNumber,
+            null, out int raw) && raw > 0 ? raw : 0;
+    }
+
+    /// <summary>Put the template's contents inside the container it declared.
+    ///
+    /// A CONTAINER line opens a box and the ITEM lines that follow go INTO it
+    /// (CreateTemplate, CItem.cpp:628/642). Taking only the first resolvable entry
+    /// produced the box and dropped everything the recipe meant to put in it.</summary>
+    private void FillTemplateContents(Item container, int templateIndex)
+    {
+        var tdef = DefinitionLoader.GetTemplateDef(templateIndex);
+        if (tdef == null || tdef.ItemEntries.Count == 0) return;
+        if (!tdef.ItemEntries[0].IsContainer) return;   // no box, nothing to fill
+
+        for (int i = 1; i < tdef.ItemEntries.Count; i++)
+        {
+            int idx = ResolveTemplateEntry(tdef.ItemEntries[i].DefName);
+            if (idx <= 0) continue;
+
+            var child = _world.CreateItem();
+            if (!ItemDefHelper.ApplyInstanceMetadata(child, idx))
+            {
+                if (idx > ushort.MaxValue) { _world.RemoveItem(child); continue; }
+                child.BaseId = (ushort)idx;
+            }
+            child.FireCreateTrigger();
+            container.AddItem(child);
+        }
     }
 
     public void ForceSpawn() => _nextSpawnTick = 0;
@@ -1027,6 +1165,19 @@ public sealed class ItemSpawnComponent
         };
         SpawnComponent.OnSpawnTrigger(_spawnItem, ItemTrigger.AddObj, args);
         ApplyTriggerTimeout(args.N1);
+    }
+
+    /// <summary>Every generated member goes through the same door as a live one, so the
+    /// pause on the last slot and the trigger's timer answer are applied once.</summary>
+    private void RegisterGenerated(Item item)
+    {
+        _spawnedUids.Add(item.Uid);
+        if (_spawnedUids.Count >= _maxCount)
+        {
+            _nextSpawnTick = -1;
+            _spawnItem.SetTimeout(-1);
+        }
+        FireAddObj(item);
     }
 
     /// <summary>Apply the seconds a spawn trigger asked for; -1 pauses.</summary>
@@ -1071,6 +1222,14 @@ public sealed class ItemSpawnComponent
 
         _spawnedUids.Add(uid);
         item.SetTag("SPAWN_POINT_UUID", _spawnItem.Uuid.ToString("D"));
+        // Last slot parks the timer before the trigger runs, so a script may still
+        // choose its own interval (CCSpawn.cpp:643/648).
+        if (_spawnedUids.Count >= _maxCount)
+        {
+            _nextSpawnTick = -1;
+            _spawnItem.SetTimeout(-1);
+        }
+        FireAddObj(item);
         return true;
     }
 
@@ -1148,12 +1307,26 @@ public sealed class ItemSpawnComponent
     {
         if (!_spawnedUids.Remove(uid)) return;
         var item = _world.FindItem(uid);
-        SpawnComponent.OnSpawnTrigger?.Invoke(_spawnItem, ItemTrigger.DelObj,
-            new SpawnTriggerArgs { SpawnedItem = item, SpawnDefIndex = _itemDefId });
-        if (item != null)
-            item.RemoveTag("SPAWN_POINT_UUID");
-        if (_nextSpawnTick <= 0)
+        item?.RemoveTag("SPAWN_POINT_UUID");
+
+        // Losing a member re-opens the schedule (CCSpawn.cpp:551) - do that BEFORE the
+        // trigger, so the seconds it is shown are the ones it can then override.
+        if (!_stopped && _spawnedUids.Count < _maxCount && _nextSpawnTick <= 0)
             SetNextSpawnTime();
+
+        if (SpawnComponent.OnSpawnTrigger == null) return;
+        // @DelObj is about the SPAWNER: O1 the spawn point, ARGN1 the remaining timer
+        // in seconds and writable (:568).
+        var args = new SpawnTriggerArgs
+        {
+            SpawnedItem = item,
+            SpawnPoint = _spawnItem,
+            N1 = _nextSpawnTick < 0
+                ? -1
+                : (int)Math.Max(0, (_nextSpawnTick - Environment.TickCount64) / 1000),
+        };
+        SpawnComponent.OnSpawnTrigger(_spawnItem, ItemTrigger.DelObj, args);
+        ApplyTriggerTimeout(args.N1);
     }
 
     public void KillAll()
