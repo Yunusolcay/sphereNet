@@ -425,11 +425,11 @@ public sealed class ContentEnvironmentParity11C12ATests
     [Fact]
     public void ARainlessRegionStaysDry()
     {
-        var (engine, region) = WeatherBench(rain: 0, cold: 0);
+        var (engine, _) = WeatherBench(rain: 0, cold: 0);
         var seen = new List<WeatherType>();
         engine.OnWeatherChanged = (_, t, _, _) => seen.Add(t);
 
-        for (int i = 0; i < 400; i++) engine.OnTick();
+        for (int i = 0; i < 20; i++) engine.OnTick();
 
         Assert.Empty(seen);
     }
@@ -437,11 +437,11 @@ public sealed class ContentEnvironmentParity11C12ATests
     [Fact]
     public void AColdRegionGetsSnowWheneverItPrecipitates()
     {
-        var (engine, region) = WeatherBench(rain: 100, cold: 100);
+        var (engine, _) = WeatherBench(rain: 100, cold: 100);
         var seen = new List<WeatherType>();
         engine.OnWeatherChanged = (_, t, _, _) => seen.Add(t);
 
-        for (int i = 0; i < 400; i++) engine.OnTick();
+        for (int i = 0; i < 20; i++) engine.OnTick();
 
         Assert.NotEmpty(seen);
         Assert.All(seen.Where(t => t != WeatherType.None), t => Assert.Equal(WeatherType.Snow, t));
@@ -463,7 +463,22 @@ public sealed class ContentEnvironmentParity11C12ATests
         {
             GetClimate = _ => (rain, cold),
         };
+        // The generation roll itself is pinned: whether a REGION precipitates is a
+        // 0.5%-per-tick draw, so leaving it to chance made this assertion a coin flip
+        // over any bounded number of ticks. With the low value forced, the climate
+        // numbers alone decide - which is what these two tests are about.
+        typeof(WeatherEngine)
+            .GetField("_rand", System.Reflection.BindingFlags.Instance |
+                               System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(engine, new LowestRoll());
         return (engine, region);
+    }
+
+    /// <summary>A Random that always rolls the bottom of its range.</summary>
+    private sealed class LowestRoll : Random
+    {
+        public override int Next(int maxValue) => 0;
+        public override int Next(int minValue, int maxValue) => minValue;
     }
 
     // ================================================================ 12A-5
