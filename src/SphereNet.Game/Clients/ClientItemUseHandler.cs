@@ -568,6 +568,21 @@ public sealed class ClientItemUseHandler
         {
             if (item.ItemType == ItemType.Shrine)
             {
+                // A shrine resurrects THROUGH the spell: Source-X calls
+                // OnSpellEffect(SPELL_Resurrection, ...) with the shrine as the source
+                // (CClientUse.cpp:327), so @SpellEffect can refuse it before anything
+                // happens (CCharSpell.cpp:3712). SphereNet went straight to the
+                // resurrection, so only @Resurrect was ever consulted.
+                if (_triggerDispatcher?.FireCharTrigger(_character, CharTrigger.SpellEffect,
+                        new TriggerArgs
+                        {
+                            CharSrc = _character,
+                            ItemSrc = item,
+                            O1 = item,
+                            N1 = (int)SpellType.Resurrection,
+                        }) == TriggerResult.True)
+                    return;
+
                 OnResurrect();
                 SysMessage(ServerMessages.GetFormatted(Msg.HealingRes, _character.Name));
                 return;
@@ -723,10 +738,16 @@ public sealed class ClientItemUseHandler
                 int trapDmg = item.UseTrap();
                 // Source-X gates the damage on CanTouch — the shard-wide reach
                 // distance (3 tiles, same as the use-reach gate above).
-                if (_character.Position.GetDistanceTo(item.Position) <= 3 &&
-                    !CombatEngine.IsDamageImmune(_character))
+                if (_character.Position.GetDistanceTo(item.Position) <= 3)
                 {
-                    _character.Hits -= (short)Math.Min(trapDmg, _character.Hits);
+                    // Through the shared damage path, not straight into the hit points:
+                    // the reference springs a trap with OnTakeDamage(dmg, nullptr,
+                    // DAMAGE_HIT_BLUNT|DAMAGE_GENERAL) (CCharUse.cpp:1753), which is
+                    // what carries @GetHit and the resistances with it. Writing Hits
+                    // directly meant a script could neither veto the damage nor change
+                    // it.
+                    CombatEngine.ApplyScriptDamage(_character, trapDmg,
+                        DamageType.HitBlunt | DamageType.General);
                     SysMessage("You set off a trap!");
                     if (_character.Hits <= 0 && !_character.IsDead)
                     {
@@ -762,28 +783,7 @@ public sealed class ClientItemUseHandler
                 // locals and then applied a flat five regardless, so a script that
                 // wrote those values changed nothing. RETURN 1 skips the gains but
                 // still costs the food, as Use_EatQty consumes either way (:913).
-                SphereNet.Game.NPCs.EatEngine.Eat(_character, item, _triggerDispatcher, 1);
-                SysMessage(ServerMessages.Get("itemuse_eat_food"));
-                BroadcastNearby?.Invoke(_character.Position, UpdateRange,
-                    new PacketAnimation(_character.Uid.Value, (ushort)AnimationType.Eat), 0);
-                BroadcastNearby?.Invoke(_character.Position, UpdateRange,
-                    new PacketSound(0x003A, _character.X, _character.Y, _character.Z), 0);
-                if (item.Amount > 1)
-                {
-                    // Eat a single unit, don't wipe the whole stack.
-                    item.Amount--;
-                    if (item.ContainedIn.IsValid)
-                        _netState.Send(new PacketContainerItem(
-                            item.Uid.Value, item.DispIdFull, 0, item.Amount, item.X, item.Y,
-                            item.ContainedIn.Value, item.Hue, _netState.IsClientPost6017));
-                    else
-                        SendWorldItem(item);
-                }
-                else if (_triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Destroy,
-                        new TriggerArgs { CharSrc = _character, ItemSrc = item }) != TriggerResult.True)
-                {
-                    _world.RemoveItem(item);
-                }
+                EatOneUnit(item);
                 break;
 
             // Source-X routes t_grain/t_grass through Use_Eat and t_water_wash
@@ -793,9 +793,24 @@ public sealed class ClientItemUseHandler
             // movable stack sitting in a container is decremented a unit. This
             // keeps a placed trough/tile intact (it was previously a dead
             // "you can't think of a way to use that" default).
+            // Grain and grass ARE food in the reference - they go through Use_Eat like
+            // anything else (CCharUse.cpp:1844), which asks whether the eater may move
+            // the item and then consumes what was eaten, last unit included. Treating
+            // them as inexhaustible fixtures let a single ear of grain feed a player
+            // forever; the move rule is what actually protects a placed trough.
             case ItemType.Grain:
             case ItemType.Grass:
+                if (!ItemMoveRules.CanMove(_character, item, out _))
+                {
+                    SysMessage(ServerMessages.Get(Msg.FoodCantmove));
+                    break;
+                }
+                EatOneUnit(item);
+                break;
+
             case ItemType.WaterWash:
+                // Water is DRUNK in the reference (Use_Drink), which is a different
+                // contract; left on the old path until that is modelled.
                 SphereNet.Game.NPCs.EatEngine.Eat(_character, item, _triggerDispatcher, 1);
                 SysMessage(ServerMessages.Get("itemuse_eat_food"));
                 BroadcastNearby?.Invoke(_character.Position, UpdateRange,
@@ -1196,7 +1211,13 @@ public sealed class ClientItemUseHandler
                 if (item.ContainedIn.IsValid)
                     SysMessage(ServerMessages.Get(Msg.ItemuseGameboardFail));
                 else
+                {
+                    // A board sets its pieces out before it opens (Game_Create,
+                    // CItemContainer.cpp:1123) - SphereNet opened an empty board, so a
+                    // new one could never be played on.
+                    SetUpGameBoard(item);
                     SendOpenContainer(item);
+                }
                 break;
             case ItemType.Clock:
                 ObjectMessage(item, FormatLocalGameTime());
@@ -1634,15 +1655,8 @@ public sealed class ClientItemUseHandler
 
             // ---- training dummies ----
             case ItemType.TrainDummy:
-            {
-                ushort animId = (ushort)(item.BaseId == 0x1070 || item.BaseId == 0x1074 ? item.BaseId + 1 : item.BaseId);
-                _netState.Send(new PacketSound(0x03B5, item.X, item.Y, item.Z));
-                var skill = _character.GetEquippedItem(Layer.TwoHanded) != null
-                    ? SkillType.Swordsmanship
-                    : SkillType.Wrestling;
-                RouteSkillTarget(skill, item.Uid);
+                TrainOnDummy(item);
                 break;
-            }
             case ItemType.TrainPickpocket:
                 TrainOnPickpocketDip(item);
                 break;
@@ -2765,9 +2779,215 @@ public sealed class ClientItemUseHandler
         return consume > 0;
     }
 
+    /// <summary>Eat one unit of something, and spend it only if it was actually
+    /// eaten.
+    ///
+    /// Source-X leaves Use_EatQty before ConsumeAmount when the eater has no room left
+    /// (CCharUse.cpp:889), so a full player loses nothing to a stray double-click.
+    /// SphereNet ignored what the meal engine answered and took the unit regardless -
+    /// deleting the last one outright.</summary>
+    private void EatOneUnit(Item food)
+    {
+        if (_character == null) return;
+
+        int eaten = SphereNet.Game.NPCs.EatEngine.Eat(_character, food, _triggerDispatcher, 1);
+        if (eaten <= 0)
+        {
+            SysMessage(ServerMessages.Get(Msg.FoodFull6));
+            return;
+        }
+
+        SysMessage(ServerMessages.Get("itemuse_eat_food"));
+        BroadcastNearby?.Invoke(_character.Position, UpdateRange,
+            new PacketAnimation(_character.Uid.Value, (ushort)AnimationType.Eat), 0);
+        BroadcastNearby?.Invoke(_character.Position, UpdateRange,
+            new PacketSound(0x003A, _character.X, _character.Y, _character.Z), 0);
+
+        if (food.Amount > eaten)
+        {
+            food.Amount -= (ushort)eaten;
+            if (food.ContainedIn.IsValid)
+                _netState.Send(new PacketContainerItem(
+                    food.Uid.Value, food.DispIdFull, 0, food.Amount, food.X, food.Y,
+                    food.ContainedIn.Value, food.Hue, _netState.IsClientPost6017));
+            else
+                SendWorldItem(food);
+            return;
+        }
+
+        if (_triggerDispatcher?.FireItemTrigger(food, ItemTrigger.Destroy,
+                new TriggerArgs { CharSrc = _character, ItemSrc = food }) != TriggerResult.True)
+            _world.RemoveItem(food);
+    }
+
     /// <summary>Source-X SKILLPRACTICEMAX default: a training aid is only useful up
     /// to 30.0 skill (CServerConfig).</summary>
     private const int SkillPracticeMax = 300;
+
+    // Source-X game pieces (uofiles_enums_itemid.h:937). GAME1 is the white set,
+    // GAME2 the brown one.
+    private const ushort Game1Checker = 0x3584, Game1Bishop = 0x3585, Game1Rook = 0x3586,
+        Game1Queen = 0x3587, Game1Knight = 0x3588, Game1Pawn = 0x3589, Game1King = 0x358A,
+        Game2Checker = 0x358B, Game2Bishop = 0x358C, Game2Rook = 0x358D,
+        Game2Queen = 0x358E, Game2Knight = 0x358F, Game2Pawn = 0x3590, Game2King = 0x3591;
+
+    /// <summary>Lay a game board out. Source-X Game_Create leaves a board that already
+    /// has pieces alone and otherwise builds the set MORE1 asks for, at the container
+    /// coordinates the client draws them on (CItemContainer.cpp:1123): chess, checkers,
+    /// backgammon - and nothing for any other value.</summary>
+    private void SetUpGameBoard(Item board)
+    {
+        if (board.Contents.Count > 0)
+            return;     // a game already in progress
+
+        switch (board.More1)
+        {
+            case 0: LayOutChess(board); break;
+            case 1: LayOutCheckers(board); break;
+            case 2: LayOutBackgammon(board); break;
+        }
+    }
+
+    private void PlacePiece(Item board, ushort id, short x, short y)
+    {
+        var piece = _world.CreateItem();
+        piece.BaseId = id;
+        piece.ItemType = ItemType.GamePiece;
+        if (!board.TryAddItem(piece))
+        {
+            _world.RemoveItem(piece);
+            return;
+        }
+        piece.Position = new Point3D(x, y, 0, _character?.MapIndex ?? 0);
+    }
+
+    private void LayOutChess(Item board)
+    {
+        ushort[] pieces =
+        [
+            Game1Rook, Game1Knight, Game1Bishop, Game1Queen, Game1King, Game1Bishop, Game1Knight, Game1Rook,
+            Game1Pawn, Game1Pawn, Game1Pawn, Game1Pawn, Game1Pawn, Game1Pawn, Game1Pawn, Game1Pawn,
+            Game2Pawn, Game2Pawn, Game2Pawn, Game2Pawn, Game2Pawn, Game2Pawn, Game2Pawn, Game2Pawn,
+            Game2Rook, Game2Knight, Game2Bishop, Game2Queen, Game2King, Game2Bishop, Game2Knight, Game2Rook,
+        ];
+        short[] rows = [5, 40, 160, 184];
+
+        short x = 0, y = 0;
+        for (int i = 0; i < pieces.Length; i++)
+        {
+            if ((i & 7) == 0) { x = 42; y = rows[i / 8]; }
+            else x += 25;
+            PlacePiece(board, pieces[i], x, y);
+        }
+    }
+
+    private void LayOutCheckers(Item board)
+    {
+        short[] rows = [30, 55, 80, 155, 180, 205];
+        short x = 0, y = 0;
+        for (int i = 0; i < 24; i++)
+        {
+            if ((i & 3) == 0)
+            {
+                x = (short)(((i / 4) & 1) != 0 ? 67 : 42);
+                y = rows[i / 4];
+            }
+            else x += 50;
+            PlacePiece(board, i >= 12 ? Game1Checker : Game2Checker, x, y);
+        }
+    }
+
+    private void LayOutBackgammon(Item board)
+    {
+        short[] rows =
+        [
+            8, 23, 38, 53, 68, 128, 143, 158, 173, 188, 8, 23, 158, 173, 188,
+            128, 143, 158, 173, 188, 8, 23, 38, 53, 68, 173, 188, 8, 23, 38,
+        ];
+        short x = 0;
+        for (int i = 0; i < 30; i++)
+        {
+            x = i switch
+            {
+                12 or 27 => 107,
+                10 or 25 => 224,
+                5 or 20 => 141,
+                0 or 15 => 41,
+                _ => x,
+            };
+            PlacePiece(board, i >= 15 ? Game1Checker : Game2Checker, x, rows[i]);
+        }
+    }
+
+    /// <summary>Swing at a training dummy.
+    ///
+    /// Source-X wants the dummy on the ground within a tile, refuses a mounted or
+    /// ranged-armed trainee and anyone past the practice cap, then swings: the dummy
+    /// spins for three seconds, makes a noise and pays out experience in the weapon
+    /// skill actually being used (Use_Train_Dummy, CCharUse.cpp:337). SphereNet played
+    /// a sound and handed the dummy to the generic skill pipeline, which sets up no
+    /// training at all - and picked the skill from whatever filled the two-handed layer
+    /// rather than from the weapon.</summary>
+    private void TrainOnDummy(Item dummy)
+    {
+        if (_character == null) return;
+
+        if (dummy.ContainedIn.IsValid || _character.Position.GetDistanceTo(dummy.Position) > 1)
+        {
+            SysMessage(ServerMessages.Get(Msg.ItemuseTrainingdummyToofar));
+            return;
+        }
+        if (_character.IsMounted)
+        {
+            SysMessage(ServerMessages.Get(Msg.ItemuseTrainingdummyMount));
+            return;
+        }
+
+        var skill = ResolveWeaponSkill();
+        if (skill is SkillType.Archery)
+        {
+            SysMessage(ServerMessages.Get(Msg.ItemuseTrainingdummyRanged));
+            return;
+        }
+        if (_character.GetSkill(skill) > SkillPracticeMax)
+        {
+            SysMessage(ServerMessages.Get(Msg.ItemuseTrainingdummySkill));
+            return;
+        }
+
+        BroadcastNearby?.Invoke(_character.Position, UpdateRange,
+            new PacketAnimation(_character.Uid.Value, (ushort)AnimationType.AttackWeapon), 0);
+
+        ushort[] sounds = [0x03A4, 0x03A6, 0x03A9, 0x03AE, 0x03B4, 0x03B6];
+        BroadcastNearby?.Invoke(dummy.Position, UpdateRange,
+            new PacketSound(sounds[Random.Shared.Next(sounds.Length)], dummy.X, dummy.Y, dummy.Z), 0);
+
+        dummy.SetAnim((ushort)(dummy.DispIdFull + 1), 3000);
+        SkillEngine.GainExperience(_character, skill, Random.Shared.Next(40));
+    }
+
+    /// <summary>The skill the wielded weapon actually trains (Source-X
+    /// Fight_GetWeaponSkill): the weapon in either hand decides it, and bare hands
+    /// mean wrestling.</summary>
+    private SkillType ResolveWeaponSkill()
+    {
+        if (_character == null) return SkillType.Wrestling;
+        var weapon = _character.GetEquippedItem(Layer.OneHanded)
+                     ?? _character.GetEquippedItem(Layer.TwoHanded);
+        if (weapon == null || !weapon.IsWeaponType) return SkillType.Wrestling;
+
+        return weapon.ItemType switch
+        {
+            ItemType.WeaponSword or ItemType.WeaponAxe or ItemType.WeaponMaceSharp
+                => SkillType.Swordsmanship,
+            ItemType.WeaponFence => SkillType.Fencing,
+            ItemType.WeaponMaceSmith or ItemType.WeaponMaceStaff or
+            ItemType.WeaponMaceCrook or ItemType.WeaponMacePick => SkillType.MaceFighting,
+            ItemType.WeaponBow or ItemType.WeaponXBow => SkillType.Archery,
+            ItemType.WeaponThrowing => SkillType.Throwing,
+            _ => SkillType.Wrestling,
+        };
+    }
 
     /// <summary>Practise stealing on the dip.
     ///

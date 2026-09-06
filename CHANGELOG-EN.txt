@@ -4,6 +4,40 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Eating, practising, traps and shrines (08D)
+----------------------------------------
+
+FIX - A full player still lost the food. The meal engine already answered that nothing
+        was eaten; the double-click ignored it and took the unit anyway, deleting the
+        last one outright. Source-X leaves Use_EatQty before it consumes anything when
+        there is no room left (CCharUse.cpp:889).
+
+FIX - Grain and grass were treated as inexhaustible fixtures: the last unit was never
+        consumed, and a locked-down one still fed whoever clicked it. They are food, and
+        go down the same Use_Eat path as anything else (:1844) - it is the move rule
+        that protects a placed trough, not an exemption from being eaten.
+
+FIX - A new game board opened empty. Source-X sets the pieces out first (Game_Create,
+        CItemContainer.cpp:1123): 32 for chess, 24 for checkers, 30 for backgammon, at
+        the container coordinates the client draws them on, and nothing for any other
+        game type. A board with a game already on it is left alone.
+
+FIX - A training dummy started no training at all: the double-click played a sound and
+        handed the dummy to the generic skill pipeline, and it chose the skill from
+        whatever filled the two-handed layer rather than from the weapon. Source-X wants
+        it on the ground within a tile, refuses a mounted or ranged-armed trainee and
+        anyone past the practice cap, then swings - the dummy spins for three seconds and
+        the weapon's own skill is credited (Use_Train_Dummy, CCharUse.cpp:337).
+
+FIX - A sprung trap wrote its damage straight into the victim's hit points, so @GetHit
+        could neither refuse it nor change it. The reference springs a trap through
+        OnTakeDamage with blunt/general damage (:1753), which is what carries the hook
+        and the resistances.
+
+FIX - A shrine resurrection skipped @SpellEffect. Source-X resurrects THROUGH the
+        Resurrection spell with the shrine as its source (CClientUse.cpp:327), so a
+        script watching spell effects can refuse it before anything happens.
+
 [2026-09-06] - Practising, drinking and linking (08C)
 ----------------------------------------
 

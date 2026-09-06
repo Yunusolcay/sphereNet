@@ -3,6 +3,39 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Yeme, antrenman, tuzak ve tapinak (08D)
+----------------------------------------
+
+FIX - Tok oyuncu yine de yemegi kaybediyordu. Yemek motoru hicbir sey yenmedigini zaten
+        soyluyordu; cift tiklama bunu okumayip birimi yine de aliyor, sonuncuyu ise
+        tamamen siliyordu. Source-X, yer kalmadiginda Use_EatQty'den tuketimden ONCE
+        cikar (CCharUse.cpp:889).
+
+FIX - Tahil ve ot tukenmez kaynak gibi ele aliniyordu: son birim hic tuketilmiyor, sabit
+        olani bile tiklayani doyuruyordu. Bunlar yiyecektir ve her yiyecek gibi ayni
+        Use_Eat yolundan gecer (:1844) - yerdeki tekneyi koruyan sey tasima kuralidir,
+        yenmekten muaf olmasi degil.
+
+FIX - Yeni oyun tahtasi bos aciliyordu. Source-X once taslari dizer (Game_Create,
+        CItemContainer.cpp:1123): satrancta 32, damada 24, tavlada 30 tas; istemcinin
+        cizdigi kap koordinatlarinda ve baska oyun turu icin hicbiri. Uzerinde oyun olan
+        tahtaya dokunulmuyor.
+
+FIX - Antrenman mankeni hicbir antrenman baslatmiyordu: cift tiklama ses calip mankeni
+        genel beceri hattina veriyor, beceriyi de silahtan degil iki elli katmanda ne
+        varsa ondan seciyordu. Source-X mankeni yerde ve bir kare icinde ister, binekli
+        veya menzilli silahli antrenmani ve antrenman sinirini asani reddeder, sonra
+        vurus yapar - manken uc saniye doner ve silahin kendi becerisi kazanim alir
+        (Use_Train_Dummy, CCharUse.cpp:337).
+
+FIX - Patlayan tuzak hasarini dogrudan cana yaziyordu; @GetHit ne reddedebiliyor ne
+        degistirebiliyordu. Referans tuzagi OnTakeDamage ile kunt/genel hasar olarak
+        patlatir (:1753); hook'u ve direncleri tasiyan yol odur.
+
+FIX - Tapinak diriltmesi @SpellEffect'i atliyordu. Source-X diriltmeyi kaynagi tapinak
+        olan Resurrection buyusu UZERINDEN yapar (CClientUse.cpp:327); boylece buyu
+        etkilerini izleyen script hicbir sey olmadan once reddedebilir.
+
 [2026-09-06] - Antrenman, icki ve baglanti (08C)
 ----------------------------------------
 

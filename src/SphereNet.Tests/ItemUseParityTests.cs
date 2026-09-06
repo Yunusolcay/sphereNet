@@ -245,8 +245,12 @@ public class ItemUseParityTests
         Assert.False(trough.IsDeleted);      // the fixture stays
     }
 
+    // Grain is food: Source-X routes it through Use_Eat (CCharUse.cpp:1844), which
+    // consumes what was eaten - the last unit included. The old expectation kept a
+    // single ear of grain alive forever, feeding its owner on every click; what
+    // protects a placed trough is the move rule, not an exemption from being eaten.
     [Fact]
-    public void GrainStackDoubleClick_DecrementsButNeverDeletesLastUnit()
+    public void GrainStackDoubleClick_IsEatenDownToNothing()
     {
         var loggerFactory = TestHarness.CreateLoggerFactory();
         var world = TestHarness.CreateWorld();
@@ -265,7 +269,27 @@ public class ItemUseParityTests
         Assert.False(hay.IsDeleted);
 
         client.HandleDoubleClick(hay.Uid.Value);
-        Assert.False(hay.IsDeleted);         // last unit is not deleted (silmeden)
+        Assert.True(hay.IsDeleted);          // and the last unit is eaten too
+    }
+
+    [Fact]
+    public void AFixedGrainFixtureIsNotEatenAway()
+    {
+        var loggerFactory = TestHarness.CreateLoggerFactory();
+        var world = TestHarness.CreateWorld();
+        var accounts = new AccountManager(loggerFactory);
+        var client = CreatePlayingClient(loggerFactory, world, accounts, out _, out var player);
+        player.Food = 0;
+
+        var hay = world.CreateItem();
+        hay.ItemType = ItemType.Grain;
+        hay.SetAttr(ObjAttributes.Move_Never);
+        world.PlaceItem(hay, player.Position);
+
+        client.HandleDoubleClick(hay.Uid.Value);
+
+        Assert.False(hay.IsDeleted);
+        Assert.Equal(0, player.Food);        // and it feeds nobody either
     }
 
     private static GameClient CreatePlayingClient(

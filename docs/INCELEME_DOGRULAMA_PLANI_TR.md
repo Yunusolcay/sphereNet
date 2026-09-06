@@ -1710,6 +1710,42 @@ gitmesi) testleri kirmiziya cevirdi.
 **Acik kalan:** antrenman isinin zamanlamasi ve tamamlanma kazanimi; @Drink'in bos-kap
 uretimi; kristalin kendi kendine baglanmasi ve hedef turu kurallari.
 
+### 08D - tuketim, antrenman ve hasar girisleri: 6 bulgu (6 Eylul 2026)
+
+Kanit raporu: [08D](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_08D_TUKETIM_EGITIM_HASAR.md).
+Alti bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+- [x] **08D-1 (P2)** - Tok oyuncuda yemek yine tuketiliyordu. (YAPILDI: `EatOneUnit` -
+  motorun dondurdugu adet uzerinden tuketim; 0 ise mesaj ve tuketim yok.)
+- [x] **08D-2 (P2)** - Tahil/ot son adette tukenmiyor, sabit hedef de doyuruyordu.
+  (YAPILDI: Grain/Grass ayni yemek yoluna alindi + CanMove kapisi.
+  **Mevcut test guncellendi:** `GrainStackDoubleClick_DecrementsButNeverDeletesLastUnit`
+  son adedin korunmasini bekliyordu - raporun isaret ettigi uydurma politika; yerine
+  "sonuna kadar yenir" ve "sabit kaynak kimseyi doyurmaz" testleri geldi.
+  **Kapsam:** WaterWash referansta Use_Drink'tir, ayri sozlesme - eski yolunda birakildi.)
+- [x] **08D-3 (P2)** - Bos oyun tahtasi taslarini olusturmuyordu. (YAPILDI:
+  `SetUpGameBoard` - satranc/dama/tavla dizilimleri ve kap koordinatlari; dolu tahta
+  korunuyor.)
+- [x] **08D-4 (P2)** - Dovus mankeni antrenman islemi baslatmiyordu. (YAPILDI:
+  `TrainOnDummy` + `ResolveWeaponSkill` - mesafe/binek/menzil/antrenman siniri, `SetAnim`
+  ve silahin kendi becerisinde kazanim.
+  **Kapsam notu:** 08C'deki gibi iki asamali NPCACT_TRAINING zamanlamasi modellenmedi.)
+- [x] **08D-5 (P2)** - Tuzak hasari @GetHit sozlesmesini atliyordu. (YAPILDI:
+  `CombatEngine.ApplyScriptDamage` ile kunt/genel hasar.)
+- [x] **08D-6 (P2)** - Tapinak diriltmesi @SpellEffect calistirmiyordu. (YAPILDI: veto
+  diriltmeyi durduruyor; @Resurrect zaten calisiyordu.)
+
+**08D kapanisi:** tam suite **2.769 basarili / 0 basarisiz** (+20). Alti duzeltme de
+gecici olarak kapatilarak 13 testin eski davranisi yakaladigi kanitlandi.
+
+**Kendi testimi duzelttim:** manken testleri once `OnSkillGain` sayiyordu; kazanim
+sansa bagli oldugu icin bu iki yolu ayirt etmiyordu. Olcut mankenin kendi animasyon
+durumu yapildi - vurus varsa uc saniyelik AnimActive, ret varsa bos.
+
+**Acik kalan:** WaterWash icme yolu; oyun taslarinin istemcide dizilimi ve tahta
+kayit/yukleme; manken/dip antrenman zamanlamasi; tuzak hasarinda zirh/direnc ve olum
+sirasi.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.
