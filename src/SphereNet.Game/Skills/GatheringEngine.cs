@@ -216,26 +216,49 @@ public sealed class GatheringEngine
                 resDef.GetRandomReapAmount(ch.GetSkill(skill), Rng), 1, ushort.MaxValue);
             ushort reapItemId = resDef.Reap;
 
-            // @ResourceGather — RETURN 1 cancels the reap; the script may also
-            // override the reaped item (ARGN1) and amount (ARGN2). Source-X CCharSkill.
+            // Never hand out more than the pool actually holds — otherwise a
+            // near-empty node still yields a full reap. The reference clamps here
+            // too, BEFORE the trigger runs (CCharSkill.cpp:1025), so a script reads
+            // the amount really on offer rather than the unclamped roll.
+            Item activeMarker = marker!;
+            int pool = GetPool(activeMarker);
+            if (reapAmount > pool)
+                reapAmount = pool;
+
+            // @ResourceGather — RETURN 1 cancels the reap.
+            //
+            // The argument contract is Source-X's: Init(wAmount, 0, 0, pResBit) plus
+            // LOCAL.ResourceID = the reap item (CCharSkill.cpp:1029). ARGN1 is the
+            // AMOUNT, the object argument is the resource marker, and the item id
+            // travels in the local — the id is read back from there afterwards
+            // (:1044). SphereNet passed the ITEM ID as ARGN1 and the amount as ARGN2,
+            // so a script halving a yield with ARGN1=2 produced four copies of item
+            // id 2, and ARGN1=0 — which the reference reads as "take nothing" — was
+            // discarded as a zero and the full reap handed over anyway.
             if (_triggerDispatcher != null)
             {
+                var locals = new SphereNet.Scripting.Variables.VarMap();
+                locals.SetInt("ResourceID", reapItemId);
                 var args = new TriggerArgs
                 {
                     CharSrc = ch,
-                    N1 = resDef.Reap,
-                    N2 = reapAmount,
+                    N1 = reapAmount,
+                    O1 = activeMarker,
+                    Locals = locals,
                 };
                 if (_triggerDispatcher.FireResourceTrigger(resDef, "ResourceGather", ch, args) == TriggerResult.True)
                     return new GatherResult { Handled = true, Success = false };
-                if (args.N1 > 0 && args.N1 <= ushort.MaxValue) reapItemId = (ushort)args.N1;
-                if (args.N2 > 0) reapAmount = Math.Clamp(args.N2, 1, ushort.MaxValue);
+
+                reapAmount = args.N1;
+                // A local left at zero or holding something that is not an item id
+                // keeps the definition's own reap; the reference would build id 0.
+                long scriptItemId = locals.GetInt("ResourceID");
+                if (scriptItemId > 0 && scriptItemId <= ushort.MaxValue)
+                    reapItemId = (ushort)scriptItemId;
             }
 
-            // Never hand out more than the pool actually holds — otherwise a
-            // near-empty node still yields a full reap.
-            Item activeMarker = marker!;
-            int pool = GetPool(activeMarker);
+            // ConsumeAmount takes what the pool can give and answers with what was
+            // really taken; zero or less yields no item at all (CCharSkill.cpp:1046).
             if (reapAmount > pool)
                 reapAmount = pool;
             if (reapAmount <= 0)
@@ -258,6 +281,16 @@ public sealed class GatheringEngine
             var reapDef = DefinitionLoader.GetItemDef(reapItemId);
             if (reapDef != null && !string.IsNullOrWhiteSpace(reapDef.Name))
                 item.Name = reapDef.Name;
+
+            // Source-X builds the reaped item through CItem::CreateScript
+            // (CCharSkill.cpp:1050), which runs GenerateScript and with it the
+            // ITEMDEF's @Create (CItem.cpp:404/415), and sets the amount only
+            // afterwards. Building it raw meant a resource whose definition scripts
+            // its hue, tags or type in @Create came out of the ground bare.
+            item.FireCreateTrigger();
+            if (item.IsDeleted)
+                return new GatherResult { Handled = true, Success = false };
+
             item.Amount = (ushort)reapAmount;
             return new GatherResult { Handled = true, Success = true, Item = item };
         }

@@ -3,6 +3,34 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Toplama: ResourceGather sozlesmesi ve madenin kendi Create'i (05B)
+----------------------------------------
+
+FIX - @ResourceGather, ARGN1'i toplanan ESYA KIMLIGI, ARGN2'yi miktar olarak
+        okuyordu. Source-X argumanlari Init(wAmount, 0, 0, pResBit) ile kurar ve
+        LOCAL.ResourceID'ye reap esyasini yazar (CCharSkill.cpp:1029): ARGN1 MIKTAR,
+        nesne argumani kaynak marker'i, esya kimligi ise tetikleyiciden sonra geri
+        okunan local'dir (:1044). Bu yuzden verimi ARGN1=2 ile yariya dusurmek
+        isteyen bir script, iki maden yerine ID=2 olan dort nesne uretiyordu.
+        Argumanlar artik referansla ayni; marker nesne argumani olarak geciyor.
+
+FIX - ARGN1=0 "atanmamis" sayilip tam reap yine de veriliyordu. Referans ARGN1'i
+        havuzdan tuketir ve geri donen deger sifir veya altiysa hicbir esya uretmez;
+        boylece script reap'i yalniz RETURN 1 ile degil miktar uzerinden de
+        reddedebiliyor. Negatif miktar da ayni nedenle hicbir sey vermiyor ve
+        havuzdan buyuk miktar dugumun gercekten tuttuguna kirpiliyor - tetikleyici
+        bunu zaten goruyor, cunku kirpma ondan once yapiliyor.
+
+FIX - Toplanan esya kendi ITEMDEF @Create blogunu hic calistirmiyordu. Source-X onu
+        CItem::CreateScript ile kurar (CCharSkill.cpp:1050); bu GenerateScript'i ve
+        onunla Create blogunu calistirir (CItem.cpp:404/415) ve miktari ancak sonra
+        atar - yani tanimi rengini, etiketlerini veya turunu @Create'te yazan bir
+        maden topraktan ciplak cikiyordu. Artik loot, spawn ve uretimin zaten
+        kullandigi ayni scriptli-olusturma hook'undan geciyor; tetikleyici
+        instance-guard'li oldugu icin teslim yolu onu ikinci kez calistiramiyor ve
+        esyayi yok eden bir Create govdesi artik basarili toplama olarak
+        raporlanmiyor.
+
 [2026-09-06] - Uretim: tarif kimligi ve asinan alet (05A)
 ----------------------------------------
 

@@ -4,6 +4,33 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Gathering: the ResourceGather contract and the ore's own Create (05B)
+----------------------------------------
+
+FIX - @ResourceGather read ARGN1 as the reaped ITEM ID and ARGN2 as the amount.
+        Source-X passes Init(wAmount, 0, 0, pResBit) and seeds LOCAL.ResourceID with
+        the reap item (CCharSkill.cpp:1029): ARGN1 is the AMOUNT, the object argument
+        is the resource marker, and the item id travels in the local, read back after
+        the trigger (:1044). A script halving a yield with ARGN1=2 therefore produced
+        four copies of item id 2 instead of two ore. The arguments now match the
+        reference, and the marker is passed as the object argument.
+
+FIX - ARGN1=0 was discarded as "unset" and the full reap handed over anyway. The
+        reference consumes ARGN1 from the pool and yields no item when that comes back
+        zero or less, so a script can now decline the reap through the amount as well
+        as through RETURN 1. A negative amount yields nothing for the same reason, and
+        an amount larger than the pool is clamped to what the node actually holds -
+        which the trigger already sees, because the clamp happens before it runs.
+
+FIX - The reaped item never ran its own ITEMDEF @Create. Source-X builds it with
+        CItem::CreateScript (CCharSkill.cpp:1050), which runs GenerateScript and with
+        it the Create block (CItem.cpp:404/415), setting the amount only afterwards -
+        so an ore whose definition scripts its hue, tags or type came out of the ground
+        bare. It now goes through the same scripted-creation hook loot, spawns and
+        crafting already use; the trigger is instance-guarded, so the delivery path
+        cannot run it twice, and a Create body that destroys the item no longer
+        reports a successful gather.
+
 [2026-09-06] - Crafting: recipe identity and the tool that wears (05A)
 ----------------------------------------
 

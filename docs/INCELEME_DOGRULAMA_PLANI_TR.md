@@ -919,6 +919,46 @@ disaridaki tek kullanim `GetRecipesBySkill`).
 **Acik kalan:** kaynak toplama turu (dugum miktari, basarisizlik tuketimi, uretim
 teslim/yerlestirme kosullari) raporun kendi devam kuyrugunda.
 
+### 05B — kaynak toplama script sozlesmesi (6 Eylul 2026)
+
+[05B kanit raporu](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_05B_KAYNAK_SCRIPT.md).
+Iki bulgu da bagimsiz olarak dogrulandi ve uygulandi.
+
+- [x] **SX-05B-01 (P1)** — ResourceGather ARGN1'i miktar yerine esya kimligi olarak
+  yorumlaniyordu. (YAPILDI: Source-X `Init(wAmount, 0, 0, pResBit)` +
+  `LOCAL.ResourceID = m_ReapItem` (CCharSkill.cpp:1029) kurar; ARGN1 MIKTAR, nesne
+  argumani marker, esya kimligi local'dir ve tetikleyiciden sonra oradan okunur
+  (:1044). Sozlesme birebir kuruldu: `N1 = reapAmount`, `O1 = activeMarker`,
+  `Locals["ResourceID"] = reapItemId`.
+  **Sifir semantigi:** referans `ConsumeAmount(ARGN1)` ile tuketir ve sonuc <= 0 ise
+  esya uretmez. Eskiden 0 "atanmamis" sayilip tam reap veriliyordu; artik hicbir sey
+  vermiyor. Negatif de ayni.
+  **Kirpma sirasi:** havuz kirpmasi tetikleyiciden ONCE yapiliyor (referans :1025),
+  boylece script gercekten sunulan miktari okuyor.
+  **Kasitli sapma:** script `LOCAL.ResourceID`'yi 0 veya gecersiz birakirsa tanimin
+  kendi reap'i korunuyor; referans o durumda id 0 uretmeye calisirdi.)
+- [x] **SX-05B-02 (P2)** — Toplanan esyanin ITEMDEF Create scripti atlaniyordu.
+  (YAPILDI: Source-X `CItem::CreateScript` kullanir (CCharSkill.cpp:1050); bu
+  `GenerateScript` uzerinden @Create'i calistirir (CItem.cpp:404/415) ve miktari
+  ANCAK SONRA atar. `item.FireCreateTrigger()` eklendi; sira da referanstaki gibi
+  (Create once, Amount sonra).
+  **Raporun iki uyarisi karsilandi:** "iki kez calisabilir" — `FireCreateTrigger`
+  instance-guard'li, teslim yolu tekrar cagirsa bile bir kez calisiyor. "Create
+  nesneyi silerse olu nesne basariyla teslim edilmez" — `IsDeleted` kontrolu eklendi.)
+
+**05B kapanisi:** tam suite **2.489 basarili / 0 basarisiz** (+14). Iki duzeltme de
+gecici olarak kapatilarak 9 testin eski davranisi yakaladigi kanitlandi. Mevcut
+hicbir test eski sozlesmeyi kodlamiyordu, guncelleme gerekmedi.
+
+**Bilincli olarak kapsam disi:** referans, kaynak tetikleyicisinden ONCE karakter
+uzerinde `CTRIG_RegionResourceGather` calistirir ve ayni arguman/LOCAL havuzunu
+paylasir (CCharSkill.cpp:1035). SphereNet'te boyle bir karakter tetikleyicisi HIC
+yok — bu, numaralandirilmis bulgunun duzeltmesi degil yeni bir trigger eklemek
+olurdu; 04B'deki `PLEVEL_Guest` ve 04C'deki GM/`OF_PetSlots` kapilariyla ayni
+gerekce. Ayrica named ITEMDEF/resource kimligi ushort'a indirgeniyor (raporun
+"degerlendirilmelidir" notu) ve havuz rejenerasyonu/marker save-load bir sonraki
+kesitte.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.
