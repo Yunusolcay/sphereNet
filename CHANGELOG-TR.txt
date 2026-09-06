@@ -3,6 +3,38 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Kusanma: obur el, suruklemenin sonu ve reddedilen esya (07V-07X)
+----------------------------------------
+
+FIX - Obur el kilic kusandiginda kalkan cikariliyordu. Iki elli katmanda durmak, iki
+        elli SILAH olmakla ayni sayiliyordu; tek elli kusanma ise iki elliyi yolundan
+        cekiyor. Source-X elleri eslestirmeden once esyanin SILAH olup olmadigini sorar
+        (CanEquipLayer, CCharStatus.cpp:410) - kalkan degildir, dolayisiyla kilic +
+        kalkan ayakta kalir. Tanimi eksik gercek bir silah icin katman hala sayiliyor;
+        o denetim zaten bunun icindi.
+
+FIX - Basarili bir kusanma, tamamladigi suruklemeyi hic bitirmiyordu. DRAGGING etiketi
+        ve kaldirma konumu ayakta kaliyor, boylece SONRAKI pickup giyili esyayi hala
+        imlecte sanip ekipman katmanindan geri aliyordu - cantaya ya da kaldirildigi
+        yer karesine. Ayni esyayi yeniden kaldirmak da ayni nedenle reddediliyordu.
+        Source-X, equip istegi dogrulanir dogrulanmaz surukleme modunu kapatir; sonuc ne
+        olursa olsun (PacketItemEquipReq, receive.cpp:542).
+
+FIX - Reddedilen kusanma esyayi hicbir yerde birakmiyordu: karaktere bagli, katmansiz,
+        kapsiz ve geri almayi saglayacak surukleme olmadan. Hem guc yetersizligi hem
+        @EquipTest vetosu bunu uretiyordu. Source-X reddedilen esyayi
+        Event_Item_Drop_Fail'e verir; esya geldigi kap gozune, karaktere veya yere doner
+        (CClientEvent.cpp:248). Suruklemesiz kaldirilan esya - EquipLastWeapon makrosu -
+        ItemBounce gibi cantaya gider.
+
+FIX - Reddedilen kusanma yine de tasiyicinin elini bosaltabiliyordu. Cift tiklama ve
+        makro yolu, kusanmaya izin verilip verilmedigine bakmadan hedef katmani cantaya
+        bosaltiyordu; sonra reddedilen esya, tasiyiciyi o eli bos birakiyordu.
+        CanEquipLayer guc sartini herhangi bir katman catismasina dokunmadan once
+        cozer (CCharStatus.cpp:333). Katmandaki esya artik yalnizca kusanma gercekten
+        ilerlerken tasiniyor - paket yolunda da; orada is dusuk seviyeli yerlestirmeye
+        birakilmisti.
+
 [2026-09-06] - Petler: ne kusanir, ne birakir (07R-07U)
 ----------------------------------------
 

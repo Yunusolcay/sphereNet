@@ -725,9 +725,17 @@ public class Item : ObjBase
     {
         get
         {
-            if (EquipLayer == Layer.TwoHanded) return true;
             var def = ResolveDefinition();
-            return def?.TwoHands ?? false;
+            if (def?.TwoHands == true) return true;
+
+            // Sitting on the two-handed layer is NOT enough on its own: a shield
+            // rides there too, and calling it two-handed made every one-handed
+            // equip bounce the shield out of the wearer's other hand. Source-X
+            // asks CCPropsItemWeapon::CanSubscribe - is this a weapon? - before
+            // pairing the two hands (CanEquipLayer, CCharStatus.cpp:410). The
+            // layer still counts for a real weapon whose def is missing, which is
+            // what the check was there for.
+            return EquipLayer == Layer.TwoHanded && IsWeaponType;
         }
     }
 

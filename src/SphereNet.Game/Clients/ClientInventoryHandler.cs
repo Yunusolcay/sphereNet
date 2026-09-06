@@ -1647,28 +1647,18 @@ public sealed class ClientInventoryHandler
         if (layer <= Layer.None || layer >= Layer.Qty)
             return false;
 
-        var prev = _character.GetEquippedItem(layer);
-
         // Lift through the real pickup path (reach, housing, trigger gates).
         HandleItemPickup(item.Uid.Value, 0);
         if (!_character.TryGetTag("DRAGGING", out string? dragStr) ||
             dragStr != item.Uid.Value.ToString())
             return false;
-        _character.RemoveTag("DRAGGING");
 
-        // Bounce the layer's current occupant to the pack before equipping —
-        // Character.Equip alone would orphan it (Source-X ItemEquip bounce).
-        if (prev != null && _character.GetEquippedItem(layer) == prev)
-        {
-            _character.Unequip(layer);
-            var removePkt = new PacketDeleteObject(prev.Uid.Value);
-            _netState.Send(removePkt);
-            BroadcastNearby?.Invoke(_character.Position, UpdateRange, removePkt, _character.Uid.Value);
-            PlaceItemInPack(_character, prev);
-        }
-
-        HandleItemEquip(item.Uid.Value, (byte)layer, _character.Uid.Value);
-        return item.IsEquipped;
+        // The drag stays open until the equip answers. Clearing it here, and
+        // emptying the layer with it, left a refused item with no layer, no pack
+        // entry and no drag to bounce it back from - and took the wearer's previous
+        // piece off for an equip that never happened. Both are the equip's own
+        // business now (SettleEquipDrag, and the occupant bounce behind the gates).
+        return HandleItemEquip(item.Uid.Value, (byte)layer, _character.Uid.Value);
     }
 
     /// <summary>0xEC equip-item macro (Source-X PacketEquipItemMacro). Each
@@ -1725,27 +1715,71 @@ public sealed class ClientInventoryHandler
         }
     }
 
-    public void HandleItemEquip(uint serial, byte layer, uint charSerial)
+    /// <summary>Settle the drag this equip request belongs to.
+    ///
+    /// Source-X ends the drag mode as soon as the request is validated, whatever
+    /// the outcome (PacketItemEquipReq, receive.cpp:542), and hands a refused item
+    /// to Event_Item_Drop_Fail, which puts it back where it was lifted from
+    /// (CClientEvent.cpp:248). SphereNet did neither: a successful equip left the
+    /// DRAGGING tag and the lift origin standing, so the NEXT pickup treated the
+    /// worn item as still on the cursor and restored it out of its layer - and a
+    /// refused one was left parented to the character with no layer, no pack entry
+    /// and no drag to recover it from.</summary>
+    private bool SettleEquipDrag(Item item, bool equipped)
     {
-        if (_character == null) return;
-        if (_character.IsDead) return;
+        if (_character == null)
+            return equipped;
+
+        bool wasDragged = _character.TryGetTag("DRAGGING", out string? raw) &&
+                          uint.TryParse(raw, out uint heldUid) && heldUid == item.Uid.Value;
+        if (wasDragged)
+            _character.RemoveTag("DRAGGING");
+
+        if (equipped)
+        {
+            // The drag ended in the equipment; there is nothing left to bounce to.
+            if (wasDragged)
+                _dragOrigin = null;
+            return true;
+        }
+
+        if (wasDragged)
+        {
+            RestoreToOrigin(item);      // consumes _dragOrigin
+            CancelDragCursor();
+        }
+        else if (item.ContainedIn == _character.Uid && !item.IsEquipped)
+        {
+            // Lifted onto the character by a path that never opened a drag (the
+            // EquipLastWeapon macro). Source-X ItemBounce sends it to the pack.
+            PlaceItemInPack(_character, item);
+        }
+        return false;
+    }
+
+    public bool HandleItemEquip(uint serial, byte layer, uint charSerial)
+    {
+        if (_character == null) return false;
+        if (_character.IsDead) return false;
 
         var item = _world.FindItem(new Serial(serial));
-        if (item == null) return;
+        if (item == null) return false;
 
         // Reject the internal-only dragging/sentinel layers (31+). Dragging is
         // not a client-equippable slot; this preserves the prior bound now that
         // Layer.Dragging sits between Special and Qty.
-        if (layer == 0 || layer >= (byte)Layer.Dragging) return;
+        if (layer == 0 || layer >= (byte)Layer.Dragging)
+            return SettleEquipDrag(item, false);
 
         if (_character.PrivLevel < PrivLevel.GM &&
             item.ContainedIn != _character.Uid)
-            return;
+            return false;   // not the item on this cursor - nothing of ours to settle
 
         var target = _world.FindChar(new Serial(charSerial));
         if (target == null) target = _character;
 
-        if (target != _character && _character.PrivLevel < PrivLevel.GM) return;
+        if (target != _character && _character.PrivLevel < PrivLevel.GM)
+            return SettleEquipDrag(item, false);
 
         // Fire @EquipTest — if script blocks, deny equip
         if (_triggerDispatcher != null)
@@ -1753,7 +1787,7 @@ public sealed class ClientInventoryHandler
             var result = _triggerDispatcher.FireItemTrigger(item, ItemTrigger.EquipTest,
                 new TriggerArgs { CharSrc = _character, ItemSrc = item });
             if (result == TriggerResult.True)
-                return;
+                return SettleEquipDrag(item, false);
         }
 
         // Central equip gate (Source-X CChar::CanEquipLayer): block an
@@ -1764,7 +1798,7 @@ public sealed class ClientInventoryHandler
         {
             if (equipDenial == Character.EquipDenial.TooWeak)
                 SysMessage("You are not strong enough to equip that.");
-            return;
+            return SettleEquipDrag(item, false);
         }
 
         // Spell interruption on equip change
@@ -1795,6 +1829,20 @@ public sealed class ClientInventoryHandler
             }
         }
 
+        // Whatever holds the layer goes to the pack before the new item takes it
+        // (Source-X CanEquipLayer bounces pItemPrev, CCharStatus.cpp:470). This ran
+        // in the double-click caller BEFORE the gates above, so a refused equip -
+        // too weak, or vetoed - still disarmed the wearer.
+        var occupant = target.GetEquippedItem((Layer)layer);
+        if (occupant != null && !ReferenceEquals(occupant, item))
+        {
+            target.Unequip((Layer)layer);
+            var occupantPkt = new PacketDeleteObject(occupant.Uid.Value);
+            _netState.Send(occupantPkt);
+            BroadcastNearby?.Invoke(target.Position, UpdateRange, occupantPkt, _character.Uid.Value);
+            PlaceItemInPack(target, occupant);
+        }
+
         target.Equip(item, (Layer)layer);
         // Equip may promote a two-handed weapon from the OneHanded layer to
         // TwoHanded; reflect the actual layer to the client so it renders/animates
@@ -1815,6 +1863,8 @@ public sealed class ClientInventoryHandler
 
         _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Equip,
             new TriggerArgs { CharSrc = _character, ItemSrc = item });
+
+        return SettleEquipDrag(item, true);
     }
 
     private static bool IsCombatEquipItem(Item item) => item.ItemType is

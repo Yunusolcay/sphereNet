@@ -1458,6 +1458,45 @@ CAN_I_PILE varyantlari; `drop all` icin summoned+ATTR birlesimleri ve saci/sakal
 olan pet; equip taramasinin referanstaki "en iyi silahi sec" puanlamasi
 (NPC_GetWeaponUseScore) - SphereNet hala canta sirasina gore ilk uyani aliyor.
 
+### 07V-07X - oyuncu kusanma yasam dongusu: obur el, surukleme sonu, ret yolu (6 Eylul 2026)
+
+Kanit raporlari: [07V](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07V_OYUNCU_KILIC_KALKAN.md),
+[07W](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07W_KUSANMA_SONRASI_SURUKLEME.md),
+[07X](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07X_KUSANMA_MACRO_RET.md).
+Uc bulgu da bagimsiz olarak dogrulandi. 07X'in kendi uyarisi ("basari ve ret yollari
+07W ile birlikte ele alinmali") dogru cikti: ucu de tek bir tamamlama noktasinda
+birlestirildi.
+
+- [x] **SX-07V-01 (P2)** - `Item.IsTwoHanded` katmani tek basina yeterli sayiyordu.
+  (YAPILDI: once ITEMDEF TWOHANDS, sonra `EquipLayer == TwoHanded && IsWeaponType`.
+  Bu, bir onceki turda 07R'yi yazarken pet tarafinda fark edip yalnizca orada
+  gecistirdigim tuzagin kaynaktaki karsiligi - raporun da gosterdigi gibi asil yer
+  burasiymis; pet tarafindaki yerel geciciye artik gerek yok ama zararsiz oldugu icin
+  duruyor.
+  **Kapsam denetimi:** `IsTwoHanded`in butun cagrilari gozden gecirildi (NpcAI, combat
+  swing gecikmesi, saldiri animasyonu, EquipLastWeapon katmani, `Character.Equip`
+  terfisi) - hepsi zaten bir SILAH tasiyor, tek davranis degisikligi kalkanlarda.)
+- [x] **SX-07W-01 (P2)** - Basarili `HandleItemEquip` suruklemeyi kapatmiyordu.
+  (YAPILDI: `SettleEquipDrag` - referans equip istegini dogrular dogrulamaz surukleme
+  modunu kapatir, receive.cpp:542.)
+- [x] **SX-07X-01 (P2)** - Reddedilen esya katmansiz/capsiz/suruklemesiz kaliyordu.
+  (YAPILDI: ret yolunda `RestoreToOrigin` + surukleme imleci iptali - referansin
+  `Event_Item_Drop_Fail`i, CClientEvent.cpp:248.
+  **Raporun otesinde kapatilan iki nokta:** (1) `TryDClickEquip` hedef katmani
+  kusanmadan ONCE bosaltiyordu, yani reddedilen equip tasiyicinin elini bosaltiyordu -
+  referansta guc sarti katman catismasina dokunulmadan once cozulur
+  (CCharStatus.cpp:333); katman bosaltma artik kapilarin arkasinda ve paket yolunda da
+  calisiyor. (2) `EquipLastWeapon` makrosu silahi cantadan cikarip suruklemesiz
+  birakiyor; ret halinde bu esya da ortada kaliyordu - `ItemBounce` karsiligi cantaya
+  donuyor.)
+
+**07V-07X kapanisi:** tam suite **2.662 basarili / 0 basarisiz** (+12). Uc duzeltme de
+gecici olarak kapatilarak 9 testin eski davranisi yakaladigi kanitlandi.
+
+**Acik kalan:** 07W/07X raporlarinin kuyruklari - script kusanma sirasinda nesneyi
+tasirsa/silerse, save/load ile yarim surukleme, gercek cift tiklama girisi, makro
+listesinde ilk esya reddedilip sonrakinin kusanilmasi, dolu/silinmis baslangic cantasi.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

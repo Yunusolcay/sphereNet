@@ -4,6 +4,39 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Equipping: the other hand, the end of the drag, and a refused item (07V-07X)
+----------------------------------------
+
+FIX - A shield was taken off whenever the other hand equipped a sword. Riding the
+        two-handed layer was treated as being a two-handed weapon, and a one-handed
+        equip bounces a two-hander out of the way. Source-X asks whether the item is a
+        WEAPON before pairing the hands (CanEquipLayer, CCharStatus.cpp:410), which a
+        shield is not - so sword plus shield stands. The layer still counts for a real
+        weapon whose definition is missing, which is what that check was for.
+
+FIX - A successful equip never ended the drag it completed. The DRAGGING tag and the
+        lift origin were left standing, so the NEXT pickup treated the worn item as
+        still on the cursor and restored it out of its equipment layer - back into the
+        pack, or onto the ground tile it had been lifted from. Picking the same item up
+        again was refused for the same reason. Source-X ends the drag as soon as the
+        equip request is validated, whatever the outcome (PacketItemEquipReq,
+        receive.cpp:542).
+
+FIX - A refused equip left the item nowhere: parented to the character, on no layer,
+        in no container and with no drag to recover it from. Too weak, or an @EquipTest
+        veto, both produced it. Source-X hands a refused item to Event_Item_Drop_Fail,
+        which puts it back in the container slot, on the character or on the ground it
+        came from (CClientEvent.cpp:248); an item lifted without a drag - the
+        EquipLastWeapon macro - goes to the pack, as ItemBounce does.
+
+FIX - A refused equip could still disarm the wearer. The double-click and macro path
+        emptied the target layer into the pack before the equip was allowed to run, so
+        an item that was then refused left the wearer with nothing in that hand.
+        CanEquipLayer settles the strength requirement before it touches any layer
+        conflict (CCharStatus.cpp:333). The occupant is now moved only once the equip
+        is going ahead - and for the packet path too, which had left it to the
+        low-level placement.
+
 [2026-09-06] - Pets: what they wear, and what they put down (07R-07U)
 ----------------------------------------
 
