@@ -4,6 +4,22 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Followers: a removed creature frees its slot at once (04D)
+----------------------------------------
+
+FIX - A dispelled or expired summon went on filling a follower slot for as long as
+        the owner's cached count survived. CurFollower is recomputed by scanning the
+        world and the answer is held for CurFollowerCacheMs; removing a creature does
+        not rewrite its ownership fields, so nothing marked that cache dirty, and the
+        owner's very next summon was refused for a creature no longer in the world.
+        Source-X hands the slots back instead of recomputing them - its NPC teardown
+        calls NPC_PetClearOwners (CChar.cpp:364), which subtracts the creature's cost
+        from the owner (CCharNPCPet.cpp:597). The cache is now dropped in
+        Character.Delete, which every removal path shares, rather than in the dispel
+        branch alone. Only the cache is dropped: the ownership fields are left standing
+        so a delete trigger can still read who owned the creature, and the next recount
+        skips it on IsDeleted alone.
+
 [2026-09-06] - Magic: the follower cost of a summon, and the life it keeps (04C)
 ----------------------------------------
 

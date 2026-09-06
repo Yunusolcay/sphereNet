@@ -1322,6 +1322,24 @@ public partial class Character : ObjBase
     /// (called when a pet's ownership changes).</summary>
     public void InvalidateFollowerCount() => _curFollowerScanMs = 0;
 
+    /// <summary>Mark the follower-count cache of whoever owns or controls this
+    /// creature as dirty. Used where the creature stops counting towards their
+    /// total without its ownership fields being rewritten - being deleted, above
+    /// all.</summary>
+    private void InvalidateKeeperFollowerCount()
+    {
+        var world = ResolveWorld?.Invoke();
+        if (world == null) return;
+
+        Serial owner = OwnerSerial;
+        if (owner.IsValid)
+            world.FindChar(owner)?.InvalidateFollowerCount();
+
+        Serial controller = ControllerSerial;
+        if (controller.IsValid && controller != owner)
+            world.FindChar(controller)?.InvalidateFollowerCount();
+    }
+
     /// <summary>Invalidate the follower-count cache of this pet's owner —
     /// mounting/dismounting (Ridden) changes what the owner's scan counts.</summary>
     private void InvalidateOwnerFollowerCount()
@@ -2674,6 +2692,22 @@ public partial class Character : ObjBase
         InterruptMeditation();
         ClearCastState();
         _isDeleted = true;
+
+        // Source-X tears an NPC down through NPC_PetClearOwners (CChar.cpp:364),
+        // which hands the creature's slot cost back to its owner
+        // (FollowersUpdate(this, -iFollowerSlots), CCharNPCPet.cpp:597). SphereNet
+        // recomputes the count instead of tracking it, and the recount is cached for
+        // CurFollowerCacheMs - so a dispelled or expired summon went on filling a
+        // slot until that cache aged out, and the owner's very next summon was
+        // refused for a creature no longer in the world.
+        //
+        // Only the CACHE is dropped here. The ownership fields are deliberately left
+        // standing so a delete trigger still sees who owned this creature; the next
+        // recount skips it on IsDeleted alone. This sits in Delete() rather than in
+        // any one caller because dispel, expiry and every other removal path share
+        // it, exactly as the reference shares its NPC cleanup.
+        InvalidateKeeperFollowerCount();
+
         CombatState.ClearAttackers();
         MemoryState.Clear();
         ClearPendingHit();

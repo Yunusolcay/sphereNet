@@ -856,6 +856,35 @@ siniri. Ayrica Source-X follower kapisini `!IsPriv(PRIV_GM)` ve `IsSetOF(OF_PetS
 altinda tutar; SphereNet'in `TryAssignOwnership` kapisinda ikisi de yok — ayri bir
 yetki/ayar karari oldugu icin bu tur degistirilmedi.
 
+### 04D — dispel ve summon temizligi (6 Eylul 2026)
+
+[04D kanit raporu](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_04D_SUMMON_TEMIZLIK.md).
+Tek bulgu bagimsiz olarak dogrulandi ve uygulandi.
+
+- [x] **SX-04D-01 (P2)** — Silinen summon, sahibinin follower sayisi onbellegini
+  gecersizlestirmiyordu. (YAPILDI: Source-X slotu yeniden hesaplamaz, GERI VERIR —
+  NPC temizligi `NPC_PetClearOwners` cagirir (CChar.cpp:364) ve yaratigin maliyetini
+  sahibinden duser (`FollowersUpdate(this, -iFollowerSlots)`, CCharNPCPet.cpp:597).
+  SphereNet sayimi tarayarak yapiyor ve `CurFollowerCacheMs` boyunca tutuyordu;
+  kaldirma sahiplik alanlarini yazmadigi icin onbellek kirlenmiyordu.
+  **Merkezi nokta secildi:** raporun uyardigi gibi yalniz `DispelConjured`'a eklemek
+  sure sonu ve diger silme yollarini acik birakirdi; invalidation butun yollarin
+  paylastigi `Character.Delete`'e kondu — referansin da tek bir dispel metodunda
+  degil ortak NPC temizliginde yaptigi gibi.
+  **Kasitli olarak yapilmayan:** raporun ikinci uyarisi, genel silmede kosulsuz
+  `ClearOwnership` cagirmanin silme scriptlerinin eski sahipligi gorme sirasini
+  bozabilecegiydi. Bu yuzden sahiplik alanlarina DOKUNULMADI, yalnizca onbellek
+  dusuruldu; sonraki sayim yaratigi zaten `IsDeleted` uzerinden atliyor.)
+
+**04D kapanisi:** tam suite **2.462 basarili / 0 basarisiz** (+9). Duzeltme gecici
+olarak kapatilarak 6 testin eski davranisi yakaladigi kanitlandi. Mevcut hicbir test
+guncellenmedi.
+
+**Acik kalan:** `DispelKillSummons` acikken olum dalinin follower davranisi (bu tur
+yalniz dogrudan silme dali calistirildi), silme scriptlerinin veto/yeniden giris
+sozlesmesi, sahibin olumu/hesabinin silinmesi/baglanti kopmasi ve summon etkisinin
+bagimsiz suresi.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

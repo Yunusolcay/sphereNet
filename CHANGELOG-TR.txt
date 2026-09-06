@@ -3,6 +3,23 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Takipciler: kaldirilan yaratik slotunu hemen birakiyor (04D)
+----------------------------------------
+
+FIX - Dispel edilen veya suresi dolan bir summon, sahibinin onbellekli sayisi
+        yasadigi surece follower slotunu doldurmaya devam ediyordu. CurFollower dunya
+        taranarak yeniden hesaplanir ve sonuc CurFollowerCacheMs boyunca tutulur;
+        yaratigin kaldirilmasi sahiplik alanlarini yeniden yazmadigi icin bu onbellegi
+        hicbir sey kirletmiyordu ve sahibin bir sonraki summon'u, artik dunyada
+        olmayan bir yaratik yuzunden reddediliyordu. Source-X slotlari yeniden
+        hesaplamak yerine geri verir: NPC temizligi NPC_PetClearOwners cagirir
+        (CChar.cpp:364) ve yaratigin maliyetini sahibinden duser
+        (CCharNPCPet.cpp:597). Onbellek artik yalniz dispel dalinda degil, butun
+        kaldirma yollarinin paylastigi Character.Delete icinde dusuruluyor. Yalnizca
+        ONBELLEK dusuruluyor: sahiplik alanlari, silme tetikleyicisi yaratigin
+        sahibini hala okuyabilsin diye yerinde birakiliyor; sonraki sayim onu zaten
+        IsDeleted uzerinden atliyor.
+
 [2026-09-06] - Buyu: summon'un takipci maliyeti ve korudugu omur (04C)
 ----------------------------------------
 
