@@ -106,12 +106,37 @@ public sealed class Ship
     /// <summary>Get plank item by index.</summary>
     public Item? GetPlank(int index, GameWorld world)
     {
+        PruneDeletedPlanks(world);
         if (index < 0 || index >= _planks.Count) return null;
         return world.FindItem(_planks[index]);
     }
 
     /// <summary>Number of plank items.</summary>
+    public int GetPlankCount(GameWorld world)
+    {
+        PruneDeletedPlanks(world);
+        return _planks.Count;
+    }
+
+    /// <summary>Number of plank items, without a world to check them against.</summary>
     public int GetPlankCount() => _planks.Count;
+
+    /// <summary>Drop the planks that are no longer in the world.
+    ///
+    /// Source-X rebuilds the list from the components that are actually there before it
+    /// answers either question (GetShipPlankCount / GetShipPlank, CItemShip.cpp:285). A
+    /// deleted plank used to keep its place in the list, so scripts read a count that
+    /// included it and PLANK.0 came back empty while a perfectly good second plank sat
+    /// behind it.</summary>
+    private void PruneDeletedPlanks(GameWorld world)
+    {
+        for (int i = _planks.Count - 1; i >= 0; i--)
+        {
+            var plank = world.FindItem(_planks[i]);
+            if (plank == null || plank.IsDeleted)
+                _planks.RemoveAt(i);
+        }
+    }
 
     /// <summary>
     /// Add a component item. Automatically categorizes hold/plank by ItemType.

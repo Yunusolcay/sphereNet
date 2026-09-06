@@ -3,6 +3,55 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Gemiler: kayit, sahiplik ve donusun neyi reddedebilecegi (10C-10D)
+----------------------------------------
+
+FIX - Klasik Source-X save'inden gelen gemi motora hic kaydedilmiyordu. Sahibi duz OWNER
+        alaninda tutulur (CItemMulti.cpp:2572, CItemShip.cpp:118); yalnizca yerel
+        SHIP.OWNER etiketi okundugu icin govde region'suz, dumensiz ve butun gemi
+        aramalarina gorunmez, sade bir esya olarak yukleniyordu.
+
+FIX - Zaten calisan bir gemide OWNER yazmak yalnizca etiketi degistiriyordu; devir
+        basarili gorunurken deed'e cevirme yetkisi eski sahipte kaliyordu. Referans bu
+        yazmayi SetOwner uzerinden gecirir (CItemMulti.cpp:3068).
+
+FIX - Silinmis plank, geminin plank listesindeki yerini koruyordu; scriptler onu da
+        sayan bir adet okuyor, PLANK.0 bos donerken arkasinda saglam bir ikinci plank
+        duruyordu. Source-X her iki soruyu yanitlamadan once listeyi gercekten var olan
+        bilesenlerden yeniden kurar (CItemShip.cpp:285).
+
+FIX - @Ship_Move her kare icin ve hicbir yon bilgisi olmadan tetikleniyordu; uc karelik
+        bir emir uc ayri hareket gibi gorunuyordu. Referans tamamlanan her hareket
+        komutu icin tek olay bildirir, ARGN1 yon (CCMultiMovable.cpp:863) - engel
+        yuzunden yarida kalan emirde ise hic bildirmez, bir dal once doner.
+
+FIX - Negatif Z'deki govde istemciye Z'si sifira kirpilmis olarak duyuruluyor, boylece
+        tasidigi ve kirpilmadan gonderilen nesnelerle celisiyordu. Referans isaretli
+        degeri gonderir (send.cpp:5414).
+
+FIX - MULTIDEF REGIONFLAGS yerlestirilen multinin region'ina hic ulasmiyordu:
+        tanimda Safe veya NoBuild denen govde ya da ev bunu yerlesir yerlesmez
+        kaybediyor, gemi ise her adimda ve her donuste yeniden kaybediyordu. Referans
+        region bayraklarini tanimin kendi bayraklarindan baslatir (CItemMulti.cpp:232).
+
+FIX - Donus, geminin zaten uzerinde yuzdugu sudaki engeller yuzunden reddediliyordu;
+        demirli govdenin altina konan bir static, yeni alan gerektirmeyen donusu
+        kilitleyebiliyordu. Source-X gemi region'i icinde kalan her noktayi atlar ve
+        yalnizca donusun yeni istedigi alani denetler (:545).
+
+FIX - KOMSU karedeki esya, govdenin geometrik olarak sigdigi donusu reddediyordu:
+        yerlestirme denetimi bir kare yaricapla ariyor ve koordinati geri kontrol
+        etmiyordu - yanindaki karakter dongusunde bu denetim zaten vardi. Referans tek
+        hucreyi sorar (CanMoveTo, :481).
+
+FIX - SHIPGATE hedefte seyre uygun su istiyordu. Referans noktayi cozer, deltaya cevirir
+        ve boyle bir denetim olmadan MoveDelta'ya verir (:1041); koordinat gecerliligi
+        ve region vetosu yerinde kalir. Normal seyir etkilenmez, hala su ister.
+
+FIX - SHIPFACE caprazi reddetmek yerine komsu bir yone yuvarliyordu; SE isteyen script
+        gemiyi sessizce doguya cevirebiliyordu. Govdenin dort yani vardir ve referans
+        yalnizca onlari kabul eder (:510). Sekiz yonlu hareket etkilenmedi.
+
 [2026-09-06] - Gemiler: guvertenin tasidigi, plank ve pilot (10A-10B)
 ----------------------------------------
 

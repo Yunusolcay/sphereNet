@@ -1897,6 +1897,55 @@ gecici olarak kapatilarak 15 testin eski davranisi yakaladigi kanitlandi.
 **Acik kalan:** gercek harita/carpisma ile binis; plank otomatik kapanma ve kayit/yukleme;
 pilot devri ve HS istemci gorunumu; redeed'in yolcu/sabit yuk varyantlari.
 
+### 10C-10D - gemi kaydi, sahiplik, paket ve donus/komut denetimi: 10 bulgu (6 Eylul 2026)
+
+Kanit raporlari: [10C](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_10C_GEMI_KAYIT_SAHIPLIK_PAKET.md),
+[10D](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_10D_GEMI_BOLGE_DONUS_KOMUT.md).
+On bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+- [x] **10C-1 (P2)** - Klasik save'in duz OWNER alani okunmuyordu. (YAPILDI:
+  DeserializeFromWorld SHIP.OWNER'a ek olarak OWNER etiketini de kabul ediyor.)
+- [x] **10C-2 (P2)** - Canli gemide OWNER yazmak sahipligi degistirmiyordu. (YAPILDI:
+  yazma kayitli gemiyi bulup Ship.Owner'i tasiyor; etiket yine round-trip ediyor.)
+- [x] **10C-3 (P2)** - Silinmis plank listede kaliyordu. (YAPILDI: PruneDeletedPlanks;
+  GetPlank ve yeni GetPlankCount(world) once listeyi tazeliyor.)
+- [x] **10C-4 (P2)** - @Ship_Move kare basina ve yonsuz tetikleniyordu. (YAPILDI: olay
+  tamamlanan hareket KOMUTUNA tasindi, ARGN1 = yon.
+  **Rapordan sapma - referans yeniden okundu:** rapor ARGN2'yi "durdu mu" olarak
+  tarif ediyor; Source-X yarida kalan emirde trigger'dan BIR DAL ONCE doner (:851), bu
+  yuzden tetiklendigi noktada fStopped kanitlanabilir sekilde 0'dir. Hook tek yon
+  argumaniyla birakildi, ARGN2 sabit 0 ve engellenen gemi hic olay bildirmiyor.)
+- [x] **10C-5 (P3)** - Negatif govde Z'si pakette sifira kirpiliyordu. (YAPILDI: isaretli
+  16-bit deger. **Kapsam notu:** duzeltme Program.EngineWiring'de, test projesinden
+  erisilemiyor - regresyon testi yok.)
+- [x] **10D-1 (P2)** - MULTIDEF REGIONFLAGS region'a tasinmiyordu. (YAPILDI:
+  MultiDef.RegionFlags + MergeScriptMetadata; gemi region'unun ilk kurulusu ve her
+  guncellemesi bu tabandan basliyor. **Kapsam genisletmesi:** referansin
+  MultiRealizeRegion'i ayni bayraklari EVE de uygular, ayni kok neden - ev region'u da
+  duzeltildi. **Acik birakildi:** referansta gemi/ev dali cevre bolgeden bayrak MIRAS
+  ALMAZ; SphereNet InheritParentFlags'i koruyor - raporun da ayrica uzlastirilmasini
+  istedigi bilincli fark.)
+- [x] **10D-2 (P2)** - Donus, zaten kaplanan alandaki engellerce reddediliyordu.
+  (YAPILDI: CanPlaceShip'e "su an tutulan ayak izi" parametresi; Face eski tanimi
+  veriyor, yalnizca yeni istenen alan denetleniyor.)
+- [x] **10D-3 (P2)** - Govde disindaki komsu esya donusu engelliyordu. (YAPILDI: esya
+  dongusu 0 yaricap + hucre koordinat denetimi - karakter dongusundeki guardin ayni.)
+- [x] **10D-4 (P3)** - SHIPGATE'e referansta olmayan su sarti eklenmisti. (YAPILDI: su
+  denetimi kaldirildi; koordinat gecerliligi ve MoveDelta'nin region vetosu duruyor.
+  Normal seyrin su sarti test ile ayrica sabitlendi.)
+- [x] **10D-5 (P3)** - SHIPFACE caprazi yuvarliyordu. (YAPILDI: Face yalnizca dort govde
+  yonunu kabul ediyor. DirFace zaten hem yerlestirmede hem yuklemede 4 yone
+  normalize edildigi icin ic donus cagrilari etkilenmiyor; sekiz yonlu SHIPMOVE test
+  ile korundu.)
+
+**10C-10D kapanisi:** tam suite **2.856 basarili / 0 basarisiz** (+23). Dokuz duzeltme
+gecici olarak kapatilarak 15 testin eski davranisi yakaladigi kanitlandi (10C-5 test
+edilemiyor).
+
+**Acik kalan:** gemi/ev region'unun cevreden bayrak mirasi ile Source-X dalinin
+uzlastirilmasi; SHIPGATE'in yolcu ve region @Enter akislari; kirik plank listesinin
+kayit/yukleme varyantlari.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

@@ -1413,7 +1413,7 @@ public class Item : ObjBase
                     value = hold != null ? $"0{hold.Uid.Value:X}" : "0";
                     return true;
                 case "PLANKS":
-                    value = (ship?.GetPlankCount() ?? 0).ToString();
+                    value = (ship?.GetPlankCount(ResolveWorld!()) ?? 0).ToString();
                     return true;
                 case "SHIPSPEED":
                     // Source-X: "period,tiles" format
@@ -1961,9 +1961,34 @@ public class Item : ObjBase
                 return true;
             }
             // Multi/housing properties — round-trip as TAGs
-            case "REGION.FLAGS": case "REGION.EVENTS": case "OWNER": case "HOUSETYPE":
+            case "REGION.FLAGS": case "REGION.EVENTS": case "HOUSETYPE":
                 SetTag(upper, value);
                 return true;
+            case "OWNER":
+            {
+                SetTag(upper, value);
+                // A ship that is ALREADY running keeps its owner in the engine, and
+                // that is what the redeed and the helm ask (Source-X routes the OWNER
+                // write through SetOwner, CItemMulti.cpp:3068). Writing only the tag
+                // left the script's transfer looking successful while the old owner
+                // stayed in charge.
+                var liveShip = ResolveShipEngine?.Invoke()?.GetShip(Uid);
+                if (liveShip != null)
+                {
+                    uint ownerUid = 0;
+                    string owner = value.Trim();
+                    if (owner.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                        owner = owner[2..];
+                    else if (owner.Length > 1 && owner[0] == '0')
+                        owner = owner.TrimStart('0');
+                    if (uint.TryParse(owner, System.Globalization.NumberStyles.HexNumber,
+                            null, out uint parsed))
+                        ownerUid = parsed;
+                    if (ownerUid != 0)
+                        liveShip.Owner = new Serial(ownerUid);
+                }
+                return true;
+            }
             // Storage budget properties. The tag is still written so a template
             // applied before the house is registered keeps working, but when the
             // multi already IS a live house the value must reach it — writing

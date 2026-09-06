@@ -69,6 +69,15 @@ public sealed class ShipEngine
     public Action<Ship, string>? OnTillerSpeak { get; set; }
 
     /// <summary>Called after a ship moves so Program.cs can broadcast 0xF6.</summary>
+    /// <summary>The ship carried out a movement order: the ship and the direction it
+    /// was given. Source-X reports one Ship_Move per COMPLETED Move command
+    /// (CCMultiMovable.cpp:863) - not one per tile, and never from MoveDelta on its
+    /// own. An order cut short by an obstruction returns before the trigger (:851),
+    /// so a blocked ship reports nothing at all.</summary>
+    public Action<Ship, int>? OnShipMoveCommand { get; set; }
+
+    /// <summary>The hull changed position - one call per step, for the movement packet
+    /// the client needs. This is NOT the script's movement event.</summary>
     public Action<Ship>? OnShipMoved { get; set; }
 
     /// <summary>Called when a ship stops (Source-X @ShipStop fire site).</summary>
@@ -257,12 +266,24 @@ public sealed class ShipEngine
         => CanPlaceShip(pos, def, null);
 
     private bool CanPlaceShip(Point3D pos, MultiDef def, Ship? ignoreShip)
+        => CanPlaceShip(pos, def, ignoreShip, null);
+
+    /// <param name="alreadyHeld">The footprint the hull occupies RIGHT NOW, when the
+    /// caller is a turn about a fixed anchor. Source-X skips every point already inside
+    /// the ship's region - "if the ship already overlaps a point then we must already be
+    /// allowed there" (Face, CCMultiMovable.cpp:545) - and tests only the ground the
+    /// turn newly claims.</param>
+    private bool CanPlaceShip(Point3D pos, MultiDef def, Ship? ignoreShip, MultiDef? alreadyHeld)
     {
         var (mapWidth, mapHeight) = _mapData?.GetMapSize(pos.Map) ?? (7168, 4096);
         for (short dx = def.MinX; dx <= def.MaxX; dx++)
         {
             for (short dy = def.MinY; dy <= def.MaxY; dy++)
             {
+                if (alreadyHeld != null &&
+                    dx >= alreadyHeld.MinX && dx <= alreadyHeld.MaxX &&
+                    dy >= alreadyHeld.MinY && dy <= alreadyHeld.MaxY)
+                    continue;
                 short cx = (short)(pos.X + dx), cy = (short)(pos.Y + dy);
                 if (cx < 0 || cy < 0 || cx >= mapWidth || cy >= mapHeight)
                     return false;
@@ -276,9 +297,16 @@ public sealed class ShipEngine
                         (ignoreShip == null || !IsOnDeck(ignoreShip,
                             _multiDefs.Get(ignoreShip.MultiItem.BaseId) ?? def, ch)))
                         return false;
-                foreach (var item in _world.GetItemsInRange(new Point3D(cx, cy, pos.Z, pos.Map), 1))
+                foreach (var item in _world.GetItemsInRange(new Point3D(cx, cy, pos.Z, pos.Map), 0))
                 {
                     if (item.IsDeleted || item.ContainedIn.IsValid || item == ignoreShip?.MultiItem) continue;
+                    // The blocker has to be IN the cell. Source-X asks GetHeightPoint2
+                    // about that one point (CanMoveTo, CCMultiMovable.cpp:481); a
+                    // neighbouring tile is not an obstacle. Searching a one-tile radius
+                    // and never checking the coordinate back made a crate on the dock
+                    // refuse a turn the hull geometrically fits - the character loop
+                    // right above already had that guard.
+                    if (item.X != cx || item.Y != cy) continue;
                     if (ignoreShip != null && ignoreShip.Components.Contains(item.Uid)) continue;
                     if (ignoreShip != null && IsOnDeck(ignoreShip,
                         _multiDefs.Get(ignoreShip.MultiItem.BaseId) ?? def, item)) continue;
@@ -518,6 +546,13 @@ public sealed class ShipEngine
 
             MoveDelta(ship, dx, dy, 0);
         }
+
+        // One event for the whole command, with the direction it was given
+        // (CCMultiMovable.cpp:863). Firing per tile from the packet callback made a
+        // three-tile order look like three moves, all of them heading north. An order
+        // that ran into something never reaches here, exactly as upstream returns
+        // false above the trigger.
+        OnShipMoveCommand?.Invoke(ship, (int)dir & 0x07);
         return true;
     }
 
@@ -527,7 +562,13 @@ public sealed class ShipEngine
     /// </summary>
     public bool Face(Ship ship, Direction newFacing)
     {
-        newFacing = Normalize4Dir(newFacing);
+        // A hull has four sides. Source-X looks the requested direction up in the four
+        // face directions and refuses anything else (:510) - it does not round it.
+        // Rounding turned SHIPFACE 3 (SE) into a real turn to the east, so a script
+        // asking for an impossible heading silently swung the ship. Eight-direction
+        // MOVEMENT is unaffected.
+        if (DirTo4IndexOrNone(newFacing) < 0)
+            return false;
         var oldFacing = ship.DirFace;
         if (newFacing == oldFacing) return true;
 
@@ -549,7 +590,12 @@ public sealed class ShipEngine
         // half-rotated with no rollback. Magic ships turn anywhere.
         if (!ship.MultiItem.IsAttr(ObjAttributes.Magic))
         {
-            if (!CanPlaceShip(ship.MultiItem.Position, newDef, ship))
+            // Only the ground the turn newly claims is tested: the anchor does not
+            // move, so the cells the hull is already floating on are allowed by
+            // definition (Face, CCMultiMovable.cpp:545). Testing them again let a
+            // static dropped under a moored ship - or a map edit beneath it - lock a
+            // turn that needs no new water at all.
+            if (!CanPlaceShip(ship.MultiItem.Position, newDef, ship, oldDef))
                 return false;
         }
 
@@ -1282,7 +1328,7 @@ public sealed class ShipEngine
         {
             Name = string.IsNullOrEmpty(mi.Name) ? "ship" : mi.Name,
             MapIndex = mi.MapIndex,
-            Flags = RegionFlag.Ship | RegionFlag.InheritParentFlags,
+            Flags = def.RegionFlags | RegionFlag.Ship | RegionFlag.InheritParentFlags,
         };
         region.AddRect(
             (short)(mi.X + def.MinX), (short)(mi.Y + def.MinY),
@@ -1316,7 +1362,10 @@ public sealed class ShipEngine
 
         // Reset to base flags, then re-inherit from the region the hull now sits
         // in. Flags-only (like houses) so the deck never double-fires @Enter/@Exit.
-        region.Flags = RegionFlag.Ship | RegionFlag.InheritParentFlags;
+        // The base includes the definition's own REGIONFLAGS - resetting to bare
+        // Ship dropped a hull's declared Safe/NoBuild on its first step, and again
+        // on every turn.
+        region.Flags = def.RegionFlags | RegionFlag.Ship | RegionFlag.InheritParentFlags;
         var parent = _world.FindParentRegion(region, center);
         if (parent != null)
             region.InheritFromParent(parent);
@@ -1386,8 +1435,11 @@ public sealed class ShipEngine
             return false;
         var def = _multiDefs.Get(ship.MultiItem.BaseId);
         if (def == null) return false;
-        if (!ship.MultiItem.IsAttr(ObjAttributes.Magic) && !CanPlaceShip(dest, def, ship))
-            return false;
+        // No water requirement here. SHIPGATE resolves the point, turns it into a delta
+        // and hands it straight to MoveDelta (CCMultiMovable.cpp:1041) - the sailing
+        // check belongs to sailing, not to the script command that moves the whole ship
+        // somewhere. A staff or script relocation onto dry land is the point of it.
+        // The coordinate validity check and MoveDelta's own region veto still apply.
         var (width, height) = _mapData?.GetMapSize(dest.Map) ?? (7168, 4096);
         if (dest.X + def.MinX < 0 || dest.Y + def.MinY < 0 ||
             dest.X + def.MaxX >= width || dest.Y + def.MaxY >= height)
@@ -1447,7 +1499,15 @@ public sealed class ShipEngine
         {
             if (obj is not Item item) continue;
             if (item.ItemType != ItemType.Ship) continue;
-            if (!item.TryGetTag("SHIP.OWNER", out string? ownerStr)) continue;
+            // A ship saved by Source-X carries its owner in the plain OWNER field
+            // (CItemMulti.cpp:2572; CItemShip::r_Write, CItemShip.cpp:118), which the
+            // item loader keeps as a tag of that name. Only the native SHIP.OWNER tag
+            // was read, so a ship out of a classic save loaded as an item and was never
+            // registered with the engine at all - no region, no helm, invisible to
+            // every ship lookup.
+            if (!item.TryGetTag("SHIP.OWNER", out string? ownerStr) &&
+                !item.TryGetTag("OWNER", out ownerStr))
+                continue;
 
             uint ownerVal = ParseHexSerial(ownerStr);
             if (ownerVal == 0) continue;
@@ -1518,6 +1578,16 @@ public sealed class ShipEngine
     // =====================================================================
 
     /// <summary>Normalize to 4-direction (N/E/S/W).</summary>
+    /// <summary>The hull-side index of a cardinal direction, or -1 for anything else.</summary>
+    private static int DirTo4IndexOrNone(Direction dir) => dir switch
+    {
+        Direction.North => 0,
+        Direction.East => 1,
+        Direction.South => 2,
+        Direction.West => 3,
+        _ => -1,
+    };
+
     private static Direction Normalize4Dir(Direction dir)
     {
         return ((byte)dir & 0x07) switch

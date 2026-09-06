@@ -2533,13 +2533,22 @@ public static partial class Program
                     (byte)ship.SpeedMode,
                     (byte)((byte)ship.DirMove & 0x07),
                     (byte)((byte)ship.DirFace & 0x07),
-                    mi.X, mi.Y, (ushort)(mi.Z < 0 ? 0 : mi.Z),
+                    // The hull's real Z, as the reference writes it: PacketMoveShip
+                    // sends the signed value in sixteen bits (send.cpp:5414). Clamping
+                    // a negative hull to zero left it disagreeing with the very objects
+                    // it was carrying, which were sent unclamped.
+                    mi.X, mi.Y, unchecked((ushort)(short)mi.Z),
                     entries);
                 BroadcastNearby(mi.Position, 18, pkt, 0);
-                // @ShipMove (Source-X) — fired on the ship multi as it advances.
-                _triggerDispatcher?.FireItemTrigger(mi, ItemTrigger.ShipMove,
-                    new TriggerArgs { ItemSrc = mi });
             };
+            // @Ship_Move belongs to the movement COMMAND, not to each tile of it, and
+            // it carries the direction in ARGN1 and whether the ship has stopped in
+            // ARGN2 (CCMultiMovable.cpp:863).
+            // ARGN2 is the reference's fStopped, which is provably 0 where it fires the
+            // trigger: an order that was stopped returns one branch earlier (:851).
+            _shipEngine.OnShipMoveCommand = (ship, dir) =>
+                _triggerDispatcher?.FireItemTrigger(ship.MultiItem, ItemTrigger.ShipMove,
+                    new TriggerArgs { ItemSrc = ship.MultiItem, N1 = dir, N2 = 0 });
             _shipEngine.OnShipStopped = ship =>
                 _triggerDispatcher?.FireItemTrigger(ship.MultiItem, ItemTrigger.ShipStop,
                     new TriggerArgs { ItemSrc = ship.MultiItem });

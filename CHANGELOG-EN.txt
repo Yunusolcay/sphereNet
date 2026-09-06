@@ -4,6 +4,57 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Ships: registering one, owning one, and what a turn may refuse (10C-10D)
+----------------------------------------
+
+FIX - A ship out of a classic Source-X save was never registered with the engine. Its
+        owner is kept in the plain OWNER field (CItemMulti.cpp:2572, CItemShip.cpp:118),
+        and only the native SHIP.OWNER tag was read - so the hull loaded as a bare item
+        with no region, no helm and invisible to every ship lookup.
+
+FIX - Writing OWNER on a ship that is already running only set the tag, so the transfer
+        looked successful while the old owner kept the authority to redeed it. The
+        reference routes the write through SetOwner (CItemMulti.cpp:3068).
+
+FIX - A deleted plank kept its place in the ship's plank list, so scripts read a count
+        that included it and PLANK.0 came back empty while a good second plank sat
+        behind it. Source-X rebuilds the list from the components that are actually
+        there before answering either question (CItemShip.cpp:285).
+
+FIX - @Ship_Move fired once per tile with no direction at all, so a three-tile order
+        looked like three separate moves. The reference reports one event per completed
+        move command with the direction in ARGN1 (CCMultiMovable.cpp:863) - and none at
+        all for an order an obstruction cut short, which returns one branch earlier.
+
+FIX - A hull sitting at a negative Z was announced to the client with its Z clamped to
+        zero, so it disagreed with the very objects it was carrying, which were sent
+        unclamped. The reference sends the signed value (send.cpp:5414).
+
+FIX - MULTIDEF REGIONFLAGS never reached the region a placed multi realizes: a hull or
+        a house declared Safe or NoBuild in its definition lost it the moment it was
+        placed, and a ship lost it again on every step and every turn. The reference
+        starts the region's flags from the definition's own (CItemMulti.cpp:232).
+
+FIX - A turn was refused by obstacles inside the water the ship was already floating
+        on, so a static laid under a moored hull could lock a turn that needs no new
+        ground. Source-X skips every point already inside the ship's region and checks
+        only what the turn newly claims (:545).
+
+FIX - An item on a NEIGHBOURING tile refused a turn the hull geometrically fits: the
+        placement check searched a one-tile radius and never checked the coordinate
+        back, though the character loop beside it already did. The reference asks about
+        the one cell (CanMoveTo, :481).
+
+FIX - SHIPGATE demanded sailable water at the destination. Upstream resolves the point,
+        turns it into a delta and hands it to MoveDelta with no such check (:1041); the
+        coordinate validity check and the region veto still apply. Ordinary sailing is
+        unaffected and still needs water.
+
+FIX - SHIPFACE rounded a diagonal to a neighbouring heading instead of refusing it, so
+        a script asking to face SE silently swung the ship east. A hull has four sides
+        and the reference accepts only those (:510). Eight-direction movement is
+        untouched.
+
 [2026-09-06] - Ships: what the deck carries, and what a plank and a pilot are (10A-10B)
 ----------------------------------------
 

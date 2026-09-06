@@ -73,6 +73,11 @@ public sealed class MultiDef
     public int ShipSpeedPeriodTenths { get; set; }
     public int ShipSpeedTiles { get; set; }
 
+    /// <summary>Script [MULTIDEF] REGIONFLAGS - the base region flags a placed multi
+    /// starts from (Source-X CItemBase.cpp:2073, applied in MultiRealizeRegion,
+    /// CItemMulti.cpp:232). None = unset.</summary>
+    public RegionFlag RegionFlags { get; set; }
+
     public List<MultiComponent> Components { get; } = [];
 
     // Bounding rect
@@ -589,6 +594,12 @@ public sealed class MultiRegistry
                     case "BASEVENDORS":
                         if (int.TryParse(arg, out int bv)) def.BaseVendors = bv;
                         break;
+                    case "REGIONFLAGS":
+                        // Sphere scripts write these as leading-zero hex (02080 =
+                        // Safe|NoBuild), so parse them the way every other flag field
+                        // in the pack is parsed.
+                        def.RegionFlags = (RegionFlag)Objects.ObjBase.ParseHexOrDecUInt(arg);
+                        break;
                     case "SHIPSPEED":
                         {
                             // SHIPSPEED=period,tiles (period in tenths of a second).
@@ -1081,7 +1092,10 @@ public sealed class HousingEngine
         {
             Name = string.IsNullOrEmpty(mi.Name) ? "house" : mi.Name,
             MapIndex = mi.MapIndex,
-            Flags = RegionFlag.House | RegionFlag.InheritParentFlags,
+            // The definition's own REGIONFLAGS are the BASE the region starts from
+            // (MultiRealizeRegion, CItemMulti.cpp:232) - a structure declared Safe or
+            // NoBuild in its MULTIDEF used to lose that the moment it was placed.
+            Flags = def.RegionFlags | RegionFlag.House | RegionFlag.InheritParentFlags,
             P = center,
         };
         region.AddRect(x1, y1, x2, y2);
