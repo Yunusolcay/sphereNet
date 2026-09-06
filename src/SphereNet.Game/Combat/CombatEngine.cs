@@ -1696,7 +1696,19 @@ public static class CombatEngine
     {
         int weaponSpeed = weapon?.Speed ?? 0;
         int baseSpeed = weaponSpeed > 0 ? weaponSpeed : 50;
-        int dex = Math.Max(0, (int)attacker.Dex);
+
+        // Which DEX-ish number the formula takes is era-specific in Source-X
+        // (CResourceCalc.cpp): era 0 uses Stat_GetAdjusted(STAT_DEX) — the effective
+        // stat, equipment and buffs included (:61, :69) — while eras 1-4 use
+        // Stat_GetVal(STAT_DEX), which is the CURRENT STAMINA POOL (:90, :101, :116,
+        // :127; CChar.cpp:4271 writes the STAM save field from it).
+        //
+        // Reading the base field for every era meant stamina loss never slowed an
+        // attack in the eras that price it that way, and a DEX bonus from equipment
+        // never sped one up in era 0.
+        int dex = Character.CombatSpeedEra == 0
+            ? Math.Max(0, EffectiveDex(attacker))
+            : Math.Max(0, (int)attacker.Stam);
         long speedScale = Math.Max(1, Character.CombatSpeedScaleFactor);
         int swingSpeedIncrease = Math.Clamp(GetEquipmentPropertyValue(
             attacker, CombatSpeedProperties.IncreaseSwingSpeed), -99, 10_000);

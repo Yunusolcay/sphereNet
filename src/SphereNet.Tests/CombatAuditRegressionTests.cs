@@ -262,7 +262,7 @@ public class CombatAuditRegressionTests
     }
 
     [Fact]
-    public void StayInRangeRangedMissStillSpendsAmmo()
+    public void StayInRangeRangedMissDoesNotSpendAmmo()
     {
         int oldFlags = Character.CombatFlags;
         try
@@ -277,7 +277,12 @@ public class CombatAuditRegressionTests
             client.TickCombat();
 
             Assert.False(attacker.HasPendingHit);
-            Assert.Equal(1, arrows.Amount);
+            // The swing is SPENT, not missed: the target stepped out of reach during
+            // the windup. Source-X reaches that state through the range re-check
+            // (CCharFight.cpp:1896) and returns WAR_SWING_EQUIPPING BEFORE it looks
+            // for ammunition at :1862, so no arrow is taken - one is spent only on a
+            // genuine miss roll (:2023). This test previously asserted the opposite.
+            Assert.Equal(2, arrows.Amount);
         }
         finally
         {
@@ -476,7 +481,8 @@ public class CombatAuditRegressionTests
         try
         {
             Character.CombatSpeedEra = 1;
-            var attacker = new Character { Dex = 100 };
+            // Era 1 reads the current stamina pool, not the base stat.
+            var attacker = new Character { Dex = 100, Stam = 100 };
             var weapon = new Item { ItemType = ItemType.WeaponSword };
 
             Character.CombatSpeedScaleFactor = 10_000;

@@ -1178,27 +1178,17 @@ public sealed class ClientCombatHandler
                 _character.ClearPendingHit();
                 if (target != null)
                 {
-                    // This branch is reached when the target left reach or LoS during
-                    // the windup, NOT on a failed hit roll. Source-X spends such a
-                    // swing without touching ammo: the range re-check returns
-                    // WAR_SWING_EQUIPPING (CCharFight.cpp:1896) well before the
-                    // pAmmo block, which only runs on a real miss roll
-                    // (:2023 m_Act_Difficulty < 0). Taking an arrow here charged the
-                    // player for a shot that was never loosed.
+                    // A SPENT swing, not a failed hit roll: the target left reach or
+                    // LoS, or the archer walked, during the windup. Source-X returns
+                    // WAR_SWING_EQUIPPING for both (CCharFight.cpp:1896 and :1857),
+                    // and both return BEFORE the pAmmo block at :1862 — so no
+                    // ammunition is touched, for any ranged weapon. An arrow is spent
+                    // only on a genuine miss roll (:2023 m_Act_Difficulty < 0), which
+                    // reaches this handler by a different route.
                     //
-                    // A throwing weapon has no pack ammo at all — it IS the
-                    // projectile — but its fallback type still matched any bolt
-                    // stack, so a thrown spear was eating crossbow bolts.
-                    Item? missedAmmo = null;
-                    if (CombatHelper.IsRangedWeapon(weapon) &&
-                        !CombatHelper.IsThrowingWeapon(weapon))
-                    {
-                        var ammoSpec = ResolveAmmo(weapon!);
-                        missedAmmo = FindAmmoInPack(ammoSpec.BaseId, ammoSpec.FallbackType);
-                        if (missedAmmo != null)
-                            EmitRangedProjectile(target, ammoSpec.Gfx);
-                    }
-                    if (!HandleMissTriggerAndAmmo(target, weapon, missedAmmo))
+                    // (A real miss roll never produces HitTimeDecision.Miss; that
+                    // decision is only ever returned for an unspent swing.)
+                    if (!HandleMissTriggerAndAmmo(target, weapon, null))
                     {
                         SysMessage(ServerMessages.GetFormatted(Msg.CombatMisss, target.Name));
                         EmitMissSound(weapon);

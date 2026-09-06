@@ -399,6 +399,11 @@ public sealed partial class GameClient
                 if (total > 80) { double s = 80.0 / total; str = (int)(str * s); dex = (int)(dex * s); intl = 80 - str - dex; }
                 str = Math.Max(10, str); dex = Math.Max(10, dex); intl = Math.Max(10, intl);
                 _character.Str = (short)str; _character.Dex = (short)dex; _character.Int = (short)intl;
+                // Seed the pools the setters only cap: swing speed reads current
+                // stamina in eras 1-4 (Source-X Stat_GetVal(STAT_DEX)), so a fresh
+                // character left at 0 would swing at the formula's slowest rate.
+                if (_character.Stam <= 0) _character.Stam = _character.MaxStam;
+                if (_character.Hits <= 0) _character.Hits = _character.MaxHits;
 
                 if (info.HairStyle != 0 && IsValidHairGraphic(info.HairStyle))
                 {

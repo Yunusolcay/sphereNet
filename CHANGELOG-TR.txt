@@ -3,6 +3,38 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Dovus: era'ya gore hiz stat'i ve okculuk bekleme suresi (03C)
+----------------------------------------
+
+FIX - Hiz formulu her era'da temel DEX alanini okuyordu. Source-X stat'i era'ya gore
+        secer (CResourceCalc.cpp): era 0 Stat_GetAdjusted(STAT_DEX) yani ekipman ve
+        buff'lari iceren etkili stat'i alir (:61, :69); era 1-4 ise
+        Stat_GetVal(STAT_DEX) yani MEVCUT STAMINA HAVUZUNU alir (:90, :101, :116,
+        :127 - CChar.cpp:4271 STAM save alanini bundan yazar). Boylece stamina kaybi
+        onu fiyatlandiran era'larda saldiriyi hic yavaslatmiyor, ekipmandan gelen DEX
+        bonusu da era 0'da hic hizlandirmiyordu. Formullere ve tarihsel tamsayi
+        yuvarlamalarina dokunulmadi.
+
+FIX - Dex setter'i MaxStam'i yukseltir ama mevcut havuzu asla; yalnizca Dex verilerek
+        kurulan bir karakterin stamina'si sifir kaliyordu - yukaridaki duzeltmeyle
+        birlikte bu, formulun en yavas degerinden vurmak demekti. Uc yaratma yolu
+        havuzu tohumlamiyordu: chardef'ten uretilen NPC'ler, yeni olusturulan oyuncu
+        karakterleri ve stres testi botlari.
+
+FIX - Hazirlik SIRASINDA yuruyen okcu, hareket sonrasi bekleme suresini odemiyordu;
+        kontrol yalnizca saldirinin basladigi yerdeydi ve bekleyen bir atis o yola
+        geri girmez. Source-X bunu vurus asamasinda uygular (CCharFight.cpp:1854) ve
+        WAR_SWING_EQUIPPING dondurur; yani saldiri harcanir ve recoil yeniden baslar.
+        Yalniz menzilli: SphereNet'in melee hareket gecikmesinin Source-X'te
+        karsiligi yok, hit asamasina bilincli olarak tasinmadi.
+
+FIX - Onceki committeki muhimmat duzeltmesi tamamlandi. Yorumu "Source-X harcanan
+        saldiride muhimmata dokunmaz" diyordu ama kod yalnizca throwing'i disliyordu;
+        hedef menzil disina ciktiginda yay ve arbalet hala ok kaybediyordu. Muhimmat
+        blogu hem menzil hem hareket donuslerinin altindadir (CCharFight.cpp:1862'ye
+        karsi :1896 ve :1857), yani hicbir menzilli silah atilmamis bir atisin
+        bedelini odemez.
+
 [2026-09-06] - Dovus: bekleyen darbenin durumu ve harcanan saldirinin muhimmati (03B)
 ----------------------------------------
 

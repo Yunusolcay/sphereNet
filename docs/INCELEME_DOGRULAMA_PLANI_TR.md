@@ -661,6 +661,52 @@ uc satirlik yorum `f98612e`'de iki kez yazilmisti; tekillestirildi.
 - `IsCasting` ve `Stam <= 0` yalnizca baslangicta denetleniyor; Source-X
   `Fight_CanHit`'te karsiligi yok, oldugu gibi birakildi.
 
+### 03C — saldiri hizi ve hareket beklemesi (6 Eylul 2026)
+
+[03C kanit raporu](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_03C_HIZ.md).
+Iki bulgu da dogrulandi ve uygulandi; raporun aritmetigi bagimsiz olarak yeniden
+turetildi ve dogru cikti.
+
+- [x] **SX-03C-01 (P2)** — Hiz formulune temel DEX giriyor. (YAPILDI:
+  `GetSwingDelayMs` stat'i era'ya gore seciyor — era 0 `EffectiveDex` (Source-X
+  `Stat_GetAdjusted`, CResourceCalc.cpp:61/69), era 1-4 `attacker.Stam` (Source-X
+  `Stat_GetVal`, :90/:101/:116/:127). `Stat_GetVal(STAT_DEX)`'in mevcut stamina
+  oldugu varsayilmadi, kanitlandi: CChar.cpp:4271 STAM save alanini ondan yazar.
+  Formullere ve tarihsel tamsayi yuvarlamalarina dokunulmadi; era 4'un
+  `100/(100+SSI)` sifirlanmasi bilincli olarak korundu.
+  **Raporda olmayan tehlike:** `Dex` setter'i `_maxStam`'i yukseltir ama mevcut
+  havuzu ASLA — yalnizca asagi kirpar. Yani sadece `Dex` verilerek kurulan bir
+  karakterin `Stam`'i 0 kalir ve era 1-4'te formulun en yavas degerinden vururdu.
+  Uc uretim yolu bunu tohumlamiyordu: `CharDefHelper` (chardef'ten NPC),
+  `GameClient.Login` (yeni oyuncu karakteri), `StressTestEngine`. Ucu de duzeltildi;
+  setter'a dokunulmadi cunku kod tabaninin kurali "havuzlari yaratan doldurur".)
+- [x] **SX-03C-02 (P2)** — Hazirlik sonrasi hareket beklemesi atlaniyor. (YAPILDI:
+  `EvaluateHitTime` artik menzilli silahta hareket beklemesini yeniden denetliyor.
+  **Disposition:** Source-X `WAR_SWING_EQUIPPING` dondurur (CCharFight.cpp:1854) —
+  yani saldiri HARCANIR ve recoil yeniden baslar; bu, 03B'de ekledigim freeze/sleep
+  `Wait`'inden FARKLI ve menzil disinin zaten kullandigi `Miss` ile ayni. Yalniz
+  menzilli: SphereNet'in melee hareket gecikmesinin Source-X'te karsiligi yok, o
+  yuzden hit asamasina tasinmadi.)
+
+**03B'de yarim kalan is tamamlandi:** `f0db737`'de yorum "Source-X harcanan saldiride
+mühimmata dokunmaz" diyordu ama kod yalnizca throwing'i disliyordu — yay/arbalet hala
+ok tuketiyordu. Miss dali artik hicbir menzilli silahta mühimmat almiyor (Source-X'te
+mühimmat blogu :1862, hem menzil (:1896) hem hareket (:1857) donuslerinin ALTINDA).
+`Miss` yalnizca harcanan saldiridan uretiliyor; gercek iska zari ayri yoldan gelir.
+
+**03C kapanisi:** tam suite **2.407 basarili / 0 basarisiz** (+10). Sozlesme
+degisikligi nedeniyle guncellenen mevcut testler: dort zamanlama testi fixture'i
+(`Dex` yanina `Stam` eklendi — beklenen sayilar degismedi) ve
+`CombatAuditRegressionTests.StayInRangeRangedMissStillSpendsAmmo` →
+`StayInRangeRangedMissDoesNotSpendAmmo` (eski adi ve iddiasi parite disiydi).
+
+**Acik kalan (03D adaylari):** Source-X hareket kontrolunu `m_pClient` ile
+kapatir (yalnizca oyuncu); SphereNet `LastMoveTick`'i NPC'ler icin de tutar ve
+`ValidateSwingPrep`'te zaten oyuncu ayrimi yok — hit asamasina da ayrimsiz eklendi,
+yani iki asama tutarli ama referanstan sapiyor. `IsPlayer` kapisi eklemek ayri bir
+karar. Ayrica NPC `@HitTry` Anim/AnimDelay sozlesmesi ve era-specific trigger
+davranislari acik.
+
 **Elenen varsayım:** `OYUN_ICI_ANALIZ_RAPORU.md` G04'teki normal çanta içindeki
 korumalı eşyanın ayrıca kurtarılması beklentisi Source-X kuralı değil.
 `CContainer::ContentsTransfer` yalnızca doğrudan çocukları değerlendirir; güncel

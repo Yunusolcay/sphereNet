@@ -196,6 +196,12 @@ public static class CharDefHelper
             ch.MaxHits = (short)Math.Clamp(hits, 1, short.MaxValue);
             if (ch.Hits > ch.MaxHits)
                 ch.Hits = ch.MaxHits;
+            // Fill the stamina pool with the rolled DEX. The Dex setter raises
+            // MaxStam but never the current pool, and swing speed reads that pool in
+            // eras 1-4 (Source-X Stat_GetVal(STAT_DEX)) - a creature spawned at 0
+            // stamina would swing at the slowest rate the formula allows.
+            if (ch.Stam <= 0)
+                ch.Stam = ch.MaxStam;
         }
 
         if (def != null && !ch.IsPlayer)

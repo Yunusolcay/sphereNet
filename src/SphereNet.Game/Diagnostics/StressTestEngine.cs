@@ -233,6 +233,7 @@ public sealed class StressTestEngine
         npc.IsPlayer = false;
         npc.Str = 50; npc.Dex = 50; npc.Int = 10;
         npc.MaxHits = 50; npc.Hits = 50;
+        npc.MaxStam = 50; npc.Stam = 50;
         npc.Name = "stressling";
         if (_hostile)
         {

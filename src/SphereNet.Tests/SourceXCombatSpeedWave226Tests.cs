@@ -13,6 +13,9 @@ public sealed class SourceXCombatSpeedWave226Tests
         var world = TestHarness.CreateWorld();
         var attacker = world.CreateCharacter();
         attacker.Dex = 100;
+        // Eras 1-4 price the swing off CURRENT STAMINA (Source-X
+        // Stat_GetVal(STAT_DEX)), not the base stat, so the pool has to be real.
+        attacker.Stam = 100;
         Character.CombatSpeedEra = 3;
         Character.CombatSpeedScaleFactor = 80_000;
 
@@ -25,6 +28,9 @@ public sealed class SourceXCombatSpeedWave226Tests
         var world = TestHarness.CreateWorld();
         var attacker = world.CreateCharacter();
         attacker.Dex = 100;
+        // Eras 1-4 price the swing off CURRENT STAMINA (Source-X
+        // Stat_GetVal(STAT_DEX)), not the base stat, so the pool has to be real.
+        attacker.Stam = 100;
         Assert.True(attacker.TrySetProperty(CombatSpeedProperties.IncreaseSwingSpeed, "10"));
         var ring = world.CreateItem();
         Assert.True(ring.TrySetProperty(CombatSpeedProperties.IncreaseSwingSpeed, "10"));
@@ -45,6 +51,7 @@ public sealed class SourceXCombatSpeedWave226Tests
         var world = TestHarness.CreateWorld();
         var attacker = world.CreateCharacter();
         attacker.Dex = 90;
+        attacker.Stam = 90;
         var weapon = world.CreateItem();
         weapon.SetTag("OVERRIDE.SPEED", "3");
         Character.CombatSpeedEra = 4;
@@ -59,6 +66,7 @@ public sealed class SourceXCombatSpeedWave226Tests
         var world = TestHarness.CreateWorld();
         var attacker = world.CreateCharacter();
         attacker.Dex = 90;
+        attacker.Stam = 90;
         attacker.SetTag(CombatSpeedProperties.IncreaseSwingSpeed, "10");
         var weapon = world.CreateItem();
         weapon.SetTag("OVERRIDE.SPEED", "3");

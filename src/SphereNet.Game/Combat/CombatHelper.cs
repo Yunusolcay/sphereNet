@@ -342,6 +342,23 @@ public static class CombatHelper
             target.IsStatFlag(StatFlag.Sleeping))
             return HitTimeDecision.Wait;
 
+        // An archer who walked DURING the windup must still serve the post-move
+        // settle. Source-X applies this inside the hit phase (Fight_Hit,
+        // CCharFight.cpp:1854) and returns WAR_SWING_EQUIPPING, which SPENDS the
+        // swing and restarts the recoil - a different disposition from the holds
+        // above, and the same one out-of-range already uses here. Checking it only
+        // where a swing starts let a player step out of the configured archery delay
+        // by beginning the shot first.
+        //
+        // Ranged only: SphereNet's melee movement delay in ValidateSwingPrep has no
+        // Source-X counterpart, so it is deliberately not repeated here.
+        if (IsRangedWeapon(weapon) &&
+            Character.CombatArcheryMovementDelay > 0 && attacker.LastMoveTick > 0 &&
+            !IsCombatFlagSet(CombatFlags.ArcheryCanMove) &&
+            !attacker.IsStatFlag(StatFlag.ArcherCanMove) &&
+            nowMs - attacker.LastMoveTick < Character.CombatArcheryMovementDelay)
+            return HitTimeDecision.Miss;
+
         if (InWeaponReachAndLos(world, attacker, target, weapon, privLevel, canSeeLos, effectiveRange))
             return HitTimeDecision.Resolve;
 

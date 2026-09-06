@@ -4,6 +4,37 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Combat: swing-speed stat per era and the archery settle time (03C)
+----------------------------------------
+
+FIX - The swing-speed formula read the base DEX field in every era. Source-X picks
+        the stat per era (CResourceCalc.cpp): era 0 takes Stat_GetAdjusted(STAT_DEX),
+        the effective stat with equipment and buffs (:61, :69), while eras 1-4 take
+        Stat_GetVal(STAT_DEX), which is the CURRENT STAMINA POOL (:90, :101, :116,
+        :127 - CChar.cpp:4271 writes the STAM save field from it). So stamina loss
+        never slowed an attack in the eras that price it that way, and a DEX bonus
+        from equipment never sped one up in era 0. The formulas and their historical
+        integer rounding are untouched.
+
+FIX - The Dex setter raises MaxStam but never the current pool, so a character built
+        from Dex alone had zero stamina - which under the fix above would swing at
+        the formula's slowest rate. Three creation paths did not seed it: NPCs rolled
+        from a chardef, newly created player characters, and stress-test bots.
+
+FIX - An archer who walked DURING the windup was not made to serve the post-move
+        settle time; it was checked only where a swing starts, and a pending shot
+        never re-enters that path. Source-X applies it inside the hit phase
+        (CCharFight.cpp:1854) and returns WAR_SWING_EQUIPPING, which spends the swing
+        and restarts the recoil. Ranged only: SphereNet's melee movement delay has no
+        Source-X counterpart and is deliberately not repeated at hit time.
+
+FIX - Completes the previous commit's ammunition fix. Its comment said Source-X takes
+        no ammo on a spent swing, but the code only excluded throwing weapons, so
+        bows and crossbows still lost an arrow when the target stepped out of reach.
+        The ammo block sits below both the range and the movement returns
+        (CCharFight.cpp:1862 vs :1896 and :1857), so no ranged weapon pays for a
+        swing that was never loosed.
+
 [2026-09-06] - Combat: pending-swing state and unspent-swing ammo (03B)
 ----------------------------------------
 
