@@ -1,4 +1,4 @@
-﻿// Steps and routing: MoveToward, A* cache, tile checks, wander, doors.
+// Steps and routing: MoveToward, A* cache, tile checks, wander, doors.
 // Decomposed from the former single-file NpcAI.cs (see NpcAI.cs core).
 using SphereNet.Core.Configuration;
 using SphereNet.Core.Enums;
@@ -252,7 +252,7 @@ public sealed partial class NpcAI
         return false;
     }
 
-    private bool CanNpcMoveTo(Character npc, Point3D pos)
+    private bool CanNpcMoveTo(Character npc, Point3D pos, bool checkChars = true)
     {
         if (pos.X < 0 || pos.Y < 0)
             return false;
@@ -273,7 +273,7 @@ public sealed partial class NpcAI
                     return false;
             }
 
-            foreach (var other in _world.GetCharsInRange(pos, 0))
+            foreach (var other in checkChars ? _world.GetCharsInRange(pos, 0) : [])
             {
                 if (other == npc || other.IsDeleted || other.IsDead)
                     continue;
@@ -401,8 +401,64 @@ public sealed partial class NpcAI
     /// NPC walking a ship deck or house floor drifted onto the terrain
     /// underneath the structure.</summary>
     private sbyte ResolveNpcStepZ(Character npc, int x, int y) =>
-        _world.Standing.ResolveStandingSurface(npc, npc.MapIndex, x, y, npc.Z,
-            WalkCheck.StandingPolicy.Settle) is { Found: true } stand ? stand.Z : npc.Z;
+        TryResolveNpcStepZ(npc, x, y, out sbyte z) ? z : npc.Z;
+
+    /// <summary>The height the NPC would actually stand at on this tile, and whether a
+    /// surface was found at all. A cached A* step carries only the search's cheap
+    /// approximation (Pathfinder uses MapData.GetEffectiveZ, which sees neither multis
+    /// nor dynamics), so applying its Z verbatim walked an NPC off a ship deck or house
+    /// floor onto the terrain underneath. Source-X resolves the surface at the moment
+    /// of the step instead (CheckValidMove, CCharStatus.cpp:1972).</summary>
+    private bool TryResolveNpcStepZ(Character npc, int x, int y, out sbyte z)
+    {
+        if (_world.Standing.ResolveStandingSurface(npc, npc.MapIndex, x, y, npc.Z,
+                WalkCheck.StandingPolicy.Settle) is { Found: true } stand)
+        {
+            z = stand.Z;
+            return true;
+        }
+
+        z = npc.Z;
+        return false;
+    }
+
+    /// <summary>Whether the NPC may take this single step. On top of the destination
+    /// tile itself, a DIAGONAL step needs both of the orthogonal tiles beside it:
+    /// Source-X tests them from the old point before moving (CheckValidMove,
+    /// CCharStatus.cpp:1988) so a creature cannot cut through the corner where two
+    /// walls meet. The reference skips that test while pathfinding (fPathFinding) and
+    /// applies it to the real step, which is why the search alone was never the place
+    /// for it - the direct step never runs A* at all.</summary>
+    private bool CanNpcStepTo(Character npc, Direction dir, Point3D dest)
+    {
+        if (!CanNpcMoveTo(npc, dest))
+            return false;
+
+        var plain = dir & ~Direction.Running;
+        if (((byte)plain & 1) == 0)
+            return true;    // an orthogonal step has no corner to cut
+
+        foreach (var side in new[]
+        {
+            (Direction)(((byte)plain + 7) % 8),   // first orthogonal
+            (Direction)(((byte)plain + 1) % 8),   // second
+        })
+        {
+            GetDirectionDelta(side, out short sdx, out short sdy);
+            short sx = (short)(npc.X + sdx);
+            short sy = (short)(npc.Y + sdy);
+            // Terrain and structures only. Source-X tests the side tiles with
+            // CheckValidMove, which knows nothing about characters - blocking mobiles
+            // are weighed against the DESTINATION alone (CanMoveWalkTo's fCheckChars).
+            // Counting them here would stop a creature walking diagonally past anyone
+            // standing beside it.
+            var sidePos = new Point3D(sx, sy, ResolveNpcStepZ(npc, sx, sy), npc.MapIndex);
+            if (!CanNpcMoveTo(npc, sidePos, checkChars: false))
+                return false;
+        }
+
+        return true;
+    }
 
     private static bool TryResolveHome(Character npc, out Point3D home, out int wanderDist)
     {
@@ -456,7 +512,7 @@ public sealed partial class NpcAI
             return;
         var directPos = new Point3D(nx, ny, nz, npc.MapIndex);
 
-        bool directBlocked = !CanNpcMoveTo(npc, directPos);
+        bool directBlocked = !CanNpcStepTo(npc, dir, directPos);
 
         // Reference parity (NPC door handling in the idle look-at path): a
         // blocked adjacent step may just be a closed door — try to open it
@@ -465,11 +521,11 @@ public sealed partial class NpcAI
         {
             var door = FindClosedDoorAt(directPos);
             if (door != null && OnNpcOpenDoor(npc, door))
-                directBlocked = !CanNpcMoveTo(npc, directPos);
+                directBlocked = !CanNpcStepTo(npc, dir, directPos);
         }
 
         if (directBlocked && TryClearObstacle(npc, directPos))
-            directBlocked = !CanNpcMoveTo(npc, directPos);
+            directBlocked = !CanNpcStepTo(npc, dir, directPos);
 
         if (!directBlocked)
         {
@@ -589,12 +645,43 @@ public sealed partial class NpcAI
 
         var nextStep = path[idx];
 
+        // The step has to still be a STEP. Source-X drops a stored route whose next
+        // point is no longer one tile away (NPC_WalkToPoint, CCharNPCAct.cpp:463);
+        // SphereNet applied it regardless, so an NPC teleported elsewhere while a path
+        // was cached snapped back onto the old route - six tiles in a single move, with
+        // nothing walked in between.
+        if (nextStep.Map != npc.MapIndex || npc.Position.GetDistanceTo(nextStep) != 1)
+        {
+            _pathCache.Remove(uid);
+            _pathIndex.Remove(uid);
+            _pathTime.Remove(uid);
+            return;
+        }
+
+        // The search's Z is an approximation; the real landing surface is resolved
+        // here, at the step. Without a surface the step is refused and the route
+        // recomputed rather than committed at the guessed height.
+        // Only meaningful where there is map data to resolve against; without any the
+        // resolver reports nothing for every tile, and refusing on that would stop the
+        // NPC walking at all rather than correcting its height.
+        if (!TryResolveNpcStepZ(npc, nextStep.X, nextStep.Y, out sbyte stepZ) &&
+            _world.MapData != null)
+        {
+            _pathCache.Remove(uid);
+            _pathIndex.Remove(uid);
+            _pathTime.Remove(uid);
+            return;
+        }
+
+        nextStep = new Point3D(nextStep.X, nextStep.Y, stepZ, npc.MapIndex);
+        var pathDir = npc.Position.GetDirectionTo(nextStep);
+
         // Re-validate the cached step before committing it. The path can be up to
         // PathCacheMaxAge old, during which a door may have closed, another mob
         // moved in, or a damage field appeared — walking it blindly would shove
         // the NPC into a blocked/dangerous tile. If it's no longer valid, drop
         // the path and recompute next tick.
-        if (!CanNpcMoveTo(npc, nextStep))
+        if (!CanNpcStepTo(npc, pathDir, nextStep))
         {
             // NPC_AI_MOVEOBSTACLES (Source-X NPC_WalkToPoint, CCharNPCAct.cpp:525):
             // a hands-capable, smart-enough NPC shifts a movable blocking item
@@ -607,8 +694,7 @@ public sealed partial class NpcAI
             return;
         }
 
-        var stepDir = npc.Position.GetDirectionTo(nextStep);
-        npc.Direction = run ? stepDir | Direction.Running : stepDir;
+        npc.Direction = run ? pathDir | Direction.Running : pathDir;
         _world.MoveCharacter(npc, nextStep);
         _pathIndex[uid] = idx + 1;
     }

@@ -3,6 +3,37 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - NPC hareketi: kose, eskimis rota ve inilen yukseklik (07E-07G)
+----------------------------------------
+
+FIX - NPC iki duvarin birlestigi koseden capraz gecebiliyordu. Source-X caprazin
+        yanindaki iki dik kareyi, terk edilen kareden bakarak sinar ve biri kapaliysa
+        adimi reddeder (CheckValidMove, CCharStatus.cpp:1988). SphereNet yalnizca hedef
+        kareye bakiyordu; yani yaratik veya pet, dogrudan basamayacagi iki engelin
+        arasindan kestirme yapiyordu. Sinama yalnizca arazi ve yapilar icindir:
+        referans engelleyen canlilari YALNIZ hedef karede tartar, dolayisiyla NPC'nin
+        yanindaki biri caprazi kapatmaz.
+
+        Referans bu sinamayi pathfinding sirasinda bilerek atlar (fPathFinding); A*
+        aramasinin dogru yer olmamasinin sebebi de budur - dogrudan adim zaten A*
+        calistirmaz.
+
+FIX - Rotasi onbellekteyken konumu degisen NPC eski rotaya geri sicriyor, arada hicbir
+        kare yurumeden tek adimda alti kare gidiyordu. Source-X, kayitli rotanin
+        sonraki noktasi artik bir kare otede degilse rotayi atar (NPC_WalkToPoint,
+        CCharNPCAct.cpp:463); onbellekteki adim artik gercekten bitisik ve ayni haritada
+        degilse reddediliyor ve rota yeniden hesaplaniyor. Genel MoveCharacter API'sine
+        dokunulmadi - teleport ve diger yerlestirmeler onu kullaniyor.
+
+FIX - Rota adimi aramanin yaklasik yuksekligiyle uygulaniyordu. Pathfinder aramayi ucuz
+        tutmak icin MapData.GetEffectiveZ kullaniyor ve bunu kendi yorumunda belirtiyor;
+        multi ve dinamikleri gormedigi icin gemi guvertesinde veya yukseltilmis zeminde
+        engel etrafindan dolasmak zorunda kalan NPC altindaki araziye tasiniyordu.
+        Inilen yuzey artik adimin kendisinde cozuluyor (CheckValidMove,
+        CCharStatus.cpp:1972) ve altinda yuzey bulunmayan adim reddedilip rota yeniden
+        hesaplaniyor - tahmini yukseklikle uygulanmiyor. Dogrudan adim yuzeyini zaten
+        cozuyordu, degismedi.
+
 [2026-09-06] - Kapilar: dikey kapilar, ozel grafik, kaplar ve kollar (07A-07D)
 ----------------------------------------
 

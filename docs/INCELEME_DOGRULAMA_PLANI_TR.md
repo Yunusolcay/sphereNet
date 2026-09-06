@@ -1260,6 +1260,47 @@ grafik varsayimini tasiyor - oyuncu yolu duzeldi, NPC yolu ayri bir tur. Ayrica
 itemdef door-switch tanimi (SphereNet'te karsiligi yok), DOOROPENSOUND/DOORCLOSESOUND
 override'lari ve link zincirinin genel item kullanimina baglanmasi.
 
+### 07E-07G - NPC adim siniri: capraz kose, eskimis rota, inilen Z (6 Eylul 2026)
+
+Kanit raporlari: [07E](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07E_NPC_CAPRAZ_HAREKET.md),
+[07F](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07F_NPC_ESKI_ROTA_SICRAMASI.md),
+[07G](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07G_NPC_ROTA_YUKSEKLIGI.md).
+Uc bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+**Ortak kok:** ucu de "adimi uygula" sinirinda. Source-X'te bu sinirda uc kosul var,
+SphereNet'te hicbiri yoktu. Duzeltme tek paylasilan yola kondu: `CanNpcStepTo`
+(capraz yan kareler) ve rota adiminda bitisiklik + yuzey cozumu.
+
+- [x] **SX-07E-01 (P2)** - NPC iki engelin birlestigi koseden gecebiliyordu.
+  (YAPILDI: `CanNpcStepTo` caprazda iki dik komsu kareyi de sinar
+  (CheckValidMove, CCharStatus.cpp:1988). Direction enum'u referansla ayni duzende -
+  tek sayilar capraz - bu yuzden `(dir & 1)` testi birebir tasindi.
+  **Uygulamada yakalanan asiri-kisitlama:** ilk surumde yan kare kontrolu CANLI
+  KARAKTERI de engel sayiyordu ve mesru capraz adimlari bloke etti (kendi rota
+  testlerim duserek bunu gosterdi). Referans yan kareleri `CheckValidMove` ile sinar;
+  o karakterleri bilmez - engelleyen canlilar yalnizca HEDEF karede tartilir
+  (`CanMoveWalkTo` fCheckChars). `CanNpcMoveTo`'ya `checkChars` parametresi eklendi.)
+- [x] **SX-07F-01 (P2)** - Yer degistiren NPC eski rotanin uzak karesine sicriyordu.
+  (YAPILDI: onbellekteki adim uygulanmadan once ayni harita + tam 1 kare mesafe
+  sarti; degilse rota atiliyor (NPC_WalkToPoint, CCharNPCAct.cpp:463).
+  **Raporun uyarisi:** genel `MoveCharacter` API'sine kare limiti EKLENMEDI - teleport
+  ve diger yerlestirmeler onu kullaniyor; denetim AI adim katmaninda.)
+- [x] **SX-07G-01 (P2)** - Rota adimi A*'in yaklasik Z'siyle uygulaniyordu.
+  (YAPILDI: `TryResolveNpcStepZ` ile inilen yuzey adimda cozuluyor; Pathfinder'in
+  kendi yorumu Z'sinin yaklasik oldugunu zaten soyluyor.
+  **Bilincli sinir:** yuzey bulunamadiginda adim reddediliyor, ama yalniz
+  `_world.MapData != null` iken - haritasiz (test) dunyada cozucu her kare icin
+  "bulunamadi" der ve kosulsuz ret NPC'yi tamamen hareketsiz birakirdi. Bunu da kendi
+  testlerim duserek gosterdi.)
+
+**07E-07G kapanisi:** tam suite **2.591 basarili / 0 basarisiz** (+12). Uc duzeltme de
+gecici olarak kapatilarak 5 testin eski davranisi yakaladigi kanitlandi. Mevcut hicbir
+test guncellenmedi.
+
+**Acik kalan:** raporlarin kendi kuyruklari - kapali kapi ve statik harita duvarlariyla
+capraz kural, pet/savas takip akislarinin ayri calistirilmasi, merdiven/multi
+yuzeylerinde onbellekteki Z, ve tasima ile rota uretiminin ayni tick'e denk gelmesi.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

@@ -4,6 +4,38 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - NPC movement: the corner, the stale route and the landing height (07E-07G)
+----------------------------------------
+
+FIX - An NPC walked diagonally through the corner where two walls meet. Source-X tests
+        both of the orthogonal tiles beside a diagonal, from the tile being left, and
+        refuses the step if either is blocked (CheckValidMove, CCharStatus.cpp:1988).
+        SphereNet checked only the destination, so a creature or pet took the shortcut
+        between two obstacles it could not step on directly. The test is on terrain and
+        structures alone: the reference weighs blocking mobiles against the DESTINATION
+        only, so someone standing beside the NPC does not wall off the diagonal.
+
+        The reference deliberately skips this while pathfinding (fPathFinding), which
+        is why the A* search was never the place for it - the direct step never runs
+        A* at all.
+
+FIX - An NPC that changed position while a route was cached snapped back onto the old
+        one, moving six tiles in a single step with nothing walked in between. Source-X
+        throws a stored route away when its next point is no longer one tile off
+        (NPC_WalkToPoint, CCharNPCAct.cpp:463); the cached step is now refused and the
+        route recomputed unless it really is the next tile, on the same map. The
+        general MoveCharacter API is untouched - it is what teleports and every other
+        placement use.
+
+FIX - A routed step was applied at the search's approximate height. Pathfinder uses
+        MapData.GetEffectiveZ to keep the search cheap, and says so; it sees neither
+        multis nor dynamics, so an NPC forced to route around an obstacle on a ship
+        deck or a raised floor was moved onto the terrain underneath. The landing
+        surface is now resolved at the step, as the reference does (CheckValidMove,
+        CCharStatus.cpp:1972), and a step with no surface under it is refused so the
+        route is recomputed rather than committed at a guessed height. The direct step
+        already resolved its surface and is unchanged.
+
 [2026-09-06] - Doors: vertical gates, custom art, containers and levers (07A-07D)
 ----------------------------------------
 
