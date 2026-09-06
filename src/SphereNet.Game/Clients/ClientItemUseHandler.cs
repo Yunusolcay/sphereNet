@@ -2867,29 +2867,42 @@ public sealed class ClientItemUseHandler
                     NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetCarrynothing));
                     return true;
                 }
-                foreach (var carried in pet.Backpack.Contents.ToArray())
-                {
-                    pet.Backpack.RemoveItem(carried);
-                    _world.PlaceItemWithDecay(carried, pet.Position);
-                }
+                DumpPetPack(pet);
                 NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetSuccess));
                 return true;
 
             case "drop all":
-                if (pet.Backpack == null || pet.Backpack.Contents.Count == 0)
+            {
+                // Source-X PC_DROP_ALL is NOT the pack loop PC_DROP runs: it calls
+                // DropAll (CCharNPCPet.cpp:255 -> CCharAct.cpp:564), which dumps the
+                // pack and then hands the worn equipment to UnEquipAllItems (:592).
+                // SphereNet repeated the drop branch verbatim, so an owner could never
+                // get a weapon off a pet - and an empty pack ended the command before
+                // the equipment was looked at at all.
+                //
+                // A conjured creature drops nothing whatsoever (CCharAct.cpp:567); its
+                // gear leaves with it.
+                if (pet.IsStatFlag(StatFlag.Conjured))
                 {
-                    NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetCarrynothing));
+                    NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetSuccess));
                     return true;
                 }
-                foreach (var carried in pet.Backpack.Contents.ToArray())
-                {
-                    pet.Backpack.RemoveItem(carried);
-                    _world.PlaceItemWithDecay(carried, pet.Position);
-                }
-                NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetSuccess));
+
+                bool droppedAny = DumpPetPack(pet);
+
+                // The order matters: the pack is emptied FIRST and the equipment lands
+                // in it afterwards. Stripping into the pack before the dump would put
+                // the worn gear on the ground with everything else.
+                droppedAny |= UnequipPetIntoPack(pet);
+
+                NpcSpeech(pet, ServerMessages.Get(droppedAny
+                    ? Msg.NpcPetSuccess
+                    : Msg.NpcPetCarrynothing));
                 return true;
+            }
 
             case "equip":
+            {
                 if (pet.Backpack == null)
                 {
                     NpcSpeech(pet, ServerMessages.Get(Msg.NpcPetFailure));
@@ -2898,23 +2911,12 @@ public sealed class ClientItemUseHandler
                 bool equippedAny = false;
                 foreach (var carried in pet.Backpack.Contents.ToArray())
                 {
-                    Layer layer = ResolveWearableLayer(carried);
-                    if (layer == Layer.None || pet.GetEquippedItem(layer) != null)
-                        continue;
-                    // Source-X scores a candidate through CanEquipLayer with fTest,
-                    // which turns the strength requirement on for an NPC too
-                    // (CCharNPCStatus.cpp:688 -> CCharStatus.cpp:333/297). Character.Equip
-                    // is the low-level placement and enforces nothing, so the spoken
-                    // command dressed a ten-strength pet in a weapon needing eighty.
-                    // A refused item stays in the pack and the scan moves on.
-                    if (!pet.CanEquip(carried, layer, out _))
-                        continue;
-                    pet.Backpack.RemoveItem(carried);
-                    pet.Equip(carried, layer);
-                    equippedAny = true;
+                    if (TryPetEquip(pet, carried))
+                        equippedAny = true;
                 }
                 NpcSpeech(pet, ServerMessages.Get(equippedAny ? Msg.NpcPetSuccess : Msg.NpcPetFailure));
                 return true;
+            }
 
             case "status":
                 if (pet.TryGetTag("HIRE_DAYS_LEFT", out string? days))
@@ -3185,6 +3187,168 @@ public sealed class ClientItemUseHandler
                 }
                 break;
         }
+    }
+
+    /// <summary>Items a pet keeps rather than throwing on the ground.
+    ///
+    /// Source-X ContentsDump is handed ATTR_OWNED by both pet drop verbs and adds
+    /// ATTR_NEWBIE / ATTR_MOVE_NEVER / ATTR_CURSED2 / ATTR_BLESSED2 to it
+    /// (CContainer.cpp:502). SphereNet emptied the pack wholesale, so a hireling's
+    /// own stock and an owner's blessed goods hit the dirt with the rest.</summary>
+    private static bool StaysInPetPack(Item item) =>
+        item.IsAttr(ObjAttributes.Owned) || item.IsAttr(ObjAttributes.Newbie) ||
+        item.IsAttr(ObjAttributes.Move_Never) || item.IsAttr(ObjAttributes.Cursed2) ||
+        item.IsAttr(ObjAttributes.Blessed2);
+
+    /// <summary>Empty what the pet is carrying onto the ground at its feet.
+    /// Reports whether anything actually left the pack.</summary>
+    private bool DumpPetPack(Character pet)
+    {
+        var pack = pet.Backpack;
+        if (pack == null)
+            return false;
+
+        bool dropped = false;
+        foreach (var carried in pack.Contents.ToArray())
+        {
+            if (StaysInPetPack(carried))
+                continue;
+            pack.RemoveItem(carried);
+            _world.PlaceItemWithDecay(carried, pet.Position);
+            dropped = true;
+        }
+        return dropped;
+    }
+
+    /// <summary>Take the pet's worn equipment off into its own pack, as Source-X
+    /// UnEquipAllItems does with a null destination (CCharAct.cpp:592/662).
+    ///
+    /// The reference walks the visible layers only - above LAYER_NONE up through
+    /// LAYER_HORSE (CItemBase.cpp:548) - and explicitly leaves the pack, the mount,
+    /// hair and beard where they are. Memories, spell effects and the vendor/bank
+    /// containers live above that range and are never touched.</summary>
+    private bool UnequipPetIntoPack(Character pet)
+    {
+        bool stripped = false;
+        for (int raw = (int)Layer.OneHanded; raw <= (int)Layer.Horse; raw++)
+        {
+            var layer = (Layer)raw;
+            if (layer is Layer.Hair or Layer.FacialHair or Layer.Pack or Layer.Horse)
+                continue;
+
+            var worn = pet.GetEquippedItem(layer);
+            if (worn == null)
+                continue;
+
+            pet.Unequip(layer);
+            var pack = pet.Backpack;
+            if (pack == null || !pack.TryAddItem(worn))
+            {
+                worn.ContainedIn = Serial.Invalid;
+                _world.PlaceItemWithDecay(worn, pet.Position);
+            }
+            stripped = true;
+        }
+        return stripped;
+    }
+
+    /// <summary>Whether the pet's OTHER hand already rules this one out.
+    ///
+    /// Source-X pairs the two hands inside CanEquipLayer (CCharStatus.cpp:410): a
+    /// weapon taking HAND2 conflicts with whatever HAND1 holds, and a HAND1 equip
+    /// conflicts with a WEAPON on HAND2 - never with a shield, which is why sword
+    /// plus shield is a legal pair. The spoken command only ever looked at the
+    /// item's own layer, so a pet ended up holding a sword and a two-handed bow at
+    /// the same time.
+    ///
+    /// The scan skips the item rather than stripping the occupied hand: above
+    /// CanEquipLayer, ItemEquipWeapon looks for a weapon at all only while neither
+    /// hand holds one (CCharUse.cpp:2051), so the reference never displaces gear
+    /// the owner did not ask to have taken off.</summary>
+    private static bool OtherHandIsTaken(Character pet, Item item, Layer layer)
+    {
+        // What the reference means by a weapon here is CCPropsItemWeapon::CanSubscribe,
+        // which a shield does not answer to. For the item still in the pack the
+        // TWOHANDS flag counts as well, for a two-hander whose TYPE the pack leaves
+        // unset; for the item already worn it does NOT - Item.IsTwoHanded reads the
+        // layer an equipped item sits on, so a shield would look two-handed to it.
+        if (layer == Layer.TwoHanded && (item.IsWeaponType || item.IsTwoHanded))
+            return pet.GetEquippedItem(Layer.OneHanded) != null;
+        if (layer == Layer.OneHanded)
+            return pet.GetEquippedItem(Layer.TwoHanded) is { IsWeaponType: true };
+        return false;
+    }
+
+    /// <summary>Wear one item out of a pet's pack the way Source-X ItemEquip does
+    /// (CCharAct.cpp:3313): score the layer, let the script veto it, leave all but
+    /// one piece of a stack behind, and run @Equip once it is actually worn.</summary>
+    private bool TryPetEquip(Character pet, Item carried)
+    {
+        var pack = pet.Backpack;
+        if (pack == null || carried.IsDeleted)
+            return false;
+
+        Layer layer = ResolveWearableLayer(carried);
+        if (layer == Layer.None)
+            return false;
+
+        // Character.Equip promotes a two-hander off the one-handed layer some
+        // tiledata gives it, so the slot to score is the one it will really take.
+        if (layer == Layer.OneHanded && carried.IsTwoHanded)
+            layer = Layer.TwoHanded;
+
+        if (pet.GetEquippedItem(layer) != null || OtherHandIsTaken(pet, carried, layer))
+            return false;
+
+        // Source-X scores a candidate through CanEquipLayer with fTest, which turns
+        // the strength requirement on for an NPC too (CCharNPCStatus.cpp:688 ->
+        // CCharStatus.cpp:333/297). Character.Equip is the low-level placement and
+        // enforces nothing, so the spoken command dressed a ten-strength pet in a
+        // weapon needing eighty. A refused item stays in the pack.
+        if (!pet.CanEquip(carried, layer, out _))
+            return false;
+
+        // @EquipTest, before anything is moved: RETURN 1 refuses the item and the
+        // reference bounces it back into the NPC's pack, which is where it already
+        // is here (CCharAct.cpp:3308). The callback may also have destroyed it or
+        // taken it out of the pack, which the reference re-checks at :3331.
+        if (_triggerDispatcher != null)
+        {
+            var test = _triggerDispatcher.FireItemTrigger(carried, ItemTrigger.EquipTest,
+                new TriggerArgs { CharSrc = pet, ItemSrc = carried });
+            if (test == TriggerResult.True)
+                return false;
+            if (carried.IsDeleted || carried.ContainedIn != pack.Uid)
+                return false;
+        }
+
+        // A pile wears one piece and leaves the rest behind (UnStackSplit(1),
+        // CCharAct.cpp:3337 -> CItem.cpp:1251). Without it a stack of five went onto
+        // the layer whole. The worn piece keeps the original identity, as it does
+        // there; the remainder is a full clone so tags, durability and attributes
+        // survive the split.
+        pack.RemoveItem(carried);
+        if (carried.Amount > 1)
+        {
+            var remainder = _world.CreateItem();
+            remainder.CopyStackInstanceStateFrom(carried);
+            remainder.Amount = (ushort)(carried.Amount - 1);
+            carried.Amount = 1;
+            if (!pack.TryAddItem(remainder))
+                _world.PlaceItemWithDecay(remainder, pet.Position);
+        }
+
+        if (!pet.Equip(carried, layer))
+        {
+            // Nowhere to be: put it back rather than leaving it parentless.
+            if (!pack.TryAddItem(carried))
+                _world.PlaceItemWithDecay(carried, pet.Position);
+            return false;
+        }
+
+        _triggerDispatcher?.FireItemTrigger(carried, ItemTrigger.Equip,
+            new TriggerArgs { CharSrc = pet, ItemSrc = carried });
+        return true;
     }
 
     internal Layer ResolveWearableLayer(Item item)

@@ -4,6 +4,55 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Pets: what they wear, and what they put down (07R-07U)
+----------------------------------------
+
+FIX - A pet could hold a sword and a two-handed bow at the same time. The spoken
+        equip command only checked the item's own layer, while Source-X pairs the two
+        hands inside CanEquipLayer (CCharStatus.cpp:410): a weapon taking HAND2
+        conflicts with whatever HAND1 holds, and a HAND1 equip conflicts with a weapon
+        on HAND2 - never with a shield, so sword plus shield stays a legal pair. The
+        scan now leaves an occupied hand alone rather than stripping it: above
+        CanEquipLayer, ItemEquipWeapon looks for a weapon at all only while neither
+        hand holds one (CCharUse.cpp:2051), so the reference never displaces gear the
+        owner did not ask to have taken off.
+
+FIX - The spoken equip fired neither @EquipTest nor @Equip. Source-X runs both from
+        ItemEquip for an NPC exactly as for a player (CCharAct.cpp:3308/3348): a
+        RETURN 1 on @EquipTest refuses the item and leaves it in the pack, and @Equip
+        runs once it is actually worn. An item the callback deletes or moves out of the
+        pack is dropped rather than equipped, as the reference re-checks at :3331.
+
+FIX - A stack was worn whole. Five of an item went onto the equipment layer as one
+        five-piece stack; Source-X splits a single piece off first
+        (UnStackSplit(1), CCharAct.cpp:3337 -> CItem.cpp:1251). The worn piece keeps
+        the original identity and the remainder stays in the pack as a full clone, so
+        tags, durability, hue and attributes survive the split.
+
+FIX - "Drop all" did nothing that plain "drop" did not: it repeated the same pack
+        loop and never touched the equipment, so an owner could not get a weapon off a
+        pet - and an empty pack ended the command before the equipment was looked at.
+        Source-X PC_DROP_ALL is DropAll (CCharNPCPet.cpp:255 -> CCharAct.cpp:564),
+        which dumps the pack and THEN moves the worn equipment into it
+        (UnEquipAllItems, :592). The order is kept: stripping into the pack first would
+        put the worn gear on the ground with everything else. The pack, the mount, hair
+        and beard stay where they are, as does everything above the visible layers
+        (memories, spell effects, the bank and vendor containers).
+
+FIX - A conjured creature now drops nothing at all on "drop all" (CCharAct.cpp:567);
+        its gear leaves with it. Plain "drop" is unaffected, as in the reference.
+
+FIX - Both pet drop verbs threw the whole pack on the ground. Source-X hands
+        ContentsDump an ATTR_OWNED filter and adds ATTR_NEWBIE / ATTR_MOVE_NEVER /
+        ATTR_CURSED2 / ATTR_BLESSED2 to it (CContainer.cpp:502), so a hireling's own
+        stock and an owner's blessed goods stay in the pack.
+
+FIX - A pet GO order that could not reach its last tile relied on a random side step
+        failing before it ended; the test that covered it was correspondingly
+        intermittent. The behaviour is the reference's own roll (CCharNPCAct.cpp:497);
+        the regression now pens the creature in so the outcome is decided rather than
+        drawn.
+
 [2026-09-06] - Pets: decks over water, unseen owners, and orders that keep their word (07L-07Q)
 ----------------------------------------
 

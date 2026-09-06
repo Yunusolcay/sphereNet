@@ -1403,6 +1403,61 @@ tabanli takibi birakma olasiligi; `Wander`/`TrySideStep` ve savas takibinin gizl
 kurali; multi gemi guvertesinde hareket eden zemin; iki el catismasi ve ekipman
 paketleri.
 
+### 07R-07U - pet ekipmani: iki el, trigger, yigin ve drop all (6 Eylul 2026)
+
+Kanit raporlari: [07R](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07R_PET_IKI_EL_KUSANMA.md),
+[07S](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07S_PET_EQUIP_TRIGGER.md),
+[07T](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07T_PET_STACK_KUSANMA.md),
+[07U](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07U_PET_DROP_ALL_EKIPMAN.md).
+Dort bulgu da bagimsiz olarak dogrulandi; hepsi ayni `equip`/`drop` dallarinda oldugu
+icin tek turda uygulandi. Sozlu equip artik referanstaki `ItemEquip` sirasini izliyor.
+
+- [x] **SX-07R-01 (P2)** - Pet ayni anda kilic ve iki elli yay tutabiliyordu. (YAPILDI:
+  `OtherHandIsTaken` - HAND2'ye giden silah HAND1'i, HAND1 equip'i HAND2'deki silahi
+  gozetiyor; kalkan disarida.
+  **Raporun otesinde bulunan:** `Character.Equip` iki elli silahi OneHanded'dan
+  TwoHanded'a terfi ettiriyor, yani tiledata'sina gore tek elli gorunen bir yay eski
+  kodda dogrudan `Equip`'e dusup kalkani cantaya iterdi. Katman artik terfi SONRASI
+  puanlaniyor.
+  **Bilincli tercih:** dolu el soyulmuyor, esya atlaniyor - referansta ItemEquipWeapon
+  zaten yalnizca iki el de bosken silah arar (CCharUse.cpp:2051); raporun "lanetli/
+  tasinamaz esyayi zorla cikarma" uyarisi da bu yonu isaret ediyor.
+  **Kurulumda cikan tuzak:** `Item.IsTwoHanded` giyili esyada KATMANDAN okunuyor, yani
+  TwoHanded'daki kalkan da "iki elli" gorunuyor. Kars el testi bu yuzden yalnizca
+  `IsWeaponType` soruyor - ilk surumum kalkan+kilic ikilisini bozmustu, test yakaladi.)
+- [x] **SX-07S-01 (P2)** - Sozlu equip @EquipTest ve @Equip tetiklemiyordu. (YAPILDI:
+  veto once, hicbir sey tasinmadan; @Equip esya giyildikten sonra. Callback esyayi
+  silerse veya cantadan cikarirsa esya kusanilmiyor - referansin CCharAct.cpp:3331
+  denetimi.)
+- [x] **SX-07T-01 (P2)** - Yigin butun halinde kusaniliyordu. (YAPILDI: `UnStackSplit(1)`
+  karsiligi - giyilen parca asil kimligi korur, kalan tam kopya olarak cantada kalir.
+  Raporun kendi ek istegi olan tag/dayaniklilik korunmasi da testte.)
+- [x] **SX-07U-01 (P2)** - `drop all`, `drop` ile ayni canta dongusune indirgenmisti.
+  (YAPILDI: once canta yere dokuluyor, SONRA ekipman cantaya aliniyor - raporun ozellikle
+  uyardigi sira. Bos canta artik komutu erken bitirmiyor.
+  **Raporun otesinde ele alinan iki yan kural:** conjured yaratik `drop all` ile hicbir
+  sey birakmiyor (CCharAct.cpp:567) ve iki drop komutu da ATTR_OWNED/NEWBIE/MOVE_NEVER/
+  CURSED2/BLESSED2 esyalarini cantada birakiyor (CContainer.cpp:502). Rapor ikisini de
+  "ayrica dogrulanmadi" diye ayirmisti; ayni referans fonksiyonunda olduklari icin
+  birlikte kapatildi.)
+
+**Bulunan ve duzeltilen kendi hatam:** 07O-02 regresyon testi
+(`AnUnreachableLastTileEndsTheOrderRatherThanRetryingForever`) CI'da kizardi. Sebep uretim
+kodu degil testin kendisiydi: engellenen adima verilen yan adim rastgeledir (referansin
+kendi zari, CCharNPCAct.cpp:497), yani emrin bitmesi %30'luk bir role bagliydi ve yerelde
+10 tikta oluyordu, CI'da olmadi. Test artik yaratigi sekiz komsusuyla kapatiyor; sonuc
+zara birakilmiyor. Uretim davranisi degismedi.
+
+**07R-07U kapanisi:** tam suite **2.650 basarili / 0 basarisiz** (+17). Dort duzeltme de
+gecici olarak kapatilarak 13 testin eski davranisi yakaladigi kanitlandi (ilk kapatma
+denemem operator onceligi yuzunden ATTR filtresinin yalnizca ilk kosulunu kapatmisti;
+duzeltilip tekrarlandi).
+
+**Acik kalan:** 07T raporunun onerdigi tam canta / ikinci kez equip / gercek ITEMDEF
+CAN_I_PILE varyantlari; `drop all` icin summoned+ATTR birlesimleri ve saci/sakali
+olan pet; equip taramasinin referanstaki "en iyi silahi sec" puanlamasi
+(NPC_GetWeaponUseScore) - SphereNet hala canta sirasina gore ilk uyani aliyor.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

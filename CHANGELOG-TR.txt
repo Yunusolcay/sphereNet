@@ -3,6 +3,53 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Petler: ne kusanir, ne birakir (07R-07U)
+----------------------------------------
+
+FIX - Bir pet ayni anda hem kilic hem iki elli yay tutabiliyordu. Sozlu equip komutu
+        yalnizca esyanin kendi katmanina bakiyordu; Source-X ise iki eli CanEquipLayer
+        icinde birlikte ele alir (CCharStatus.cpp:410): HAND2'ye giden bir silah
+        HAND1'deki her seyle catisir, HAND1 equip'i ise HAND2'deki SILAHLA catisir -
+        kalkanla asla, bu yuzden kilic + kalkan gecerli ikili olarak kalir. Tarama artik
+        dolu eli soymak yerine o esyayi atliyor: CanEquipLayer'in ustunde ItemEquipWeapon
+        silahi zaten yalnizca iki el de bosken arar (CCharUse.cpp:2051), yani referans
+        sahibinin cikarilmasini istemedigi ekipmani hicbir zaman yerinden etmez.
+
+FIX - Sozlu equip ne @EquipTest ne @Equip tetikliyordu. Source-X her ikisini de NPC icin
+        oyuncudaki gibi ItemEquip'ten calistirir (CCharAct.cpp:3308/3348): @EquipTest'te
+        RETURN 1 esyayi reddeder ve cantada birakir, @Equip ise esya gercekten
+        giyildikten sonra calisir. Callback esyayi silerse veya cantadan cikarirsa esya
+        kusanilmiyor; referans da :3331'de bunu yeniden denetler.
+
+FIX - Yigin butun halinde kusaniliyordu. Bes adetlik yigin tek parca gibi ekipman
+        katmanina gidiyordu; Source-X once tek adet ayirir (UnStackSplit(1),
+        CCharAct.cpp:3337 -> CItem.cpp:1251). Giyilen parca asil kimligi korur, kalan
+        cantada tam bir kopya olarak kalir; boylece tag, dayaniklilik, renk ve
+        oznitelikler ayirma sirasinda kaybolmaz.
+
+FIX - "Drop all", duz "drop"tan farkli bir sey yapmiyordu: ayni canta dongusunu tekrar
+        ediyor, ekipmana hic dokunmuyordu; yani sahibi petin elinden silahi alamiyordu -
+        ve bos canta, ekipmana bakilmadan komutu bitiriyordu. Source-X'te PC_DROP_ALL,
+        DropAll'dir (CCharNPCPet.cpp:255 -> CCharAct.cpp:564): once cantayi bosaltir,
+        SONRA giyili ekipmani cantaya tasir (UnEquipAllItems, :592). Sira korunuyor;
+        once cantaya soymak, giyili ekipmani da digerleriyle birlikte yere dokerdi.
+        Canta, binek, sac ve sakal yerinde kaliyor; gorunur katmanlarin ustundeki her sey
+        de oyle (hafiza esyalari, buyu efektleri, banka ve saticiya ait kaplar).
+
+FIX - Cagrilmis (conjured) bir yaratik "drop all" ile artik hicbir sey birakmiyor
+        (CCharAct.cpp:567); esyasi kendisiyle birlikte gidiyor. Duz "drop" referanstaki
+        gibi bundan etkilenmiyor.
+
+FIX - Iki pet drop komutu da cantanin tamamini yere doktu. Source-X ContentsDump'a
+        ATTR_OWNED filtresini verir ve uzerine ATTR_NEWBIE / ATTR_MOVE_NEVER /
+        ATTR_CURSED2 / ATTR_BLESSED2 ekler (CContainer.cpp:502); boylece kiralik NPC'nin
+        kendi stogu ve sahibinin blessed esyalari cantada kalir.
+
+FIX - Son karesine ulasamayan pet GO emri, bitmek icin rastgele yan adimin basarisiz
+        olmasina bagliydi; onu kapsayan test de bu yuzden kararsizdi. Davranis
+        referansin kendi zarindan geliyor (CCharNPCAct.cpp:497); regresyon testi artik
+        yaratigi kapatarak sonucu zara birakmiyor.
+
 [2026-09-06] - Petler: su ustundeki guverteler, gorunmeyen sahipler ve sozunu tutan emirler (07L-07Q)
 ----------------------------------------
 

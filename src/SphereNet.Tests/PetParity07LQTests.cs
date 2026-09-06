@@ -341,8 +341,17 @@ public sealed class PetParity07LQTests
     {
         var (world, ai, _) = Setup();
         var goal = new Point3D(101, 100, 0, 0);
-        Being(world, goal);          // somebody is standing on it
         var (_, pet) = GoBench(world, ai, goal, PetAIMode.Stay);
+
+        // Pen the pet in. A blocked step is answered by a random side step
+        // (TrySideStep, mirroring the reference's own roll at CCharNPCAct.cpp:497),
+        // so leaving a way out only makes the order end EVENTUALLY - the pet shuffles
+        // around the goal until a roll happens to keep it still. With every neighbour
+        // taken, the goal among them, the step can only fail.
+        for (short dx = -1; dx <= 1; dx++)
+            for (short dy = -1; dy <= 1; dy++)
+                if (dx != 0 || dy != 0)
+                    Being(world, new Point3D((short)(100 + dx), (short)(100 + dy), 0, 0));
 
         for (int i = 0; i < 10 && pet.TryGetTag("GO_TARGET", out _); i++)
             Tick(ai, pet);
