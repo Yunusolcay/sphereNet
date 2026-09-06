@@ -1668,25 +1668,43 @@ public sealed class SpellEngine
     }
 
     /// <summary>Typed field step/stand effect (Source-X: walking into or
-    /// standing in a field triggers the field's spell). Returns true when the
-    /// touch was handled here; false lets the caller's legacy flat-damage
-    /// path run (script-made fields with only FIELD_DAMAGE).</summary>
-    public bool ApplyFieldTouch(Character ch, Item field)
+    /// standing in a field triggers the field's spell).
+    ///
+    /// <see cref="FieldTouchResult.NotHandled"/> lets the caller's legacy
+    /// flat-damage path run (script-made fields with only FIELD_DAMAGE). The
+    /// other two answers both mean "consumed here", and differ only in whether an
+    /// effect actually landed — which is what caps the number of spell fields one
+    /// step may set off.</summary>
+    public FieldTouchResult ApplyFieldTouch(Character ch, Item field)
     {
-        if (ch.IsDead) return true;
+        if (ch.IsDead) return FieldTouchResult.Handled;
         if (!field.TryGetTag("FIELD_SPELL", out string? fsStr) ||
             !int.TryParse(fsStr, out int fsId))
-            return false;
+            return FieldTouchResult.NotHandled;
 
         Character? caster = null;
         if (field.TryGetTag("FIELD_CASTER", out string? cStr) && uint.TryParse(cStr, out uint cuid))
             caster = _world.FindChar(new Serial(cuid));
 
-        switch ((SpellType)fsId)
+        var spellType = (SpellType)fsId;
+
+        // Source-X runs a field touch through OnSpellEffect, whose harmful branch
+        // turns an invulnerable target away BEFORE anything is applied, and answers
+        // false so the cap below stays clear for the next field
+        // (CCharSpell.cpp:3762). Fire tested its own immunity; poison and paralyze
+        // did not, so an invulnerable character took no damage and yet was still
+        // poisoned - timer, source UID and status notification and all - and still
+        // frozen. Both field defs carry SPELLFLAG_HARM in the reference pack, so
+        // the flag is read from the def rather than the type being listed here.
+        if (ch.IsStatFlag(StatFlag.Invul) &&
+            (_spells.Get(spellType)?.IsFlag(SpellFlag.Harm) ?? false))
+            return FieldTouchResult.Handled;
+
+        switch (spellType)
         {
             case SpellType.FireField:
             {
-                if (CombatEngine.IsDamageImmune(ch)) return true;
+                if (CombatEngine.IsDamageImmune(ch)) return FieldTouchResult.Handled;
                 MarkFieldCrime(caster, ch);
                 int dmg = field.TryGetTag("FIELD_DAMAGE", out string? dStr) &&
                           int.TryParse(dStr, out int d) ? d : 2;
@@ -1701,7 +1719,7 @@ public sealed class SpellEngine
                     else if (Character.OnLifecycleKill != null) Character.OnLifecycleKill(ch, caster);
                     else ch.Kill();
                 }
-                return true;
+                return FieldTouchResult.SpellHit;
             }
             case SpellType.PoisonField:
             {
@@ -1711,7 +1729,7 @@ public sealed class SpellEngine
                 // The caster rides along as the poison SOURCE so a poison
                 // death credits the kill/crime to the right character.
                 ch.ApplyPoison(level, caster?.Uid ?? Serial.Invalid);
-                return true;
+                return FieldTouchResult.SpellHit;
             }
             case SpellType.ParalyzeField:
             {
@@ -1722,13 +1740,18 @@ public sealed class SpellEngine
                     MarkFieldCrime(caster, ch);
                     ApplyDirectEffect(caster ?? ch, ch, SpellType.Paralyze, 300);
                 }
-                return true;
+                // Counts as the step's one spell hit even when the victim was already
+                // held: the cap exists precisely to stop a Paralyze+Fire stack from
+                // re-freezing at every damage tick (CCharAct.cpp:5000).
+                return FieldTouchResult.SpellHit;
             }
             case SpellType.WallOfStone:
             case SpellType.EnergyField:
-                return true; // pure barriers — passage blocked by the tiledata
+                // A barrier lands no effect, so it must not swallow a real field
+                // sharing the tile.
+                return FieldTouchResult.Handled; // passage is blocked by the tiledata
             default:
-                return false;
+                return FieldTouchResult.NotHandled;
         }
     }
 

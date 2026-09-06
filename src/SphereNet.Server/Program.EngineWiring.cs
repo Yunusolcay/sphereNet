@@ -1241,7 +1241,7 @@ public static partial class Program
             // Typed field step/stand effects (fire burns, poison poisons,
             // paralyze freezes, barriers inert) — Source-X field spell touch.
             SphereNet.Game.Objects.Characters.Character.FieldTouchHook =
-                (ch, fieldItem) => _spellEngine?.ApplyFieldTouch(ch, fieldItem) ?? false;
+                (ch, fieldItem) => _spellEngine?.ApplyFieldTouch(ch, fieldItem) ?? FieldTouchResult.NotHandled;
             _world.OnSectorLight = (character, level) =>
             {
                 if (TryGetClientFor(character, out var lightClient))

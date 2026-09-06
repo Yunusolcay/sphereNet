@@ -3,6 +3,40 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Buyu: alan buyusunun erisimi ve kac tanesinin isleyecegi (04B)
+----------------------------------------
+
+FIX - Ust uste binmis alan buyuleri tek adimin bedelini katliyordu. Bir hucreye
+        yurumek oradaki HER alani calistiriyordu, yani uc Fire Field uc kat hasar
+        veriyordu; ayni uc alanin uzerinde DURMAK ise bir kat veriyordu - iki yol
+        birbirine uymuyordu. Source-X bir konum kontrolunu TEK buyu etkisiyle
+        sinirlar (CCharAct.cpp:4996) ve bu sinirin gerekcesini tam olarak bu durum
+        ile Paralyze+Fire yiginin kurbani her hasar tick'inde yeniden dondurup
+        cikamaz hale getirmesi olarak yazar. Iki yol artik ayni siniri paylasiyor.
+
+FIX - Sinir, denemeyi degil SONUCU izler. Source-X fSpellHit degerini OnSpellEffect
+        donusunden alir (:5008); etki reddedildiginde bu false olur, boylece etkisiz
+        bir alan arkasindakini yutmaz. Alan temas hook'u bunu ifade edemeyen tek bir
+        "islendi" boolean'i donuyordu; artik etkinin gercekten uygulanip
+        uygulanmadigini bildiriyor (FieldTouchResult).
+
+FIX - Alt kattaki bir alan ust kata ulasiyordu. Ne yurume ne de durma yolu Z'yi
+        karsilastiriyordu, bu yuzden ayni X/Y'yi paylasan bir esya 50 Z yukaridaki
+        karakteri etkiliyordu. Source-X yuksekligi ortusmeyen esyayi atlar:
+        zdiff = itemZ - charZ, esya yuksekligi en az 3 sayilir, zdiff > height veya
+        zdiff < -3 ise reddedilir (CCharAct.cpp:4934). Bu test @STEP'ten ONCE
+        calisir, yani atlanan esya tetikleyici de calistirmaz; hucredeki tuzak,
+        moongate ve aglar da ayni kuralla suzuluyor.
+
+FIX - Poison Field, Invul karakteri zehirliyor; Paralyze Field donduruyordu. Tick
+        hasari onlar icin zaten sifirlaniyordu ama zehrin kendisi kabul ediliyordu -
+        bayrak, sure, kaynak UID'si ve istemci durum bildirimi - ve dondurma dogrudan
+        uygulaniyordu. Source-X zararli buyu dalinin basinda Invul hedefi, herhangi
+        bir etkiden once geri cevirir (CCharSpell.cpp:3762) ve iki alan tanimi da
+        SPELLFLAG_HARM tasir. Fire bu kontrolu zaten yapiyordu; poison ve paralyze
+        artik ayni kapidan geciyor. Zaten devam eden zehir icin var olan tick
+        tarafindaki koruma degismedi.
+
 [2026-09-06] - Buyu: cast kaynaginin yeniden cozulmesi ve hedef dogrulama (04A)
 ----------------------------------------
 

@@ -4,6 +4,40 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Magic: what a spell field may reach, and how many may land (04B)
+----------------------------------------
+
+FIX - Stacked spell fields multiplied the cost of a single step. Walking onto a tile
+        ran every field on it, so three Fire Fields cost three times the damage,
+        while STANDING on the same three cost one - the two paths disagreed. Source-X
+        caps a location check at ONE spell effect (CCharAct.cpp:4996) and documents
+        the cap as the guard against exactly this, and against a Paralyze+Fire stack
+        re-freezing the victim at every damage tick with no way out. Both paths now
+        share the cap.
+
+FIX - The cap follows the RESULT, not the attempt. Source-X assigns fSpellHit from
+        the return of OnSpellEffect (:5008), which is false when the effect was
+        refused, so an inert field never swallows the one behind it. The field touch
+        hook answered a single "handled" boolean that could not express this, and now
+        reports whether an effect actually landed (FieldTouchResult).
+
+FIX - A field on the floor below reached the storey above. Neither the walking nor
+        the standing path compared Z at all, so an item sharing the X/Y touched a
+        character 50 Z above it. Source-X skips an item unless its height overlaps -
+        zdiff = itemZ - charZ, the item's height counted as at least 3, rejected when
+        zdiff > height or zdiff < -3 (CCharAct.cpp:4934). The test runs BEFORE @STEP,
+        so a skipped item fires no trigger either; traps, moongates and webs on the
+        tile are filtered by the same rule.
+
+FIX - A Poison Field poisoned an invulnerable character, and a Paralyze Field froze
+        one. The tick damage was already zeroed for them, but the poison itself was
+        accepted - flag, timer, source UID and client status notification - and the
+        freeze was applied outright. Source-X turns an invulnerable target away at the
+        top of the harmful-spell branch (CCharSpell.cpp:3762), before any effect, and
+        both field defs carry SPELLFLAG_HARM. Fire already made this check; poison and
+        paralyze now go through the same gate. The existing tick-side protection for
+        poison that was already running is unchanged.
+
 [2026-09-06] - Magic: cast source re-resolution and target validation (04A)
 ----------------------------------------
 

@@ -76,7 +76,7 @@ public sealed class FieldAndSummonParityTests
         victim.MaxHits = 100;
         victim.Hits = 100;
         world.PlaceCharacter(victim, segments[0].Position);
-        Assert.True(engine.ApplyFieldTouch(victim, segments[0]));
+        Assert.Equal(FieldTouchResult.SpellHit, engine.ApplyFieldTouch(victim, segments[0]));
         Assert.True(victim.Hits < 100, "fire field touch dealt no damage");
     }
 
@@ -103,7 +103,7 @@ public sealed class FieldAndSummonParityTests
         victim.MaxHits = 100;
         victim.Hits = 100;
         world.PlaceCharacter(victim, segment.Position);
-        Assert.True(engine.ApplyFieldTouch(victim, segment));
+        Assert.Equal(FieldTouchResult.SpellHit, engine.ApplyFieldTouch(victim, segment));
         Assert.True(victim.IsPoisoned, "poison field did not poison");
         Assert.Equal(100, victim.Hits); // poisons, does not flat-damage
     }

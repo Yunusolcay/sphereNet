@@ -277,8 +277,15 @@ public sealed class MovementEngine
     private void CheckLocationEffects(Objects.Characters.Character ch, Point3D originalPos)
     {
         var pos = originalPos;
+        bool spellHit = false;
         foreach (var item in _world.GetItemsInRange(pos, 0))
         {
+            // Source-X CheckLocation weeds out anything the character cannot
+            // actually reach in Z before it even looks at @STEP
+            // (CCharAct.cpp:4934) - a trap, moongate or field on the floor below
+            // shares the X/Y but is a storey away.
+            if (!item.IsWithinStepHeight(ch.Z)) continue;
+
             // Source-X parity: @Step trigger gets first chance. RETURN 1
             // cancels the hard-coded effect (trap, teleport, moongate, …)
             // so scripts can fully replace native behaviour.
@@ -345,11 +352,20 @@ public sealed class MovementEngine
             // Typed field step effect (fire damages, poison poisons, paralyze
             // freezes, barriers inert — Source-X field spell on step). Falls
             // back to the legacy flat FIELD_DAMAGE for script-made fields.
-            if (Character.FieldTouchHook != null && Character.FieldTouchHook(ch, item))
-            {
-                // handled by the spell engine
-            }
-            else if (item.TryGetTag("FIELD_DAMAGE", out string? fdStr) && int.TryParse(fdStr, out int fieldDmg) &&
+            // Source-X caps one location check at a single spell effect
+            // (CCharAct.cpp:4996): stacking Fire Fields on a tile would otherwise
+            // multiply the damage of one step, and a Paralyze+Fire stack would
+            // re-freeze the victim at every damage tick with no way out. The cap
+            // follows the RESULT, not the attempt - a field that landed nothing
+            // leaves the next one its chance.
+            var touch = spellHit && item.TryGetTag("FIELD_SPELL", out _)
+                ? FieldTouchResult.Handled      // a spell field already went off here
+                : Character.FieldTouchHook?.Invoke(ch, item) ?? FieldTouchResult.NotHandled;
+            if (touch == FieldTouchResult.SpellHit)
+                spellHit = true;
+
+            if (touch == FieldTouchResult.NotHandled &&
+                item.TryGetTag("FIELD_DAMAGE", out string? fdStr) && int.TryParse(fdStr, out int fieldDmg) &&
                 !Combat.CombatEngine.IsDamageImmune(ch))
             {
                 ch.Hits -= (short)Math.Min(fieldDmg, ch.Hits);

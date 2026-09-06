@@ -340,6 +340,25 @@ public class Item : ObjBase
     public Layer ResolveEquipLayer() =>
         EquipLayer != Layer.None ? EquipLayer : (ResolveDefinition()?.Layer ?? Layer.None);
 
+    /// <summary>The itemdef's HEIGHT, as the location-touch window reads it.</summary>
+    public byte DefHeight => ResolveDefinition()?.Height ?? 0;
+
+    /// <summary>Whether this item is close enough in Z to touch a character standing
+    /// at <paramref name="charZ"/> — that is, whether stepping onto or standing on the
+    /// tile should reach the item at all.
+    ///
+    /// Source-X CheckLocation (CCharAct.cpp:4934) computes <c>zdiff = itemZ - charZ</c>,
+    /// counts the item's height as at least 3, and skips the item when
+    /// <c>zdiff &gt; height</c> or <c>zdiff &lt; -3</c>. Without it a field, trap or
+    /// moongate lying on the floor below reaches whoever stands on the same X/Y one
+    /// storey up. The reference makes this test BEFORE @STEP, so a skipped item fires
+    /// no trigger either.</summary>
+    public bool IsWithinStepHeight(sbyte charZ)
+    {
+        int zdiff = Z - charZ;
+        return zdiff <= Math.Max((byte)3, DefHeight) && zdiff >= -3;
+    }
+
     /// <summary>Last-resort equip layer derived from the itemdef TYPE, for wearables
     /// whose fixed slot the client stores in tiledata but some tiledata builds leave
     /// as 0 (hair/beard) — and for the lone unlabelled container a char carries, its

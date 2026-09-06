@@ -1464,8 +1464,9 @@ public partial class Character : ObjBase
 
     /// <summary>Typed field touch (SpellEngine.ApplyFieldTouch, wired by the
     /// host): fire damages, poison poisons, paralyze freezes, barriers are
-    /// inert. Returns true when the spell engine handled the touch.</summary>
-    public static Func<Character, Item, bool>? FieldTouchHook;
+    /// inert. The answer says whether the touch was consumed there and whether an
+    /// effect actually landed - see <see cref="FieldTouchResult"/>.</summary>
+    public static Func<Character, Item, FieldTouchResult>? FieldTouchHook;
 
     /// <summary>Apply damage from any fire/poison field on the character's
     /// current tile. Sector-indexed lookup, so this is cheap per tick.</summary>
@@ -1475,14 +1476,22 @@ public partial class Character : ObjBase
         var world = ResolveWorld?.Invoke();
         if (world == null) return;
 
+        bool spellHit = false;
         foreach (var item in world.GetItemsInRange(Position, 0))
         {
             if (item.IsDeleted) continue;
             if (item.Position.X != X || item.Position.Y != Y) continue;
+            // A field one storey below shares the X/Y but must not reach up.
+            if (!item.IsWithinStepHeight(Z)) continue;
             if (FieldTouchHook != null && item.TryGetTag("FIELD_SPELL", out _))
             {
-                if (FieldTouchHook(this, item))
-                    return; // one field tick per cycle is enough
+                // Source-X caps a location check at one spell effect
+                // (CCharAct.cpp:4996). The cap follows the RESULT: a field that
+                // landed nothing - an immune target, a bare barrier - leaves the
+                // next field on the tile its chance.
+                if (spellHit) continue;
+                if (FieldTouchHook(this, item) == FieldTouchResult.SpellHit)
+                    spellHit = true;
                 continue;
             }
             if (!item.TryGetTag("FIELD_DAMAGE", out string? fdStr) ||

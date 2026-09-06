@@ -759,6 +759,57 @@ etiketin varligindan degil cozulmus kaynaktan fiyatlaniyor.
 reddeder; SphereNet CHARGES etiketi olmayan asayi sinirsiz sayar), `ATTR_MAGIC`
 kapisi (:2415) ve `CastStart`'in yalniz Layer.OneHanded'a bakan asa okumasi.
 
+### 04B — alan buyulerinde temas (6 Eylul 2026)
+
+[04B kanit raporu](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_04B_ALAN_BUYULERI.md).
+Uc bulgu da bagimsiz olarak dogrulandi ve uygulandi.
+
+- [x] **SX-04B-01 (P1)** — Ust uste binmis alanlarin hasari yuruyuste birikiyordu.
+  (YAPILDI: Source-X bir konum kontrolunu TEK buyu etkisiyle sinirlar
+  (CCharAct.cpp:4996) ve gerekcesini kodda yazar: yigilmis Fire Field'in tek adimi
+  katlamasi ve Paralyze+Fire yiginin her hasar tick'inde yeniden dondurmesi.
+  SphereNet'te durma yolu ilk alandan sonra donuyordu ama yurume yolu hepsini
+  calistiriyordu — iki yol artik ayni siniri paylasiyor.
+  **Kritik ayrinti:** sinir denemeyi degil SONUCU izler. Referans
+  `fSpellHit = OnSpellEffect(...)` (:5008) atamasini yapar; etki reddedildiginde
+  false doner ve sonraki alan hakkini korur. Tek bir "islendi" boolean'i bunu
+  ifade edemedigi icin hook `FieldTouchResult` (NotHandled/Handled/SpellHit)
+  donuyor. Barrier ve bagisik hedef artik arkasindaki alani yutmuyor.
+  **Kapsam:** sinir yalniz buyu alanlarina ait; ayni hucredeki tuzak/telepad
+  dongusu Source-X'teki gibi calismaya devam ediyor.)
+- [x] **SX-04B-02 (P1)** — Alan temasinda kat/yukseklik ayrimi yoktu.
+  (YAPILDI: `Item.IsWithinStepHeight`, Source-X CheckLocation penceresini kuruyor
+  (CCharAct.cpp:4934): zdiff = itemZ - charZ, esya yuksekligi en az 3 sayilir,
+  zdiff > height veya zdiff < -3 ise esya atlanir. Yurume ve durma yollari ayni
+  yardimciyi kullaniyor.
+  **Bilincli kapsam genislemesi:** referans bu testi @STEP'ten ONCE yapar, yani
+  atlanan esya tetikleyici de calistirmaz. Bu nedenle filtre yalniz alanlara degil
+  butun konum dongusune (tuzak, moongate, ag) uygulandi — raporun istedigi
+  "paylasilan temas/yukseklik uygunlugu" bu. Alt kattaki moongate'in ust kattaki
+  karakteri isinlamamasi da ayni duzeltmenin sonucu.)
+- [x] **SX-04B-03 (P2)** — Poison Field, Invul karakterde zehir durumunu baslatiyordu.
+  (YAPILDI: Source-X zararli buyu dalinin basinda Invul hedefi, herhangi bir etki
+  uygulanmadan geri cevirir ve false doner (CCharSpell.cpp:3762). Fire kendi
+  bagisiklik kontrolunu yapiyordu; poison ve paralyze yapmiyordu.
+  **Raporda olmayan ikinci hedef:** ayni delik Paralyze Field'da da vardi — Invul
+  karakter donuyordu. Referans pakette hem `s_poison_field` hem
+  `s_paralyzation_field` SPELLFLAG_HARM tasidigi icin kapi tur listesine degil
+  def'in Harm bayragina bagli; ucu birden tek kapidan geciyor.
+  **Degismeyen:** zaten devam eden zehir icin tick tarafindaki koruma
+  (CharacterPoisonState) korundu — rapor bunun kaldirilmamasini istiyordu.)
+
+**04B kapanisi:** tam suite **2.439 basarili / 0 basarisiz** (+20). Uc duzeltme de
+gecici olarak kapatilarak 7 testin eski davranisi yakaladigi kanitlandi.
+Sozlesme degisikligi nedeniyle `FieldAndSummonParityTests`'in iki iddiasi
+bool'dan `FieldTouchResult.SpellHit`'e guncellendi.
+
+**Acik kalan (04C adaylari):** Source-X zararli dalinin `PLEVEL_Guest` reddi
+(:3767) SphereNet'te hicbir yerde yok — Invul kapisiyla ayni satirda ama ayri bir
+yetki kurali oldugu icin bu tur eklenmedi. Paralyze Field'in normal Paralyze
+tanimina yonlendirilmesi, field uzerinde `@SpellEffect` veto sozlesmesi,
+`FIELD_CASTER_UUID` uretilmesine ragmen temasin yalniz UID kullanmasi ve
+`OverrideFields` ayari da acik.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.
