@@ -523,11 +523,16 @@ public sealed class Sector : IScriptObj
         for (int i = 0; i < scratch.Count; i++)
         {
             var item = scratch[i];
-            if (item.IsDeleted) { _items.Remove(item); continue; }
+            // Through RemoveItem, so the listen-item counter comes down with the
+            // object. Calling _items.Remove directly skipped it, and a sector whose
+            // last communication crystal simply decayed went on reporting a listener
+            // for ever - the later RemoveItem could not fix it either, because the
+            // object was no longer in the list to be removed.
+            if (item.IsDeleted) { RemoveItem(item); continue; }
             if (!item.IsSleeping)
             {
                 if (!item.OnTick())
-                    _items.Remove(item);
+                    RemoveItem(item);
             }
         }
         scratch.Clear();

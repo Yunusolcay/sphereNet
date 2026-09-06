@@ -4,6 +4,67 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - The decay contract, the drop event and delayed work (12S-12U)
+----------------------------------------
+
+FIX - A decay of under a second was rounded away to nothing by the save and the pending
+        rot was forgotten on reload. The remaining time is now written in milliseconds
+        (DECAYMS); DECAY is still written alongside it so a save read by an older build
+        finds the field it expects.
+
+FIX - Picking an item up left its rot running, so an item carried in a bag could vanish
+        out of it. Upstream ends the decay the moment the object is lifted
+        (CCharAct.cpp:3064).
+
+FIX - Putting an item down armed a decay over the top of a script timer it was already
+        running, destroying it well before the interval its script had chosen. The shared
+        contract now stands aside for a live timer (SetDecayTime, CItem.cpp:1485).
+
+FIX - @DropOn_Ground did not speak the reference's language: the drop point went out as
+        ARGN1/2/3 and the interval as a local, where upstream passes the decay in TENTHS
+        OF A SECOND as ARGN1 and the point as the string argument, and reads both back
+        (CItem.cpp:1629). A Source-X script's choices reached nothing. LOCAL.DECAY is
+        still read, in seconds, and wins when the script actually changed it, so packs
+        written against the older reading keep working.
+        BREAKING for a pack that read ARGN1 on this event as a coordinate.
+
+FIX - A no-decay region vetoed whatever the script had chosen instead of shaping the
+        NATURAL time before the script speaks (:1620).
+
+FIX - An item the drop script deleted was still placed back on the ground, and a
+        container the script had moved it into was overruled by the drop point
+        (:1634/:1654).
+
+FIX - RETURN 1 on @DropOn_Ground bounced the item back to the backpack. On this event it
+        means the script took over after the item was placed - upstream updates it and
+        returns success (:1660) - not the veto other events use.
+
+FIX - A refused @Timer stopped the special item types from doing their own work, and an
+        item running a millisecond timer was not destroyed when it ran out. Only the
+        default path deletes, and it now sees both clocks (:6380/:6412).
+
+FIX - TIMERF CLEAR and TIMERF STOP fell into the scheduler, which found no payload and
+        returned quietly: cancelling delayed work was accepted and did nothing, and the
+        jobs ran anyway. They are separated before anything is scheduled
+        (CObjBase.cpp:2762), and STOP takes a name or a trailing-wildcard family.
+
+NEW - ISTIMERF.<name> answers the milliseconds left before a delayed job runs, 0 when
+        there is no such job (CObjBase.cpp:1499).
+
+FIX - A TIMERF delay was read with a plain integer parse, so "2 f_a" (space-separated),
+        "1+1" and the leading-zero hex form all became zero and ran at once. The delay
+        now ends at the first comma OR space and is read as a Sphere number; one that
+        cannot be read, or a negative one, is refused rather than scheduled for now.
+
+FIX - Due delayed jobs ran in the order they were SCHEDULED, so after a stall a pair of
+        ordered script steps came out backwards. They run in due order
+        (CWorldTicker.cpp:1051).
+
+FIX - A sector whose last communication crystal simply decayed went on reporting a
+        listener for ever: the tick removed the item from the list directly and skipped
+        the counter, and the later removal could not fix it because the object was no
+        longer in the list.
+
 [2026-09-06] - One item clock, one timer gate (12Q-12R)
 ----------------------------------------
 

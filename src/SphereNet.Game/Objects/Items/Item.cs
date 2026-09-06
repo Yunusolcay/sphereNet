@@ -53,6 +53,26 @@ public class Item : ObjBase
     /// <summary>Run the itemdef <c>@Create</c> trigger exactly once for this
     /// instance. Guarded so re-stamping metadata never double-applies a magic
     /// @Create body (which would, e.g., stack the damage bonus every call).</summary>
+    /// <summary>Source-X CItem::SetDecayTime (CItem.cpp:1478): -1 clears the decay and
+    /// its attribute, a positive value arms it, and a timer that is ALREADY running for
+    /// something other than decay is left to expire on its own unless the caller
+    /// insists. That last rule is what keeps a script's own interval from being cut
+    /// short by an unrelated placement.</summary>
+    public void SetDecayTime(long msecs, bool overrideAlways = false)
+    {
+        if (!overrideAlways && Timeout > 0 && !IsAttr(ObjAttributes.Decay))
+            return;   // a live script timer owns this object's clock
+
+        if (msecs < 0)
+        {
+            DecayTime = 0;
+            ClearAttr(ObjAttributes.Decay);
+            return;
+        }
+        DecayTime = Environment.TickCount64 + msecs;
+        SetAttr(ObjAttributes.Decay);
+    }
+
     public void FireCreateTrigger()
     {
         if (_createTriggerFired) return;
@@ -1935,8 +1955,15 @@ public class Item : ObjBase
                 SetTag("USESMAX", value);
                 return true;
             case "DECAY":
-                if (long.TryParse(value, out long decaySec) && decaySec > 0)
+                // Only when DECAYMS has not already supplied the precise value: a save
+                // carries both, and the millisecond field is the accurate one.
+                if (long.TryParse(value, out long decaySec) && decaySec > 0 &&
+                    DecayTime <= Environment.TickCount64)
                     DecayTime = Environment.TickCount64 + decaySec * 1000;
+                return true;
+            case "DECAYMS":
+                if (long.TryParse(value, out long decayMs) && decayMs >= 0)
+                    DecayTime = Environment.TickCount64 + decayMs;
                 return true;
             case "TIMER":
                 // Sphere has ONE item timer: TIMER drives the @Timer script
@@ -3254,6 +3281,8 @@ public class Item : ObjBase
         long timeout = Timeout;
         bool timerDue = timeout > 0 && Environment.TickCount64 >= timeout;
         bool timerFired = false;
+        // What the timer script answered, kept until the type behaviour has had its go.
+        TriggerResult pendingTimerResult = TriggerResult.Default;
 
         if (decayDue || timerDue)
         {
@@ -3300,19 +3329,26 @@ public class Item : ObjBase
                 return false;
             }
 
-            // The timer ran out on an item with no decay of its own. Upstream deletes
-            // it only when it carries ATTR_DECAY or the script explicitly said so with
-            // RETURN 0; otherwise the item simply stays (:6412).
-            if (timerResult == TriggerResult.False)
-            {
-                _isDeleted = true;
-                SpawnChar?.KillAll();
-                return false;
-            }
+            // The delete decision belongs AFTER the type behaviour, not before it: the
+            // types that handle their own expiry return on their own (a hive refills
+            // and lives, :6380), and only an object that falls through to the default
+            // path is destroyed - by ATTR_DECAY or by the script's RETURN 0 (:6412).
+            pendingTimerResult = timerResult;
         }
+
+        // Did the type behaviour below claim this expiry? Upstream's special types
+        // RETURN from the switch with their own answer, so the default-path deletion at
+        // the bottom must not reach them (CItem.cpp:6247-6404).
+        bool typeHandledTimer = false;
 
         if (timerFired)
         {
+            typeHandledTimer = _type is ItemType.TrapActive or ItemType.TrapInactive
+                or ItemType.ShipPlank or ItemType.Door or ItemType.DoorOpen
+                or ItemType.DoorLocked or ItemType.Portculis or ItemType.PortLocked
+                or ItemType.Crops or ItemType.Foliage or ItemType.LightLit
+                or ItemType.AnimActive or ItemType.BeeHive
+                || (_type == ItemType.EqMemoryObj && EquipLayer == Layer.FlagWool);
 
             // Source-X CItem::_OnTick trap state machine: an armed trap relaxes
             // to inactive, an inactive one either re-arms (MOREZ periodic) or
@@ -3391,6 +3427,19 @@ public class Item : ObjBase
         long now = Environment.TickCount64;
         SpawnChar?.OnTick(now);
         SpawnItem?.OnTick(now);
+
+        // The default path, reached by everything the type switch above did not claim.
+        // Here - and only here - an expired timer destroys the item, either because it
+        // carries the decay attribute or because the script asked for it with a
+        // RETURN 0 (CItem.cpp:6412). A hive, a trap or a plank has already returned
+        // above with its own answer.
+        if (timerFired && !typeHandledTimer &&
+            (IsAttr(ObjAttributes.Decay) || pendingTimerResult == TriggerResult.False))
+        {
+            _isDeleted = true;
+            SpawnChar?.KillAll();
+            return false;
+        }
 
         return true;
     }

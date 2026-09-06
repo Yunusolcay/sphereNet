@@ -317,11 +317,18 @@ public class ItemInventoryRulesTests
     {
         var world = CreateWorld();
         var dispatcher = new TriggerDispatcher();
-        // @DropOn_Ground shifts the drop one tile east and shortens decay to 5s.
+        // The Source-X contract: ARGN1 carries the decay in TENTHS OF A SECOND and the
+        // string argument carries the drop point (MoveToCheck, CItem.cpp:1629). This
+        // test used to write the X coordinate into ARGN1, which is what that finding
+        // was about - passing then proved nothing about the reference.
+        Point3D seenPoint = default;
+        int seenTenths = -1;
         dispatcher.RegisterItemEvent("EVENTSITEM", "DropOn_Ground", (_, args) =>
         {
-            args.N1 += 1;                  // relocate X (within reach)
-            args.Locals?.SetInt("DECAY", 5);
+            seenTenths = args.N1;
+            Point3D.TryParse(args.S1 ?? "", out seenPoint);
+            args.N1 = 50;                                     // 5 seconds
+            args.S1 = $"{seenPoint.X + 1},{seenPoint.Y},{seenPoint.Z},{seenPoint.Map}";
             return TriggerResult.Default;
         });
         var (client, player, _) = MakePlayer(world, 9303, dispatcher);
@@ -333,9 +340,36 @@ public class ItemInventoryRulesTests
         client.HandleItemPickup(item.Uid.Value, 0);
         client.HandleItemDrop(item.Uid.Value, player.X, player.Y, 0, 0xFFFFFFFF);
 
-        Assert.Equal(player.X + 1, item.X); // relocated by the script
+        Assert.Equal(player.X, seenPoint.X);                 // the point it was given
+        Assert.True(seenTenths > 0, "the natural decay should arrive in tenths");
+        Assert.Equal(player.X + 1, item.X);                  // relocated by the script
         long remainingMs = item.DecayTime - Environment.TickCount64;
-        Assert.InRange(remainingMs, 1, 5000); // custom 5s decay, not the 10-min default
+        Assert.InRange(remainingMs, 1, 5000);                // the 5 s it chose
+    }
+
+    [Fact]
+    public void DropOnGround_LocalDecayStillWorksForOlderScripts()
+    {
+        var world = CreateWorld();
+        var dispatcher = new TriggerDispatcher();
+        // The LOCAL.DECAY seconds reading SphereNet has always accepted is kept, so a
+        // pack written against it does not break when ARGN1 changes meaning.
+        dispatcher.RegisterItemEvent("EVENTSITEM", "DropOn_Ground", (_, args) =>
+        {
+            args.Locals?.SetInt("DECAY", 5);
+            return TriggerResult.Default;
+        });
+        var (client, player, _) = MakePlayer(world, 9304, dispatcher);
+
+        var item = world.CreateItem();
+        item.BaseId = 0x0F7A;
+        world.PlaceItem(item, player.Position);
+
+        client.HandleItemPickup(item.Uid.Value, 0);
+        client.HandleItemDrop(item.Uid.Value, player.X, player.Y, 0, 0xFFFFFFFF);
+
+        long remainingMs = item.DecayTime - Environment.TickCount64;
+        Assert.InRange(remainingMs, 1, 5000);
     }
 
     // ---- #1b: bank cap counts the whole tree (nested bags can't bypass) ----

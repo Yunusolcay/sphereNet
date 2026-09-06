@@ -771,7 +771,14 @@ public sealed class WorldSaver
 
         if (item.DecayTime > 0)
         {
-            long remainingSec = (item.DecayTime - now) / 1000;
+            // Milliseconds, because a whole-second field silently rounded anything
+            // under a second down to nothing and the pending rot was forgotten on
+            // reload. Upstream keeps the remaining time at millisecond resolution
+            // (r_Write, CObjBase.cpp:2081). DECAY stays alongside it so a save read by
+            // an older build still finds the field it expects.
+            long remainingMs = Math.Max(0, item.DecayTime - now);
+            w.WriteProperty("DECAYMS", remainingMs.ToString());
+            long remainingSec = remainingMs / 1000;
             if (remainingSec > 0)
                 w.WriteProperty("DECAY", remainingSec.ToString());
         }

@@ -699,6 +699,11 @@ public sealed class ClientInventoryHandler
             }
 
             item.ContainedIn = _character.Uid;
+            // Picking something up ends its rot: upstream calls SetDecayTime(-1) at the
+            // end of the pickup (CCharAct.cpp:3064), which clears the timer and the
+            // attribute - and leaves a genuine script timer alone. The item used to
+            // carry its old ground decay into the backpack.
+            item.SetDecayTime(-1);
             _character.SetTag("DRAGGING", item.Uid.Value.ToString());
             BroadcastDragAnimation(item, dragSourceSerial, dragSourcePos, 0, _character.Position, dragSourcePos);
             return;
@@ -743,6 +748,7 @@ public sealed class ClientInventoryHandler
         }
 
         item.ContainedIn = _character.Uid;
+        item.SetDecayTime(-1);
         _character.SetTag("DRAGGING", serial.ToString());
         BroadcastDragAnimation(item, dragSourceSerial, dragSourcePos, 0, _character.Position, dragSourcePos);
 
@@ -1477,31 +1483,52 @@ public sealed class ClientInventoryHandler
             }
         }
 
-        // @DropOn_Ground — Source-X passes the drop point as ARGN1/2/3 (x/y/z)
-        // and a DECAY local (seconds) so a script can relocate the drop or set a
-        // custom rot timer; RETURN 1 bounces the drop. ARGN/LOCAL readback flows
-        // through the EVENTS / @Item* path (RunWrapped + the shared Locals pool).
+        // @DropOn_Ground — Source-X hands ARGN1 the decay time in TENTHS OF A SECOND
+        // and the drop point as the string argument, and reads BOTH back afterwards
+        // (MoveToCheck, CItem.cpp:1629). Both halves used to differ: the coordinates
+        // went out as ARGN1/2/3 and the interval as a LOCAL, so a Source-X script's
+        // choices reached nothing. LOCAL.DECAY is still read, in seconds, so the
+        // scripts written against the older reading keep working.
         long defaultDecaySec = GameWorld.DefaultDecayTimeMs / 1000;
+        long naturalDecayMs = GameWorld.DefaultDecayTimeMs;
+        // The region's protection is applied to the NATURAL time, before the script
+        // speaks (:1620) - not as a veto over whatever it then chooses.
+        var preRegion = _world.FindRegion(new Point3D(x, y, z, _character.MapIndex));
+        if (preRegion != null && preRegion.IsFlag(SphereNet.Core.Enums.RegionFlag.NoDecay))
+            naturalDecayMs = -1000;
+
         var dropLocals = new SphereNet.Scripting.Variables.VarMap();
-        dropLocals.SetInt("DECAY", defaultDecaySec);
+        long seededDecaySec = naturalDecayMs > 0 ? naturalDecayMs / 1000 : defaultDecaySec;
+        dropLocals.SetInt("DECAY", seededDecaySec);
         var dropArgs = new TriggerArgs
         {
             CharSrc = _character, ItemSrc = item,
-            N1 = x, N2 = y, N3 = z, Locals = dropLocals,
+            N1 = (int)(naturalDecayMs / 100),          // tenths of a second
+            S1 = $"{x},{y},{z},{_character.MapIndex}", // the drop point
+            Locals = dropLocals,
         };
+        var priorContainer = item.ContainedIn;
         var dropResult = _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.DropOnGround, dropArgs);
-        if (dropResult == TriggerResult.True)
+
+        // A script that removed the item ends the drop right there (:1634).
+        if (item.IsDeleted)
         {
-            RestoreToOrigin(item);
-            _netState.Send(new PacketDropReject());
+            _netState.Send(new PacketDropAck());
             return;
         }
+
+        naturalDecayMs = dropArgs.N1 * 100L;
 
         // Honor a script-relocated drop point, re-validating map bounds + reach so
         // a script can't fling the item out of the world / out of range (GM keeps
         // the same bypass the pre-trigger gate used).
-        short finalX = (short)dropArgs.N1, finalY = (short)dropArgs.N2;
-        sbyte finalZ = (sbyte)dropArgs.N3;
+        short finalX = x, finalY = y;
+        sbyte finalZ = z;
+        if (!string.IsNullOrWhiteSpace(dropArgs.S1) &&
+            Point3D.TryParse(dropArgs.S1.Trim(), out var relocated))
+        {
+            finalX = relocated.X; finalY = relocated.Y; finalZ = relocated.Z;
+        }
         if (finalX != x || finalY != y || finalZ != z)
         {
             bool inBounds = true;
@@ -1518,10 +1545,26 @@ public sealed class ClientInventoryHandler
             }
         }
 
-        // Script decay override (LOCAL.DECAY seconds): >0 sets a custom timer,
-        // otherwise the default 10-minute ground decay applies.
-        long dropDecaySec = dropLocals.GetInt("DECAY", defaultDecaySec);
-        long dropDecayMs = dropDecaySec > 0 ? dropDecaySec * 1000 : GameWorld.DefaultDecayTimeMs;
+        // ARGN1 is the reference's channel; LOCAL.DECAY still works for the scripts
+        // written against the older reading, and wins when the script actually changed
+        // it. A negative interval means "do not rot" (the region's own protection, or a
+        // script asking for the same).
+        // The local only wins when the script actually CHANGED it - it is seeded with
+        // the natural value, so its mere presence says nothing.
+        long dropDecaySec = dropLocals.GetInt("DECAY", seededDecaySec);
+        long dropDecayMs = dropDecaySec != seededDecaySec
+            ? (dropDecaySec > 0 ? dropDecaySec * 1000 : -1000)
+            : naturalDecayMs;
+        if (dropDecayMs == 0)
+            dropDecayMs = GameWorld.DefaultDecayTimeMs;
+
+        // A script that moved the item somewhere else keeps it there: upstream only
+        // repositions when the container is unchanged (:1654).
+        if (item.ContainedIn != priorContainer && item.ContainedIn.IsValid)
+        {
+            _netState.Send(new PacketDropAck());
+            return;
+        }
 
         var groundPos = new Point3D(x, y, z, _character.MapIndex);
         var sector = _world.GetSector(groundPos);
@@ -1567,7 +1610,29 @@ public sealed class ClientInventoryHandler
             item.TryFlipDisplay();
         }
 
-        _world.PlaceItemWithDecay(item, groundPos, dropDecayMs);
+        // RETURN 1 on THIS event means the script took over after the item was placed -
+        // upstream moves and updates it and then returns success (:1654/:1660). It is
+        // not the general veto other events use, so bouncing the item back to the
+        // backpack was the opposite of what the script asked for.
+        if (dropResult == TriggerResult.True)
+        {
+            _world.PlaceItem(item, groundPos);
+            _netState.Send(new PacketDropAck());
+            BroadcastDragAnimation(item, _character.Uid.Value, _character.Position, 0, groundPos, groundPos);
+            BroadcastWorldItem(item);
+            return;
+        }
+
+        if (dropDecayMs < 0)
+        {
+            // No rot at all - place it and clear the decay.
+            _world.PlaceItem(item, groundPos);
+            item.SetDecayTime(-1);
+        }
+        else
+        {
+            _world.PlaceItemWithDecay(item, groundPos, dropDecayMs);
+        }
         _netState.Send(new PacketDropAck());
         BroadcastDragAnimation(item, _character.Uid.Value, _character.Position, 0, groundPos, groundPos);
         BroadcastNearby?.Invoke(groundPos, UpdateRange,

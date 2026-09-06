@@ -1808,10 +1808,14 @@ public sealed class GameWorld
     /// (pass a positive <paramref name="decayMs"/> to override).</summary>
     public bool PlaceItemWithDecay(Item item, Point3D pos, long decayMs = 0)
     {
+        if (item.IsDeleted) return false;
         if (!PlaceItem(item, pos)) return false;
-        long now = Environment.TickCount64;
         long safeDelay = Math.Max(0, decayMs > 0 ? decayMs : DefaultDecayTimeMs);
-        item.DecayTime = safeDelay > long.MaxValue - now ? long.MaxValue : now + safeDelay;
+        // Through the shared contract, so an item already running a script timer of its
+        // own is left to finish it (SetDecayTime, CItem.cpp:1485). Arming a separate
+        // shorter decay here destroyed the item well before the interval its script had
+        // chosen while it was still in a bag.
+        item.SetDecayTime(safeDelay);
         return true;
     }
 

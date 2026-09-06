@@ -3,6 +3,66 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Decay sozlesmesi, birakma olayi ve gecikmeli is (12S-12U)
+----------------------------------------
+
+FIX - Bir saniyenin altindaki decay kayitta yuvarlanip yok oluyor, bekleyen curume
+        yeniden yuklemede unutuluyordu. Kalan sure artik milisaniye olarak yaziliyor
+        (DECAYMS); DECAY de yaninda yazilmaya devam ediyor, boylece kaydi okuyan eski
+        bir surum bekledigi alani buluyor.
+
+FIX - Esyayi eline almak curumesini durdurmuyordu; cantada tasinan esya cantanin icinde
+        yok olabiliyordu. Referans, nesne kaldirildigi anda decay'i bitirir
+        (CCharAct.cpp:3064).
+
+FIX - Esyayi yere birakmak, zaten calisan bir script timer'inin uzerine decay kuruyor ve
+        esyayi scriptinin sectigi sureden cok once yok ediyordu. Ortak sozlesme artik
+        canli bir timer varsa kenara cekiliyor (SetDecayTime, CItem.cpp:1485).
+
+FIX - @DropOn_Ground referansin dilini konusmuyordu: birakma noktasi ARGN1/2/3 ile,
+        sure ise local ile gidiyordu; referans ise decay'i SANIYENIN ONDA BIRI cinsinden
+        ARGN1'de, noktayi string argumaninda gecirir ve ikisini de geri okur
+        (CItem.cpp:1629). Bir Source-X scriptinin tercihleri hicbir yere ulasmiyordu.
+        LOCAL.DECAY saniye cinsinden okunmaya devam ediyor ve script onu gercekten
+        degistirdiyse kazaniyor; eski okumaya gore yazilmis paketler calismaya devam
+        ediyor.
+        KIRICI: bu olayda ARGN1'i koordinat olarak okuyan paketler icin.
+
+FIX - Curumeyi engelleyen bolge, scriptin sectigi sureyi veto ediyordu; oysa bolge
+        script konusmadan ONCE DOGAL sureyi bicimlendirir (:1620).
+
+FIX - Birakma scriptinin sildigi esya yine de yere konuyor, scriptin tasidigi kap ise
+        birakma noktasi tarafindan eziliyordu (:1634/:1654).
+
+FIX - @DropOn_Ground'da RETURN 1 esyayi cantaya geri gonderiyordu. Bu olayda RETURN 1,
+        esya yerlestirildikten sonra scriptin isi devraldigi anlamina gelir - referans
+        esyayi gunceller ve basari doner (:1660) - diger olaylardaki veto degildir.
+
+FIX - Reddedilen bir @Timer, ozel esya turlerinin kendi isini yapmasini engelliyordu;
+        milisaniyelik timer'i biten esya ise yok edilmiyordu. Sadece varsayilan yol
+        siler ve artik her iki saati de goruyor (:6380/:6412).
+
+FIX - TIMERF CLEAR ve TIMERF STOP zamanlayiciya dusuyor, orada calistirilacak bir sey
+        bulunmayinca sessizce donuyordu: gecikmeli isi iptal etmek kabul ediliyor ama
+        hicbir sey yapmiyor, isler yine calisiyordu. Artik hicbir sey zamanlanmadan once
+        ayriliyorlar (CObjBase.cpp:2762) ve STOP bir isim ya da sonu yildizli aile alir.
+
+NEW - ISTIMERF.<isim>, gecikmeli isin calismasina kalan milisaniyeyi doner; boyle bir is
+        yoksa 0 (CObjBase.cpp:1499).
+
+FIX - TIMERF suresi duz tamsayi olarak okunuyordu; "2 f_a" (bosluklu), "1+1" ve basinda
+        sifir olan onaltilik bicim sifira dusup hemen calisiyordu. Sure artik ilk virgul
+        VEYA boslukta bitiyor ve Sphere sayisi olarak okunuyor; okunamayan ya da negatif
+        bir deger simdiye zamanlanmak yerine reddediliyor.
+
+FIX - Vakti gelen gecikmeli isler ZAMANLANDIKLARI sirayla calisiyordu; bir takilmadan
+        sonra sirali iki script adimi ters cikiyordu. Artik vakit sirasiyla calisiyorlar
+        (CWorldTicker.cpp:1051).
+
+FIX - Son iletisim kristali curuyup giden sektor sonsuza dek dinleyici bildiriyordu: tick
+        esyayi listeden dogrudan cikarip sayaci atliyor, sonraki cikarma da nesne artik
+        listede olmadigi icin bunu duzeltemiyordu.
+
 [2026-09-06] - Esyanin tek saati, tek timer kapisi (12Q-12R)
 ----------------------------------------
 

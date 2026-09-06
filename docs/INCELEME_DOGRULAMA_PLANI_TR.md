@@ -2331,6 +2331,76 @@ sonra oluyordu. Teste ayirt edici asama (`DecayTime == 0`) eklendi.
 **Acik kalan:** DecayTime ile Timeout'un tek alana indirilmesi; saniye alti decay kaydi;
 pickup sirasinda decay iptali; tick callback'inin nesneyi tasimasi/silmesi.
 
+### 12S-12U - decay sozlesmesi, birakma olayi ve gecikmeli is: 15 bulgu (6 Eylul 2026)
+
+Kanit raporlari: [12S](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12S_DECAY_KAYIT_BOLGE.md),
+[12T](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12T_BIRAKMA_OLAYI.md),
+[12U](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12U_TIMERF_SEKTOR.md).
+On bes bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+**Kok neden ortak:** decay'in *sahibi* belirsizdi. Kim kurar, kim durdurur, kim kenara
+cekilir sorusunun cevabi cagri yerine gore degisiyordu; birakma olayi ise referansin
+kanallarini (ARGN1 = saniyenin onda biri, string argumani = nokta) hic kullanmiyordu. Tur
+once tek bir `SetDecayTime` sozlesmesi kurdu, sonra birakma olayini o sozlesmenin uzerine
+oturttu.
+
+- [x] **12S-1 (P2)** - Saniye altindaki decay kayitta yuvarlanip kayboluyordu. (YAPILDI:
+  `DECAYMS` milisaniye alani; `DECAY` eski okuyucular icin yaninda yazilmaya devam
+  ediyor.)
+- [x] **12S-2 (P1)** - Esyayi eline almak curumesini durdurmuyordu; cantadaki esya
+  cantada yok olabiliyordu. (YAPILDI: her iki alma noktasinda `SetDecayTime(-1)`.)
+- [x] **12S-3 (P1)** - Yere birakma, calisan script timer'inin uzerine decay kuruyordu.
+  (YAPILDI: `PlaceItemWithDecay` ortak sozlesmeden geciyor, canli timer'a dokunmuyor.)
+- [x] **12S-4 (P1)** - @DropOn_Ground argumanlari referansla ortusmuyordu. (YAPILDI:
+  ARGN1 = onda bir saniye, S1 = "x,y,z,map"; ikisi de geri okunuyor.)
+- [x] **12S-5 (P2)** - NODECAY bolgesi scriptin secimini veto ediyordu. (YAPILDI: bolge
+  DOGAL sureyi script konusmadan once bicimlendiriyor.)
+- [x] **12T-1 (P1)** - Scriptin sildigi esya yine de yere konuyordu. (YAPILDI: erken
+  cikis + `PlaceItemWithDecay` icinde `IsDeleted` gardi.)
+- [x] **12T-2 (P2)** - Scriptin tasidigi kap birakma noktasiyla eziliyordu. (YAPILDI:
+  kap degistiyse yerlestirme atlaniyor.)
+- [x] **12T-3 (P2)** - RETURN 1 esyayi cantaya geri gonderiyordu. (YAPILDI: bu olayda
+  RETURN 1 basari yolu - yerlestir ve onayla.)
+- [x] **12T-4 (P2)** - Reddedilen @Timer ozel esya turlerinin isini de durduruyordu.
+  (YAPILDI: yalnizca varsayilan yol siliyor.)
+- [x] **12T-5 (P2)** - Milisaniyelik timer'i biten ATTR_DECAY esyasi silinmiyordu.
+  (YAPILDI: silme karari her iki saati de goruyor.)
+- [x] **12U-1 (P1)** - TIMERF CLEAR/STOP sessizce hicbir sey yapmiyordu. (YAPILDI:
+  zamanlamadan once ayriliyorlar; STOP isim ya da sonu yildizli aile aliyor.)
+- [x] **12U-2 (P2)** - ISTIMERF yoktu. (YAPILDI: kalan milisaniye, yoksa 0.)
+- [x] **12U-3 (P2)** - TIMERF suresi duz tamsayi olarak okunuyordu. (YAPILDI: ilk virgul
+  VEYA boslukta bitiyor; Sphere sayisi - basi sifir onaltilik, basit toplam; okunamayan
+  ya da negatif deger reddediliyor.)
+- [x] **12U-4 (P2)** - Vadesi gelen isler zamanlanma sirasiyla calisiyordu. (YAPILDI:
+  vadeye gore siralaniyor.)
+- [x] **12U-5 (P2)** - Curuyen son kristalden sonra sektor sonsuza dek dinleyici
+  bildiriyordu. (YAPILDI: tick `RemoveItem` uzerinden gidiyor.)
+
+**KIRICI degisiklik:** @DropOn_Ground'da ARGN1'in anlami degisti (koordinat -> onda bir
+saniye decay). Eski okumaya gore yazilmis paketler icin uyumluluk dali olarak LOCAL.DECAY
+saniye cinsinden okunmaya devam ediyor ve script onu *gercekten degistirdiyse* kazaniyor.
+`DECAY` alani da `DECAYMS` ile birlikte yazilmaya devam ediyor, boylece kaydi okuyan eski
+bir surum bozulmuyor.
+
+**Kendi 12Q duzeltmemdeki kapsam hatasi:** 12T-4 ve 12T-5 bir onceki turda kurdugum tek
+`@Timer` kapisinin kapsam hatalariydi - kapi dogruydu, ama silme karari hem ozel turleri
+hem de milisaniye saatini disarida birakiyordu. Karar artik tick'in en sonunda ve iki
+saatle birlikte veriliyor.
+
+**12S-12U kapanisi:** tam suite **3.047 basarili / 0 basarisiz** (+26). On bes duzeltme
+gecici olarak kapatilarak 21 testin eski davranisi yakaladigi kanitlandi.
+
+**Tur ici duzeltilen kendi zayif testim:** "RETURN 1 esyayi yerde birakir" testi once
+esyayi yerden aliyordu, bu yuzden geri sekme de ayni yere koyuyor ve test kapatma altinda
+da geciyordu. Test artik esyayi cantadan cikariyor; geri sekme cantaya donus olarak
+gorunur oluyor.
+
+**12Q'dan devrilen acik kalanlar kapandi:** saniye alti decay kaydi (12S-1) ve
+pickup sirasinda decay iptali (12S-2) bu turda cozuldu.
+
+**Acik kalan:** `DecayTime` ile `Timeout`un tumden tek alanda birlestirilmesi (12Q'dan
+devrediyor); TIMERF suresinde tam ifade motoru (su an basit toplam/cikarma).
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

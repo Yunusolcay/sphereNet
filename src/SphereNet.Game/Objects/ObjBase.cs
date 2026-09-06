@@ -351,16 +351,120 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
     /// from the payload, so the payload may itself contain commas.</summary>
     internal void ScheduleTimerF(string args, long delayUnitMs)
     {
-        int comma = args.IndexOf(',');
-        string delayPart = comma >= 0 ? args[..comma] : args;
-        string payload = comma >= 0 ? args[(comma + 1)..].Trim() : "";
+        // The delay ends at the first comma OR the first space, whichever comes first:
+        // upstream reads the expression and then walks the pointer on to the command,
+        // skipping one argument separator (CObjBase.cpp:2777). Splitting on the comma
+        // alone threw away the whole "2 f_a" form, which is perfectly valid.
+        string trimmed = args.Trim();
+        int split = -1;
+        for (int i = 0; i < trimmed.Length; i++)
+        {
+            if (trimmed[i] == ',' || char.IsWhiteSpace(trimmed[i])) { split = i; break; }
+        }
+        if (split < 0)
+            return;                                   // a delay and nothing to run
+        string delayPart = trimmed[..split].Trim();
+        string payload = trimmed[(split + 1)..].TrimStart();
+        if (payload.StartsWith(',')) payload = payload[1..].TrimStart();
         if (string.IsNullOrWhiteSpace(payload))
             return;
         int space = payload.IndexOfAny([' ', '\t']);
         string functionName = space >= 0 ? payload[..space].Trim() : payload.Trim();
         string functionArgs = space >= 0 ? payload[(space + 1)..].Trim() : "";
-        _ = long.TryParse(delayPart.Trim(), out long delay);
+
+        // A Sphere number: an expression, or hex when it leads with a zero. A value
+        // that cannot be read - or a negative one - is refused rather than silently
+        // scheduled for right now (:2777).
+        if (!TryParseSphereDelay(delayPart, out long delay) || delay < 0)
+            return;
         AddTimerF(delay * delayUnitMs, functionName, functionArgs);
+    }
+
+    /// <summary>Read a Sphere numeric literal or simple sum: a leading zero means hex
+    /// (CExpression.cpp:666), and <c>1+1</c> is arithmetic rather than a parse failure
+    /// that silently became zero.</summary>
+    private static bool TryParseSphereDelay(string text, out long value)
+    {
+        value = 0;
+        string s = text.Trim();
+        if (s.Length == 0) return false;
+
+        // Split on + / - so a simple sum reads as one.
+        long total = 0;
+        int i = 0;
+        int sign = 1;
+        bool any = false;
+        while (i < s.Length)
+        {
+            int start = i;
+            while (i < s.Length && s[i] != '+' && !(i > start && s[i] == '-')) i++;
+            string term = s[start..i].Trim();
+            if (term.Length == 0) return false;
+            if (!TryParseSphereNumber(term, out long termValue)) return false;
+            total += sign * termValue;
+            any = true;
+            if (i < s.Length)
+            {
+                sign = s[i] == '-' ? -1 : 1;
+                i++;
+            }
+        }
+        if (!any) return false;
+        value = total;
+        return true;
+    }
+
+    private static bool TryParseSphereNumber(string term, out long value)
+    {
+        value = 0;
+        string t = term.Trim();
+        if (t.Length == 0) return false;
+        bool negative = t[0] == '-';
+        if (negative) t = t[1..].Trim();
+        if (t.Length == 0) return false;
+
+        bool ok;
+        if (t.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            ok = long.TryParse(t.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out value);
+        else if (t.Length > 1 && t[0] == '0')
+            ok = long.TryParse(t, System.Globalization.NumberStyles.HexNumber, null, out value);
+        else
+            ok = long.TryParse(t, out value);
+        if (negative) value = -value;
+        return ok;
+    }
+
+    /// <summary>Cancel this object's delayed work. A null pattern clears everything
+    /// (TIMERF CLEAR); otherwise only the jobs whose command starts with it are removed
+    /// (TIMERF STOP &lt;pattern&gt;, CTimedFunctionHandler.cpp:34). A trailing '*' is
+    /// accepted as the wildcard scripts write.</summary>
+    public int ClearTimerF(string? pattern)
+    {
+        if (string.IsNullOrWhiteSpace(pattern))
+        {
+            int all = _timerFEntries.Count;
+            _timerFEntries.Clear();
+            return all;
+        }
+        string prefix = pattern.Trim().TrimEnd('*');
+        return _timerFEntries.RemoveAll(e =>
+            e.FunctionName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Milliseconds until the named delayed job runs, or 0 when there is no
+    /// such job (ISTIMERF, CObjBase.cpp:1499 -> CTimedFunctionHandler.cpp:19).</summary>
+    public long GetTimerFRemaining(string pattern, long nowMs)
+    {
+        string prefix = (pattern ?? "").Trim().TrimEnd('*');
+        long best = 0;
+        foreach (var e in _timerFEntries)
+        {
+            if (!e.FunctionName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                continue;
+            long remaining = Math.Max(0, e.DueTickMs - nowMs);
+            if (best == 0 || remaining < best) best = remaining;
+        }
+        return best;
     }
 
     /// <summary>Restore a persisted TIMERF entry ("remainingMs|functionName|args",
@@ -388,7 +492,11 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
             due.Add(_timerFEntries[i]);
             _timerFEntries.RemoveAt(i);
         }
-        due.Reverse();
+        // By WHEN they were due, not by when they were scheduled. Upstream keeps the
+        // list in time order and takes the due ones off the front (CWorldTicker.cpp:1051),
+        // so after a stall a preparation step scheduled second still ran second - and a
+        // pair of ordered script steps came out backwards.
+        due.Sort((a, b) => a.DueTickMs.CompareTo(b.DueTickMs));
         return due;
     }
 
@@ -421,6 +529,8 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
     public virtual bool TryGetProperty(string key, out string value)
     {
         value = "";
+        if (TryGetTimerFProperty(key.ToUpperInvariant(), out value))
+            return true;
         switch (key.ToUpperInvariant())
         {
             // Reaching this getter means the ref already resolved to a live
@@ -612,6 +722,18 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
                $"{Math.Abs(iLong / 60)}o {Math.Abs(iLong % 60)}'{(iLong >= 0 ? "E" : "W")}";
     }
 
+    /// <summary>ISTIMERF.&lt;name&gt; - milliseconds until that delayed job runs, or 0 when
+    /// there is none (CObjBase.cpp:1499). It is a REMAINING TIME, not a yes/no.</summary>
+    protected bool TryGetTimerFProperty(string upperKey, out string value)
+    {
+        value = "";
+        if (!upperKey.StartsWith("ISTIMERF", StringComparison.OrdinalIgnoreCase))
+            return false;
+        string rest = upperKey[8..].TrimStart('.', ' ');
+        value = GetTimerFRemaining(rest, Environment.TickCount64).ToString();
+        return true;
+    }
+
     public virtual bool TryExecuteCommand(string key, string args, ITextConsole source)
     {
         // Source-X compatibility: a bare TAG/CTAG/DTAG command with a dotted
@@ -689,11 +811,28 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
             // Source-X TIMERF schedules a delayed function/verb on this object: the
             // delay is in SECONDS, while TIMERFMS takes MILLISECONDS (same payload).
             case "TIMERF":
-                ScheduleTimerF(args, delayUnitMs: 1000L);
-                return true;
             case "TIMERFMS":
-                ScheduleTimerF(args, delayUnitMs: 1L);
+            {
+                // CLEAR and STOP are MANAGEMENT commands, separated before anything is
+                // scheduled (CObjBase.cpp:2762). They used to fall into the scheduler,
+                // which found no payload and returned quietly - so cancelling delayed
+                // work was accepted and did nothing, and the jobs ran anyway.
+                string timerFArg = args.Trim();
+                if (timerFArg.Equals("CLEAR", StringComparison.OrdinalIgnoreCase))
+                {
+                    ClearTimerF(null);
+                    return true;
+                }
+                if (timerFArg.StartsWith("STOP", StringComparison.OrdinalIgnoreCase) &&
+                    (timerFArg.Length == 4 || char.IsWhiteSpace(timerFArg[4])))
+                {
+                    ClearTimerF(timerFArg.Length > 4 ? timerFArg[4..].Trim() : null);
+                    return true;
+                }
+                ScheduleTimerF(timerFArg,
+                    key.Trim().Equals("TIMERF", StringComparison.OrdinalIgnoreCase) ? 1000L : 1L);
                 return true;
+            }
             case "SHOW":
                 source.SysMessage($"{GetName()} [0x{Uid.Value:X8}] P={Position.X},{Position.Y},{Position.Z},{Position.Map}");
                 return true;
