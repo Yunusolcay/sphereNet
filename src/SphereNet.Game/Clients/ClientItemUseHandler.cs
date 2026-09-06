@@ -413,6 +413,13 @@ public sealed class ClientItemUseHandler
         return true;
     }
 
+    /// <summary>Source-X CanSee for an item, as the double-click path applies it.
+    /// The book, map and board packet handlers gate on the same rule.</summary>
+    internal bool CanSeeItem(Item item) => CanSeeItemForDoubleClick(item, out _);
+
+    /// <summary>Source-X CanTouch: reach, not just sight.</summary>
+    internal bool CanTouchItem(Item? item) => CanReachTargetItem(item);
+
     private bool CanSeeItemForDoubleClick(Item item, out Point3D usePoint)
     {
         usePoint = item.Position;
@@ -2209,7 +2216,7 @@ public sealed class ClientItemUseHandler
     /// t_map_blank or an empty/invalid world rect — only reports blank.
     /// Rect words follow the CItem m_itMap layout: MORE1 = top(lo)/left(hi),
     /// MORE2 = bottom(lo)/right(hi).</summary>
-    private void OpenMapGump(Item item)
+    internal void OpenMapGump(Item item)
     {
         ushort top = (ushort)(item.More1 & 0xFFFF);
         ushort left = (ushort)(item.More1 >> 16);
@@ -2223,7 +2230,11 @@ public sealed class ClientItemUseHandler
 
         _netState.Send(new PacketMapDisplay(item.Uid.Value, left, top, right, bottom));
         // Source-X addMapMode(MAP_UNSENT): reset the client's pin list before
-        // replaying ours, plot mode off.
+        // replaying ours, plot mode off. addMapMode sets the SERVER's plot mode from
+        // the same value it sends (CClientMsg.cpp:2542) - leaving the stored flag on
+        // while telling the client it is off made the next toggle answer "off" again,
+        // so a map that had been edited before needed two clicks to start editing.
+        item.RemoveTag("PLOTMODE");
         _netState.Send(new PacketMapPlot(item.Uid.Value, 5, false));
         for (int i = 1; ; i++)
         {

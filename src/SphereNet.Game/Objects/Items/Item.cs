@@ -1375,11 +1375,30 @@ public class Item : ObjBase
         {
             if (upper == "AUTHOR") { value = Tags.Get("BOOK_AUTHOR") ?? ""; return true; }
             if (upper == "TITLE") { value = Tags.Get("BOOK_TITLE") ?? Name; return true; }
-            if (upper == "PAGES") { value = CountTagsWithPrefix("PAGE_").ToString(); return true; }
-            if (upper.StartsWith("BODY.", StringComparison.Ordinal) || upper.StartsWith("PAGE.", StringComparison.Ordinal))
+            if (upper == "PAGES")
             {
-                int dot = upper.IndexOf('.');
-                value = Tags.Get($"PAGE_{upper[(dot + 1)..]}") ?? "";
+                MigrateLegacyPageZero();
+                value = CountTagsWithPrefix("PAGE_").ToString();
+                return true;
+            }
+            if (upper.StartsWith("BODY.", StringComparison.Ordinal))
+            {
+                // BODY is ZERO-based upstream: BODY.0 is the first page, and the
+                // client's page N is GetPageText(N-1) (CItemMessage.cpp:96,
+                // send.cpp:1709). Storage here is the 1-based PAGE_n, so the two
+                // differ by one - reading BODY.n straight out of PAGE_n returned the
+                // page after the one the script asked for.
+                MigrateLegacyPageZero();
+                value = int.TryParse(upper[5..], out int bodyIdx) && bodyIdx >= 0
+                    ? Tags.Get($"PAGE_{bodyIdx + 1}") ?? ""
+                    : "";
+                return true;
+            }
+            if (upper.StartsWith("PAGE.", StringComparison.Ordinal))
+            {
+                // PAGE.n is SphereNet's own 1-based accessor onto the same storage.
+                MigrateLegacyPageZero();
+                value = Tags.Get($"PAGE_{upper[5..]}") ?? "";
                 return true;
             }
         }
@@ -2023,28 +2042,56 @@ public class Item : ObjBase
         if (_type is ItemType.Book or ItemType.Message)
         {
             if (upper == "AUTHOR") { Tags.Set("BOOK_AUTHOR", value); return true; }
-            if (upper == "TITLE") { Tags.Set("BOOK_TITLE", value); return true; }
+            if (upper == "TITLE")
+            {
+                // A book's TITLE *is* its name upstream: the setter calls SetName and
+                // the getter returns GetName (CItemMessage.cpp:73/112), and the client's
+                // header change does the same (CClientEvent.cpp:180). Writing only the
+                // tag left the book window and the item name showing different text.
+                // The tag is still written, and still wins on READ, so a legacy save
+                // whose BOOK_TITLE was never mirrored onto the name keeps its title.
+                Tags.Set("BOOK_TITLE", value);
+                Name = value;
+                return true;
+            }
             if (upper.StartsWith("BODY.", StringComparison.Ordinal))
             {
-                // BODY.n — append a new line (value is the text)
-                int pageCount = CountTagsWithPrefix("PAGE_");
-                Tags.Set($"PAGE_{pageCount}", value);
+                // BODY.n appends the next page, whatever index it names - upstream
+                // matches on the key HEAD and calls AddPageText (CItemMessage.cpp:53).
+                // The append started at PAGE_0, one below the first page anything
+                // reads, so a book built out of BODY lines was missing its first page
+                // everywhere it was shown.
+                MigrateLegacyPageZero();
+                Tags.Set($"PAGE_{CountTagsWithPrefix("PAGE_") + 1}", value);
                 return true;
             }
             if (upper.StartsWith("PAGE.", StringComparison.Ordinal))
             {
-                int dot = upper.IndexOf('.');
-                Tags.Set($"PAGE_{upper[(dot + 1)..]}", value);
+                MigrateLegacyPageZero();
+                Tags.Set($"PAGE_{upper[5..]}", value);
                 return true;
             }
         }
 
         // Map: PIN.n set
-        if ((_type is ItemType.Map or ItemType.MapBlank) &&
-            upper.StartsWith("PIN.", StringComparison.Ordinal))
+        if (_type is ItemType.Map or ItemType.MapBlank)
         {
-            Tags.Set($"PIN_{upper[4..]}", value);
-            return true;
+            if (upper.StartsWith("PIN.", StringComparison.Ordinal))
+            {
+                Tags.Set($"PIN_{upper[4..]}", value);
+                return true;
+            }
+            if (upper == "PIN")
+            {
+                // A classic save writes one bare "PIN=x,y" line per pin
+                // (CItemMap::r_Write, CItemMap.cpp:100) and the loader appends them in
+                // order (r_LoadVal, :47). Only the indexed PIN.n form was understood,
+                // so every pin on every map out of an old save was dropped on load.
+                int pins = 0;
+                while (!string.IsNullOrEmpty(Tags.Get($"PIN_{pins + 1}"))) pins++;
+                Tags.Set($"PIN_{pins + 1}", value.Trim());
+                return true;
+            }
         }
 
         // Ship property set — Source: CCMultiMovable::r_LoadVal
@@ -3820,6 +3867,26 @@ public class Item : ObjBase
             if (GetResCount(id) < need) return false;
         }
         return true;
+    }
+
+    /// <summary>Lift a book page written by the old zero-based BODY append into the
+    /// 1-based storage everything else reads. PAGE_0 is unreachable from every other
+    /// path - the client's pages start at 1 - so a book carrying one is a book whose
+    /// first page was written before the indexes agreed. Idempotent, and a no-op for
+    /// every book that does not have one.</summary>
+    private void MigrateLegacyPageZero()
+    {
+        string? orphan = Tags.Get("PAGE_0");
+        if (orphan == null) return;
+
+        var moved = new List<string>();
+        for (int i = 1; !string.IsNullOrEmpty(Tags.Get($"PAGE_{i}")); i++)
+            moved.Add(Tags.Get($"PAGE_{i}")!);
+
+        Tags.Set("PAGE_1", orphan);
+        for (int i = 0; i < moved.Count; i++)
+            Tags.Set($"PAGE_{i + 2}", moved[i]);
+        Tags.Remove("PAGE_0");
     }
 
     private int CountTagsWithPrefix(string prefix)

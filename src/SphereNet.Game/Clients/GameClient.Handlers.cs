@@ -270,9 +270,18 @@ public sealed partial class GameClient
         // Clamp the page count and iterate with an int. A BOOK_PAGES tag of 65535
         // (corrupt/hand-edited save) drove the old "for (ushort i = 1; i <= pageCount)"
         // past 65535, wrapped i to 0, and looped forever on the main thread (E1).
-        int pageCount = 16;
+        // A writable book offers the whole writing capacity, a finished one offers
+        // exactly the pages it has (PacketDisplayBook, send.cpp:2919). Opening with a
+        // flat 16 while the page handler happily stored page 17..64 meant the text was
+        // in the book but outside the range the window ever asked for. BOOK_PAGES, when
+        // the script sets it, still stands in for the resource's own page count.
+        int pageCount = writable ? MaxBookPages : CountWrittenPages(book);
+        // BOOK_PAGES stands in for a system book's resource PAGES, which upstream reads
+        // straight out of the resource with no MAX_BOOK_PAGES clamp (send.cpp:2901).
+        // The 256 ceiling here is not parity, it is the E1 anti-hang guard on a
+        // hand-edited count.
         if (book.TryGetTag("BOOK_PAGES", out string? ps) && int.TryParse(ps, out int pc))
-            pageCount = Math.Clamp(pc, 0, MaxBookPages);
+            pageCount = Math.Clamp(pc, 0, DeclaredPageHardCap);
 
         _netState.Send(new PacketBookHeaderOut(
             book.Uid.Value, writable, (ushort)pageCount, title, author));
@@ -291,7 +300,29 @@ public sealed partial class GameClient
         SendBookPages(book.Uid.Value, pages);
     }
 
-    private const int MaxBookPages = 256;
+    /// <summary>Source-X MAX_BOOK_PAGES (sphereproto.h:767) - the hard ceiling on a
+    /// user-written book, applied both to what is offered and to what is accepted.</summary>
+    private const int MaxBookPages = 64;
+
+    /// <summary>Ceiling on a script- or save-declared BOOK_PAGES. SphereNet-only: a
+    /// corrupt 65535 used to drive the open loop past a ushort and spin forever (E1).</summary>
+    private const int DeclaredPageHardCap = 256;
+
+    /// <summary>How many pages the book actually holds, counting from the first.</summary>
+    private static int CountWrittenPages(Item book)
+    {
+        int pages = 0;
+        while (pages < MaxBookPages &&
+               !string.IsNullOrEmpty(book.Tags.Get($"PAGE_{pages + 1}")))
+            pages++;
+        return pages;
+    }
+
+    /// <summary>Is this actually a book? Upstream every editing entry casts to
+    /// CItemMessage first and gives up when the cast fails
+    /// (receive.cpp:1017, CClientEvent.cpp:159).</summary>
+    private static bool IsBookItem(Item item) =>
+        item.ItemType is ItemType.Book or ItemType.Message;
 
     /// <summary>Send book pages as one or more 0x66 packets, splitting so no
     /// single packet approaches the 65535-byte variable-length ceiling. A normal
@@ -328,12 +359,16 @@ public sealed partial class GameClient
 
         var item = _world.FindItem(new Serial(serial));
         if (item == null) return;
+        // Reading a page needs to be able to SEE the book (receive.cpp:1002); the
+        // handler used to work on any item at any distance, so a window left open
+        // after the book was carried off still read and wrote it - and the same call
+        // wrote PAGE_n tags onto a pile of gold.
+        if (!ItemUse.CanSeeItem(item)) return;
 
-        bool canWrite = _character.PrivLevel >= PrivLevel.GM || IsBookWritableBy(item, _character);
+        bool canWrite = IsBookItem(item) &&
+            (_character.PrivLevel >= PrivLevel.GM || IsBookWritableBy(item, _character));
 
-        ushort maxPages = 64;
-        if (item.TryGetTag("BOOK_PAGES", out string? bpStr) && ushort.TryParse(bpStr, out ushort bpVal))
-            maxPages = Math.Min(bpVal, (ushort)256);
+        int maxPages = MaxBookPages;
 
         foreach (var (pageNum, lines) in pages)
         {
@@ -386,15 +421,24 @@ public sealed partial class GameClient
         if (_character == null) return;
 
         var item = _world.FindItem(new Serial(serial));
-        if (item == null) return;
+        if (item == null || !IsBookItem(item)) return;
 
         _logger.LogDebug("[book_header] item=0x{Item:X8} title='{Title}' author='{Author}'",
             serial, title, author);
+
+        // Retitling needs REACH, not just sight (Event_Book_Title, CClientEvent.cpp:165).
+        if (!ItemUse.CanTouchItem(item))
+        {
+            SysMessage(ServerMessages.Get(Msg.ReachFail));
+            return;
+        }
 
         if (writable && (_character.PrivLevel >= PrivLevel.GM || IsBookWritableBy(item, _character)))
         {
             item.SetTag("BOOK_TITLE", title);
             item.SetTag("BOOK_AUTHOR", author);
+            // The book's title is its name upstream (SetName, :180).
+            item.Name = title;
         }
     }
 
@@ -408,6 +452,11 @@ public sealed partial class GameClient
     {
         board = _world.FindItem(new Serial(boardSerial));
         if (board == null || board.ItemType != ItemType.BBoard) return null;
+        // Every sub-command of the board packet is gated on being able to see the
+        // board (receive.cpp:1193). Without it a window left open after walking away
+        // still read messages and deleted the player's own - the author check was the
+        // only thing left standing.
+        if (!ItemUse.CanSeeItem(board)) { board = null; return null; }
         var msg = _world.FindItem(new Serial(msgSerial));
         return msg != null && msg.ContainedIn == board.Uid ? msg : null;
     }
@@ -468,6 +517,10 @@ public sealed partial class GameClient
 
         var msg = _world.CreateItem();
         msg.BaseId = BoardMessageGraphic;
+        // A posted message is fixed in place (receive.cpp:1252). The pickup path
+        // refused it for other reasons, but every rule that asks the object itself
+        // was being told the notice could be carried away.
+        msg.SetAttr(ObjAttributes.Move_Never);
         msg.Name = string.IsNullOrEmpty(subject) ? "(no subject)" : subject;
         msg.Link = _character.Uid;
         msg.SetTag("AUTHOR", _character.Name ?? "");
@@ -526,6 +579,25 @@ public sealed partial class GameClient
 
         _logger.LogDebug("[map_pin] item=0x{Item:X8} action={Action} pin={PinId} x={X} y={Y}",
             serial, action, pinId, x, y);
+
+        // It has to be a map, and it has to be within reach (PacketMapEdit,
+        // receive.cpp:867). Existence alone let a stale window pin a map across the
+        // world, and let the same tags be written onto whatever else the serial named.
+        if (item.ItemType is not (ItemType.Map or ItemType.MapBlank) ||
+            !ItemUse.CanTouchItem(item))
+        {
+            SysMessage(ServerMessages.Get(Msg.ReachFail));
+            return;
+        }
+
+        // MOREZ glues the pins down (CItem.h:295). Everyone is told; only staff may
+        // then go on and change them (:875).
+        if (item.MoreP.Z != 0)
+        {
+            SysMessage("The pins seem to be glued in place.");
+            if (_character.PrivLevel < PrivLevel.GM)
+                return;
+        }
 
         const int maxPins = 128;
         int count = 0;

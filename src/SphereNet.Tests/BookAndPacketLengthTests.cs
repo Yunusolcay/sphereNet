@@ -90,7 +90,11 @@ public sealed class BookAndPacketLengthTests
         TestHarness.AttachCharacter(client, ch);
         state.BookPageHandler = (_, serial, pages) => client.HandleBookPage(serial, pages);
 
+        // The write path now needs a real book the reader can see and reach
+        // (receive.cpp:1002/1017), so the fixture places both.
         var book = world.CreateItem();
+        book.ItemType = SphereNet.Core.Enums.ItemType.Book;
+        world.PlaceCharacter(ch, new Point3D(100, 100, 0, 0));
         world.PlaceItem(book, new Point3D(100, 100, 0, 0));
 
         // 0x66 write: 1 page, 1 line of 1000 'A' with a single trailing NUL.
@@ -127,8 +131,11 @@ public sealed class BookAndPacketLengthTests
         Assert.Null(ex);
 
         var header = TestHarness.GetQueuedPackets(state).First(p => p.Span[0] == 0x93);
-        int pageCount = (header.Span[9] << 8) | header.Span[10];
-        Assert.Equal(256, pageCount); // clamped to MaxBookPages
+        // 0x93 is fixed 99 bytes with no length field: uid(1..4), writable, writable,
+        // pages(7..8), title(60), author(30) — send.cpp:2925.
+        Assert.Equal(99, header.Span.Length);
+        int pageCount = (header.Span[7] << 8) | header.Span[8];
+        Assert.Equal(256, pageCount); // clamped by the anti-hang cap
     }
 
     [Fact]

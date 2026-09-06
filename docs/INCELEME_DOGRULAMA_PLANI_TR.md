@@ -1946,6 +1946,59 @@ edilemiyor).
 uzlastirilmasi; SHIPGATE'in yolcu ve region @Enter akislari; kirik plank listesinin
 kayit/yukleme varyantlari.
 
+### 11A-11B - kitap penceresi, harita/pano erisimi ve kapasite: 11 bulgu (6 Eylul 2026)
+
+Kanit raporlari: [11A](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_11A_KITAP_HARITA.md),
+[11B](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_11B_PANO_HARITA_DURUM.md).
+On bir bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+- [x] **11A-1 (P1)** - 0x93 yanlis uzunluk ve alan duzeni. (YAPILDI: sabit 99 bayt,
+  60/30 sabit genislikte metin alanlari, yazilabilir bayragi iki kez.
+  **Rapor otesi:** GELEN 0x93 isleyicisi zaten dogru sabit duzeni okuyordu - iki uc
+  birbiriyle de celisiyordu; ClassicUO `OpenBook` da 0x93 icin uzunluk alani aramiyor,
+  bu da referansi ikinci kaynaktan dogruluyor. 0x66 ayrica karsilastirildi, uyumlu.)
+- [x] **11A-2 (P2)** - Kitap duzenleme girisleri erisim/tur dogrulamiyordu. (YAPILDI:
+  sayfa yolunda CanSee + gercek kitap turu + yazilabilirlik, baslik yolunda CanTouch -
+  raporun "ikisini tek mesafe kontrolune indirgeme" uyarisina uyuldu.)
+- [x] **11A-3 (P2)** - Harita pin degisiklikleri uzak/harita olmayan esyaya
+  uygulaniyordu. (YAPILDI: ortak giriste tur + CanTouch.)
+- [x] **11A-4 (P2)** - BODY sayfalari bir sayfa kaymis sakleniyordu. (YAPILDI: BODY
+  sifir tabanli, depolama bir tabanli, ikisi arasindaki cevrim tek yerde.
+  **Rapor otesi:** yazma tarafi kadar OKUMA tarafi da kaymisti - `BODY.n` dogrudan
+  `PAGE_n` okuyordu. **Gecis:** `PAGE_0` tasiyan kitap ilk okuma/yazmada yerine
+  kaldiriliyor - `PAGE_0` baska hicbir yoldan okunamadigi icin guvenli ve idempotent.)
+- [x] **11A-5 (P2)** - Klasik kayittaki tekrarlanan PIN satirlari yuklenmiyordu.
+  (YAPILDI: indekssiz `PIN` yazimi sirayla ekliyor.)
+- [x] **11A-6 (P3)** - TITLE ile NAME kopuyordu. (YAPILDI: TITLE yazimi adi da kuruyor,
+  istemci baslik degisimi de. **Oncelik acikca belirlendi:** OKUMADA hala
+  `BOOK_TITLE` tag'i once geliyor, boylece adi hic aynalanmamis eski kayit basligini
+  kaybetmiyor - raporun istedigi aktarim onceligi karari.)
+- [x] **11B-1 (P2)** - Panodan uzaklasinca okuma/silme suruyordu. (YAPILDI: ortak
+  `ResolveBoardMessage` girisinde CanSee; mevcut yazar denetimi korundu.)
+- [x] **11B-2 (P3)** - Yeni pano mesajina Move_Never verilmiyordu. (YAPILDI.)
+- [x] **11B-3 (P2)** - MOREZ ile sabitlenmis pinler oyuncuya aciti. (YAPILDI: mesaj
+  herkese, engel yalnizca GM altina.)
+- [x] **11B-4 (P2)** - Harita acilisinda sunucu cizim modu sifirlanmiyordu. (YAPILDI:
+  acilis PLOTMODE'u da temizliyor.)
+- [x] **11B-5 (P2)** - Acilis 16 sayfa sunarken 64 kabul ediliyordu. (YAPILDI:
+  yazilabilir -> 64, bitmis -> gercek sayfa sayisi, yazma tavani 64.
+  **Bilincli ayrim:** `BOOK_PAGES` sistem kitabinin resource sayfa sayisi yerine
+  geciyor ve referansta orada MAX_BOOK_PAGES kirpmasi yok; oradaki 256 tavani parite
+  degil, E1 anti-hang korumasi - iki sabit ayri tutuldu.)
+
+**11A-11B kapanisi:** tam suite **2.881 basarili / 0 basarisiz** (+25). On bir duzeltme
+de gecici olarak kapatilarak 20 testin eski davranisi yakaladigi kanitlandi.
+
+**Mevcut testler yeniden kuruldu:** `BookAndPacketLengthTests` iki testi eski
+sozlesmeyi kodluyordu - 0x93 sayfa alani degisken paketin 9. ofsetinden sabit paketin
+7. ofsetine tasindi, ve gelen satir-kirpma fixture'i tur/erisim kapisi olmadan
+calisiyordu (turu olmayan esya, yerlestirilmemis karakter); ikisi de gercek kitaba ve
+yakin okura tasindi. Wire-uzunlugu korumalari (T1/E1) aynen duruyor.
+
+**Acik kalan:** sabitlenmis pinlerin kayit/yukleme yolu; pano mesajlarinin @Create ve
+decay davranisi; sistem kitabi (RES_BOOK) icerik yolu; 0xD4 yeni baslik paketi hic
+uretilmiyor - eski istemci disi surumlerde ayrica degerlendirilmeli.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

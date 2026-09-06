@@ -4,6 +4,65 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Books, maps and bulletin boards: the window, and who may edit it (11A-11B)
+----------------------------------------
+
+FIX - The book window packet was built as a variable-length packet with a length
+        header and length-prefixed strings, which is the shape of the newer 0xD4
+        header. Opcode 0x93 is a fixed 99 bytes with 60- and 30-byte string fields
+        (send.cpp:2871), and that is what the client reads for it, so every field
+        after the uid was landing at the wrong offset. The incoming 0x93 handler was
+        already reading the fixed layout, so the two disagreed with each other.
+
+FIX - A writable book was opened offering 16 pages while the page handler accepted
+        writes up to 64, so text written past page 16 was in the book but outside
+        the range the window ever asked for. Upstream offers a writable book
+        MAX_BOOK_PAGES and a finished one exactly the pages it holds (:2919), and
+        refuses a write past that ceiling (receive.cpp:1039). A script-declared
+        BOOK_PAGES still stands in for a system book's resource page count.
+
+FIX - Book page edits ran on any item at any distance: a window left open after the
+        book was carried away still wrote it, and the same call wrote page tags onto
+        whatever else the serial named. Reading a page needs to be able to see the
+        book (receive.cpp:1002) and writing one needs a real book that is writable
+        (:1017); retitling needs to reach it (CClientEvent.cpp:165).
+
+FIX - A book's title and its name drifted apart: the title change wrote only a tag,
+        so the book window and the item name showed different text and NAME readers
+        saw the old one. Upstream a book's TITLE *is* its name (CItemMessage.cpp:73).
+        The tag is still written and still wins on read, so a legacy book keeps its
+        title.
+
+FIX - Pages added through BODY were stored one below the first page anything reads,
+        so a book built from BODY lines was missing its first page everywhere it was
+        shown. BODY is zero-based upstream and the client's page N is page N-1 of the
+        list (:53, send.cpp:1709). A book already carrying an orphaned page is lifted
+        into place the first time it is read or written.
+
+FIX - Map pin edits ran on any item at any distance, the same way. A pin edit needs
+        a real map within reach (receive.cpp:867).
+
+FIX - Pins glued in place through MOREZ could be added, moved and cleared by any
+        player. Upstream says so and then refuses everyone but staff (:875).
+
+FIX - Opening a map told the client that plotting was off but left the server's own
+        flag on, so the first toggle afterwards answered "off" again and a map that
+        had been edited before needed two clicks to start editing. addMapMode sets
+        both from the same value (CClientMsg.cpp:2542).
+
+FIX - Bulletin board reads and deletes ran with no visibility check at all, so a
+        window left open after walking away still read messages and deleted the
+        player's own. Every sub-command is gated on seeing the board
+        (receive.cpp:1193).
+
+FIX - A newly posted notice was not fixed in place, so every rule that asks the
+        object itself was told it could be carried away. Upstream sets ATTR_MOVE_NEVER
+        on it as it is created (:1252).
+
+FIX - A classic save's pins were dropped on load: it writes one bare PIN= line per
+        pin (CItemMap.cpp:100) and only the indexed PIN.n form was understood, so
+        every map out of an old save came back with an empty pin list.
+
 [2026-09-06] - Ships: registering one, owning one, and what a turn may refuse (10C-10D)
 ----------------------------------------
 

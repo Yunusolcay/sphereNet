@@ -3,6 +3,69 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Kitap, harita ve ilan panosu: pencere ve kimin duzenleyebilecegi (11A-11B)
+----------------------------------------
+
+FIX - Kitap penceresi paketi, uzunluk basligi ve uzunluk onekli metinlerle degisken
+        uzunlukta uretiliyordu; bu yeni 0xD4 basliginin bicimidir. 0x93 opcode'u sabit
+        99 bayttir ve metin alanlari 60 ile 30 bayt genisligindedir (send.cpp:2871);
+        istemci de onu boyle okur, dolayisiyla uid'den sonraki her alan yanlis ofsete
+        dusuyordu. Gelen 0x93 isleyicisi zaten sabit duzeni okuyordu, yani ikisi
+        birbiriyle celisiyordu.
+
+FIX - Yazilabilir kitap 16 sayfayla aciliyor, sayfa isleyicisi ise 64'e kadar yazmayi
+        kabul ediyordu; 16'dan sonrasina yazilan metin kitapta duruyor ama pencerenin
+        hic sormadigi araliga dusuyordu. Referans yazilabilir kitaba MAX_BOOK_PAGES,
+        bitmis kitaba tam sahip oldugu sayfayi sunar (:2919) ve o tavanin otesine
+        yazmayi reddeder (receive.cpp:1039). Script'in verdigi BOOK_PAGES hala sistem
+        kitabinin resource sayfa sayisi yerine gecer.
+
+FIX - Kitap sayfasi duzenlemesi herhangi bir esyada, herhangi bir mesafeden
+        calisiyordu: kitap uzaklastirildiktan sonra acik kalan pencere hala yaziyor,
+        ayni cagri sayfa tag'lerini serinin gosterdigi baska nesneye de yaziyordu.
+        Sayfa okumak kitabi GORMEYI (receive.cpp:1002), yazmak yazilabilir gercek bir
+        kitabi (:1017), baslik degistirmek ise ONA ULASMAYI gerektirir
+        (CClientEvent.cpp:165).
+
+FIX - Kitabin basligi ile adi birbirinden kopuyordu: baslik degisimi yalnizca tag
+        yaziyor, kitap penceresi ile esya adi farkli metin gosteriyor, NAME okuyan
+        scriptler eskisini goruyordu. Referansta kitabin TITLE'i ADIDIR
+        (CItemMessage.cpp:73). Tag yine yaziliyor ve okumada hala oncelikli, boylece
+        eski kayittaki kitap basligini korur.
+
+FIX - BODY ile eklenen sayfalar, herhangi bir seyin okudugu ilk sayfanin bir altina
+        yaziliyordu; BODY satirlariyla kurulan kitabin ilk sayfasi gosterildigi her
+        yerde eksikti. Referansta BODY sifir tabanlidir ve istemcinin N sayfasi
+        listenin N-1'idir (:53, send.cpp:1709). Oksuz sayfa tasiyan kitap, ilk okuma
+        veya yazmada yerine kaldiriliyor.
+
+FIX - Harita pin duzenlemesi de ayni sekilde herhangi bir esyada, herhangi bir
+        mesafeden calisiyordu. Pin duzenlemesi ulasilabilir gercek bir harita ister
+        (receive.cpp:867).
+
+FIX - MOREZ ile sabitlenmis pinler her oyuncu tarafindan eklenebiliyor, tasinabiliyor
+        ve silinebiliyordu. Referans once soyler, sonra personel disinda herkesi
+        reddeder (:875).
+
+FIX - Harita acilirken istemciye cizim modunun kapali oldugu soyleniyor ama sunucunun
+        kendi bayragi acik birakiliyordu; sonraki ilk gecis yine "kapali" cevabi
+        veriyor, daha once duzenlenmis harita duzenlemeye baslamak icin iki tik
+        istiyordu. addMapMode ikisini de ayni degerden kurar (CClientMsg.cpp:2542).
+
+FIX - Ilan panosu okuma ve silme islemleri hicbir gorunurluk denetimi olmadan
+        calisiyordu; uzaklastiktan sonra acik kalan pencere hala mesaj okuyor ve
+        oyuncunun kendi mesajini siliyordu. Butun alt komutlar panoyu gormeye baglidir
+        (receive.cpp:1193).
+
+FIX - Yeni birakilan ilan yerine sabitlenmiyordu; nesnenin kendisine soran her kural
+        ilanin tasinabilecegini duyuyordu. Referans olustururken ATTR_MOVE_NEVER verir
+        (:1252).
+
+FIX - Klasik kayittaki pinler yuklemede dusuyordu: kayit her pin icin tek bir duz
+        PIN= satiri yazar (CItemMap.cpp:100), yalnizca indeksli PIN.n bicimi
+        anlasiliyordu, boylece eski kayittan gelen her harita bos pin listesiyle
+        geliyordu.
+
 [2026-09-06] - Gemiler: kayit, sahiplik ve donusun neyi reddedebilecegi (10C-10D)
 ----------------------------------------
 

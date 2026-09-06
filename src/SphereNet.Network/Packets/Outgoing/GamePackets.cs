@@ -654,12 +654,22 @@ public sealed class PacketPromptRequest : PacketWriter
     }
 }
 
-/// <summary>0x93 — Book header (outgoing: displays book gump with title/author).</summary>
+/// <summary>0x93 — Book header (outgoing: displays book gump with title/author).
+///
+/// FIXED 99 bytes, with fixed-width strings: uid(4), writable(1), writable(1),
+/// pages(2), title(60), author(30). Source-X writes exactly that
+/// (PacketDisplayBook, send.cpp:2871) and the client reads exactly that — for
+/// opcode 0x93 ClassicUO takes the 60/30 fixed fields and never looks for a
+/// length field (PacketHandlers.OpenBook). It was being built as a VARIABLE packet
+/// with a length header and length-prefixed strings, which is the layout of the
+/// newer 0xD4 header: every field after the uid landed at the wrong offset.</summary>
 public sealed class PacketBookHeaderOut : PacketWriter
 {
+    private const int TitleFieldLength = 60;
+    private const int AuthorFieldLength = 30;
+
     private readonly uint _serial;
     private readonly bool _writable;
-    private readonly bool _newStyleTitle;
     private readonly ushort _pageCount;
     private readonly string _title;
     private readonly string _author;
@@ -669,7 +679,6 @@ public sealed class PacketBookHeaderOut : PacketWriter
     {
         _serial = serial;
         _writable = writable;
-        _newStyleTitle = true;
         _pageCount = pageCount;
         _title = title;
         _author = author;
@@ -677,25 +686,22 @@ public sealed class PacketBookHeaderOut : PacketWriter
 
     public override PacketBuffer Build()
     {
-        var buf = CreateVariable(100);
+        var buf = CreateFixed(99);
         buf.WriteUInt32(_serial);
+        // Upstream writes the writable flag twice; the client keeps the first and
+        // skips the second on this opcode.
         buf.WriteByte((byte)(_writable ? 1 : 0));
-        buf.WriteByte((byte)(_newStyleTitle ? 1 : 0));
+        buf.WriteByte((byte)(_writable ? 1 : 0));
         buf.WriteUInt16(_pageCount);
-
-        // Title (length-prefixed ASCII string)
-        string title = _title.Length > 60 ? _title[..60] : _title;
-        buf.WriteUInt16((ushort)(title.Length + 1));
-        buf.WriteAsciiNull(title);
-
-        // Author (length-prefixed ASCII string)
-        string author = _author.Length > 30 ? _author[..30] : _author;
-        buf.WriteUInt16((ushort)(author.Length + 1));
-        buf.WriteAsciiNull(author);
-
-        buf.WriteLengthAt(1);
+        // Truncate one short of the field so the string is always NUL-terminated
+        // inside it, as writeStringFixedASCII does.
+        buf.WriteAsciiFixed(Clamp(_title, TitleFieldLength), TitleFieldLength);
+        buf.WriteAsciiFixed(Clamp(_author, AuthorFieldLength), AuthorFieldLength);
         return buf;
     }
+
+    private static string Clamp(string text, int field) =>
+        text.Length > field - 1 ? text[..(field - 1)] : text;
 }
 
 /// <summary>0x66 — Book page content (outgoing: sends page text to client).</summary>
