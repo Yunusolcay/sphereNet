@@ -4,6 +4,41 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Delayed work: classic saves, mid-callback saves and who it runs as (12V)
+----------------------------------------
+
+FIX - A classic [TIMERF] section was skipped on load, so every delayed job a
+        Sphere/Source-X world save carried was lost while its objects loaded fine. The
+        section is now read and each job re-attached to the object its UID names
+        (CWorld.cpp:842, CTimedFunctionHandler.cpp:122); the leading number tells the
+        dialect apart - 99 marks milliseconds, anything smaller is a 0.56 save counting
+        tenths of a second (:185). SphereNet keeps its own jobs inside the object
+        record, so this path only adds what that record could not carry.
+
+FIX - The tick took every due job off the object before running the first, so a world
+        save from inside the first callback recorded none of the ones still waiting and
+        they could never be restored. Each job is now removed immediately before it
+        runs, matching the reference, where a timer deletes itself inside its own tick
+        (CTimedFunction.cpp:77) while the save walks whatever is still pending (:203).
+        A job cancelled by an earlier callback in the same pass no longer runs.
+
+FIX - SRC in a delayed function was the item itself. Upstream uses the target's
+        top-level object when that is a character - the player carrying it - and the
+        server otherwise (CTimedFunction.cpp:43). The line also ran on the server
+        console regardless of owner, giving a player's item administrator privileges;
+        it now runs as their client, or at their privilege level when they are offline.
+
+FIX - A delayed function's argument only arrived as ARGS: ARGN1/2/3 stayed at zero, so
+        "TIMERF 5, f_give 30" handed the script an amount of nothing. The argument goes
+        through the normal preparation, which reads the leading numbers
+        (CScriptTriggerArgs.cpp:112).
+
+FIX - A script [FUNCTION] shadowed the engine verb of the same name in a delayed call,
+        so a pack's own REMOVE ran instead of the engine's and the object survived. The
+        built-in verb table is searched first and the function only answers for a name
+        no verb owns (CObjBase::r_Verb, CObjBase.cpp:2134) - the same order a typed
+        command follows.
+
 [2026-09-06] - The decay contract, the drop event and delayed work (12S-12U)
 ----------------------------------------
 

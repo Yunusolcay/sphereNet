@@ -2819,29 +2819,17 @@ public static partial class Program
                     ItemTrigger.Timer,
                     new TriggerArgs { ItemSrc = item });
             };
-            _world.TimerFExpired = (obj, entry) =>
-            {
-                if (_triggerRunner == null)
-                    return;
-                var trigArgs = new SphereNet.Scripting.Execution.TriggerArgs(obj)
-                {
-                    ArgString = entry.Args
-                };
-                // Source-X TIMERF/TIMERFMS runs a delayed VERB or function. Try the
-                // payload as a [FUNCTION] first; if no such function exists, fall back
-                // to running it as a command on the object (e.g. "SAY hi" / "REMOVE"),
-                // so bare-verb timers work and no longer silently no-op.
-                if (_triggerRunner.TryRunFunction(entry.FunctionName, obj, null, trigArgs, out _))
-                    return;
-                try
-                {
-                    obj.TryExecuteCommand(entry.FunctionName, entry.Args, new RefExecConsole());
-                }
-                catch (Exception ex)
-                {
-                    _log.LogWarning(ex, "Delayed TIMERF verb '{Verb}' failed", entry.FunctionName);
-                }
-            };
+            // Source-X TIMERF/TIMERFMS runs a delayed verb or function on the object.
+            // The caller (SRC/console), the dispatch order and the argument preparation
+            // all live in the dispatcher so they can be exercised without a server.
+            var delayedCalls = new SphereNet.Game.Scripting.DelayedCallDispatcher(
+                () => _triggerRunner,
+                ch => TryGetClientFor(ch, out var client) ? client : null,
+                new RefExecConsole(),
+                serverObj: null,
+                onError: (ex, verb) =>
+                    _log.LogWarning(ex, "Delayed TIMERF payload '{Verb}' failed", verb));
+            _world.TimerFExpired = delayedCalls.Run;
             SphereNet.Game.Objects.Items.Item.ResolveShipEngine = () => _shipEngine;
             SphereNet.Game.Objects.Items.Item.ResolveWorld = () => _world;
             SphereNet.Game.Objects.ObjBase.ResolveWorld = () => _world;

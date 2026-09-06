@@ -80,6 +80,12 @@ internal static class TestHarness
         }
     }
 
+    /// <summary>Run the world's TIMERF sweep (private: it is driven by the main loop).</summary>
+    public static void PumpTimerF(GameWorld world, long nowMs) =>
+        typeof(GameWorld)
+            .GetMethod("TickTimerF", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(world, [nowMs]);
+
     public static void SetPrivateField<T>(GameClient client, string fieldName, T value)
     {
         typeof(GameClient)

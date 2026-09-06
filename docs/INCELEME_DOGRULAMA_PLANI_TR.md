@@ -2333,8 +2333,8 @@ pickup sirasinda decay iptali; tick callback'inin nesneyi tasimasi/silmesi.
 
 ### 12S-12U - decay sozlesmesi, birakma olayi ve gecikmeli is: 15 bulgu (6 Eylul 2026)
 
-Kanit raporlari: [12S](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12S_DECAY_KAYIT_BOLGE.md),
-[12T](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12T_BIRAKMA_OLAYI.md),
+Kanit raporlari: [12S](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12S_DECAY_PICKUP_DROP.md),
+[12T](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12T_DROP_YASAM_TIMER_TURLERI.md),
 [12U](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12U_TIMERF_SEKTOR.md).
 On bes bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
 
@@ -2400,6 +2400,51 @@ pickup sirasinda decay iptali (12S-2) bu turda cozuldu.
 
 **Acik kalan:** `DecayTime` ile `Timeout`un tumden tek alanda birlestirilmesi (12Q'dan
 devrediyor); TIMERF suresinde tam ifade motoru (su an basit toplam/cikarma).
+
+### 12V - TIMERF kaliciligi ve gecikmeli cagri baglami: 5 bulgu (6 Eylul 2026)
+
+Kanit raporu: [12V](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12V_TIMERF_KAYIT_BAGLAM.md).
+Bes bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+**Kok neden ortak:** gecikmeli isin *kimin adina, hangi sirayla ve ne zaman* calistigi
+hicbir yerde tanimli degildi. Zamanlama tarafinda isler calismadan once toplu
+cikariliyor, kalicilikta klasik bolum hic okunmuyor, cagri tarafinda ise SRC, konsol,
+arguman hazirligi ve dispatch sirasi referansin dordunu de birden kaciriyordu.
+
+- [x] **12V-1 (P2)** - Klasik [TIMERF] bolumu yuklemede sessizce atlaniyordu. (YAPILDI:
+  `LoadTimerFSection`; TimerFCall/TimerFNumbers cifti, 99 = milisaniye / kucugu = 0.56
+  onda bir saniye, UID ile nesneye yeniden baglama.)
+- [x] **12V-2 (P2)** - Vadesi gelen isler ilk callback'ten once toplu cikariliyordu;
+  callback icinden alinan kayit bekleyenleri gormuyordu. (YAPILDI: `PeekDueTimerF` +
+  `RemoveTimerFEntry`; is calismadan hemen once cikariliyor.)
+- [x] **12V-3 (P2)** - Gecikmeli fonksiyonda SRC esyanin kendisiydi. (YAPILDI:
+  `GetTopLevelObj()`; karakterse o, degilse sunucu.)
+- [x] **12V-4 (P2)** - Fonksiyon argumani ARGN alanlarina ayristirilmiyordu. (YAPILDI:
+  `TriggerArgs.InitFromRaw` - bastaki sayilar ARGN1/2/3.)
+- [x] **12V-5 (P2)** - Script fonksiyonu ayni adli yerlesik verb'u golgeliyordu.
+  (YAPILDI: once verb tablosu, sonra fonksiyon.)
+
+**Raporun yakalamadigi yan bulgu - yetki yukselmesi:** gecikmeli satir sahibinden
+bagimsiz olarak sunucu konsoluyla (Admin) calisiyordu; yani bir oyuncunun cantasindaki
+esyanin TIMERF'i motor komutlarini yonetici yetkisiyle isletebiliyordu. Referans, ust
+duzey nesne karakterse o karakteri konsol yapar. Artik sahibinin istemcisi, cevrimdisiysa
+sahibinin yetki seviyesini tasiyan bir konsol veriliyor.
+
+**Yapisal karar:** SRC/konsol cozumu, dispatch sirasi ve arguman hazirligi host
+lambda'sindan `SphereNet.Game.Scripting.DelayedCallDispatcher` sinifina tasindi; boylece
+sozlesme sunucu ayaga kaldirilmadan test edilebiliyor. Host yalnizca istemci arama ve
+sunucu konsolunu veriyor.
+
+**Bilincli sinir - klasik bolum yalnizca OKUNUYOR:** SphereNet gecikmeli isleri nesne
+kaydinin icinde (`TIMERF=<ms>|<ad>|<arg>`) yazmaya devam ediyor. Klasik bolumu ayrica
+yazmak, kendi kaydimizi geri yuklerken ayni isin iki kez kurulmasina yol acardi.
+
+**12V kapanisi:** tam suite **3.064 basarili / 0 basarisiz** (+17). Bes duzeltme gecici
+olarak kapatilarak 10 testin eski davranisi yakaladigi kanitlandi.
+
+**Acik kalan:** callback icinden yeni is eklenmesi (bu gecise mi yoksa sonrakine mi
+dusmeli); yurutme aninda sahip degistirme; klasik TIMERF'in birden cok dosyaya yayilmis
+ya da eksik ciftleri.
 
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 

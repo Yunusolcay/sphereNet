@@ -262,20 +262,7 @@ public class Item : ObjBase
     /// <summary>Top of the container chain — the wearing character or the
     /// outermost item (Source-X GetTopLevelObj). Used by the chained
     /// TOPOBJ.&lt;verb&gt; dispatch.</summary>
-    internal ObjBase? ResolveTopObject()
-    {
-        var world = ResolveWorld?.Invoke();
-        if (world == null) return this;
-        ObjBase cur = this;
-        for (int depth = 0; depth < 64; depth++)
-        {
-            if (cur is not Item ci || !ci.ContainedIn.IsValid) break;
-            var parent = world.FindObject(ci.ContainedIn);
-            if (parent == null) break;
-            cur = parent;
-        }
-        return cur;
-    }
+    internal ObjBase? ResolveTopObject() => GetTopLevelObj();
 
     /// <summary>The raw instance type field, before the lazy def-resolution the
     /// <see cref="ItemType"/> getter applies. Diagnostics only: raw-<c>_type</c>

@@ -45,6 +45,72 @@ public sealed class TriggerArgs : ITriggerArgs
         ArgString = argStr;
     }
 
+    /// <summary>Set the argument string the way a script call does, filling in the
+    /// numeric ARGN1/2/3 fields from its leading numbers (Source-X
+    /// CScriptTriggerArgs::Init, CScriptTriggerArgs.cpp:112). A call that only
+    /// assigned <see cref="ArgString"/> left ARGN1 at zero, so a delayed
+    /// <c>TIMERF 5, f_give 30</c> handed the script an amount of nothing.
+    ///
+    /// Upstream only looks for numbers when the string STARTS with one (a digit, or a
+    /// minus followed by a digit); "hello 5" leaves all three at zero. Each further
+    /// number must follow an argument separator (comma or whitespace).</summary>
+    public void InitFromRaw(string? raw)
+    {
+        ArgString = raw ?? "";
+        Number1 = 0;
+        Number2 = 0;
+        Number3 = 0;
+
+        string s = _argString;
+        int i = 0;
+        if (!StartsWithNumber(s, i))
+            return;
+        for (int slot = 1; slot <= 3; slot++)
+        {
+            if (!StartsWithNumber(s, i) || !TryReadNumber(s, ref i, out long value))
+                return;
+            int truncated = value > int.MaxValue ? int.MaxValue
+                          : value < int.MinValue ? int.MinValue
+                          : (int)value;
+            if (slot == 1) Number1 = truncated;
+            else if (slot == 2) Number2 = truncated;
+            else Number3 = truncated;
+            // Skip one argument separator, the way SKIP_ARGSEP does.
+            while (i < s.Length && (s[i] == ',' || char.IsWhiteSpace(s[i]))) i++;
+        }
+    }
+
+    private static bool StartsWithNumber(string s, int i) =>
+        i < s.Length &&
+        (char.IsAsciiDigit(s[i]) || (s[i] == '-' && i + 1 < s.Length && char.IsAsciiDigit(s[i + 1])));
+
+    private static bool TryReadNumber(string s, ref int i, out long value)
+    {
+        value = 0;
+        int start = i;
+        if (i < s.Length && s[i] == '-') i++;
+        int digitStart = i;
+        while (i < s.Length && char.IsAsciiDigit(s[i])) i++;
+        if (i == digitStart)
+        {
+            i = start;
+            return false;
+        }
+        // A leading zero means hex in Sphere script (0A = 10), matching the number
+        // reading the rest of the engine does.
+        var span = s.AsSpan(digitStart, i - digitStart);
+        bool ok = span.Length > 1 && span[0] == '0'
+            ? long.TryParse(span, System.Globalization.NumberStyles.HexNumber, null, out value)
+            : long.TryParse(span, out value);
+        if (!ok)
+        {
+            i = start;
+            return false;
+        }
+        if (s[start] == '-') value = -value;
+        return true;
+    }
+
     public IReadOnlyList<string> GetArgv() => _argvCache ??= SplitArgString(_argString);
 
     public int GetArgc() => GetArgv().Count;

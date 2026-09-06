@@ -482,6 +482,43 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
         return true;
     }
 
+    /// <summary>The jobs due at <paramref name="nowMs"/>, in due order, WITHOUT taking
+    /// them off the object. The caller removes each one as it runs it, so a world save
+    /// taken from inside the first callback still finds the ones that have not run yet
+    /// (Source-X deletes each CTimedFunction inside its own tick,
+    /// CTimedFunction.cpp:77, while the save walks the ones still in the container,
+    /// CTimedFunctionHandler.cpp:203).</summary>
+    public List<TimerFEntry> PeekDueTimerF(long nowMs)
+    {
+        var due = new List<TimerFEntry>();
+        foreach (var entry in _timerFEntries)
+        {
+            if (entry.DueTickMs <= nowMs)
+                due.Add(entry);
+        }
+        due.Sort((a, b) => a.DueTickMs.CompareTo(b.DueTickMs));
+        return due;
+    }
+
+    /// <summary>Take one specific pending job off the object. Returns false when it is
+    /// already gone - a callback that ran before it may have cancelled it with
+    /// TIMERF CLEAR/STOP, and a cancelled job must not then run.</summary>
+    public bool RemoveTimerFEntry(TimerFEntry entry)
+    {
+        for (int i = 0; i < _timerFEntries.Count; i++)
+        {
+            // By identity: two jobs with the same due time, name and arguments are
+            // separate pieces of work, and the record's value equality would let one
+            // stand in for the other.
+            if (ReferenceEquals(_timerFEntries[i], entry))
+            {
+                _timerFEntries.RemoveAt(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
     public List<TimerFEntry> DequeueDueTimerF(long nowMs)
     {
         var due = new List<TimerFEntry>();
@@ -689,10 +726,11 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
         return false;
     }
 
-    /// <summary>Top-level map position: a character's own position, or — for a
-    /// contained/equipped item — the position of the outermost container or
-    /// wearer (Source-X GetTopLevelObj()->GetTopPoint()).</summary>
-    public Point3D GetTopLevelPosition()
+    /// <summary>The outermost object this one lives in: a character is its own top
+    /// level, a contained or equipped item resolves to its container or wearer
+    /// (Source-X CObjBase::GetTopLevelObj). The walk is depth-capped so a corrupt
+    /// save that points a container at itself cannot hang the caller.</summary>
+    public ObjBase GetTopLevelObj()
     {
         var world = ResolveWorld?.Invoke();
         ObjBase cur = this;
@@ -703,8 +741,13 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
             if (parent == null) break;
             cur = parent;
         }
-        return cur.Position;
+        return cur;
     }
+
+    /// <summary>Top-level map position: a character's own position, or — for a
+    /// contained/equipped item — the position of the outermost container or
+    /// wearer (Source-X GetTopLevelObj()->GetTopPoint()).</summary>
+    public Point3D GetTopLevelPosition() => GetTopLevelObj().Position;
 
     /// <summary>Sextant coordinate string for a map point (Source-X
     /// CServerConfig::Calc_MaptoSextant). Zero point 1323,1624; longitude uses

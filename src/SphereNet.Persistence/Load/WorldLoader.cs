@@ -1434,7 +1434,7 @@ public sealed class WorldLoader
     {
         if (!File.Exists(path)) return;
         using var reader = Formats.SaveIO.OpenReader(path);
-        int globals = 0, lists = 0;
+        int globals = 0, lists = 0, timerFJobs = 0;
 
         while (reader.NextRecord(out string section))
         {
@@ -1572,16 +1572,99 @@ public sealed class WorldLoader
                         world.SetWorldClockMinutes(gameMinutes);
                 }
             }
+            else if (upper == "TIMERF")
+            {
+                timerFJobs += LoadTimerFSection(world, reader);
+            }
             else
             {
-                // TIMERF, EOF — skip properties
+                // EOF — skip properties
                 while (reader.NextProperty(out _, out _)) { }
             }
         }
 
-        if (globals > 0 || lists > 0)
-            _logger.LogInformation("Data: {Path} -> {Globals} globals, {Lists} lists",
-                Path.GetFileName(path), globals, lists);
+        if (globals > 0 || lists > 0 || timerFJobs > 0)
+            _logger.LogInformation("Data: {Path} -> {Globals} globals, {Lists} lists, {Timers} delayed job(s)",
+                Path.GetFileName(path), globals, lists, timerFJobs);
+    }
+
+    /// <summary>Read a classic <c>[TIMERF]</c> section — the delayed jobs a
+    /// Sphere/Source-X world save keeps outside the objects themselves
+    /// (CWorld.cpp:842). Each job is a pair of lines in this order:
+    ///
+    /// <code>
+    /// TimerFCall=&lt;command line&gt;
+    /// TimerFNumbers=&lt;tick&gt;,&lt;uid&gt;,&lt;elapsed&gt;
+    /// </code>
+    ///
+    /// The first number tells the two dialects apart: 99 marks a Source-X save whose
+    /// elapsed time is in milliseconds, anything smaller is a 0.56 save counting tenths
+    /// of a second (CTimedFunctionHandler.cpp:122/185). The job is re-attached to the
+    /// object the UID names; SphereNet keeps its own jobs inside the object record, so
+    /// this path only ever ADDS what that record could not carry.</summary>
+    private int LoadTimerFSection(GameWorld world, Formats.ISaveReader reader)
+    {
+        const int sourceXTickMarker = 99;   // TF_TICK_MAGIC_NUMBER
+        const long msecsPerTenth = 100;
+        int restored = 0;
+        string? pendingCall = null;
+
+        while (reader.NextProperty(out string key, out string val))
+        {
+            if (key.StartsWith("TimerFCall", StringComparison.OrdinalIgnoreCase))
+            {
+                if (pendingCall != null)
+                    _logger.LogWarning("TIMERF: '{Call}' has no TimerFNumbers line; dropped", pendingCall);
+                pendingCall = val.Trim();
+                continue;
+            }
+            if (!key.StartsWith("TimerFNumbers", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (pendingCall == null)
+            {
+                _logger.LogWarning("TIMERF: TimerFNumbers without a preceding TimerFCall; dropped");
+                continue;
+            }
+
+            string command = pendingCall;
+            pendingCall = null;
+
+            var parts = val.Split([',', ' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 3)
+            {
+                _logger.LogWarning("TIMERF: '{Numbers}' needs 3 values; dropped", val);
+                continue;
+            }
+            if (!int.TryParse(parts[0], out int tick) ||
+                !TryParseHexOrDec(parts[1], out uint uid) ||
+                !long.TryParse(parts[2], out long elapsed))
+            {
+                _logger.LogWarning("TIMERF: '{Numbers}' is not readable; dropped", val);
+                continue;
+            }
+            if (tick < sourceXTickMarker)
+                elapsed *= msecsPerTenth;   // a 0.56 save counts tenths of a second
+
+            var target = world.FindObject(new Serial(uid));
+            if (target == null)
+            {
+                _logger.LogDebug("TIMERF: no object 0x{Uid:X} for '{Call}'; dropped", uid, command);
+                continue;
+            }
+
+            // The saved line is a whole command: the name, then its arguments.
+            int split = command.IndexOfAny([' ', '\t']);
+            string name = split >= 0 ? command[..split] : command;
+            string args = split >= 0 ? command[(split + 1)..].Trim() : "";
+            if (name.Length == 0)
+                continue;
+            target.AddTimerF(Math.Max(0, elapsed), name, args);
+            restored++;
+        }
+
+        if (pendingCall != null)
+            _logger.LogWarning("TIMERF: '{Call}' has no TimerFNumbers line; dropped", pendingCall);
+        return restored;
     }
 
     /// <summary>Check whether <paramref name="section"/> matches

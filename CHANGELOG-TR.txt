@@ -3,6 +3,41 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Gecikmeli is: klasik kayitlar, callback ici kayit ve kimin adina calistigi (12V)
+----------------------------------------
+
+FIX - Klasik [TIMERF] bolumu yuklemede atlaniyordu; bir Sphere/Source-X dunya kaydinin
+        tasidigi butun gecikmeli isler, nesneleri sorunsuz yuklenirken kayboluyordu.
+        Bolum artik okunuyor ve her is UID'sinin gosterdigi nesneye yeniden baglaniyor
+        (CWorld.cpp:842, CTimedFunctionHandler.cpp:122); bastaki sayi lehceyi ayirir -
+        99 milisaniye demektir, daha kucugu saniyenin onda birini sayan 0.56 kaydidir
+        (:185). SphereNet kendi islerini nesne kaydinin icinde tutar, bu yuzden bu yol
+        yalnizca o kaydin tasiyamadigini ekler.
+
+FIX - Tick, ilkini calistirmadan once vadesi gelen butun isleri nesneden aliyordu; ilk
+        callback icinden alinan dunya kaydi bekleyen isleri hic gormuyor ve bunlar bir
+        daha kurulamiyordu. Her is artik calismadan hemen once cikariliyor; referansta
+        da timer kendini kendi tick'i icinde siler (CTimedFunction.cpp:77) ve kayit
+        bekleyenleri dolasir (:203). Ayni gecisteki onceki bir callback tarafindan iptal
+        edilen is artik calismiyor.
+
+FIX - Gecikmeli fonksiyonda SRC esyanin kendisiydi. Referans, hedefin ust duzey
+        nesnesini karakterse onu - esyayi tasiyan oyuncuyu - kullanir, degilse sunucuyu
+        (CTimedFunction.cpp:43). Satir ayrica sahibinden bagimsiz olarak sunucu
+        konsolunda calisiyor ve oyuncunun esyasina yonetici yetkisi veriyordu; artik
+        kendi istemcisi adina, cevrimdisiysa kendi yetki seviyesinde calisiyor.
+
+FIX - Gecikmeli fonksiyonun argumani yalnizca ARGS olarak geliyor, ARGN1/2/3 sifir
+        kaliyordu; "TIMERF 5, f_give 30" scripte hicligi miktar olarak veriyordu. Arguman
+        artik bastaki sayilari okuyan normal hazirliktan geciyor
+        (CScriptTriggerArgs.cpp:112).
+
+FIX - Gecikmeli cagrida script [FUNCTION]'i ayni adli motor verb'unu golgeliyordu;
+        paketin kendi REMOVE'u motorunkinin yerine calisiyor ve nesne hayatta kaliyordu.
+        Once yerlesik verb tablosu araniyor, fonksiyon yalnizca hicbir verb'un sahip
+        olmadigi ad icin cevap veriyor (CObjBase::r_Verb, CObjBase.cpp:2134) - dogrudan
+        yazilan komutun izledigi sirayla ayni.
+
 [2026-09-06] - Decay sozlesmesi, birakma olayi ve gecikmeli is (12S-12U)
 ----------------------------------------
 

@@ -1409,10 +1409,19 @@ public sealed class GameWorld
                 _objectsWithTimerF.Remove(obj);
                 continue;
             }
-            foreach (var entry in obj.DequeueDueTimerF(nowMs))
+            // One at a time: the job is taken off the object immediately before it
+            // runs, not all of them up front. A callback that saves the world (or
+            // reads the object's own pending list) must still see the jobs that have
+            // not run yet - draining them all first made them vanish from that save
+            // and they could never be restored.
+            foreach (var entry in obj.PeekDueTimerF(nowMs))
             {
-                if (!obj.IsDeleted)
-                    TimerFExpired?.Invoke(obj, entry);
+                if (obj.IsDeleted)
+                    break;
+                // Gone already: an earlier callback in this same pass cancelled it.
+                if (!obj.RemoveTimerFEntry(entry))
+                    continue;
+                TimerFExpired?.Invoke(obj, entry);
             }
             if (obj.IsDeleted || obj.TimerFEntries.Count == 0)
                 _objectsWithTimerF.Remove(obj);
