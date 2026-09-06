@@ -1210,6 +1210,56 @@ tasarim mi oldugu Source-X script politikasi dogrulanmadan hata sayilmadi; ayni
 degerlendirme burada da gecerli, dokunulmadi. FOODTYPE-turetilen maksimum yarisi da
 yukarida kayitli bilincli sapma.
 
+### 07A-07D - kapi, dikey kapi, ozel tanim ve kol-link (6 Eylul 2026)
+
+Kanit raporlari: [07A](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07A_PORTCULLIS.md),
+[07B](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07B_OZEL_KAPI_TANIMI.md),
+[07C](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07C_KAP_ICINDE_KAPI.md),
+[07D](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07D_KOL_KAPI_LINK.md).
+Bes bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+**Ortak kok:** Source-X'te birbirinden AYRI uc yordam var - `Use_Portculis` (dikey,
+Z hareketi), `Use_DoorNew` (ozel grafik + MOREP), `Use_Door` (klasik mentese) - ve
+ikisi de top-level kontroluyle basliyor. SphereNet hepsini tek menteseli rutine
+katlamisti; bes bulgunun besi de bu katlamadan cikiyor.
+
+- [x] **SX-07A-01 (P2)** - Portcullis yukseklikleri kullanilmiyor, yalniz grafik
+  degisiyordu. (YAPILDI: `UsePortcullis` - MORE1/MORE2 arasinda Z hareketi, grafik
+  degismiyor, iki yukseklik esitse no-op (:4596), PORTCULISSOUND override (:4602).)
+- [x] **SX-07A-02 (P2)** - Kilitli portcullis normal oyuncunun kullanimini kabul
+  ediyordu. (YAPILDI: GM degilse ve link uzerinden gelmiyorsa ret; referansta
+  `case IT_PORT_LOCKED` FALLTHROUGH ile `IT_PORTCULIS`'e duser (CCharUse.cpp:1771).)
+- [x] **SX-07B-01 (P2)** - DOOROPENID desteklenmiyordu. (YAPILDI: `Item.DoorOpenId`
+  (tag-destekli, persist ve scriptten yazilabilir) + `UseCustomDoor`. Grafik takasi ve
+  MOREP kaymasi referanstaki gibi; yerine gecen grafik DOOROPENID'ye yaziliyor (:4681).
+  **Uygulamada cikan tuzak:** ilk denemede ozel kapi ikinci kullanimda geri gelmiyordu -
+  durum klasik `GetDoorDir` tablosundan okunuyor ve alternatif grafik (0x06A5) o
+  tabloda KAPALI yuvaya denk geliyordu. Referans `ATTR_OPENED` bayragini okur; ozel
+  kapida durum artik yalnizca DOOR_OPEN bayragindan cozuluyor.)
+- [x] **SX-07C-01 (P2)** - Kap icindeki kapi haritaya birakiliyordu. (YAPILDI: hem
+  `ToggleDoor` hem `Item.CloseDoor` basinda top-level reddi; raporun uyardigi gibi
+  yalniz dclick tarafina eklemek timer yolunu acik birakirdi.)
+- [x] **SX-07D-01 (P2)** - Kol grafigi degisiyor ama bagli kapi calismiyordu.
+  (YAPILDI: `FollowItemLinks` - 64 adim siniri, kayip hedefte ve baslangica donuste
+  durma (CCharUse.cpp:1962).
+  **Raporun uyarisi karsilandi:** "butun linked hedeflere dogrudan HandleDoubleClick
+  cagirmak olmamalidir" - zincir BAGLI kullanim uyguluyor: kapi icin just-open
+  (:4641, ikinci cekiste kapanmiyor), kilitli kapi icin link yetkisi (:1771).
+  **Bilincli kapsam:** referans MASK_RETURN_FOLLOW_LINKS'i HER item kullaniminda
+  doner; zincir simdilik yalniz switch'ten takip ediliyor. Her cift tiklamaya baglamak
+  canli shard'larda beklenmedik zincirler uretebilirdi - acik madde olarak birakildi.)
+
+**07 kapanisi:** tam suite **2.579 basarili / 0 basarisiz** (+16). Bes duzeltme de
+gecici olarak kapatilarak 10 testin eski davranisi yakaladigi kanitlandi. Mevcut
+hicbir test guncellenmedi - 07A raporunun "NpcDoorOpeningTests icinde +2 grafik
+bekleyen test var" uyarisi icin kontrol edildi: o testler NPC yolundaki
+`DoorHelper.TryOpenDoorState` uzerinden gidiyor ve dokunulmadi.
+
+**Acik kalan:** `DoorHelper.TryOpenDoorState` (NPC kapi acma) hala portcullis icin +2
+grafik varsayimini tasiyor - oyuncu yolu duzeldi, NPC yolu ayri bir tur. Ayrica
+itemdef door-switch tanimi (SphereNet'te karsiligi yok), DOOROPENSOUND/DOORCLOSESOUND
+override'lari ve link zincirinin genel item kullanimina baglanmasi.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

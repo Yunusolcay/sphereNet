@@ -67,6 +67,8 @@ public sealed partial class GameClient
         WorldFeatures.TryToggleNearestMapStaticDoor(clientSerial);
 
     internal void ToggleDoor(Item door) => WorldFeatures.ToggleDoor(door);
+    internal bool UsePortcullis(Item gate) => WorldFeatures.UsePortcullis(gate);
+    internal void FollowItemLinks(Item start) => WorldFeatures.FollowItemLinks(start);
 
     internal void UsePotion(Item potion) => WorldFeatures.UsePotion(potion);
 

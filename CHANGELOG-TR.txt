@@ -3,6 +3,45 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Kapilar: dikey kapilar, ozel grafik, kaplar ve kollar (07A-07D)
+----------------------------------------
+
+FIX - Portcullis hareket etmek yerine resmini degistiriyordu. Source-X dikey kapiya
+        kendi yordamini verir; kapiyi MORE1 ve MORE2'deki iki yukseklik arasinda
+        tasir ve grafige hic dokunmaz (Use_Portculis, CItem.cpp:4583). SphereNet onu
+        menteseli kapi yoluna sokuyordu; bu da grafigi iki birim kaydiriyor ve kapiyi
+        eski Z'sinde birakiyordu, yani tasarlanan yukseklikler hic islemiyor ve klasik
+        kapinin 20 saniyelik timer'i da beraberinde geliyordu. Iki yuksekligi ayni olan
+        kapi artik hicbir sey yapmiyor ve PORTCULISSOUND dikkate aliniyor.
+
+FIX - Kilitli portcullis cift tiklayan herkese aciliyordu. Source-X kullanim bir LINK
+        uzerinden gelmiyorsa GM disinda herkese kapatir (CCharUse.cpp:1771) ve ancak
+        ondan sonra kapi hareketine gecer.
+
+FIX - DOOROPENID hic desteklenmiyordu; yani ozel acilma grafigi ve kendi kaymasiyla
+        yazilmis bir kapi siradan kapi gibi davraniyordu. Source-X once alternatif
+        grafigi cozer ve mentese tablosu yerine MOREP kadar kaydirir; yerine gectigi
+        grafigi de saklar ki bir sonraki kullanim dogrudan geri alsin (Use_DoorNew,
+        CItem.cpp:4633). Alternatifi olmayan kapi klasik tabloya dusmeye devam ediyor.
+        Ozel kapinin durumu grafiginden degil kendi bayragindan okunuyor; cunku
+        alternatif grafik klasik kapali/acik eslesmesinin parcasi degildir ve baska bir
+        setin kapali yuvasina denk gelebilir.
+
+FIX - Kap icindeki kapi hala dunyadaki kapi gibi isleniyordu. Kap icindeki yuva
+        koordinatlari harita koordinati olarak okunuyor, uzerine mentese kaymasi
+        ekleniyor ve kapi cantadan cikarilip haritaya birakiliyordu - otomatik kapanma
+        timer'i da ayni koda ulastigi icin acikken alinan bir kapi kendi basina
+        cantadan cikiyordu. Source-X top-level olmayan kapiyi hicbir seye dokunmadan
+        reddeder (:4637, :4695); artik hem kullanim hem timer yolu oyle yapiyor.
+
+FIX - Kol yalnizca kendi grafigini cevirip biraktiyordu. Source-X kullanimin ardindan
+        esyanin LINK'ini takip eder: Use_Item m_uidLink zincirinde 64 adima kadar
+        yurur, kayip hedefte veya basladigi esyaya donunce durur ve her hedefe sinyal
+        gonderir (CCharUse.cpp:1962). Zincir yeni bir cift tiklama degil BAGLI kullanim
+        uygular - bir link kapiyi yalnizca acar, yani kolu iki kez cekmek kapiyi
+        kapatmaz, ve link kilitli kapiyi calistiran yetkiyi tasir. Zincir switch
+        uzerinden takip ediliyor; her esya kullanimina baglanmasi bu turda yapilmadi.
+
 [2026-09-06] - Tanimdan gelen yiyecek tavanlari ve el degistiren pet (06N-06O)
 ----------------------------------------
 

@@ -107,6 +107,8 @@ public sealed class ClientItemUseHandler
         ushort multiId, short xOff, short yOff, short zOff, ushort hue) =>
         _client.SetPendingMultiTarget(callback, multiId, xOff, yOff, zOff, hue);
     private void ToggleDoor(Item door) => _client.ToggleDoor(door);
+    private bool UsePortcullis(Item gate) => _client.UsePortcullis(gate);
+    private void FollowItemLinks(Item start) => _client.FollowItemLinks(start);
     private bool TryToggleNearestMapStaticDoor(uint clientSerial) => _client.TryToggleNearestMapStaticDoor(clientSerial);
     private void UsePotion(Item potion) => _client.UsePotion(potion);
 
@@ -1498,6 +1500,11 @@ public sealed class ClientItemUseHandler
                             item.X, item.Y, item.Z, item.Hue), 0);
                     _netState.Send(new PacketSound(0x0F, _character.X, _character.Y, _character.Z));
                 }
+
+                // Source-X follows the item's LINK chain after the use itself
+                // (Use_Item, CCharUse.cpp:1962) - a lever exists to work whatever it
+                // is wired to, and only the graphic was flipping.
+                FollowItemLinks(item);
                 // ARGN1 = fStanding (Source-X @Step contract): 1 — the char is
                 // standing at/using the item rather than walking onto it.
                 _triggerDispatcher?.FireItemTrigger(item, ItemTrigger.Step,
@@ -1763,9 +1770,21 @@ public sealed class ClientItemUseHandler
                 break;
 
             // ---- portcullis ----
-            case ItemType.Portculis:
             case ItemType.PortLocked:
-                ToggleDoor(item);
+                // Source-X refuses a locked gate to anyone but a GM unless the use
+                // arrived through a LINK (CCharUse.cpp:1771); it then falls through
+                // to the ordinary portcullis move.
+                if (_character.PrivLevel < PrivLevel.GM)
+                {
+                    SysMessage(ServerMessages.Get(Msg.ItemusePortLocked));
+                    break;
+                }
+                goto case ItemType.Portculis;
+
+            case ItemType.Portculis:
+                // A vertical gate MOVES between two heights; it does not swap art
+                // like a hinged door (Use_Portculis, CItem.cpp:4583).
+                UsePortcullis(item);
                 break;
 
             // ---- fletching tool ----

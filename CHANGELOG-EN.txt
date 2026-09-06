@@ -4,6 +4,45 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Doors: vertical gates, custom art, containers and levers (07A-07D)
+----------------------------------------
+
+FIX - A portcullis changed its picture instead of moving. Source-X gives the vertical
+        gate its own routine, which moves it between the two heights in MORE1 and
+        MORE2 and never touches the art (Use_Portculis, CItem.cpp:4583). SphereNet sent
+        it down the hinged-door path, which swapped the graphic by an offset of two and
+        left the gate at its old Z, so the designed heights never took effect and the
+        classic door's 20-second timer came along with them. A gate whose two heights
+        are the same now does nothing, and PORTCULISSOUND is honoured.
+
+FIX - A locked portcullis opened for anyone who double-clicked it. Source-X refuses it
+        to all but a GM unless the use arrived through a LINK (CCharUse.cpp:1771), and
+        only then falls through to the gate move.
+
+FIX - DOOROPENID was not supported at all, so a door scripted with a custom open
+        graphic and its own offset behaved like an ordinary one. Source-X resolves the
+        alternate graphic first and shifts by MOREP instead of the hinge table, storing
+        the graphic it replaced so the next use swaps straight back (Use_DoorNew,
+        CItem.cpp:4633). A door with no alternate still falls through to the classic
+        table. A custom door's state is its own flag rather than its graphic, because
+        the alternate art is not part of the classic closed/open pairing and can land
+        on another set's closed slot.
+
+FIX - A door inside a container was still treated as a door in the world. Its slot
+        coordinates were read as map coordinates, the hinge shift was added to them,
+        and the door was dropped out of the pack onto the map - and the auto-close
+        timer reached the same code, so a door picked up while open left the backpack
+        on its own. Source-X refuses a door that is not top-level before touching
+        anything (:4637, :4695), and both the use and the timer paths now do.
+
+FIX - A lever flipped its own graphic and nothing else. Source-X follows the item's
+        LINK after the use itself: Use_Item walks m_uidLink for up to 64 hops, stopping
+        on a missing target or a return to the item it started from, and signals each
+        one (CCharUse.cpp:1962). The chain applies the LINKED use rather than a fresh
+        double-click - a link only ever opens a door, so pulling the lever twice does
+        not close it, and the link carries the authority that works a locked gate. The
+        chain is followed from a switch; wiring it to every item use is left alone.
+
 [2026-09-06] - Food ceilings from the definition, and a pet that changes hands (06N-06O)
 ----------------------------------------
 

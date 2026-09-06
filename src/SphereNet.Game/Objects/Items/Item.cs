@@ -507,6 +507,23 @@ public class Item : ObjBase
     public uint More2 { get => _more2; set => _more2 = value; }
     public uint MoreB { get => _moreB; set => _moreB = value; }
     public Point3D MoreP { get => _moreP; set => _moreP = value; }
+
+    /// <summary>The graphic this door shows when it is in its OTHER state. Source-X
+    /// keeps it as the DOOROPENID property and swaps the two on every use
+    /// (Use_DoorNew, CItem.cpp:4649/4681); zero means the door has no custom art and
+    /// falls back to the classic hinge table. Stored as a tag so it persists and a
+    /// script can set it.</summary>
+    public ushort DoorOpenId
+    {
+        get => TryGetTag("DOOROPENID", out string? raw) &&
+            ushort.TryParse(raw, System.Globalization.NumberStyles.HexNumber, null, out ushort id)
+                ? id : (ushort)0;
+        set
+        {
+            if (value == 0) RemoveTag("DOOROPENID");
+            else SetTag("DOOROPENID", value.ToString("X"));
+        }
+    }
     public Serial Crafter { get => _crafter; set => _crafter = value; }
     public ushort UsesRemaining { get => _usesRemaining; set => _usesRemaining = value; }
     public Serial Link { get => _link; set => _link = value; }
@@ -3186,6 +3203,13 @@ public class Item : ObjBase
     /// the visual to observers. Returns false when already closed.</summary>
     public bool CloseDoor()
     {
+        // Source-X refuses the whole door path for an item that is not top-level
+        // (Use_Door, CItem.cpp:4695). A door picked up while open used to reach this
+        // through its own timer, have its container slot read as world coordinates,
+        // and get dropped out of the pack onto the map.
+        if (ContainedIn.IsValid)
+            return false;
+
         int doorDir = World.DoorHelper.GetDoorDir(DispIdFull);
         bool isOpen = doorDir >= 0
             ? (doorDir & 1) != 0

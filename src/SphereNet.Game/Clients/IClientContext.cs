@@ -181,6 +181,14 @@ internal interface IClientContext : ITextConsole
     bool TryMountCharacter(Character mount);
     void ResetWalkValidator();
     void ToggleDoor(Item door);
+
+    /// <summary>Move a vertical gate between its two heights (Source-X
+    /// Use_Portculis).</summary>
+    bool UsePortcullis(Item gate);
+
+    /// <summary>Signal whatever this item is LINKed to, the way Source-X Use_Item
+    /// follows m_uidLink after the item's own use.</summary>
+    void FollowItemLinks(Item start);
     bool TryToggleNearestMapStaticDoor(uint clientSerial);
     void UsePotion(Item potion);
     bool HasAmmoInBackpack(ItemType ammo);

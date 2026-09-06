@@ -225,6 +225,8 @@ public sealed partial class GameClient : IClientContext
     bool IClientContext.TryMountCharacter(Character mount) => TryMountCharacter(mount);
     void IClientContext.ResetWalkValidator() => ResetWalkValidator();
     void IClientContext.ToggleDoor(Item door) => ToggleDoor(door);
+    bool IClientContext.UsePortcullis(Item gate) => UsePortcullis(gate);
+    void IClientContext.FollowItemLinks(Item start) => FollowItemLinks(start);
     bool IClientContext.TryToggleNearestMapStaticDoor(uint clientSerial) => TryToggleNearestMapStaticDoor(clientSerial);
     void IClientContext.UsePotion(Item potion) => UsePotion(potion);
     bool IClientContext.HasAmmoInBackpack(ItemType ammo) => HasAmmoInBackpack(ammo);

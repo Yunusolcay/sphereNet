@@ -1906,28 +1906,135 @@ public sealed class ClientWorldFeaturesHandler
         BroadcastNearby?.Invoke(pos, UpdateRange, broadcastPacket, _character.Uid.Value);
     }
 
-    internal void ToggleDoor(Item door)
+    /// <summary>Raise or lower a portcullis. Source-X gives the vertical gate its own
+    /// function (Use_Portculis, CItem.cpp:4583): it moves the gate between the two
+    /// heights in MORE1 and MORE2 and does NOT touch the graphic. SphereNet sent it
+    /// down the hinged-door path instead, which swapped the art by an offset of two
+    /// and left the gate at its old Z, so the designed heights never took effect and
+    /// the classic door's 20-second timer was inherited along with them.</summary>
+    internal bool UsePortcullis(Item gate)
+    {
+        // Not while it is inside something (:4587).
+        if (gate.ContainedIn.IsValid)
+            return false;
+
+        sbyte lowered = unchecked((sbyte)gate.More1);
+        sbyte raised = unchecked((sbyte)gate.More2);
+        sbyte target = gate.Z == lowered ? raised : lowered;
+        if (target == gate.Z)
+            return false;       // both heights the same: nothing to do (:4596)
+
+        var world = SphereNet.Game.Objects.ObjBase.ResolveWorld?.Invoke();
+        var pos = new Point3D(gate.X, gate.Y, target, gate.MapIndex);
+        if (world != null)
+            world.PlaceItem(gate, pos);
+        else
+            gate.Position = pos;
+
+        // PORTCULISSOUND overrides the default (:4602).
+        ushort sound = gate.TryGetTag("PORTCULISSOUND", out string? raw) &&
+            ushort.TryParse(raw, out ushort custom) && custom != 0 ? custom : (ushort)0x021D;
+        BroadcastNearby?.Invoke(gate.Position, UpdateRange,
+            new PacketSound(sound, gate.X, gate.Y, gate.Z), 0);
+        BroadcastNearby?.Invoke(gate.Position, UpdateRange,
+            new PacketWorldItem(gate.Uid.Value, gate.DispIdFull, gate.Amount,
+                gate.X, gate.Y, gate.Z, gate.Hue), 0);
+        return true;
+    }
+
+    /// <summary>Follow an item's LINK chain after it has been used. Source-X returns
+    /// MASK_RETURN_FOLLOW_LINKS from Do_Use_Item and Use_Item then walks m_uidLink,
+    /// calling Do_Use_Item(target, fLink: true) for up to 64 hops, stopping on a
+    /// missing target or a return to the item it started from (CCharUse.cpp:1962).
+    /// A lever's graphic flipped but the door it was linked to never moved.
+    ///
+    /// The chain applies the LINKED use, not a fresh double-click: a link only ever
+    /// opens a door (:4641), and it carries the authority that lets it work a locked
+    /// portcullis (:1771).</summary>
+    internal void FollowItemLinks(Item start)
+    {
+        var current = start;
+        for (int hop = 0; hop < 64; hop++)
+        {
+            if (!current.Link.IsValid)
+                return;
+
+            var next = _world.FindItem(current.Link);
+            if (next == null || next.IsDeleted || next == start)
+                return;
+
+            switch (next.ItemType)
+            {
+                case ItemType.Door:
+                case ItemType.DoorLocked:
+                    ToggleDoor(next, justOpen: true, viaLink: true);
+                    break;
+                case ItemType.Portculis:
+                case ItemType.PortLocked:
+                    UsePortcullis(next);
+                    break;
+            }
+
+            current = next;
+        }
+    }
+
+    /// <param name="justOpen">A link signal only ever opens: Source-X returns early
+    /// when a just-open use finds the door already open (Use_DoorNew, CItem.cpp:4641),
+    /// so a second pull of the lever does not close it.</param>
+    /// <param name="viaLink">The use arrived through a LINK rather than from the
+    /// player's own hand, so the door may be out of reach - the lever was what they
+    /// touched.</param>
+    internal void ToggleDoor(Item door, bool justOpen = false, bool viaLink = false)
     {
         if (_character == null) return;
         if (_character.IsDead) return;
 
-        int dx = Math.Abs(_character.X - door.X);
-        int dy = Math.Abs(_character.Y - door.Y);
-        if (_character.MapIndex != door.MapIndex || dx > 2 || dy > 2)
-        {
-            SysMessage("That is too far away.");
+        // Source-X refuses a door that is not top-level before touching anything
+        // (Use_DoorNew :4637, Use_Door :4695). Without it, a door carried in a pack
+        // had its container slot read as world coordinates: the hinge shift was added
+        // to them and PlaceItem then dropped the door out of the pack onto the map.
+        // The timer close path reached the same code, so a door picked up while open
+        // left the backpack on its own.
+        if (door.ContainedIn.IsValid)
             return;
+
+        if (!viaLink)
+        {
+            int dx = Math.Abs(_character.X - door.X);
+            int dy = Math.Abs(_character.Y - door.Y);
+            if (_character.MapIndex != door.MapIndex || dx > 2 || dy > 2)
+            {
+                SysMessage("That is too far away.");
+                return;
+            }
         }
 
         bool isOpen = door.TryGetTag("DOOR_OPEN", out string? openStr) && openStr == "1";
         int doorDir = DoorHelper.GetDoorDir(door.DispIdFull);
-        if (doorDir >= 0)
-            isOpen = (doorDir & 1) != 0; // the graphic is the state for classic sets
-        bool isPortcullis = door.ItemType is ItemType.Portculis or ItemType.PortLocked;
-        int offset = isPortcullis ? 2 : 1;
+        // The graphic IS the state for a classic set, whose ids come in closed/open
+        // pairs. A custom door's alternate art is not part of that table - it may even
+        // land on another set's closed slot - so its state is the flag alone, which is
+        // what the reference reads too (ATTR_OPENED).
+        if (doorDir >= 0 && door.DoorOpenId == 0)
+            isOpen = (doorDir & 1) != 0;
+
+        if (justOpen && isOpen)
+            return;
+
+        // Source-X Use_DoorNew resolves an alternate open graphic first - the
+        // DOOROPENID override, or the itemdef's door switch id - and only falls back
+        // to the classic hinge table when there is none (CItem.cpp:4649). SphereNet
+        // had no DOOROPENID at all, so a door scripted with a custom open art and
+        // offset behaved like an ordinary one.
+        if (door.DoorOpenId != 0)
+        {
+            UseCustomDoor(door, isOpen);
+            return;
+        }
 
         ushort displayId = door.DispIdFull;
-        ushort newDisplayId = (ushort)(displayId + (isOpen ? -offset : offset));
+        ushort newDisplayId = (ushort)(displayId + (isOpen ? -1 : 1));
         if (door.DispIdOverride != 0)
             door.TrySetProperty("DISPID", $"0{newDisplayId:X}");
         else
@@ -1959,6 +2066,52 @@ public sealed class ClientWorldFeaturesHandler
             door.Uid.Value, door.DispIdFull, door.Amount,
             door.X, door.Y, door.Z, door.Hue);
         BroadcastNearby?.Invoke(door.Position, UpdateRange, doorBroadcast, _character.Uid.Value);
+    }
+
+    /// <summary>The custom half of Source-X Use_DoorNew (CItem.cpp:4633): swap to the
+    /// alternate graphic, shift by MOREP rather than the hinge table, and remember the
+    /// graphic just replaced in DOOROPENID so the next use swaps straight back.</summary>
+    private void UseCustomDoor(Item door, bool isOpen)
+    {
+        short dx = door.MoreP.X;
+        short dy = door.MoreP.Y;
+
+        var pos = new Point3D(
+            (short)(isOpen ? door.X - dx : door.X + dx),
+            (short)(isOpen ? door.Y - dy : door.Y + dy),
+            door.Z, door.MapIndex);
+
+        // The graphic being replaced becomes the alternate for the way back (:4681).
+        ushort previous = door.DispIdFull;
+        ushort alternate = door.DoorOpenId;
+        door.DoorOpenId = previous;
+        if (door.DispIdOverride != 0)
+            door.TrySetProperty("DISPID", $"0{alternate:X}");
+        else
+            door.BaseId = alternate;
+
+        if (isOpen)
+            door.RemoveTag("DOOR_OPEN");
+        else
+            door.SetTag("DOOR_OPEN", "1");
+
+        var world = SphereNet.Game.Objects.ObjBase.ResolveWorld?.Invoke();
+        if (world != null)
+            world.PlaceItem(door, pos);
+        else
+            door.Position = pos;
+
+        door.SetTimeout(isOpen ? 0 : Environment.TickCount64 + 20_000);
+
+        ushort soundId = (ushort)(isOpen ? 0x00F1 : 0x00EA);
+        BroadcastNearby?.Invoke(door.Position, UpdateRange,
+            new PacketSound(soundId, door.X, door.Y, door.Z), 0);
+        _netState.Send(BuildWorldItemPacket(
+            door.Uid.Value, door.DispIdFull, door.Amount,
+            door.X, door.Y, door.Z, door.Hue));
+        BroadcastNearby?.Invoke(door.Position, UpdateRange,
+            new PacketWorldItem(door.Uid.Value, door.DispIdFull, door.Amount,
+                door.X, door.Y, door.Z, door.Hue), _character!.Uid.Value);
     }
 
     internal static (ushort Anim, ushort Sound) GetCraftAnimAndSound(SkillType skill) => skill switch
