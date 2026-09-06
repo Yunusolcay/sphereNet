@@ -1746,6 +1746,39 @@ durumu yapildi - vurus varsa uc saniyelik AnimActive, ret varsa bos.
 kayit/yukleme; manken/dip antrenman zamanlamasi; tuzak hasarinda zirh/direnc ve olum
 sirasi.
 
+### 09A - sohbet kanallari ve moderasyon: 6 bulgu (6 Eylul 2026)
+
+Kanit raporu: [09A](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_09A_SOHBET_KANALLARI.md).
+Alti bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+- [x] **09A-1 (P2)** - Basarisiz gecis eski kanali kaybettiriyordu. (YAPILDI: once hedef
+  denetleniyor, sonra eski uyelik birakiliyor ve ayrilma bildirimi uretiliyor.)
+- [x] **09A-2 (P2)** - Katilma komutunda parola okunmuyordu. (YAPILDI: `ParseJoinCommand`
+  ("Ad" parola) ve `ParseCreateCommand` (Ad{parola}) ayrildi.)
+- [x] **09A-3 (P2)** - DefaultVoice degisimi mevcut uyeleri susturuyordu. (YAPILDI: ses
+  uyeye katilirken veriliyor; `CanSpeak` yalnizca uyenin kendi kaydini soruyor.
+  **Mevcut test guncellendi:** `ChatSystemTests.ChatEngine_ModeratedChannel_...` eski
+  uyenin ayarla sessizlesmesini bekliyordu - raporun isaret ettigi beklenti; yerine
+  "eski uye konusmaya devam eder / sonradan gelen sessiz baslar / bireysel susturma
+  calisir" geldi.)
+- [x] **09A-4 (P2)** - Kurucunun moderatorlugu kaldirilamiyordu. (YAPILDI: `SeatFounder`
+  ile kurucu da normal moderator kaydi aliyor; `IsModerator` yalnizca listeye bakiyor.)
+- [x] **09A-5 (P2)** - Olusturma ve katilma tek isleme dusmustu. (YAPILDI: `Join(...,
+  create)` - olusturmada ad bos olmali, katilmada kanal var olmali.
+  **Sozlesme degisikligi:** `ChatEngine.Join` artik otomatik kanal yaratmiyor; mevcut
+  motor testlerinin ad-hoc kanal kuran cagrilarina `create: true` eklendi.)
+- [x] **09A-6 (P2)** - Kanal listesi degisimleri duyurulmuyordu. (YAPILDI:
+  `AnnounceToChat` - olusturma, bosalan kanalin kaldirilmasi ve yeniden adlandirmada
+  global kaldir/ekle. Motor `Participants` ve `Exists` verecek sekilde genisletildi;
+  `Rename` eski adi geri donduruyor.)
+
+**09A kapanisi:** tam suite **2.780 basarili / 0 basarisiz** (+11). Alti duzeltme de
+gecici olarak kapatilarak 9 testin eski davranisi yakaladigi kanitlandi.
+
+**Acik kalan:** kanal silme ve parola degisiminin ilani; raporun isaret ettigi referans
+ici tutarsizlik (`RemoveVoice(true)`); parolanin uc durumlari; sohbet penceresi yeniden
+acildiginda liste tazeligi.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

@@ -4,6 +4,40 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Chat channels: switching, passwords, voice and the list (09A)
+----------------------------------------
+
+FIX - A refused channel switch cost the speaker the channel they were in. The old
+        channel was left before the new one was checked, so a wrong password left them
+        in no channel at all - and a one-member channel was destroyed on the way out,
+        password and moderators with it. Source-X checks the destination first
+        (JoinChannel, CChat.cpp:70).
+
+FIX - The standard join command could not carry a password. It is
+        <c>"Name" password</c> - the name inside the quotes, the password after them
+        (CChat.cpp:169) - while creating a channel uses <c>Name{password}</c>. Both
+        commands went through the create-shaped parser, which threw the tail away, so
+        the right password never reached the engine.
+
+FIX - Creating and joining were the same operation. Joining a channel that no longer
+        exists quietly recreated it, and creating one that someone else already owned
+        walked into their conversation instead of reporting the name as taken. Source-X
+        keeps CreateChannel and JoinChannel apart (:12/:70).
+
+FIX - Turning a channel's default voice off silenced everyone already talking in it.
+        The channel default decides what a member STARTS with; whether they may speak is
+        their own record (HasVoice, CChatChannel.cpp:272). Someone arriving after the
+        change still starts silent, and an individual mute still silences.
+
+FIX - A channel founder's moderation could not be revoked: it was read off the owner
+        field, so the call succeeded and changed nothing. Source-X seats the creator in
+        the moderator list like anyone else, and RevokeModerator removes them (:517).
+
+FIX - Channel-list changes were never announced outside the channel itself: a new
+        channel did not appear in anyone else's list, and a rename left everyone else
+        looking at the old name. Source-X announces a create globally (CChat.cpp:48) and
+        a rename as a global remove-and-add (CChatChannel.cpp:138).
+
 [2026-09-06] - Eating, practising, traps and shrines (08D)
 ----------------------------------------
 

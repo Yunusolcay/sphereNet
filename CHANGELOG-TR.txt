@@ -3,6 +3,38 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Sohbet kanallari: gecis, parola, ses ve liste (09A)
+----------------------------------------
+
+FIX - Reddedilen kanal gecisi, konusanin bulundugu kanali kaybettiriyordu. Yeni kanal
+        denetlenmeden eskisi birakiliyordu; yanlis parola girildiginde kisi hicbir
+        kanalda kalmiyor, tek uyeli kanal da parolasi ve moderatorleriyle birlikte
+        siliniyordu. Source-X once hedefi denetler (JoinChannel, CChat.cpp:70).
+
+FIX - Standart katilma komutu parola tasiyamiyordu. Bicimi <c>"Ad" parola</c>dir - ad
+        tirnak icinde, parola tirnaktan sonra (CChat.cpp:169) - kanal olusturma ise
+        <c>Ad{parola}</c> kullanir. Iki komut da olusturma bicimindeki ayristiriciya
+        gidiyor, o da sondaki parolayi atiyordu; dogru parola motora hic ulasmiyordu.
+
+FIX - Olusturma ve katilma ayni islemdi. Artik var olmayan bir kanala katilmak onu
+        sessizce yeniden yaratiyor, baskasinin sahibi oldugu adla kanal olusturmak ise
+        "ad kullanimda" demek yerine onun sohbetine giriyordu. Source-X CreateChannel ve
+        JoinChannel'i ayri tutar (:12/:70).
+
+FIX - Kanalin varsayilan sesini kapatmak, halihazirda konusan herkesi susturuyordu.
+        Varsayilan yalnizca uyenin NE ILE BASLAYACAGINI belirler; konusabilme ise uyenin
+        kendi kaydidir (HasVoice, CChatChannel.cpp:272). Degisiklikten sonra gelen yine
+        sessiz baslar, bireysel susturma yine susturur.
+
+FIX - Kanal kurucusunun moderatorlugu kaldirilamiyordu: yetki Owner alanindan
+        okundugu icin islem basarili gorunup hicbir sey degistirmiyordu. Source-X
+        kurucuyu da moderator listesine koyar ve RevokeModerator onu cikarabilir (:517).
+
+FIX - Kanal listesi degisiklikleri kanal disina hic duyurulmuyordu: yeni kanal
+        baskalarinin listesinde gorunmuyor, yeniden adlandirma sonrasi digerleri eski adi
+        gormeye devam ediyordu. Source-X olusturmayi global duyurur (CChat.cpp:48),
+        yeniden adlandirmayi ise global kaldir-ekle olarak (CChatChannel.cpp:138).
+
 [2026-09-06] - Yeme, antrenman, tuzak ve tapinak (08D)
 ----------------------------------------
 

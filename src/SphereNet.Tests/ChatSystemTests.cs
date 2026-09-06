@@ -119,8 +119,10 @@ public class ChatSystemTests
         Assert.NotNull(engine.Join(b, "General"));
         Assert.Equal(2, engine.GetChannel("General")!.Members.Count);
 
-        // Joining another channel leaves the previous one.
-        var adhoc = engine.Join(a, "Trade");
+        // Joining another channel leaves the previous one. Making a new one is the
+        // create command: Source-X refuses a join to a channel that does not exist
+        // (CChat.cpp:70), so the two are no longer the same call.
+        var adhoc = engine.Join(a, "Trade", create: true);
         Assert.NotNull(adhoc);
         Assert.Single(engine.GetChannel("General")!.Members);
         Assert.Equal("Trade", engine.GetMemberChannel(a)!.Name);
@@ -149,7 +151,7 @@ public class ChatSystemTests
     {
         var engine = new ChatEngine();
         var owner = new Serial(1);
-        var channel = engine.Join(owner, "Trade");
+        var channel = engine.Join(owner, "Trade", create: true);
         Assert.NotNull(channel);
         Assert.Equal(owner, channel!.Owner);
         Assert.True(channel.IsModerator(owner));
@@ -164,7 +166,7 @@ public class ChatSystemTests
         var guest = new Serial(2);
 
         // Owner creates a protected channel.
-        Assert.NotNull(engine.Join(owner, "Secret", "letmein"));
+        Assert.NotNull(engine.Join(owner, "Secret", "letmein", create: true));
         Assert.True(engine.GetChannel("Secret")!.HasPassword);
 
         // Missing and wrong passwords are rejected; the guest stays out.
@@ -183,7 +185,7 @@ public class ChatSystemTests
         var engine = new ChatEngine();
         var owner = new Serial(1);
         var member = new Serial(2);
-        engine.Join(owner, "Trade");
+        engine.Join(owner, "Trade", create: true);
         engine.Join(member, "Trade");
 
         // A non-moderator cannot kick.
@@ -204,16 +206,28 @@ public class ChatSystemTests
         var engine = new ChatEngine();
         var owner = new Serial(1);
         var member = new Serial(2);
-        var channel = engine.Join(owner, "Trade")!;
+        var channel = engine.Join(owner, "Trade", create: true)!;
         engine.Join(member, "Trade");
 
-        // Turn the channel moderated (default-voice off): only mod/voiced may talk.
+        // Turning the default off does NOT reach back and silence a member who is
+        // already talking: Source-X asks the member's own no-voice record (HasVoice,
+        // CChatChannel.cpp:272) and the default only decides what a member starts with.
+        // The old expectation had the setting mute everyone retroactively.
         Assert.True(engine.SetDefaultVoice(owner, false));
         Assert.True(channel.CanSpeak(owner));   // moderator
-        Assert.False(channel.CanSpeak(member)); // plain member silenced
-        Assert.Equal((ushort)0, channel.UserType(member));
+        Assert.True(channel.CanSpeak(member));  // was already speaking
 
-        // Grant the member voice.
+        // Someone arriving after the change starts without a voice.
+        var latecomer = new Serial(4);
+        engine.Join(latecomer, "Trade");
+        Assert.False(channel.CanSpeak(latecomer));
+        Assert.Equal((ushort)0, channel.UserType(latecomer));
+
+        // Taking the member's voice away individually does silence them.
+        Assert.True(engine.SetVoice(owner, member, false));
+        Assert.False(channel.CanSpeak(member));
+
+        // Granting it back shows the voiced marker.
         Assert.True(engine.SetVoice(owner, member, true));
         Assert.True(channel.CanSpeak(member));
         Assert.Equal((ushort)2, channel.UserType(member)); // voiced marker
@@ -237,7 +251,7 @@ public class ChatSystemTests
         var engine = new ChatEngine("General");
         var owner = new Serial(1);
         var staticMember = new Serial(2);
-        engine.Join(owner, "Trade");
+        engine.Join(owner, "Trade", create: true);
         engine.Join(staticMember, "General");
 
         // Static channels cannot be renamed.
@@ -262,7 +276,7 @@ public class ChatSystemTests
         var engine = new ChatEngine();
         var owner = new Serial(1);
         var guest = new Serial(2);
-        engine.Join(owner, "Trade");
+        engine.Join(owner, "Trade", create: true);
 
         // A non-member cannot set the password.
         Assert.False(engine.SetPassword(guest, "secret"));

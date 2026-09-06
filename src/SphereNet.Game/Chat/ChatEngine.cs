@@ -25,12 +25,24 @@ public sealed class ChatChannel
     public IReadOnlyList<Serial> Members => _members;
     public bool HasPassword => !string.IsNullOrEmpty(Password);
 
-    public bool IsModerator(Serial uid) => uid == Owner || _moderators.Contains(uid);
+    /// <summary>Whether this member holds the moderator role.
+    ///
+    /// Founding a channel is not a permanent rank: Source-X puts the creator in the
+    /// moderator LIST like anyone else, so another moderator can revoke it
+    /// (RevokeModerator, CChatChannel.cpp:517). Reading it off the Owner field made the
+    /// founder's moderation impossible to remove - the call succeeded and changed
+    /// nothing.</summary>
+    public bool IsModerator(Serial uid) => _moderators.Contains(uid);
     public bool IsVoiced(Serial uid) => _voiced.Contains(uid);
 
-    /// <summary>Whether a member may talk in this channel: moderators always; any
-    /// member when default-voice is on; otherwise only explicitly voiced members.</summary>
-    public bool CanSpeak(Serial uid) => IsModerator(uid) || DefaultVoice || _voiced.Contains(uid);
+    /// <summary>Whether a member may talk here.
+    ///
+    /// Source-X asks the member's OWN no-voice record (HasVoice,
+    /// CChatChannel.cpp:272); the channel default only decides what a member starts
+    /// with. Recomputing it from the default on every message meant flipping the
+    /// default silenced everyone who was already talking - without anyone being
+    /// individually muted.</summary>
+    public bool CanSpeak(Serial uid) => IsModerator(uid) || _voiced.Contains(uid);
 
     /// <summary>0xB2 AddUser userType for a member: 1 = moderator, 2 = voiced
     /// (when the channel is moderated), 0 = ordinary speaker.</summary>
@@ -41,11 +53,24 @@ public sealed class ChatChannel
         return 0;
     }
 
+    /// <summary>Give the founder the moderator record every other moderator has, so
+    /// the role can be granted and revoked uniformly.</summary>
+    internal void SeatFounder(Serial uid)
+    {
+        Owner = uid;
+        _moderators.Add(uid);
+        _voiced.Add(uid);
+    }
+
     internal bool Add(Serial uid)
     {
         if (_members.Contains(uid))
             return false;
         _members.Add(uid);
+        // A member arrives with the voice the channel currently hands out; taking the
+        // default away later does not reach back and mute them.
+        if (DefaultVoice)
+            _voiced.Add(uid);
         return true;
     }
 
@@ -96,6 +121,13 @@ public sealed class ChatEngine
 
     public string GetChatName(Serial uid) => _chatNames.GetValueOrDefault(uid, "");
 
+    /// <summary>Everyone with the chat window open - the audience for a channel-list
+    /// change, which Source-X announces globally rather than per channel
+    /// (CChat.cpp:48).</summary>
+    public IReadOnlyCollection<Serial> Participants => _chatNames.Keys;
+
+    public bool Exists(string channelName) => _channels.ContainsKey(channelName);
+
     public void SetChatName(Serial uid, string name) => _chatNames[uid] = name;
 
     /// <summary>Resolve a chat handle back to its character uid (for whispers).</summary>
@@ -138,35 +170,51 @@ public sealed class ChatEngine
         return now;
     }
 
-    /// <summary>Join (creating an ad-hoc channel when missing). A member can be in
-    /// one channel at a time — joining leaves the previous one. The creator becomes
-    /// the channel owner; an existing password-protected channel rejects a join with
-    /// a wrong (or missing) password. Returns the channel, or null on empty name /
-    /// password mismatch.</summary>
-    public ChatChannel? Join(Serial uid, string channelName, string? password = null)
+    /// <summary>Enter a channel. A member can be in one channel at a time - a
+    /// successful switch leaves the previous one, a refused one changes nothing.
+    /// <paramref name="create"/> tells the two client commands apart: creating needs
+    /// the name to be free, joining needs the channel to exist and the password to
+    /// match. Returns the channel, or null when the request is refused.</summary>
+    public ChatChannel? Join(Serial uid, string channelName, string? password = null,
+        bool create = false)
     {
         channelName = channelName.Trim();
         if (channelName.Length == 0)
             return null;
 
-        if (_channels.TryGetValue(channelName, out var existing))
+        // Source-X keeps CreateChannel and JoinChannel apart (CChat.cpp:12/70): a join
+        // needs the channel to exist, a create needs the name to be free, and neither
+        // silently becomes the other. Sending both commands down one auto-creating Join
+        // meant picking a dead channel out of a stale list quietly resurrected it, and
+        // creating a channel someone else already owned just walked into their
+        // conversation.
+        bool exists = _channels.TryGetValue(channelName, out var channel);
+        if (create)
         {
-            if (existing.HasPassword && !string.Equals(existing.Password, password, StringComparison.Ordinal))
-                return null; // wrong/missing password
+            if (exists)
+                return null;    // that name is taken
+        }
+        else
+        {
+            if (!exists)
+                return null;    // there is no such channel
+            if (channel!.HasPassword && !string.Equals(channel.Password, password, StringComparison.Ordinal))
+                return null;    // wrong/missing password
         }
 
+        // Only once the switch is known to be allowed does the old membership go.
         Leave(uid);
-        if (!_channels.TryGetValue(channelName, out var channel))
+        if (!exists)
         {
             channel = new ChatChannel
             {
                 Name = channelName,
-                Owner = uid,
                 Password = string.IsNullOrEmpty(password) ? null : password,
             };
             _channels[channelName] = channel;
+            channel.SeatFounder(uid);
         }
-        channel.Add(uid);
+        channel!.Add(uid);
         _memberChannel[uid] = channel;
         return channel;
     }
@@ -235,13 +283,19 @@ public sealed class ChatEngine
 
     /// <summary>Rename the actor's channel. Returns the channel on success (re-keyed),
     /// null if not permitted or the new name is taken/empty.</summary>
-    public ChatChannel? Rename(Serial mod, string newName)
+    public ChatChannel? Rename(Serial mod, string newName) => Rename(mod, newName, out _);
+
+    /// <summary>Rename the actor's channel, reporting the name it used to have: every
+    /// open chat window is still showing the old one.</summary>
+    public ChatChannel? Rename(Serial mod, string newName, out string oldName)
     {
+        oldName = "";
         newName = newName.Trim();
         var channel = ModeratedChannel(mod);
         if (channel == null || newName.Length == 0 || channel.IsStatic ||
             _channels.ContainsKey(newName))
             return null;
+        oldName = channel.Name;
         _channels.Remove(channel.Name);
         channel.Name = newName;
         _channels[newName] = channel;

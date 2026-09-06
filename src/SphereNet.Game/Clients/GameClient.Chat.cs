@@ -32,11 +32,16 @@ public sealed partial class GameClient
 
         switch (cmd)
         {
-            case 0x62: // join — channel name (+ optional {password}) wrapped in quotes
-            case 0x63: // create channel (joins it too)
+            case 0x62: // join an existing channel: "Name" password
             {
-                var (name, password) = ParseChannelName(text);
-                ChatJoinChannel(name, password);
+                var (name, password) = ParseJoinCommand(text);
+                ChatJoinChannel(name, password, create: false);
+                break;
+            }
+            case 0x63: // create a new channel: Name{password}
+            {
+                var (name, password) = ParseCreateCommand(text);
+                ChatJoinChannel(name, password, create: true);
                 break;
             }
             case 0x43: // leave current channel
@@ -62,10 +67,10 @@ public sealed partial class GameClient
                 ChatSetIgnore(text, ChatIgnoreAction.Toggle);
                 break;
             case 0x64: // rename the current channel (moderator)
-                ChatRename(ParseChannelName(text).Name);
+                ChatRename(ParseCreateCommand(text).Name);
                 break;
             case 0x41: // change channel password (moderator)
-                _chatEngine.SetPassword(_character.Uid, ParseChannelName(text).Password ?? text.Trim());
+                _chatEngine.SetPassword(_character.Uid, ParseCreateCommand(text).Password ?? text.Trim());
                 break;
             case 0x76: // kick a member (moderator)
                 ChatModerateTarget(text, ChatModAction.Kick);
@@ -108,16 +113,36 @@ public sealed partial class GameClient
             ChatLeaveChannel();
     }
 
-    private void ChatJoinChannel(string channelName, string? password)
+    private void ChatJoinChannel(string channelName, string? password, bool create)
     {
         if (_character == null || _chatEngine == null || channelName.Length == 0)
             return;
 
-        ChatLeaveChannel(); // notify the old channel before switching
-
-        var channel = _chatEngine.Join(_character.Uid, channelName, password);
+        // Source-X checks the destination FIRST and only then leaves the old channel
+        // (JoinChannel, CChat.cpp:70). Announcing the departure up front meant a wrong
+        // password left the speaker in no channel at all - and took a one-member
+        // channel, with its password and moderators, down with it.
+        var previous = _chatEngine.GetMemberChannel(_character.Uid);
+        var channel = _chatEngine.Join(_character.Uid, channelName, password, create);
         if (channel == null)
-            return; // empty name or wrong password
+            return; // no such channel, name taken, or wrong password
+
+        if (previous != null && previous != channel)
+        {
+            string leavingName = _chatEngine.GetChatName(_character.Uid);
+            Send(PacketChatSystem.MakeLeftChannel(previous.Name));
+            foreach (var memberUid in previous.Members)
+                SendToChar?.Invoke(memberUid, PacketChatSystem.MakeRemoveUser(leavingName));
+        }
+
+        // A channel that has just come into being, or one that has just gone, changes
+        // the list every open chat window is showing (BroadcastAddChannel,
+        // CChat.cpp:48).
+        if (create)
+            AnnounceToChat(PacketChatSystem.MakeCreateChannel(channel.Name, channel.HasPassword));
+        if (previous != null && previous != channel && !_chatEngine.Exists(previous.Name))
+            AnnounceToChat(PacketChatSystem.MakeRemoveChannel(previous.Name));
+
         string myName = _chatEngine.GetChatName(_character.Uid);
 
         Send(PacketChatSystem.MakeJoinedChannel(channel.Name));
@@ -176,7 +201,7 @@ public sealed partial class GameClient
     {
         if (_character == null || _chatEngine == null)
             return;
-        var target = _chatEngine.FindByChatName(ParseChannelName(targetName).Name);
+        var target = _chatEngine.FindByChatName(ParseCreateCommand(targetName).Name);
         if (!target.IsValid)
             return;
 
@@ -237,7 +262,7 @@ public sealed partial class GameClient
     {
         if (_character == null || _chatEngine == null)
             return;
-        var target = _chatEngine.FindByChatName(ParseChannelName(targetName).Name);
+        var target = _chatEngine.FindByChatName(ParseCreateCommand(targetName).Name);
         if (!target.IsValid || target == _character.Uid)
             return;
         switch (action)
@@ -296,7 +321,7 @@ public sealed partial class GameClient
     {
         if (_character == null || _chatEngine == null || newName.Length == 0)
             return;
-        var channel = _chatEngine.Rename(_character.Uid, newName);
+        var channel = _chatEngine.Rename(_character.Uid, newName, out string oldName);
         if (channel == null)
             return;
         // The client tracks channels by name: re-advertise as remove-then-create.
@@ -304,11 +329,46 @@ public sealed partial class GameClient
         {
             SendToChar?.Invoke(m, PacketChatSystem.MakeJoinedChannel(channel.Name));
         }
+        // And everyone ELSE has the old name in their channel list (RenameChannel does
+        // a global remove/add, CChatChannel.cpp:138).
+        AnnounceToChat(PacketChatSystem.MakeRemoveChannel(oldName));
+        AnnounceToChat(PacketChatSystem.MakeCreateChannel(channel.Name, channel.HasPassword));
     }
 
-    /// <summary>The 0x62/0x63 payload wraps the channel name in '"' quotes and may
-    /// append a "{password}" suffix. Returns the name and the password (or null).</summary>
-    private static (string Name, string? Password) ParseChannelName(string raw)
+    /// <summary>Tell every chat participant about a channel-list change. Source-X
+    /// announces a create, a removal and a rename to all of them, not only to the
+    /// members of the channel in question (CChat.cpp:48; RenameChannel,
+    /// CChatChannel.cpp:138).</summary>
+    private void AnnounceToChat(SphereNet.Network.Packets.Outgoing.PacketChatSystem packet)
+    {
+        if (_chatEngine == null || SendToChar == null)
+            return;
+        foreach (var participant in _chatEngine.Participants.ToArray())
+            SendToChar(participant, packet);
+    }
+
+    /// <summary>The JOIN command's shape: <c>"Name" password</c> - the name inside the
+    /// quotes, the password after them (Source-X CChat.cpp:169). The old parser threw
+    /// the tail away and then looked for braces in what was left, so the standard client
+    /// could never join a password-protected channel with the right password.</summary>
+    private static (string Name, string? Password) ParseJoinCommand(string raw)
+    {
+        string s = raw.Trim();
+        int firstQuote = s.IndexOf('"');
+        if (firstQuote < 0)
+            return ParseCreateCommand(s);   // an unquoted name, brace form and all
+
+        int secondQuote = s.IndexOf('"', firstQuote + 1);
+        if (secondQuote < 0)
+            return (s[(firstQuote + 1)..].Trim(), null);
+
+        string name = s[(firstQuote + 1)..secondQuote].Trim();
+        string tail = s[(secondQuote + 1)..].Trim();
+        return (name, string.IsNullOrEmpty(tail) ? null : tail);
+    }
+
+    /// <summary>The CREATE command's shape: <c>Name{password}</c>.</summary>
+    private static (string Name, string? Password) ParseCreateCommand(string raw)
     {
         string s = raw.Trim();
         int firstQuote = s.IndexOf('"');
