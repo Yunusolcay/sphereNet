@@ -221,11 +221,7 @@ public sealed partial class NpcAI
         var mapData = _world.MapData;
         if (mapData == null) return true;
 
-        var terrain = mapData.GetTerrainTile(pos.Map, pos.X, pos.Y);
-        var landData = mapData.GetLandTileData(terrain.TileId);
-
-        bool isWater = landData.IsWet;
-        if (isWater)
+        if (StandsOnWater(mapData, pos))
         {
             var charDef = DefinitionLoader.GetCharDef(npc.CharDefIndex);
             bool canSwim = charDef != null && (charDef.Can & Core.Enums.CanFlags.C_Swim) != 0;
@@ -252,7 +248,15 @@ public sealed partial class NpcAI
         return false;
     }
 
-    private bool CanNpcMoveTo(Character npc, Point3D pos, bool checkChars = true)
+    /// <summary>The part of the decision the shared walk check does NOT answer: whether
+    /// the tile is dangerous or wants swimming, and whether somebody is already standing
+    /// there.
+    ///
+    /// Split out because once CheckMovement has approved a step, re-running the cruder
+    /// land-level tests over it only takes the approval away again - a dry deck laid
+    /// over water is impassable ground by that measure, which kept a landlocked
+    /// creature off its own pier even once the swim rule itself was corrected.</summary>
+    private bool CanNpcOccupy(Character npc, Point3D pos, bool checkChars = true)
     {
         if (pos.X < 0 || pos.Y < 0)
             return false;
@@ -260,8 +264,32 @@ public sealed partial class NpcAI
         if (!CanNpcEnterTile(npc, pos))
             return false;
 
-        bool canPassWalls = CharDefHelper.CanPassWalls(npc);
-        if (!canPassWalls)
+        if (CharDefHelper.CanPassWalls(npc))
+            return true;
+
+        foreach (var other in checkChars ? _world.GetCharsInRange(pos, 0) : [])
+        {
+            if (other == npc || other.IsDeleted || other.IsDead)
+                continue;
+            if (other.MapIndex != pos.Map || other.X != pos.X || other.Y != pos.Y)
+                continue;
+            if ((other.IsStatFlag(StatFlag.Hidden) || other.IsStatFlag(StatFlag.Invisible))
+                && other.PrivLevel >= PrivLevel.Counsel)
+                continue;
+            if (!SharesHeightWith(other, pos.Z))
+                continue;
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool CanNpcMoveTo(Character npc, Point3D pos, bool checkChars = true)
+    {
+        if (!CanNpcOccupy(npc, pos, checkChars))
+            return false;
+
+        if (!CharDefHelper.CanPassWalls(npc))
         {
             var mapData = _world.MapData;
             if (mapData != null && !mapData.IsPassable(pos.Map, pos.X, pos.Y, pos.Z))
@@ -272,23 +300,27 @@ public sealed partial class NpcAI
                 if (item.IsStaticBlock && BlocksAtHeight(item, pos.Z))
                     return false;
             }
-
-            foreach (var other in checkChars ? _world.GetCharsInRange(pos, 0) : [])
-            {
-                if (other == npc || other.IsDeleted || other.IsDead)
-                    continue;
-                if (other.MapIndex != pos.Map || other.X != pos.X || other.Y != pos.Y)
-                    continue;
-                if ((other.IsStatFlag(StatFlag.Hidden) || other.IsStatFlag(StatFlag.Invisible))
-                    && other.PrivLevel >= PrivLevel.Counsel)
-                    continue;
-                if (!SharesHeightWith(other, pos.Z))
-                    continue;
-                return false;
-            }
         }
 
         return true;
+    }
+
+    /// <summary>Whether a step landing at <paramref name="pos"/> would put the creature
+    /// ON the water, rather than on something dry above it.
+    ///
+    /// Source-X resolves the surface first and only then asks for the ability that
+    /// surface needs - CAN_C_SWIM for water, CAN_C_WALK for a platform
+    /// (CCharStatus.cpp:1812/1858). SphereNet asked the raw land tile, so a dry jetty,
+    /// bridge or deck laid over water demanded that the creature be able to swim, and
+    /// a landlocked NPC could not walk across its own pier.</summary>
+    internal static bool StandsOnWater(MapData.MapDataManager mapData, Point3D pos)
+    {
+        var terrain = mapData.GetTerrainTile(pos.Map, pos.X, pos.Y);
+        if (!mapData.GetLandTileData(terrain.TileId).IsWet)
+            return false;
+
+        // Above the water line something else is holding the creature up.
+        return pos.Z <= terrain.Z;
     }
 
     /// <summary>Roughly a character's own height, as the shared walk check measures
@@ -508,7 +540,7 @@ public sealed partial class NpcAI
                 return false;
 
             dest = new Point3D(nx, ny, (sbyte)landZ, npc.MapIndex);
-            return CanNpcMoveTo(npc, dest);
+            return CanNpcOccupy(npc, dest);
         }
 
         sbyte fallbackZ = ResolveNpcStepZ(npc, nx, ny);

@@ -4,6 +4,62 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Pets: decks over water, unseen owners, and orders that keep their word (07L-07Q)
+----------------------------------------
+
+FIX - A creature that cannot swim could not walk across a dry deck laid over water.
+        The swim requirement was read from the raw land tile underneath rather than
+        from the surface actually stood on, so a jetty, bridge or ship deck demanded
+        swimming. Source-X resolves the surface first and only then asks for the
+        ability that surface needs - swimming for water, walking for a platform
+        (CCharStatus.cpp:1812/1858). Open water still needs swimming, and the
+        pathfinder answers the same way, since a search that disagrees with the step
+        plans routes the step will refuse.
+
+FIX - A pet tracked an owner who had just hidden, across the map, to wherever they
+        went. Source-X takes the follow point only from a target it can SEE
+        (NP_Act_Follow, CCharNPCAct.cpp:1386; CanSee, CCharStatus.cpp:1189). A
+        concealed target now leaves the last place it was seen standing, which is what
+        the follower walks to, and following resumes when it reappears.
+
+FIX - The @NPCActFollow contract was collapsed into a bool. Source-X gives it three
+        outcomes - give up, handled, carry on - and arguments the script may rewrite:
+        ARGN1 flee, ARGN2 the distance to keep, ARGN3 move away, with the target as the
+        object argument (CCharNPCAct.cpp:1357). The adapter passed none of them and
+        threw the answer away, so a script's distance never reached the engine and
+        "handled" was indistinguishable from "carry on". ARGN2 is seeded with
+        SphereNet's own following distance rather than the reference's 1, so a pack
+        that scripts nothing keeps the behaviour it has.
+
+        A script's RETURN 0 still cannot be told from falling off the end, because the
+        interpreter maps zero onto Default for every trigger; only a native handler can
+        answer "handled" today. Recorded rather than papered over.
+
+FIX - Completing a GO order threw ArgumentException. PetAIMode is byte-backed and
+        Enum.IsDefined THROWS when handed a boxed Int32 for such an enum instead of
+        answering false - so every GO issued by the real command, which does record the
+        previous mode, blew up on arrival with the destination tag already deleted,
+        leaving the pet stuck in Come.
+
+FIX - A GO order counted as complete one tile short, so an order to an adjacent tile
+        never moved the pet at all and a distant one stopped beside the spot. Source-X
+        keeps stepping while a direction remains (NPC_WalkToPoint, CCharNPCAct.cpp:437).
+        An unreachable last tile - someone standing on it, or walled off - ends the
+        order rather than being retried forever.
+
+FIX - An attack order destroyed the mode it had just saved to fall back on. It wrote
+        PREV_PET_MODE and then superseded the previous order, which clears that very
+        tag, so a pet told to kill returned to Follow and trailed its master instead of
+        going back to Guard or Stay. The clear now happens first, and the fallback is
+        written after it.
+
+FIX - A pet's `equip` command skipped the strength requirement: a ten-strength pet
+        wore a weapon needing eighty. Source-X scores a candidate through CanEquipLayer
+        with fTest, which turns the requirement on for an NPC too (CCharNPCStatus.cpp:688
+        -> CCharStatus.cpp:297). Character.Equip is the low-level placement and enforces
+        nothing, so the command now asks CanEquip first; a refused item stays in the
+        pack and the scan moves on to the next one.
+
 [2026-09-06] - NPC movement: what is really in the way, and leave to move (07H-07K)
 ----------------------------------------
 

@@ -1349,6 +1349,60 @@ turleri, ayni kattaki shove/stamina tuketimi, cok katli multi/gemi geometrisiyle
 uca takip, NOMOVETILL ve ozel hareket yetenekleri. Ayrica `Wander`/`TrySideStep`
 yollarinin kisit kapisini ayri kullanmasi.
 
+### 07L-07Q - guverte/su, gizli hedef takibi, follow trigger, GO ve pet komutlari (6 Eylul 2026)
+
+Kanit raporlari: [07L](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07L_NPC_SU_USTU_PLATFORM.md),
+[07M](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07M_PET_GIZLI_HEDEF_TAKIBI.md),
+[07N](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07N_PET_FOLLOW_TRIGGER.md),
+[07O](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07O_PET_GO_TAMAMLAMA.md),
+[07P](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07P_SALDIRI_ONCESI_EMIR_KAYBI.md),
+[07Q](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_07Q_PET_EQUIP_GUC_KOSULU.md).
+Yedi bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+- [x] **SX-07L-01 (P2)** - Yuzey yerine alttaki su arazisine gore yuzme sarti araniyordu.
+  (YAPILDI: `StandsOnWater` - su kurali yalnizca adim gercekten suya iniyorsa gecerli;
+  `CanNpcEnterTile` ve `Pathfinder.IsWalkable` ayni yardimciyi paylasiyor.
+  **Uygulamada cikan ikinci kapi:** yalniz yuzme kuralini duzeltmek yetmedi - kendi
+  tanisal testim gosterdi ki `mapData.IsPassable` de guverteyi gormuyor ve adimi yine
+  reddediyordu. `CanNpcOccupy` ayrildi: paylasilan yurume denetimi geometriyi zaten
+  onayladiginda, kaba land-seviyesi testleri o onayi geri almiyor.)
+- [x] **SX-07M-01 (P2)** - Gizli hedefin guncel konumu kosulsuz okunuyordu. (YAPILDI:
+  `ResolveFollowPoint` - gorunur hedefte konum guncellenir ve `FOLLOW_LAST_SEEN`
+  etiketine yazilir; gizli hedefte son gorulen yer kullanilir.
+  **Kapsam notu:** referansin INT tabanli "takibi birakma" olasiligi tasinmadi - raporun
+  cekirdek iddiasi takip noktasinin guncellenmemesiydi; olasilik dali acik madde.)
+- [x] **SX-07N-01 (P2)** - Uc durumlu trigger sonucu ve degisebilir argumanlar bool'a
+  indirgeniyordu. (YAPILDI: `FollowTriggerResult` + `FollowTriggerArgs`; adapter N1/N2/N3
+  besliyor ve geri okuyor.
+  **Bilincli sapma:** ARGN2 referansin 1'i yerine SphereNet'in kendi mesafesi (2) ile
+  besleniyor - referans degeri koymak hicbir sey scriptlemeyen paketlerde petlerin
+  yaklasma mesafesini degistirirdi.
+  **Kapatilamayan yari, kayda gecirildi:** `ScriptInterpreter` sifiri Default'a esledigi
+  icin gercek SCP `RETURN 0` ile fonksiyon sonuna dusmek ayirt edilemiyor; bunu duzeltmek
+  butun trigger'larin RETURN 0 anlamini degistirirdi.)
+- [x] **SX-07O-01 (P2)** - `Enum.IsDefined` int/byte uyusmazligi ArgumentException
+  firlatiyordu. (YAPILDI: `byte.TryParse` + byte overload. Gercek bir istisnaydi.)
+- [x] **SX-07O-02 (P2)** - Bos hedefe bir kare kala varilmis sayiliyordu. (YAPILDI:
+  `goDist == 0` varis; ulasilamayan son kare icin "adim atilamadiysa emri bitir"
+  korumasi - raporun "sonsuz tekrar yaratma" uyarisi.
+  **Mevcut test guncellendi:** `NpcPetGoOrderTests` `distance <= 1`'i varis sayiyordu;
+  raporun kendisi de bunun degismesi gerektigini yaziyordu.)
+- [x] **SX-07P-01 (P2)** - Saldiri emri kaydettigi onceki modu hemen siliyordu.
+  (YAPILDI: `SupersedePendingPetOrder` artik PREV yaziminin ONUNDE.
+  **Kendi regresyonum:** bu cagriyi 06A turunda eklemistim ve PREV yaziminin arkasina
+  koymusum. 07O ile birlikte ele alinmasi gerekiyordu - PREV geri geldigi anda 07O'daki
+  enum istisnasi gorunur hale gelirdi; iki duzeltme ayni turda yapildi.)
+- [x] **SX-07Q-01 (P2)** - Pet equip komutu `CanEquip`'i atliyordu. (YAPILDI: komut once
+  ortak uygunlugu soruyor; reddedilen esya cantada kaliyor ve tarama devam ediyor.)
+
+**07L-07Q kapanisi:** tam suite **2.633 basarili / 0 basarisiz** (+24). Yedi duzeltme de
+gecici olarak kapatilarak 15 testin eski davranisi yakaladigi kanitlandi.
+
+**Acik kalan:** gercek SCP RETURN 0 ayrimi (yorumlayici seviyesinde); referansin INT
+tabanli takibi birakma olasiligi; `Wander`/`TrySideStep` ve savas takibinin gizli hedef
+kurali; multi gemi guvertesinde hareket eden zemin; iki el catismasi ve ekipman
+paketleri.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

@@ -2901,6 +2901,14 @@ public sealed class ClientItemUseHandler
                     Layer layer = ResolveWearableLayer(carried);
                     if (layer == Layer.None || pet.GetEquippedItem(layer) != null)
                         continue;
+                    // Source-X scores a candidate through CanEquipLayer with fTest,
+                    // which turns the strength requirement on for an NPC too
+                    // (CCharNPCStatus.cpp:688 -> CCharStatus.cpp:333/297). Character.Equip
+                    // is the low-level placement and enforces nothing, so the spoken
+                    // command dressed a ten-strength pet in a weapon needing eighty.
+                    // A refused item stays in the pack and the scan moves on.
+                    if (!pet.CanEquip(carried, layer, out _))
+                        continue;
                     pet.Backpack.RemoveItem(carried);
                     pet.Equip(carried, layer);
                     equippedAny = true;
@@ -3048,12 +3056,18 @@ public sealed class ClientItemUseHandler
                     !victim.IsStatFlag(StatFlag.Ridden) &&
                     victim != _character && victim.Uid != pet.NpcMaster)
                 {
+                    // Clear the previous order FIRST. Superseding drops
+                    // PREV_PET_MODE along with the stale GO it belonged to, so writing
+                    // the fallback before it destroyed the very value the attack path
+                    // saves - the pet then fell back to Follow and trailed its master
+                    // instead of returning to Guard or Stay.
+                    SupersedePendingPetOrder(pet);
+
                     // Remember the mode to fall back to once the target dies,
                     // so the pet returns to Guard/Follow instead of trailing the
                     // master (ModernUO DoOrderNone behavior).
                     if (pet.PetAIMode != PetAIMode.Attack)
                         pet.SetTag("PREV_PET_MODE", ((int)pet.PetAIMode).ToString());
-                    SupersedePendingPetOrder(pet);
                     pet.SetTag("ATTACK_TARGET", victim.Uid.Value.ToString());
                     pet.FightTarget = victim.Uid;
                     pet.PetAIMode = PetAIMode.Attack;

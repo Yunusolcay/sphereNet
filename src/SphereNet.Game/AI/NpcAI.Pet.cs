@@ -21,8 +21,12 @@ public sealed partial class NpcAI
     private static void FinishGoOrder(Character npc)
     {
         npc.RemoveTag("GO_TARGET");
+        // PetAIMode is byte-backed, and Enum.IsDefined THROWS when handed a boxed Int32
+        // for such an enum rather than answering false. Every GO order issued by the
+        // real command - which does record the previous mode - therefore blew up here,
+        // leaving the pet stuck in Come with its GO_TARGET already deleted.
         if (npc.TryGetTag("PREV_PET_MODE", out string? prev) &&
-            int.TryParse(prev, out int prevMode) &&
+            byte.TryParse(prev, out byte prevMode) &&
             Enum.IsDefined(typeof(PetAIMode), prevMode))
         {
             npc.PetAIMode = (PetAIMode)prevMode;
@@ -33,6 +37,34 @@ public sealed partial class NpcAI
             npc.PetAIMode = PetAIMode.Stay;
         }
     }
+
+    /// <summary>Where a follower should head for. A target it can see gives its own
+    /// position, and that position is remembered; one it cannot gives the last place it
+    /// was seen, and null once there is nothing remembered to walk to.
+    ///
+    /// Hidden and Invisible are visibility rules of their own - a geometric line of
+    /// sight would not answer them - and staff-level concealment stays visible to the
+    /// creature that owns the follower, as it is elsewhere in the engine.</summary>
+    private static Point3D? ResolveFollowPoint(Character npc, Character target)
+    {
+        bool concealed = target.IsStatFlag(StatFlag.Hidden) || target.IsStatFlag(StatFlag.Invisible);
+        if (!concealed || npc.PrivLevel >= PrivLevel.Counsel)
+        {
+            npc.SetTag(FollowLastSeenTag, $"{target.X},{target.Y},{target.Z},{target.MapIndex}");
+            return target.Position;
+        }
+
+        if (!npc.TryGetTag(FollowLastSeenTag, out string? raw) || !TryParsePoint(raw, out var seen))
+            return null;
+        return seen.Map == npc.MapIndex ? seen : null;
+    }
+
+    private const string FollowLastSeenTag = "FOLLOW_LAST_SEEN";
+
+    /// <summary>How close a follower tries to get by default. The reference's own
+    /// default is 1; SphereNet has always closed to two and that is what a pack
+    /// scripting nothing keeps.</summary>
+    private const int PetFollowDistance = 2;
 
     /// <summary>Pet follow gives up beyond this distance on the same map
     /// (reference parity: UO_MAP_VIEW_RADAR = 36); it resumes when the owner
@@ -160,30 +192,64 @@ public sealed partial class NpcAI
                         FinishGoOrder(npc);
                         break;
                     }
+                    // Walk onto the tile itself. Source-X keeps stepping until there
+                    // is no direction left to take (NPC_WalkToPoint, CCharNPCAct.cpp:437)
+                    // - being one tile short is not arrival, and treating it as such
+                    // meant a GO to an adjacent tile never moved the pet at all.
                     int goDist = npc.Position.GetDistanceTo(goPos);
-                    if (goDist > 1)
-                        MoveToward(npc, goPos, run: goDist > 3);
-                    else
+                    if (goDist == 0)
+                    {
+                        FinishGoOrder(npc);
+                        break;
+                    }
+
+                    var beforeGoStep = npc.Position;
+                    MoveToward(npc, goPos, run: goDist > 3);
+
+                    // The last tile can simply be unreachable - occupied, blocked or
+                    // walled off. Standing beside it and getting nowhere ends the
+                    // order rather than retrying it forever.
+                    if (goDist == 1 && npc.Position == beforeGoStep)
                         FinishGoOrder(npc);
                     break;
                 }
 
                 Character followTarget = ResolvePetTargetCharacter(npc, "FOLLOW_TARGET") ?? master;
-                // Source-X @NPCActFollow RETURN 1 = GIVE UP following entirely
-                // (NPC_Act_Follow returns false), not a one-tick pause.
-                if (OnNpcActFollow?.Invoke(npc, followTarget) == true)
+
+                // Source-X @NPCActFollow: RETURN 1 gives up following entirely,
+                // RETURN 0 means the script handled this call, and falling through
+                // carries on with the arguments the script may have rewritten.
+                var followArgs = new FollowTriggerArgs { MaxDistance = PetFollowDistance };
+                if (OnNpcActFollow != null)
                 {
-                    npc.PetAIMode = PetAIMode.Stay;
-                    break;
+                    var followed = OnNpcActFollow(npc, followTarget, followArgs);
+                    if (followed == FollowTriggerResult.GiveUp)
+                    {
+                        npc.PetAIMode = PetAIMode.Stay;
+                        break;
+                    }
+                    if (followed == FollowTriggerResult.Handled)
+                        break;
                 }
                 if (npc.MapIndex != followTarget.MapIndex)
                 {
                     break;
                 }
-                int dist = npc.Position.GetDistanceTo(followTarget.Position);
+                // Source-X only takes the follow point from a target it can SEE
+                // (NPC_Act_Follow, CCharNPCAct.cpp:1386; CanSee, CCharStatus.cpp:1189).
+                // SphereNet read the position unconditionally, so a pet tracked an
+                // owner who had just hidden - across the map, to wherever they went.
+                // A hidden target leaves the last place it WAS seen standing, which is
+                // what the pet walks to.
+                var followPoint = ResolveFollowPoint(npc, followTarget);
+                if (followPoint == null)
+                    break;
+
+                int dist = npc.Position.GetDistanceTo(followPoint.Value);
                 bool leashed = PetFollowMaxDistance > 0 && dist > PetFollowMaxDistance;
-                if (dist > 2 && !leashed)
-                    MoveToward(npc, followTarget.Position, run: dist > 3);
+                int keep = Math.Max(0, followArgs.MaxDistance);
+                if (dist > keep && !leashed)
+                    MoveToward(npc, followPoint.Value, run: dist > 3);
                 break;
             }
             case PetAIMode.Guard:

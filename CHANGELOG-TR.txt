@@ -3,6 +3,60 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Petler: su ustundeki guverteler, gorunmeyen sahipler ve sozunu tutan emirler (07L-07Q)
+----------------------------------------
+
+FIX - Yuzemeyen bir yaratik, su uzerine serilmis kuru bir guverteden gecemiyordu.
+        Yuzme sarti, basilan yuzey yerine altindaki ham land tile'dan okunuyordu; yani
+        iskele, kopru veya gemi guvertesi yuzme istiyordu. Source-X once yuzeyi cozer ve
+        ancak sonra o yuzeyin istedigi yetenegi sorar - su icin yuzme, platform icin
+        yurume (CCharStatus.cpp:1812/1858). Acik su hala yuzme istiyor ve pathfinder da
+        ayni yaniti veriyor; cunku adimla anlasmayan bir arama, adimin reddedecegi
+        rotalar planlar.
+
+FIX - Pet, az once gizlenen sahibini haritanin obur ucuna kadar takip ediyordu.
+        Source-X takip noktasini yalnizca GOREBILDIGI hedeften alir (NPC_Act_Follow,
+        CCharNPCAct.cpp:1386; CanSee, CCharStatus.cpp:1189). Gizlenen hedef artik
+        gorulen son yeri geride birakiyor ve takipci oraya yuruyor; hedef yeniden
+        gorununce takip kaldigi yerden devam ediyor.
+
+FIX - @NPCActFollow sozlesmesi tek bir bool'a indirgenmisti. Source-X'te uc sonuc var -
+        vazgec, islendi, devam et - ve scriptin degistirebilecegi argumanlar: ARGN1
+        kacma, ARGN2 korunacak mesafe, ARGN3 uzaklasma, ARGO hedef
+        (CCharNPCAct.cpp:1357). Adapter bunlarin hicbirini gecirmiyor ve yaniti atiyordu;
+        yani scriptin mesafesi motora hic ulasmiyor, "islendi" ile "devam et" ayirt
+        edilemiyordu. ARGN2 referansin 1'i yerine SphereNet'in kendi takip mesafesiyle
+        besleniyor; boylece hicbir sey scriptlemeyen paket mevcut davranisini koruyor.
+
+        Scriptin RETURN 0'i hala fonksiyon sonuna dusmekten ayirt edilemiyor, cunku
+        yorumlayici butun trigger'larda sifiri Default'a esliyor; bugun yalnizca native
+        bir handler "islendi" diyebiliyor. Ustu ortulmedi, kayda gecirildi.
+
+FIX - GO emrinin tamamlanmasi ArgumentException firlatiyordu. PetAIMode byte tabanlidir
+        ve Enum.IsDefined, boyle bir enum'a kutulanmis Int32 verildiginde false donmek
+        yerine FIRLATIR - yani onceki modu gercekten kaydeden gercek komutun verdigi her
+        GO, varista patliyordu; hedef etiketi zaten silinmis oluyor ve pet Come modunda
+        takili kaliyordu.
+
+FIX - GO emri bir kare kala tamamlanmis sayiliyordu; yani bitisik kareye verilen emir
+        peti hic hareket ettirmiyor, uzak hedefte de son kareye girilmiyordu. Source-X
+        gidilecek yon kaldigi surece adim atmaya devam eder (NPC_WalkToPoint,
+        CCharNPCAct.cpp:437). Ulasilamayan son kare - uzerinde biri varsa veya kapaliysa -
+        sonsuza kadar denenmek yerine emri sonlandiriyor.
+
+FIX - Saldiri emri, geri donmek icin az once kaydettigi modu yok ediyordu.
+        PREV_PET_MODE'u yaziyor, hemen ardindan onceki emri temizleyen cagriyi yapiyordu
+        ve o cagri tam da bu etiketi siliyordu; boylece "oldur" denen pet Guard veya
+        Stay'e degil Follow'a donup sahibinin pesine takiliyordu. Temizlik artik once
+        yapiliyor, geri donus degeri ondan sonra yaziliyor.
+
+FIX - Petin `equip` komutu guc gereksinimini atliyordu: on gucundeki pet seksen guc
+        isteyen silahi kusaniyordu. Source-X adayi CanEquipLayer'dan fTest ile gecirir;
+        bu da gereksinimi NPC icin de devreye sokar (CCharNPCStatus.cpp:688 ->
+        CCharStatus.cpp:297). Character.Equip dusuk seviyeli yerlestirmedir ve hicbir sey
+        dayatmaz; komut artik once CanEquip soruyor. Reddedilen esya cantada kaliyor ve
+        tarama bir sonraki adaya geciyor.
+
 [2026-09-06] - NPC hareketi: gercekten yolda olan sey ve yurume izni (07H-07K)
 ----------------------------------------
 

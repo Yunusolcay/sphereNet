@@ -1741,9 +1741,39 @@ public static partial class Program
                     _triggerDispatcher.FireCharTrigger(npc, CharTrigger.NPCActWander,
                         new TriggerArgs { CharSrc = npc }) == TriggerResult.True;
             if (_triggerDispatcher.IsCharTriggerUsed(CharTrigger.NPCActFollow))
-                _npcAI.OnNpcActFollow = (npc, target) =>
-                    _triggerDispatcher.FireCharTrigger(npc, CharTrigger.NPCActFollow,
-                        new TriggerArgs { CharSrc = target, O1 = target }) == TriggerResult.True;
+                _npcAI.OnNpcActFollow = (npc, target, followArgs) =>
+                {
+                    // Source-X NPC_Act_Follow args: ARGN1 = flee, ARGN2 = the distance
+                    // to keep, ARGN3 = move away, ARGO = the target - seeded before the
+                    // trigger and read back when it falls through (CCharNPCAct.cpp:1357).
+                    // The old adapter passed none of them and threw the answer away as
+                    // a bool.
+                    var args = new TriggerArgs
+                    {
+                        CharSrc = target,
+                        O1 = target,
+                        N1 = followArgs.Flee ? 1 : 0,
+                        N2 = followArgs.MaxDistance,
+                        N3 = followArgs.MoveAway ? 1 : 0,
+                    };
+
+                    var result = _triggerDispatcher.FireCharTrigger(
+                        npc, CharTrigger.NPCActFollow, args);
+                    if (result == TriggerResult.True)
+                        return SphereNet.Game.AI.NpcAI.FollowTriggerResult.GiveUp;
+
+                    // NOTE: a script's RETURN 0 cannot be told from falling off the end
+                    // here - ScriptInterpreter maps zero onto Default - so only a native
+                    // handler can answer Handled today. Recorded as an open item rather
+                    // than pretended away.
+                    if (result == TriggerResult.False)
+                        return SphereNet.Game.AI.NpcAI.FollowTriggerResult.Handled;
+
+                    followArgs.Flee = args.N1 != 0;
+                    followArgs.MaxDistance = args.N2;
+                    followArgs.MoveAway = args.N3 != 0;
+                    return SphereNet.Game.AI.NpcAI.FollowTriggerResult.Continue;
+                };
             if (_triggerDispatcher.IsCharTriggerUsed(CharTrigger.NPCActCast))
                 _npcAI.OnNpcActCast = (npc, target, spell, wandUse) =>
                 {

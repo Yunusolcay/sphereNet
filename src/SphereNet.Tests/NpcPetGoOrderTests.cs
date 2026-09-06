@@ -42,14 +42,16 @@ public class NpcPetGoOrderTests
         pet.SetTag("GO_TARGET", "120,100,0,0");
 
         var goal = new Point3D(120, 100, 0, 0);
-        for (int i = 0; i < 60 && pet.Position.GetDistanceTo(goal) > 1; i++)
+        for (int i = 0; i < 60 && pet.Position.GetDistanceTo(goal) > 0; i++)
         {
             pet.NextNpcActionTime = 0;
             ai.OnTickAction(pet);
         }
 
-        Assert.True(pet.Position.GetDistanceTo(goal) <= 1,
-            $"pet stuck at {pet.Position.X},{pet.Position.Y} — the go order never completed");
+        // Onto the tile itself. This used to accept being one short, which is how a GO
+        // to an adjacent tile moved the pet nowhere at all: Source-X keeps stepping
+        // while a direction remains (NPC_WalkToPoint, CCharNPCAct.cpp:437).
+        Assert.Equal(goal, pet.Position);
 
         // The arrival tick clears the order and parks the pet at the spot
         // instead of resuming the follow (Source-X NPCACT_GOTO semantics).

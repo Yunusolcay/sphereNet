@@ -168,9 +168,10 @@ public sealed class Pathfinder
             if (!mapData.IsPassable(pos.Map, pos.X, pos.Y, pos.Z))
                 return false;
 
-            var terrain = mapData.GetTerrainTile(pos.Map, pos.X, pos.Y);
-            var landData = mapData.GetLandTileData(terrain.TileId);
-            if (landData.IsWet && (canFlags & CanFlags.C_Swim) == 0)
+            // The search has to agree with the step it is planning: the water rule
+            // belongs to the surface actually stood on, not to whatever land lies at
+            // the bottom (see AI.NpcAI.StandsOnWater).
+            if (AI.NpcAI.StandsOnWater(mapData, pos) && (canFlags & CanFlags.C_Swim) == 0)
                 return false;
         }
 

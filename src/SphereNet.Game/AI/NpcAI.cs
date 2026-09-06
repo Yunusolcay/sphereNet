@@ -117,7 +117,38 @@ public sealed partial class NpcAI
 
     public Func<Character, bool>? OnNpcActWander { get; set; }
 
-    public Func<Character, Character, bool>? OnNpcActFollow { get; set; }
+    /// <summary>What a follow trigger answered, and what it left behind.
+    ///
+    /// Source-X gives NPC_Act_Follow three outcomes (CCharNPCAct.cpp:1357): RETURN 1
+    /// gives up following, RETURN 0 means the script handled this call and the native
+    /// movement is skipped, and falling through carries on after reading ARGN1 (flee),
+    /// ARGN2 (the distance to keep) and ARGN3 (move away) back. The adapter collapsed
+    /// all of that into one bool, so "handled" and "carry on" were the same answer and
+    /// a script's distance never reached the engine.</summary>
+    public enum FollowTriggerResult
+    {
+        /// <summary>Carry on with the native follow, honouring <see cref="FollowTriggerArgs"/>.</summary>
+        Continue = 0,
+        /// <summary>The script dealt with this call; take no native step.</summary>
+        Handled = 1,
+        /// <summary>Give up following.</summary>
+        GiveUp = 2,
+    }
+
+    /// <summary>The mutable half of the follow trigger, seeded before it runs and read
+    /// back afterwards.</summary>
+    public sealed class FollowTriggerArgs
+    {
+        public bool Flee { get; set; }
+        public bool MoveAway { get; set; }
+
+        /// <summary>How close the follower wants to be. Seeded with SphereNet's own
+        /// following distance rather than the reference's 1, so a pack that scripts
+        /// nothing keeps the behaviour it has today.</summary>
+        public int MaxDistance { get; set; }
+    }
+
+    public Func<Character, Character, FollowTriggerArgs, FollowTriggerResult>? OnNpcActFollow { get; set; }
 
     /// <summary>@NPCActCast hook. Source-X NPC_FightMagery fires it per candidate
     /// spell with ARGN1=spell, ARGN2=wand-use, ARGO=target, LOCAL.HealThreshold.
