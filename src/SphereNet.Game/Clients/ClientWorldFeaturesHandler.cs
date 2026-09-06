@@ -700,14 +700,23 @@ public sealed class ClientWorldFeaturesHandler
         if (trade == null) return;
         if (!trade.IsParticipant(_character)) return;
 
+        // Source-X receive.cpp:1132 refuses the packet when the named container is
+        // not the sender's own (`character != container->GetParent()`). Without it,
+        // reading the accept value from the packet would let a client name the
+        // PARTNER's container and set the partner's flag - turning a toggle bug into
+        // one-sided completion. Now that each window is parented to its owner
+        // (CreateTradeContainer) this is a direct comparison.
+        if (trade.GetOwnContainer(_character).Uid.Value != containerSerial)
+            return;
+
         switch (action)
         {
             case 1: // Cancel
                 CancelTrade(trade);
                 break;
-            case 2: // Accept toggle
+            case 2: // Accept / un-accept, per the packet's own flag
             {
-                bool bothAccepted = trade.ToggleAccept(_character);
+                bool bothAccepted = trade.SetAccept(_character, param != 0);
                 SendTradeUpdateToBoth(trade);
 
                 if (bothAccepted)
@@ -762,34 +771,70 @@ public sealed class ClientWorldFeaturesHandler
         return true;
     }
 
-    public void InitiateTrade(Character partner, Item? firstItem = null)
+    /// <summary>
+    /// Build one side of a secure trade window and attach it to its owner.
+    ///
+    /// Source-X Cmd_SecureTrade (CClientUse.cpp:1414/1420) does
+    /// <c>LayerAdd(pCont, LAYER_SPECIAL)</c> on each character with type
+    /// IT_EQ_TRADE_WINDOW, so the window belongs to a person. SphereNet left both
+    /// containers as loose world items with no parent and no position, which is why
+    /// nothing downstream could tell whose window it was: the pickup reach check
+    /// found neither an owner nor an opened-container record, so a player could not
+    /// take back what they had just offered.
+    ///
+    /// Attached by hand rather than through <see cref="Character.Equip"/>: Layer.Special
+    /// is shared with memory items, which deliberately stay out of the equipment slot
+    /// array (CharacterMemoryState), so writing the slot here would collide with them.
+    /// </summary>
+    private Item CreateTradeContainer(Character owner)
     {
-        if (_character == null || _tradeManager == null) return;
+        var cont = _world.CreateItem();
+        cont.BaseId = 0x1E5E;
+        cont.ItemType = Core.Enums.ItemType.EqTradeWindow;
+        cont.Name = "Trade Container";
+        cont.IsEquipped = true;
+        cont.EquipLayer = Core.Enums.Layer.Special;
+        cont.ContainedIn = owner.Uid;
+        return cont;
+    }
+
+    /// <summary>
+    /// Open a secure trade with <paramref name="partner"/>, optionally seeded with
+    /// the item that was dropped on them. Returns false when the trade did not open.
+    ///
+    /// The result matters: Source-X Event_Item_Drop bounces the dropped item when
+    /// Cmd_SecureTrade fails (CClientEvent.cpp:325). This used to return void, so
+    /// every early refusal - a dead or distant partner, REFUSETRADES, either side
+    /// already trading - left the item parented to the character with no drag and no
+    /// container, unreachable through any normal inventory view, while the client was
+    /// told the drop had succeeded.
+    /// </summary>
+    public bool InitiateTrade(Character partner, Item? firstItem = null)
+    {
+        if (_character == null || _tradeManager == null) return false;
         if (partner == _character || partner.IsDeleted || !partner.IsPlayer)
-        { SysMessage("That is not a valid trade partner."); return; }
-        if (_character.IsDead || partner.IsDead) { SysMessage("You cannot trade while dead."); return; }
+        { SysMessage("That is not a valid trade partner."); return false; }
+        if (_character.IsDead || partner.IsDead) { SysMessage("You cannot trade while dead."); return false; }
+        // Source-X Cmd_SecureTrade (CClientUse.cpp:1338) refuses a partner with no
+        // active client, "and also offline players" — a character standing in the
+        // world is not the same thing as a player who can answer.
+        if (!partner.IsOnline)
+        { SysMessage($"{partner.Name} is not available for trade."); return false; }
         if (_character.MapIndex != partner.MapIndex ||
             _character.Position.GetDistanceTo(partner.Position) > 3)
-        { SysMessage("That person is too far away."); return; }
+        { SysMessage("That person is too far away."); return false; }
         if (partner.TryGetTag("REFUSETRADES", out string? refuse) &&
             (!int.TryParse(refuse, out int refuseValue) || refuseValue != 0))
-        { SysMessage($"{partner.Name} is refusing trade requests."); return; }
+        { SysMessage($"{partner.Name} is refusing trade requests."); return false; }
 
         var existing = _tradeManager.FindTradeFor(_character);
-        if (existing != null) { SysMessage("You are already trading."); return; }
+        if (existing != null) { SysMessage("You are already trading."); return false; }
 
         var partnerTrade = _tradeManager.FindTradeFor(partner);
-        if (partnerTrade != null) { SysMessage("They are already trading."); return; }
+        if (partnerTrade != null) { SysMessage("They are already trading."); return false; }
 
-        var cont1 = _world.CreateItem();
-        cont1.BaseId = 0x1E5E;
-        cont1.ItemType = Core.Enums.ItemType.Container;
-        cont1.Name = "Trade Container";
-
-        var cont2 = _world.CreateItem();
-        cont2.BaseId = 0x1E5E;
-        cont2.ItemType = Core.Enums.ItemType.Container;
-        cont2.Name = "Trade Container";
+        var cont1 = CreateTradeContainer(_character);
+        var cont2 = CreateTradeContainer(partner);
 
         var trade = _tradeManager.StartTrade(_character, partner, cont1, cont2);
         if (FireTradeTrigger(_character, CharTrigger.TradeCreate, trade, partner, firstItem) == TriggerResult.True ||
@@ -801,7 +846,7 @@ public sealed class ClientWorldFeaturesHandler
             _tradeManager.EndTrade(trade);
             _world.RemoveItem(cont1);
             _world.RemoveItem(cont2);
-            return;
+            return false;
         }
 
         if (firstItem != null && _triggerDispatcher?.FireItemTrigger(firstItem,
@@ -818,7 +863,7 @@ public sealed class ClientWorldFeaturesHandler
             _tradeManager.EndTrade(trade);
             _world.RemoveItem(cont1);
             _world.RemoveItem(cont2);
-            return;
+            return false;
         }
 
         _netState.Send(BuildWorldItemPacket(cont1.Uid.Value, 0x1E5E, 1, 0, 0, 0, 0));
@@ -834,7 +879,7 @@ public sealed class ClientWorldFeaturesHandler
             {
                 TradeManager.ReturnItemToCharacter(_world, _character, firstItem);
                 CancelTrade(trade);
-                return;
+                return false;
             }
             _netState.Send(new PacketContainerItem(
                 firstItem.Uid.Value, firstItem.DispIdFull, 0,
@@ -842,6 +887,8 @@ public sealed class ClientWorldFeaturesHandler
                 cont1.Uid.Value, firstItem.Hue, _netState.IsClientPost6017));
             SendTradeItemToPartner?.Invoke(partner, firstItem, cont1);
         }
+
+        return true;
     }
 
     private void CancelTrade(SecureTrade trade)
@@ -893,13 +940,21 @@ public sealed class ClientWorldFeaturesHandler
         var cont1 = trade.InitiatorContainer;
         var cont2 = trade.PartnerContainer;
 
-        // @TradeAccepted fires BEFORE any item changes hands (Source-X
-        // CItemContainer): RETURN 1 from either side cancels the whole trade, so
-        // the items go back to their owners instead of being swapped.
+        // @TradeAccepted fires BEFORE any item changes hands. RETURN 1 from either
+        // side vetoes THIS EXCHANGE, and nothing more: Source-X
+        // CItemContainer.cpp:189 simply returns, without Trade_Delete, so the window
+        // stays open with both offers untouched and the script's caller can adjust
+        // the offer and accept again. Cancelling the whole trade instead handed the
+        // goods back and fired @TradeClose on both sides, which a script written
+        // against the reference does not expect.
+        //
+        // Source-X also leaves both check marks SET on this path (:145 sets them,
+        // :188 returns before anything clears them), so a later Trade_Status
+        // re-fires the trigger. That is reproduced deliberately rather than
+        // clearing the flags, which would be a different contract.
         if (FireTradeTrigger(initiator, CharTrigger.TradeAccepted, trade, partner) == TriggerResult.True ||
             FireTradeTrigger(partner, CharTrigger.TradeAccepted, trade, initiator) == TriggerResult.True)
         {
-            CancelTrade(trade);
             return;
         }
 

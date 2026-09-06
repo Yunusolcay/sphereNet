@@ -189,7 +189,7 @@ internal interface IClientContext : ITextConsole
     bool TryHandleCommandSpeech(string text);
     void SetWarMode(bool warMode, bool syncClients, bool preserveTarget);
     void FaceTarget(Character target);
-    void InitiateTrade(Character partner, Item? firstItem = null);
+    bool InitiateTrade(Character partner, Item? firstItem = null);
     void SendTradeUpdateToBoth(SecureTrade trade);
     void TickPendingSkill();
     void TickPendingCraft();

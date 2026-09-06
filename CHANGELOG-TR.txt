@@ -3,6 +3,58 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Guvenli ticaret: pencere sahipligi, onay sozlesmesi ve kurtarma (02)
+----------------------------------------
+
+FIX - Iki guvenli ticaret penceresi de sahipsiz ve konumsuz, basibos dunya
+        nesneleriydi. Source-X Cmd_SecureTrade her pencereyi IT_EQ_TRADE_WINDOW
+        olarak LAYER_SPECIAL'da karakterine kusandirir (CClientUse.cpp:1414/1420);
+        asagidakilerin nerdeyse hepsi bu sahiplikten dogar. ItemType.EqTradeWindow ve
+        Layer.Special zaten tanimliydi, burada sadece kullanilmiyordu.
+
+FIX - Oyuncu az once teklif ettigi esyayi geri alamiyordu. Envanter turunde eklenen
+        kap erisim kapisi trade penceresi icin ne sahip ne acilma kaydi buluyordu;
+        yanlis konan esyayi geri almanin tek yolu tum ticareti iptal etmekti.
+        Pencerenin sahibi olmasi bunu cozuyor; partnerin penceresi ise dogru sekilde
+        erisim disi kaliyor.
+
+FIX - Onay paketinin kendi bayragi yok sayilip saklanan bool tersine ceviriliyordu;
+        tekrarlanan onay sessizce onayi kaldiriyor, acik bir "kabul etmiyorum" ise
+        ticareti tamamliyordu. Source-X Trade_Status degeri atar ve false ise IKI
+        tarafi birden temizler (CItemContainer.cpp:144). Gonderen ayrica KENDI kabini
+        adlandirmak zorundadir (receive.cpp:1132) - bu kontrol olmadan bayragi
+        paketten okumak, istemcinin partnerin onayini set etmesine izin verirdi.
+
+FIX - Teklifin degismesi, verilmis bir onayi gecersiz kilmiyordu. Sifirlama iki
+        istemci handler'inda duruyordu; bir script tasimasi veya motor silmesi
+        anlasilmis bir ticaretin mallarini degistirebiliyordu. Artik ekleme ve
+        cikarmanin ikisinden de tetiklenen bir kap degismezi; Source-X de ContentAdd
+        (CItemContainer.cpp:557) ve OnRemoveObj (:798) icinde ayni seyi yapar.
+
+FIX - Ticareti reddeden, olu, uzak veya zaten ticarette olan bir oyuncuya esya
+        birakmak, esyayi karaktere bagli, suruklemesiz ve kapsiz birakiyordu - hicbir
+        envanter goruntusunden erisilemez halde - ve istemciye birakma basarili
+        deniyordu. InitiateTrade artik basarisizligi bildiriyor, esya kaldirildigi
+        yere geri donuyor (Source-X Event_Item_Drop_Fail, CClientEvent.cpp:325).
+
+FIX - Aktif istemcisi olmayan bir oyuncuyla ticaret acilabiliyor, teklif kimsenin
+        cevap veremeyecegi bir oturumda kaliyordu. Source-X cevrimdisi partneri
+        dogrudan reddeder (CClientUse.cpp:1338).
+
+FIX - Ticaret sirasinda alinan kayit, pencerelerle ama oturumsuz geri geliyordu; ve
+        parent'lari olmadigi icin yukleyici onlari haritada (0,0) karesine, icinde
+        gercek oyuncu maliyla acilabilir siradan kaplar olarak yerlestiriyordu. Trade
+        pencereleri artik sahipli ve RecoverInterruptedTrades yuklemede her birini
+        sahibine bosaltip kaldiriyor - Source-X'in CItem::IsWeird (CItem.cpp:1005)
+        ile vardigi sonucun aynisi.
+
+FIX - @TradeAccepted'dan RETURN 1 tum ticareti iptal ediyordu: mallar geri donuyor,
+        iki tarafta @TradeClose tetikleniyor, oturum ve pencereler yok ediliyordu.
+        Source-X yalnizca return eder (CItemContainer.cpp:189): o degisimi veto eder,
+        pencereyi iki teklif de yerinde acik birakir; boylece scripti yazan teklifi
+        duzeltip yeniden onaylatabilir. Iki onay isareti de referanstaki gibi
+        bilincli olarak set birakildi.
+
 [2026-09-06] - Envanter aktarim kurallari: imlec, kap hedefleri ve erisim (01B)
 ----------------------------------------
 

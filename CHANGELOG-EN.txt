@@ -4,6 +4,58 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Secure trade: window ownership, accept contract and recovery (02)
+----------------------------------------
+
+FIX - Both secure-trade windows were loose world items with no owner and no
+        position. Source-X Cmd_SecureTrade equips each one on its character as
+        IT_EQ_TRADE_WINDOW at LAYER_SPECIAL (CClientUse.cpp:1414/1420), and almost
+        everything below follows from having that owner. ItemType.EqTradeWindow and
+        Layer.Special already existed and were simply unused here.
+
+FIX - A player could not take back what they had just offered. The container-reach
+        gate added with the inventory work found neither an owner nor an opened
+        container record for a trade window, so the only way out of a mistaken offer
+        was to cancel the whole trade. Owning the window fixes it, and the partner's
+        window stays correctly out of reach.
+
+FIX - The accept packet's own flag was ignored and a stored bool flipped instead, so
+        a repeated accept silently un-accepted and an explicit "I do not accept"
+        completed the trade. Source-X Trade_Status assigns the value and clears BOTH
+        sides when it is false (CItemContainer.cpp:144). The sender must also name
+        their OWN container (receive.cpp:1132) - without that check, reading the flag
+        from the packet would have let a client set the partner's acceptance.
+
+FIX - Changing an offer did not invalidate an acceptance already given. The reset
+        lived in two client handlers, so a script move or an engine deletion could
+        swap the goods under an agreed trade. It is now a container invariant fired
+        from add and remove alike, as Source-X does from ContentAdd
+        (CItemContainer.cpp:557) and OnRemoveObj (:798).
+
+FIX - Dropping an item on a player who refuses trades, is dead, is distant, or is
+        already trading left the item parented to the character with no drag and no
+        container - unreachable through any inventory view - while the client was
+        told the drop succeeded. InitiateTrade now reports failure and the item
+        bounces to its lift origin (Source-X Event_Item_Drop_Fail,
+        CClientEvent.cpp:325).
+
+FIX - A trade could be opened with a player who has no active client, leaving the
+        offer in a session nobody could answer. Source-X refuses an offline partner
+        outright (CClientUse.cpp:1338).
+
+FIX - A save taken mid-trade came back with the windows but no session, and because
+        they had no parent the loader placed them on the map at tile (0,0) as
+        ordinary openable containers holding real player property. Trade windows are
+        now owned, and RecoverInterruptedTrades empties each one back to its owner on
+        load and removes it - the same end Source-X reaches through CItem::IsWeird
+        (CItem.cpp:1005).
+
+FIX - A RETURN 1 from @TradeAccepted cancelled the whole trade: goods returned,
+        @TradeClose fired on both sides, session and windows destroyed. Source-X
+        simply returns (CItemContainer.cpp:189), vetoing that exchange and leaving
+        the window open with both offers intact so the script's author can adjust and
+        accept again. Both check marks are deliberately left set, as in the reference.
+
 [2026-09-06] - Inventory transfer rules: cursor, container targets and reach (01B)
 ----------------------------------------
 

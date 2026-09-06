@@ -1604,6 +1604,16 @@ public static partial class Program
             _deathEngine.PartyManager = _partyManager;
             _deathEngine.TriggerDispatcher = _triggerDispatcher;
             _tradeManager = new TradeManager();
+
+            // A change to either offer invalidates any acceptance already given
+            // (Source-X Trade_Status(false) from ContentAdd/OnRemoveObj). Driven from
+            // the container itself so a script move or an engine deletion cannot slip
+            // past a handler that forgot.
+            SphereNet.Game.Objects.Items.Item.OnTradeWindowChanged = window =>
+            {
+                var trade = _tradeManager?.FindByContainer(window.Uid.Value);
+                trade?.ResetAcceptance();
+            };
             // Source-X kill record: log the player death and echo it to the
             // victim's party (LOGM_KILLS + m_pParty->SysMessageAll).
             _deathEngine.KillMessageHook = (victim, msg) =>

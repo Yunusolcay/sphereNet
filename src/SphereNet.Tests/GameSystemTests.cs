@@ -451,10 +451,16 @@ public class GameSystemTests
         var trade = tm.StartTrade(ch1, ch2, cont1, cont2);
         Assert.False(trade.IsCompleted);
 
-        trade.ToggleAccept(ch1);
+        trade.SetAccept(ch1, true);
         Assert.False(trade.InitiatorAccepted && trade.PartnerAccepted);
-        bool both = trade.ToggleAccept(ch2);
+        bool both = trade.SetAccept(ch2, true);
         Assert.True(both);
+
+        // Source-X Trade_Status(false) clears BOTH sides, so one player changing
+        // their mind puts the whole trade back to unaccepted.
+        Assert.False(trade.SetAccept(ch2, false));
+        Assert.False(trade.InitiatorAccepted);
+        Assert.False(trade.PartnerAccepted);
     }
 
     // --- NPC AI ---
@@ -2554,13 +2560,18 @@ TAG.DIALOG_SUBJECT_TOUCHED=1
         client.SetEngines(triggerDispatcher: dispatcher, tradeManager: tradeManager);
         AttachCharacter(client, initiator);
 
+        // A trade partner must have an active client (Source-X Cmd_SecureTrade
+        // refuses offline players); the test partner never logs in.
+        partner.IsOnline = true;
         client.InitiateTrade(partner);
         var trade = tradeManager.FindTradeFor(initiator);
         Assert.NotNull(trade);
         Assert.Equal(2, createCount);
 
-        trade!.ToggleAccept(partner);
-        client.HandleSecureTrade(2, trade.InitiatorContainer.Uid.Value, 0);
+        trade!.SetAccept(partner, true);
+        // param carries the accept flag: 1 = accept. It used to be ignored and the
+        // stored bool flipped instead, so a 0 completed the trade.
+        client.HandleSecureTrade(2, trade.InitiatorContainer.Uid.Value, 1);
 
         Assert.Equal(2, acceptedCount);
         Assert.Equal(2, closeCount);
@@ -2605,6 +2616,9 @@ TAG.DIALOG_SUBJECT_TOUCHED=1
         client.SetEngines(triggerDispatcher: dispatcher, tradeManager: tradeManager);
         AttachCharacter(client, initiator);
 
+        // A trade partner must have an active client (Source-X Cmd_SecureTrade
+        // refuses offline players); the test partner never logs in.
+        partner.IsOnline = true;
         client.InitiateTrade(partner);
         var trade = tradeManager.FindTradeFor(initiator);
         Assert.NotNull(trade);
@@ -2649,6 +2663,9 @@ TAG.DIALOG_SUBJECT_TOUCHED=1
         client.SetEngines(triggerDispatcher: dispatcher, tradeManager: tradeManager);
         AttachCharacter(client, initiator);
 
+        // A trade partner must have an active client (Source-X Cmd_SecureTrade
+        // refuses offline players); the test partner never logs in.
+        partner.IsOnline = true;
         client.InitiateTrade(partner);
         var trade = tradeManager.FindTradeFor(initiator);
         Assert.NotNull(trade);

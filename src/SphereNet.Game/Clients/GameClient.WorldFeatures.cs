@@ -38,7 +38,7 @@ public sealed partial class GameClient
     /// (Source-X CChar::Death Trade_Delete).</summary>
     public void CancelActiveTradeOnDeath() => WorldFeatures.CancelActiveTradeOnDeath();
 
-    public void InitiateTrade(Character partner, Item? firstItem = null) =>
+    public bool InitiateTrade(Character partner, Item? firstItem = null) =>
         WorldFeatures.InitiateTrade(partner, firstItem);
 
     internal void SendTradeUpdateToBoth(SecureTrade trade) => WorldFeatures.SendTradeUpdateToBoth(trade);

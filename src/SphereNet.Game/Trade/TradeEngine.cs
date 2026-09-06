@@ -65,12 +65,31 @@ public sealed class SecureTrade
     public Character GetPartner(Character ch) =>
         ch == _initiator ? _partner : _initiator;
 
-    public bool ToggleAccept(Character from)
+    /// <summary>
+    /// Set one side's accept flag to the value the client sent, and report whether
+    /// both sides now agree.
+    ///
+    /// Source-X CItemContainer::Trade_Status (CItemContainer.cpp:144) ASSIGNS the
+    /// value from the packet and, when it is false, clears the partner's flag too —
+    /// a change of mind puts the whole trade back to unaccepted. Flipping a stored
+    /// bool instead meant the packet's own field was ignored: a repeated accept
+    /// silently un-accepted, and an explicit "no" completed the trade.
+    /// </summary>
+    public bool SetAccept(Character from, bool accepted)
     {
         if (_isCompleted) return false;
 
-        if (from == _initiator) _initiatorAccepted = !_initiatorAccepted;
-        else if (from == _partner) _partnerAccepted = !_partnerAccepted;
+        if (from == _initiator) _initiatorAccepted = accepted;
+        else if (from == _partner) _partnerAccepted = accepted;
+        else return false;
+
+        if (!accepted)
+        {
+            // Withdrawing consent drops the other side's too, so nothing can
+            // complete on a flag the partner set against a different offer.
+            _initiatorAccepted = false;
+            _partnerAccepted = false;
+        }
 
         return _initiatorAccepted && _partnerAccepted;
     }

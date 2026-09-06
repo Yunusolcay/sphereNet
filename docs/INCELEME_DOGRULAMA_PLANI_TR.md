@@ -507,6 +507,71 @@ argumanlari, imlec origin bilgisinin harita/teleport sonrasi gecerliligi, nested
 weight/override kurallari, stack overflow parent limitleri, equip layer'in gercek
 itemdef ile eslesmesi. Bunlar 01B'de dogrulanmadi.
 
+### 02 + 02B — guvenli ticaret (6 Eylul 2026)
+
+[02 kanit raporu](D:/Projeler/Yunus/sphereNet/SOURCE_X_BOLUM_02_GUVENLI_TICARET.md) ·
+[02B kanit raporu](D:/Projeler/Yunus/sphereNet/SOURCE_X_BOLUM_02B_KAYIT_SCRIPT.md).
+Yedi bulgunun tamami dogrulandi ve uygulandi.
+
+**Kok neden (yedi bulgunun besini birden besliyordu):** trade penceresinin kimligi
+yoktu. `InitiateTrade` iki jenerik `Container` yaratiyordu — sahipsiz, konumsuz,
+kalici oturum kaydi yok. Source-X `Cmd_SecureTrade` (CClientUse.cpp:1414/1420)
+her pencereyi `IT_EQ_TRADE_WINDOW` olarak `LAYER_SPECIAL`'da karaktere kusandirir.
+`CreateTradeContainer` artik ayni seyi yapiyor; `ItemType.EqTradeWindow` ve
+`Layer.Special` zaten tanimliydi, sadece kullanilmiyordu.
+
+- [x] **SX-02-01 (P1)** — Onay toggle'i. (YAPILDI: `ToggleAccept` → `SetAccept(bool)`;
+  paketteki deger ataniyor ve `false` iki tarafi birden temizliyor (Source-X
+  Trade_Status, CItemContainer.cpp:144). **Raporda olmayan ek:** Source-X
+  receive.cpp:1132 gonderenin KENDI kabini kullandigini da denetler — bu olmadan
+  acik-durum atamasi, partnerin bayragini set etmeye izin veren tek tarafli
+  tamamlama acigina donusurdu; kontrol eklendi.)
+- [x] **SX-02-02 (P2→P1)** — Kendi teklifini geri alamama. (YAPILDI: kok neden
+  yukarida; pencere artik sahibine bagli oldugu icin `CanReachInsideContainer`
+  kendi penceresini geciriyor, partnerinkini reddediyor. **Bu, `6804d29`'da benim
+  actigim regresyondu** — 01B kap erisim kapisi trade penceresini hesaba
+  katmiyordu.)
+- [x] **SX-02-03 (P1)** — Baslatilamayan ticaret esyayi ortada birakiyor. (YAPILDI:
+  `InitiateTrade` artik `bool` donuyor; her erken rette esya lift-origin'ine geri
+  birakiliyor ve istemciye `PacketDropAck` yerine reject gidiyor — Source-X
+  Event_Item_Drop_Fail, CClientEvent.cpp:325.)
+- [x] **SX-02-04 (P1)** — Icerik degisikligi onayi bozmuyor. (YAPILDI: sifirlama
+  handler'lardan alinip kap mutasyonuna tasindi — `Item.OnTradeWindowChanged`
+  hem `TryAddItem` hem `RemoveItem` icinde tetikleniyor. **Rapora duzeltme:**
+  Source-X hem ContentAdd (CItemContainer.cpp:557) hem OnRemoveObj (:798) icinde
+  sifirlar; mevcut drop-uzerine sifirlama zaten dogru pariteydi, eksik olan
+  cikarma yariydi.)
+- [x] **SX-02B-01 (P1)** — Kayittan yuklemede sahipsiz trade kabi. (YAPILDI: yapisal
+  yari yukaridaki sahiplik; kurtarma yarisi `RecoverInterruptedTrades` — yuklemeden
+  hemen sonra her trade penceresi sahibine bosaltilip kaldiriliyor (Source-X
+  CItem::IsWeird → ItemBounce, CItem.cpp:1005). **Rapora duzeltme:** "kaplari
+  kayittan haric tut" da "oturumu persist et" de Source-X'in yaptigi degil; referans
+  kabi kusanik olarak persist edip yuklemede kendini onariyor. **Raporda olmayan
+  tehlike:** `WorldLoader` CONT'suz esyayi kayitli konumuna YERLESTIRIR — yani eski
+  davranista pencere, icindeki gercek oyuncu mali ile birlikte (0,0) karesinde
+  acilabilir bir dunya kabi olarak geri geliyordu.)
+- [x] **SX-02B-02 (P2)** — Cevrimdisi oyuncuyla ticaret. (YAPILDI: `partner.IsOnline`
+  kapisi (Source-X CClientUse.cpp:1338 "and also offline players"). Reddedilen
+  baslangic SX-02-03'un iade yolunu kullaniyor. NOT: Source-X ayrica karsilikli
+  `CanSee` ister; SphereNet'te harita+mesafe var, LOS yok — bu tur eklenmedi,
+  02C'ye birakildi.)
+- [x] **SX-02B-03 (P2)** — Script vetosu tum ticareti iptal ediyor. (YAPILDI: veto
+  artik yalnizca bu degisimi reddediyor, `CancelTrade` cagrilmiyor; pencere ve iki
+  teklif yerinde kaliyor (Source-X CItemContainer.cpp:189 duz `return`).
+  **Bilincli karar:** Source-X bu dalda iki onay isaretini de SET birakir, biz de
+  oyle biraktik — temizlemek farkli bir sozlesme olurdu, kod yorumunda yazili.)
+
+**02 kapanisi:** tam suite **2.374 basarili / 0 basarisiz** (+12). Sozlesme
+degisikligi nedeniyle guncellenen mevcut testler: GameSystemTests (ToggleAccept →
+SetAccept, `param=0` → `param=1`), TradeSafetyTests (ayni), ve alti `InitiateTrade`
+cagri yerinde partnere `IsOnline = true`.
+
+**Kalan (02C):** uzaklasma/harita degisimi, karsilikli CanSee, @TradeAccepted
+numarali nesne argumanlari (Source-X m_VarObjs), veto sonrasi tekrar onay akisi,
+ticaret surerken save/load'in canli oturumla etkilesimi. Ayrica kapasite
+davranisi bilincli tasarim farki olarak birakildi: SphereNet `CanAcceptTradeItems`
+ile on-kontrol yapar, Source-X kabulden sonra ItemBounce ile teslim eder.
+
 **Elenen varsayım:** `OYUN_ICI_ANALIZ_RAPORU.md` G04'teki normal çanta içindeki
 korumalı eşyanın ayrıca kurtarılması beklentisi Source-X kuralı değil.
 `CContainer::ContentsTransfer` yalnızca doğrudan çocukları değerlendirir; güncel
@@ -521,19 +586,48 @@ Altı yeni bulgu izole GameClient handler senaryolarıyla çalıştırıldı; So
 tarafı kaynak karşılaştırmasıdır. Üretim kodu değiştirilmedi. Tam test sonucu
 2348/2348 başarılı. 01A'nın beş eski çalışma senaryosu da düzeltmeleri doğruladı.
 
-- [ ] **SX-01B-01 (P1)** — İkinci pickup önceki sürüklemeyi çözmeden DRAGGING ve
-  origin bilgisini eziyor; ilk eşya layer'sız karakter çocuğu kalıyor.
-- [ ] **SX-01B-02 (P1)** — Kap olmayan hedefi gerçek kaptan ayır; gem kılıca
-  bırakıldığında kılıcın çocuk nesnesi oluyor.
-- [ ] **SX-01B-03 (P2)** — Banka sayımına gelen dolu çantanın alt ağacını dahil et;
-  sınırı 3 olan boş bankaya 5 çocuklu çanta girip derin sayı 6 oluyor.
-- [ ] **SX-01B-04 (P1)** — Drop hedefinin kök karakter sahipliğini bütün iç
-  çantalarda doğrula; yabancı oyuncunun iç çantasına doğrudan aktarım kabul ediliyor.
-- [ ] **SX-01B-05 (P1)** — Pickup için geçerli açılmış kap bağlamını doğrula;
-  çocuk UID biliniyorsa açılmamış kilitli kaptan eşya kaldırılabiliyor.
-- [ ] **SX-01B-06 (P2)** — Kuşanma öncesi yerinden çıkarılacak ekipmanın hareket
-  iznini kontrol et; yeni silah kuşanarak Cursed silah çantaya gönderilebiliyor.
+**Yeniden kontrol:** Yukarıdaki tamamlanmış SX-01B-01–06 kayıtları geçerlidir.
+`6804d29` üzerinde altı eski deney beklenen sonucu verdi; bu bölümdeki yinelenen
+açık kutular kaldırıldı. Yeni kap kontrolünün trade bütünleşme eksiği SX-02-02'dir.
 
 01B-04/05 eski veya özel hazırlanmış istek/UID bilgisi gerektiren erişim sınırı
 senaryolarıdır; normal istemcinin bunları kendiliğinden ürettiği iddia edilmiyor.
 Ek envanter varyantları rapor sonunda ayrıldı; sıradaki ana bölüm 02 güvenli ticaret.
+
+### SX-02 — Güvenli ticaret ilk tur (6 Eylül 2026)
+
+SphereNet `6804d29`, Source-X `92ced0ba`.
+[Kanıt ve tekrar raporu](D:/Projeler/Yunus/sphereNet/SOURCE_X_BOLUM_02_GUVENLI_TICARET.md).
+Tam suite 2362/2362 başarılı. Dört bulgu izole handler/world deneyleriyle üretildi.
+
+- [ ] **SX-02-01 (P1)** — `HandleSecureTrade` param değerini kullanmalı;
+  `param=0` mevcut toggle yaklaşımında onayı açıp transferi tamamlayabiliyor.
+- [ ] **SX-02-02 (P2)** — Trade container sahipliği/açılma/erişim bağlamını
+  bütünleştir; normal oyuncu kendi teklif nesnesini pickup ile geri alamıyor.
+- [ ] **SX-02-03 (P1)** — Başlatılamayan trade'in ilk eşyasını iade et;
+  REFUSETRADES reddinde eşya çanta ve DRAGGING dışında karaktere bağlı kalıyor.
+- [ ] **SX-02-04 (P1)** — Trade içeriğinden nesne çıkarılınca iki onayı sıfırla;
+  World.RemoveItem sonrası partner onayı korunup farklı teklif tamamlanıyor.
+
+Normal tamamlama, disconnect iadesi ve ölüm öncesi trade iptal köprüsü kontrolleri
+geçti. Sonraki 02B turu: save/load, script sözleşmesi, uzaklaşma/harita ve diğer
+durum değişimleri. Tam kapsam henüz kapanmadı; kapasite ön reddi raporda tasarım
+farkı olarak ayrıldı, yeni hata hükmü verilmedi.
+
+### SX-02B — Yeni kayıt/script bulguları (6 Eylül 2026)
+
+Kullanıcı SX-02-01–04 sorunlarının sürdüğünü bildirdi; açık durumları korundu.
+Bu tur onları düzeltmeden üç ayrı senaryo çalıştırıldı. SphereNet `db97de6`.
+[02B raporu](D:/Projeler/Yunus/sphereNet/SOURCE_X_BOLUM_02B_KAYIT_SCRIPT.md).
+
+- [ ] **SX-02B-01 (P1)** — Aktif trade snapshot'ından yüklemede teklif eşyasını
+  özgün sahibine geri bağla; nesne oturumsuz ve sahipsiz eski trade kabında kalıyor.
+- [ ] **SX-02B-02 (P2)** — Partnerin aktif bağlantısını doğrula; IsPlayer=true
+  fakat GameClient olmayan karakterle trade açılabiliyor.
+- [ ] **SX-02B-03 (P2)** — @TradeAccepted veto ile gerçek iptali ayır; Source-X
+  pencereyi açık bırakırken SphereNet kapatıp iki @TradeClose çalıştırıyor.
+
+Üçü izole deneyle üretildi; Source-X karşılıkları kaynak okumadır. Üretim kodu
+değiştirilmedi. Önceki 2362 test sonucu geçerli kaynak ağacına aittir; tam suite
+bu tur tekrar çalıştırılmadı. Sonraki ana alan 03 dövüş; kalan ticaret varyantları
+02B raporunda açık kapsam olarak korunuyor.

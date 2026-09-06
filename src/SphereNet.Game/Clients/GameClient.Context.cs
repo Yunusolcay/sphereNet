@@ -233,7 +233,7 @@ public sealed partial class GameClient : IClientContext
     bool IClientContext.TryHandleCommandSpeech(string text) => TryHandleCommandSpeech(text);
     void IClientContext.SetWarMode(bool warMode, bool syncClients, bool preserveTarget) => SetWarMode(warMode, syncClients, preserveTarget);
     void IClientContext.FaceTarget(Character target) => FaceTarget(target);
-    void IClientContext.InitiateTrade(Character partner, Item? firstItem) => InitiateTrade(partner, firstItem);
+    bool IClientContext.InitiateTrade(Character partner, Item? firstItem) => InitiateTrade(partner, firstItem);
     void IClientContext.SendTradeUpdateToBoth(SecureTrade trade) => SendTradeUpdateToBoth(trade);
     void IClientContext.TickPendingSkill() => TickPendingSkill();
     void IClientContext.TickPendingCraft() => TickPendingCraft();

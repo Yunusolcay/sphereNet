@@ -47,6 +47,9 @@ public class TradeSafetyTests
             .GetField("_character", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .SetValue(client, initiator);
 
+        // A trade partner must have an active client (Source-X Cmd_SecureTrade
+        // refuses offline players); the test partner never logs in.
+        partner.IsOnline = true;
         client.InitiateTrade(partner);
         var trade = tradeManager.FindTradeFor(initiator);
         Assert.NotNull(trade);
@@ -89,6 +92,9 @@ public class TradeSafetyTests
         client.SetEngines(tradeManager: tradeManager);
         TestHarness.AttachCharacter(client, initiator);
 
+        // A trade partner must have an active client (Source-X Cmd_SecureTrade
+        // refuses offline players); the test partner never logs in.
+        partner.IsOnline = true;
         client.InitiateTrade(partner);
         var trade = tradeManager.FindTradeFor(initiator);
         Assert.NotNull(trade);
@@ -98,8 +104,8 @@ public class TradeSafetyTests
         heavy.Amount = 100;
         trade!.InitiatorContainer.AddItem(heavy);
 
-        Assert.False(trade.ToggleAccept(partner));
-        client.HandleSecureTrade(2, trade.InitiatorContainer.Uid.Value, 0);
+        Assert.False(trade.SetAccept(partner, true));
+        client.HandleSecureTrade(2, trade.InitiatorContainer.Uid.Value, 1);
 
         Assert.NotNull(tradeManager.FindTradeFor(initiator));
         Assert.False(trade.InitiatorAccepted);

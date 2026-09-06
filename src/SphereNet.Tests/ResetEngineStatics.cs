@@ -101,6 +101,7 @@ public sealed class ResetEngineStaticsAttribute : BeforeAfterTestAttribute
         SphereNet.Game.Objects.Characters.Character.ScriptEquipItem = null;
         SphereNet.Game.Objects.Characters.Character.OnDragRelease = null;
         SphereNet.Game.Objects.Characters.Character.OnDragCancel = null;
+        SphereNet.Game.Objects.Items.Item.OnTradeWindowChanged = null;
         SphereNet.Game.Objects.Characters.Character.OnHitIgnored = null;
         SphereNet.Game.Objects.Characters.Character.OnNpcLostTeleport = null;
         SphereNet.Game.Objects.Items.Item.OnTimerExpired = null;

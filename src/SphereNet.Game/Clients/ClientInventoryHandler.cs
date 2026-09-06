@@ -161,7 +161,7 @@ public sealed class ClientInventoryHandler
     private SpellEngine? _spellEngine => _client.Spells;
     private bool CanSendStatusFor(Character ch) => _client.CanSendStatusFor(ch);
     private void SendSkillList() => _client.SendSkillList();
-    private void InitiateTrade(Character partner, Item? firstItem = null) => _client.InitiateTrade(partner, firstItem);
+    private bool InitiateTrade(Character partner, Item? firstItem = null) => _client.InitiateTrade(partner, firstItem);
     private void SendCharacterStatus(Character ch, bool includeExtendedStats = true) => _client.SendCharacterStatus(ch, includeExtendedStats);
     private void BroadcastWorldItem(Item item)
     {
@@ -1336,7 +1336,16 @@ public sealed class ClientInventoryHandler
 
                 if (charTarget.IsPlayer && _tradeManager != null)
                 {
-                    InitiateTrade(charTarget, item);
+                    // Source-X Event_Item_Drop bounces the item when Cmd_SecureTrade
+                    // refuses (CClientEvent.cpp:325). Acking a drop that never landed
+                    // told the client it had succeeded while the item sat parented to
+                    // the character, out of reach of every inventory view.
+                    if (!InitiateTrade(charTarget, item))
+                    {
+                        RestoreToOrigin(item);
+                        _netState.Send(new PacketDropReject());
+                        return;
+                    }
                     _netState.Send(new PacketDropAck());
                     return;
                 }

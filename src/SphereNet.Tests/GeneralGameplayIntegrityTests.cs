@@ -188,6 +188,9 @@ public sealed class GeneralGameplayIntegrityTests
         triggers.RegisterCharEvent("EVENTSPLAYER", "TradeCreate", (_, _) => TriggerResult.True);
         client.SetEngines(tradeManager: trades, triggerDispatcher: triggers);
 
+        // A trade partner must have an active client (Source-X Cmd_SecureTrade
+        // refuses offline players); the test partner never logs in.
+        partner.IsOnline = true;
         client.InitiateTrade(partner, offered);
 
         Assert.Null(trades.FindTradeFor(initiator));

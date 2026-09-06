@@ -787,6 +787,7 @@ public class Item : ObjBase
         item.ContainedIn = Uid;
         if (item.X == 0 && item.Y == 0)
             AssignRandomContainerPosition(this, item);
+        NotifyTradeContentChanged();
         return true;
     }
 
@@ -973,9 +974,28 @@ public class Item : ObjBase
         if (_contents.Remove(item))
         {
             item.ContainedIn = Serial.Invalid;
+            NotifyTradeContentChanged();
             return true;
         }
         return false;
+    }
+
+    /// <summary>Wired by the host to clear both sides' accept flags when a secure
+    /// trade window's contents change.</summary>
+    public static Action<Item>? OnTradeWindowChanged;
+
+    /// <summary>
+    /// An offer that has been agreed to is only agreed to as it stood. Source-X makes
+    /// this a container invariant rather than a handler courtesy: ContentAdd
+    /// (CItemContainer.cpp:557) and OnRemoveObj (:798) both call Trade_Status(false)
+    /// for IT_EQ_TRADE_WINDOW. Resetting only in the client drop handler left every
+    /// other path - a script move, an engine deletion - able to change the goods out
+    /// from under an acceptance that had already been given.
+    /// </summary>
+    private void NotifyTradeContentChanged()
+    {
+        if (_type == ItemType.EqTradeWindow)
+            OnTradeWindowChanged?.Invoke(this);
     }
 
     /// <summary>Implements the <c>CONT=</c> script setter: move this item into

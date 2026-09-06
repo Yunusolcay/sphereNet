@@ -899,6 +899,10 @@ public static partial class Program
             var (items, chars) = _loader.Load(_world, savePath, _accounts);
             _log.LogInformation("World loaded: {Items} items, {Chars} chars", items, chars);
 
+            // A trade window cannot survive a restart: its session lived only in
+            // memory. Give the goods back before anything else looks at the world.
+            RecoverInterruptedTrades();
+
             // Initialize spawn components for IT_SPAWN_CHAR items
             InitializeSpawnItems();
 

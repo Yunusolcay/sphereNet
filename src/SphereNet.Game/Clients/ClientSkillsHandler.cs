@@ -67,7 +67,7 @@ public sealed class ClientSkillsHandler
     private void SysMessage(string text) => _client.SysMessage(text);
     private void SetPendingTarget(Action<uint, short, short, sbyte, ushort> callback, byte cursorType = 1) => _client.SetPendingTarget(callback, cursorType);
     private void SendGump(GumpBuilder gump, Action<uint, uint[], (ushort, string)[]>? callback = null) => _client.SendGump(gump, callback);
-    private void InitiateTrade(Character partner, Item? firstItem = null) => _client.InitiateTrade(partner, firstItem);
+    private bool InitiateTrade(Character partner, Item? firstItem = null) => _client.InitiateTrade(partner, firstItem);
     private bool OpenNamedDialog(string dialogId, int requestedPage = 0) => _client.OpenNamedDialog(dialogId, requestedPage);
     private Item? GetTopContainer(Item item) => _client.GetTopContainer(item);
     private static uint StableStringHash(string s) => GameClient.StableStringHash(s);

@@ -304,6 +304,55 @@ public static partial class Program
     /// and read-only, so it runs on every boot as a canary — a non-zero count means
     /// something loaded inconsistently (empty-looking bag, unmaterialised type,
     /// runaway spawner) that a player would otherwise have to discover in-game.</summary>
+    /// <summary>
+    /// Return the contents of any secure-trade window found in a freshly loaded
+    /// world, then delete the window.
+    ///
+    /// A trade session lives only in TradeManager's memory, so a save taken mid-trade
+    /// comes back with the windows but no session to drive them. Source-X reaches the
+    /// same end through CItem::IsWeird (CItem.cpp:1005), which runs over every object
+    /// on load: a trade window whose owner has no active client has its contents
+    /// bounced to that owner and is then removed.
+    ///
+    /// This runs before the world is otherwise used. Until the windows were parented
+    /// to their owners they saved with no CONT= at all, and the loader places a
+    /// parentless item at its stored position - which for these was tile (0,0),
+    /// leaving real player goods in an openable container on the map.
+    /// </summary>
+    private static void RecoverInterruptedTrades()
+    {
+        var windows = _world.GetAllObjects()
+            .OfType<SphereNet.Game.Objects.Items.Item>()
+            .Where(i => !i.IsDeleted && i.ItemType == SphereNet.Core.Enums.ItemType.EqTradeWindow)
+            .ToList();
+        if (windows.Count == 0) return;
+
+        int returned = 0;
+        foreach (var window in windows)
+        {
+            var owner = _world.FindChar(window.ContainedIn);
+            foreach (var item in new List<SphereNet.Game.Objects.Items.Item>(window.Contents))
+            {
+                window.RemoveItem(item);
+                if (owner != null && !owner.IsDeleted)
+                    SphereNet.Game.Trade.TradeManager.ReturnItemToCharacter(_world, owner, item);
+                else
+                    // No owner to give it back to (a save written before the windows
+                    // carried one). Drop it where the window stood rather than
+                    // deleting player property.
+                    _world.PlaceItemWithDecay(item, window.GetTopLevelPosition());
+                returned++;
+            }
+
+            owner?.Unequip(SphereNet.Core.Enums.Layer.Special);
+            _world.RemoveItem(window);
+        }
+
+        _log.LogInformation(
+            "Recovered {Count} item(s) from {Windows} interrupted trade window(s)",
+            returned, windows.Count);
+    }
+
     private static void AuditLoadedWorld()
     {
         var anomalies = SphereNet.Game.Diagnostics.WorldInvariantAuditor.Audit(_world);
