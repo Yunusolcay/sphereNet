@@ -1,4 +1,4 @@
-﻿// Fight execution: monster brain, ActFight, swings, flee, flanking.
+// Fight execution: monster brain, ActFight, swings, flee, flanking.
 // Decomposed from the former single-file NpcAI.cs (see NpcAI.cs core).
 using SphereNet.Core.Configuration;
 using SphereNet.Core.Enums;
@@ -873,10 +873,13 @@ public sealed partial class NpcAI
             return false;
         }
         // COMBAT_PARALYZE_CANSWING (old-sphere): a paralyzed (Freeze) attacker
-        // can keep swinging; sleeping always blocks.
+        // can keep swinging; sleeping always blocks — on either side, since
+        // Source-X Fight_CanHit (CCharFight.cpp:1697) answers SWINGING for
+        // STATF_SLEEPING on the attacker AND the target.
         bool paralyzeCanSwing = CombatHelper.IsCombatFlagSet(CombatFlags.ParalyzeCanSwing);
         if ((npc.IsStatFlag(StatFlag.Freeze) && !paralyzeCanSwing) ||
-            npc.IsStatFlag(StatFlag.Sleeping))
+            npc.IsStatFlag(StatFlag.Sleeping) ||
+            target.IsStatFlag(StatFlag.Sleeping))
         {
             npc.NextAttackTime = now + 500;
             return false;

@@ -975,9 +975,14 @@ public sealed class ClientCombatHandler
         // COMBAT_PARALYZE_CANSWING (old-sphere): a paralyzed (Freeze) attacker
         // can keep swinging; sleeping always blocks. Without the flag both
         // freeze and sleep stop the swing.
+        // A sleeping TARGET is checked here too: Source-X Fight_CanHit
+        // (CCharFight.cpp:1697) answers SWINGING for STATF_SLEEPING on either side,
+        // so a sleeper is not swung at from any entry point — the pending-hit path
+        // enforces the same rule in CombatHelper.EvaluateHitTime.
         bool paralyzeCanSwing = CombatHelper.IsCombatFlagSet(CombatFlags.ParalyzeCanSwing);
         if ((_character.IsStatFlag(StatFlag.Freeze) && !paralyzeCanSwing) ||
-            _character.IsStatFlag(StatFlag.Sleeping))
+            _character.IsStatFlag(StatFlag.Sleeping) ||
+            target.IsStatFlag(StatFlag.Sleeping))
         {
             _character.NextAttackTime = now + 250;
             return;
@@ -1173,8 +1178,20 @@ public sealed class ClientCombatHandler
                 _character.ClearPendingHit();
                 if (target != null)
                 {
+                    // This branch is reached when the target left reach or LoS during
+                    // the windup, NOT on a failed hit roll. Source-X spends such a
+                    // swing without touching ammo: the range re-check returns
+                    // WAR_SWING_EQUIPPING (CCharFight.cpp:1896) well before the
+                    // pAmmo block, which only runs on a real miss roll
+                    // (:2023 m_Act_Difficulty < 0). Taking an arrow here charged the
+                    // player for a shot that was never loosed.
+                    //
+                    // A throwing weapon has no pack ammo at all — it IS the
+                    // projectile — but its fallback type still matched any bolt
+                    // stack, so a thrown spear was eating crossbow bolts.
                     Item? missedAmmo = null;
-                    if (CombatHelper.IsRangedWeapon(weapon))
+                    if (CombatHelper.IsRangedWeapon(weapon) &&
+                        !CombatHelper.IsThrowingWeapon(weapon))
                     {
                         var ammoSpec = ResolveAmmo(weapon!);
                         missedAmmo = FindAmmoInPack(ammoSpec.BaseId, ammoSpec.FallbackType);

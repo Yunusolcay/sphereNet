@@ -327,6 +327,21 @@ public static class CombatHelper
             IsCombatBlockedByRegion(world, attacker, target))
             return HitTimeDecision.Drop;
 
+        // States that arrive DURING the windup. Source-X re-runs Fight_CanHit at the
+        // top of the hit phase (Fight_Hit, CCharFight.cpp:1813) and returns without
+        // damage unless it says READY, so a swing wound up before a paralyse or a
+        // sleep does not land after one. SphereNet checked these only in TrySwingAt,
+        // which a pending hit never re-enters.
+        //
+        // The disposition is WAIT, not Drop: Fight_CanHit answers WAR_SWING_SWINGING
+        // for all three (CCharFight.cpp:1696-1699), which holds the swing rather than
+        // spending it. Clearing the pending hit here would be a different rule.
+        bool paralyzeCanSwing = IsCombatFlagSet(CombatFlags.ParalyzeCanSwing);
+        if ((attacker.IsStatFlag(StatFlag.Freeze) && !paralyzeCanSwing) ||
+            attacker.IsStatFlag(StatFlag.Sleeping) ||
+            target.IsStatFlag(StatFlag.Sleeping))
+            return HitTimeDecision.Wait;
+
         if (InWeaponReachAndLos(world, attacker, target, weapon, privLevel, canSeeLos, effectiveRange))
             return HitTimeDecision.Resolve;
 
@@ -435,10 +450,6 @@ public static class CombatHelper
             bool matches = baseId != 0 ? item.BaseId == baseId : item.ItemType == fallbackType;
             if (matches && item.Amount > 0)
                 return item;
-            // Source-X CContainer::ContentFind checks IsSearchable before descending
-            // (CContainer.cpp:236), so a locked chest inside the pack is not part of
-            // an ordinary resource search — arrows separated from the player's
-            // reachable quiver were still being fired.
             // Source-X CContainer::ContentFind checks IsSearchable before descending
             // (CContainer.cpp:236), so a locked chest inside the pack is not part of
             // an ordinary resource search — arrows separated from the player's

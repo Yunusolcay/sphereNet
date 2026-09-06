@@ -619,6 +619,48 @@ proc'lar Invul hedefe karsi da calisir. Duzeltilmedi (bu turun bulgusu degil);
 `CombatParity03ATests.AnInvulnerableTargetIsNotSwungAtAtAll` mevcut davranisi
 sabitliyor ve gerekcesini tasiyor. 03B adayi.
 
+### 03B — hazirlik sirasinda durum degisimi ve cephane (6 Eylul 2026)
+
+[03B kanit raporu](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_03B_ZAMANLAMA.md).
+Iki bulgu da dogrulandi ve uygulandi.
+
+- [x] **SX-03B-01 (P2)** — Hazirlanmis darbe cozulurken freeze/sleep denetlenmiyor.
+  (YAPILDI: `CombatHelper.EvaluateHitTime` artik saldirganin Freeze/Sleeping'ini ve
+  HEDEFIN Sleeping'ini yeniden denetliyor. **Rapora duzeltme — disposition:** rapor
+  bunlari gecersiz sayiyordu; Source-X `Fight_CanHit` (CCharFight.cpp:1696-1699) bu
+  ucu de WAR_SWING_SWINGING dondurur, yani darbe DUSURULMEZ, BEKLETILIR →
+  `HitTimeDecision.Wait`. `ClearPendingHit` yanlis olurdu. Yalniz dead/stone/invul/
+  insubstantial INVALID'dir ve Drop olarak kaldi. **Rapordaki bir karistirma:**
+  `pCharSrc->IsSleeping()` (dormant sektor → INVALID) ile STATF_SLEEPING (→ SWINGING)
+  ayni sey degil. **Raporda olmayan ek:** uyuyan hedef SphereNet'te hicbir asamada
+  korunmuyordu — `IsInvalidSwingParticipant` Sleeping'e bakmiyor — bu yuzden baslangic
+  yollari (`ClientCombatHandler.TrySwingAt`, `NpcAI.TrySwingAttack`) de kapatildi.)
+- [x] **SX-03B-02 (P2)** — Menzil disi iska cantadan bolt tuketiyor. (YAPILDI: miss
+  dalinda throwing artik hic mühimmat aramiyor. **Rapora ek — sorun throwing'den
+  genis:** Source-X'te mühimmat blogu `if (iHitCheck != WAR_SWING_READY) return`
+  satirinin ALTINDA (CCharFight.cpp:1814) ve menzil yeniden kontrolu
+  WAR_SWING_EQUIPPING dondurur (:1896) — yani "hedef uzaklasti" harcanan bir
+  saldiridir ve YAY/ARBALET dahil hicbir mühimmata dokunmaz; ok yalnizca gercek iska
+  zarinda tuketilir (:2023) ve yalnizca oyuncu icin (:2041). NPC yolu zaten dogru
+  (`FindNpcAmmo` throwing icin null doner, NPC miss dali mühimmat tuketmez) —
+  dokunulmadi.)
+
+**03B kapanisi:** tam suite **2.397 basarili / 0 basarisiz** (+9). Mevcut testlerde
+sozlesme degisikligi gerekmedi.
+
+**03A'da acilan kusur duzeltildi:** `CombatHelper.FindAmmoInContainerCore` icindeki
+uc satirlik yorum `f98612e`'de iki kez yazilmisti; tekillestirildi.
+
+**Bilincli birakilanlar / 03C adaylari:**
+- Hidden/Invisible hedef `EvaluateHitTime`'da `Drop` donuyor; Source-X SWINGING
+  (bekle) der. Degistirilmedi: gizli kalan bir hedefte "sonsuza kadar beklet"
+  bekleyen darbeyi kilitleyebilir; ayri bir tasarim karari.
+- Menzil disi durum hala `Miss` olarak siniflaniyor (iska mesaji + sesi uretiyor);
+  Source-X harcanan saldiri sayar. Mühimmat tuketimi kaldirildi, siniflandirma
+  degismedi.
+- `IsCasting` ve `Stam <= 0` yalnizca baslangicta denetleniyor; Source-X
+  `Fight_CanHit`'te karsiligi yok, oldugu gibi birakildi.
+
 **Elenen varsayım:** `OYUN_ICI_ANALIZ_RAPORU.md` G04'teki normal çanta içindeki
 korumalı eşyanın ayrıca kurtarılması beklentisi Source-X kuralı değil.
 `CContainer::ContentsTransfer` yalnızca doğrudan çocukları değerlendirir; güncel

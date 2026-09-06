@@ -4,6 +4,37 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Combat: pending-swing state and unspent-swing ammo (03B)
+----------------------------------------
+
+FIX - Freeze and sleep were checked only where a swing STARTS, and a pending hit
+        never re-enters that path, so a blow wound up before a paralyse still landed
+        after one. Source-X re-runs Fight_CanHit at the top of the hit phase
+        (CCharFight.cpp:1813) and refuses to proceed unless it answers READY. The
+        disposition matters as much as the check: Fight_CanHit returns
+        WAR_SWING_SWINGING for a frozen or sleeping attacker and for a sleeping
+        target (:1696-1699), which HOLDS the swing rather than spending it, so these
+        are deferrals and not drops. Dead / stone / invulnerable / insubstantial stay
+        INVALID and still drop the swing. COMBAT_PARALYZE_CANSWING still excuses
+        freeze, and still does not excuse sleep.
+
+FIX - A sleeping target could be attacked from every entry point, because the
+        invalid-participant test never looked at Sleeping. Both start paths (player
+        and NPC) now refuse it, matching the pending-hit rule.
+
+FIX - A swing spent because the target stepped out of reach consumed ammunition. In
+        Source-X the ammo block sits below the hit-phase gate (CCharFight.cpp:1814)
+        and the range re-check returns WAR_SWING_EQUIPPING (:1896), so an unspent
+        swing never reaches it - an arrow is taken only on a real miss roll (:2023),
+        and only for a player. Throwing weapons are worse than the general case: they
+        have no pack ammo at all, yet their fallback type still matched any bolt
+        stack, so a thrown spear ate crossbow bolts. The miss branch no longer looks
+        for ammo for a throwing weapon. NPC behaviour was already correct and is
+        unchanged.
+
+FIX - A three-line comment in CombatHelper.FindAmmoInContainerCore was duplicated by
+        the previous commit; deduplicated.
+
 [2026-09-06] - Combat: reflected damage, on-hit ordering and searchable containers (03A)
 ----------------------------------------
 

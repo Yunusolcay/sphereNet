@@ -3,6 +3,36 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Dovus: bekleyen darbenin durumu ve harcanan saldirinin muhimmati (03B)
+----------------------------------------
+
+FIX - Freeze ve sleep yalnizca saldirinin BASLADIGI yerde denetleniyordu; bekleyen
+        bir darbe o yola hic geri girmez, bu yuzden paralizden once hazirlanmis bir
+        darbe paralizden sonra hala isabet ediyordu. Source-X vurus asamasinin
+        basinda Fight_CanHit'i yeniden calistirir (CCharFight.cpp:1813) ve READY
+        demedikce ilerlemez. Disposition en az kontrol kadar onemli: Fight_CanHit
+        donmus/uyuyan saldirgan ve uyuyan hedef icin WAR_SWING_SWINGING dondurur
+        (:1696-1699) - yani darbeyi harcamaz, BEKLETIR; bunlar dusurme degil
+        erteleme. Dead/stone/invul/insubstantial INVALID kalir ve darbeyi dusurur.
+        COMBAT_PARALYZE_CANSWING freeze'i yine mazur goruyor, sleep'i yine gormuyor.
+
+FIX - Uyuyan bir hedefe her giristen saldirilabiliyordu; gecersiz-katilimci testi
+        Sleeping'e hic bakmiyordu. Iki baslangic yolu da (oyuncu ve NPC) artik
+        reddediyor; bekleyen darbe kuraliyla ayni.
+
+FIX - Hedef menzil disina ciktigi icin harcanan bir saldiri muhimmat tuketiyordu.
+        Source-X'te muhimmat blogu vurus-asamasi kapisinin altindadir
+        (CCharFight.cpp:1814) ve menzil yeniden kontrolu WAR_SWING_EQUIPPING
+        dondurur (:1896); yani harcanan saldiri oraya hic ulasmaz - ok yalnizca
+        gercek iska zarinda (:2023) ve yalnizca oyuncu icin alinir. Throwing genel
+        durumdan da kotuydu: hic canta muhimmati yokken fallback turu herhangi bir
+        bolt yiginiyla eslesiyordu, yani atilan mizrak arbalet oku yiyordu. Miss
+        dali artik throwing icin muhimmat aramiyor. NPC davranisi zaten dogruydu,
+        degistirilmedi.
+
+FIX - CombatHelper.FindAmmoInContainerCore icindeki uc satirlik yorum onceki
+        committe iki kez yazilmisti; tekillestirildi.
+
 [2026-09-06] - Dovus: yansiyan hasar, vurus sirasi ve aranabilir kaplar (03A)
 ----------------------------------------
 
