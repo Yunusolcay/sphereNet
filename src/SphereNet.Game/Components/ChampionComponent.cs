@@ -185,8 +185,15 @@ public sealed class ChampionComponent
 
     private int GetMonstersCount()
     {
+        // The empty list has to be answered BEFORE the index is clamped: with a length
+        // of zero the upper bound became -1 and Math.Clamp threw, so starting a
+        // champion whose definition had not been linked left it half-armed - Active
+        // already true, nothing running (Source-X answers a safe value instead,
+        // CCChampion.cpp:640).
+        if (_monstersList.Length == 0)
+            return SpawnsMax;
         int idx = Math.Clamp(Level - 1, 0, _monstersList.Length - 1);
-        return _monstersList.Length == 0 ? SpawnsMax : _monstersList[idx] * SpawnsMax / 100;
+        return _monstersList[idx] * SpawnsMax / 100;
     }
 
     private int GetCandlesCount()
@@ -205,8 +212,8 @@ public sealed class ChampionComponent
         if (Active)
             return;
 
-        Active = true;
         LastActivationTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        Active = true;
         SpawnsNextRed = GetCandlesCount();
         SetLevel(1);
 
@@ -311,6 +318,8 @@ public sealed class ChampionComponent
                 return; // boss already out
             if (ChampionId == 0)
                 return;
+            // The shared counter update below applies to the boss too
+            // (CCChampion.cpp:337), so these are set one short on purpose.
             SpawnsNextWhite = 1;
             SpawnsCur = SpawnsMax - 1;
             defIndex = ChampionId;
@@ -334,14 +343,13 @@ public sealed class ChampionComponent
             return;
 
         if (Level >= LevelMax)
-        {
             ChampionSummoned = npc.Uid;
-        }
-        else
-        {
-            SpawnsCur++;
-            SpawnsNextWhite--;
-        }
+        // Source-X updates the counters after ANY successful spawn, the boss included
+        // (CCChampion.cpp:337) - they sat inside the ordinary branch, so a script or a
+        // status window reading SPAWNSCUR / KILLSNEXTWHITE was left one short for good
+        // once the boss came out.
+        SpawnsCur++;
+        SpawnsNextWhite--;
         SaveStateToTags();
     }
 
@@ -396,25 +404,42 @@ public sealed class ChampionComponent
 
     public void AddWhiteCandle(Serial existing = default)
     {
+        // Re-linking a candle read back from a save is a separate path and is not
+        // subject to the level gate (Source-X takes the uid branch first,
+        // CCChampion.cpp:437).
+        Item? candle = existing.IsValid ? _world.FindItem(existing) : null;
+        if (candle != null)
+        {
+            _whiteCandles.Add(candle.Uid);
+            SpawnsNextWhite = SpawnsNextRed / (CandlesNextRed + 1);
+            SaveStateToTags();
+            return;
+        }
+
+        // The boss is out; the progress ring is finished and takes no more candles
+        // (:346).
+        if (Level >= LevelMax)
+            return;
+
         if (_whiteCandles.Count >= CandlesNextRed)
         {
             AddRedCandle();
             return;
         }
 
-        Item? candle = existing.IsValid ? _world.FindItem(existing) : null;
+        candle = CreateCandle(WhiteOffsets[Math.Min(_whiteCandles.Count, WhiteOffsets.Length - 1)], red: false);
         if (candle == null)
+            return;
+        if (FireTrigger(ItemTrigger.AddWhiteCandle, new SpawnTriggerArgs { SpawnedItem = candle }) == TriggerResult.True)
         {
-            candle = CreateCandle(WhiteOffsets[Math.Min(_whiteCandles.Count, WhiteOffsets.Length - 1)], red: false);
-            if (candle == null)
-                return;
-            if (FireTrigger(ItemTrigger.AddWhiteCandle, new SpawnTriggerArgs { SpawnedItem = candle }) == TriggerResult.True)
-            {
-                _world.DeleteObject(candle);
-                candle.Delete();
-                return;
-            }
+            _world.DeleteObject(candle);
+            candle.Delete();
+            return;
         }
+        // The candle's own ITEMDEF @Create, which upstream runs through
+        // GenerateScript right after placing it (:411). @AddWhiteCandle on the
+        // champion is a different hook and does not stand in for it.
+        candle.FireCreateTrigger();
 
         _whiteCandles.Add(candle.Uid);
         // Next white candle needs another kill quota (Source-X recomputes).
@@ -424,25 +449,46 @@ public sealed class ChampionComponent
 
     public void AddRedCandle(Serial existing = default)
     {
-        Item? candle = existing.IsValid ? _world.FindItem(existing) : null;
-        if (candle == null)
+        // A candle read back from a save is re-linked and nothing else (:433).
+        // The uid has to RESOLVE, not merely be non-sentinel: Serial.IsValid only
+        // rules out the clear value, so an omitted argument reports valid.
+        if (existing.IsValid && _world.FindItem(existing) is { } restored)
         {
-            candle = CreateCandle(RedOffsets[Math.Min(_redCandles.Count, RedOffsets.Length - 1)], red: true);
-            if (candle == null)
-                return;
-            if (FireTrigger(ItemTrigger.AddRedCandle, new SpawnTriggerArgs { SpawnedItem = candle }) == TriggerResult.True)
-            {
-                _world.DeleteObject(candle);
-                candle.Delete();
-                return;
-            }
-            // A fresh red candle consumes the white ring (OSI progression).
-            ClearWhiteCandles();
+            _redCandles.Add(restored.Uid);
+            SaveStateToTags();
+            return;
         }
 
-        _redCandles.Add(candle.Uid);
+        // The level threshold is measured against the candles ALREADY standing, before
+        // this one joins them (:441). Counting the new candle first advanced the level
+        // one candle early, so the wave change and @Level fired ahead of the
+        // reference's own progression.
         if (Active && _redCandles.Count >= CandlesNextLevel && Level < LevelMax)
             SetLevel(Level + 1);
+
+        // Once the boss is out the ring is finished (:443).
+        if (Level >= LevelMax)
+            return;
+
+        var candle = CreateCandle(RedOffsets[Math.Min(_redCandles.Count, RedOffsets.Length - 1)], red: true);
+        if (candle == null)
+        {
+            // Upstream forces the boss out rather than stalling the event when the
+            // candle cannot be made (:551).
+            SetLevel(LevelMax);
+            return;
+        }
+        if (FireTrigger(ItemTrigger.AddRedCandle, new SpawnTriggerArgs { SpawnedItem = candle }) == TriggerResult.True)
+        {
+            _world.DeleteObject(candle);
+            candle.Delete();
+            return;
+        }
+        candle.FireCreateTrigger();
+        // A fresh red candle consumes the white ring (OSI progression).
+        ClearWhiteCandles();
+
+        _redCandles.Add(candle.Uid);
         SaveStateToTags();
     }
 
@@ -496,6 +542,9 @@ public sealed class ChampionComponent
         }
     }
 
+    /// <summary>Source-X raises a placed candle by this much (:409/:529).</summary>
+    private const int CandleZOffset = 4;
+
     private Item? CreateCandle((int X, int Y) offset, bool red)
     {
         var item = _world.CreateItem();
@@ -505,9 +554,24 @@ public sealed class ChampionComponent
         item.Attributes |= ObjAttributes.Move_Never;
         item.Link = _item.Uid;
         var p = _item.Position;
+        // Source-X lifts a candle four above whatever it was placed on
+        // (SetTopZ(GetTopZ() + 4), :409/:529), so it stands on the altar platform
+        // rather than sinking into it.
         _world.PlaceItem(item, new Point3D(
-            (short)(p.X + offset.X), (short)(p.Y + offset.Y), p.Z, p.Map));
+            (short)(p.X + offset.X), (short)(p.Y + offset.Y),
+            (sbyte)Math.Clamp(p.Z + CandleZOffset, sbyte.MinValue, sbyte.MaxValue), p.Map));
         return item;
+    }
+
+    /// <summary>The altar is going away: take its candles with it. Source-X does this
+    /// in ~CCChampion (CCChampion.cpp:92), so it happens however the multi dies -
+    /// .nuke, a script REMOVE or a normal stop - and not only through STOP.</summary>
+    public void OnAltarDeleted()
+    {
+        foreach (var uid in _redCandles.Concat(_whiteCandles).ToList())
+            RemoveCandleItem(_world.FindItem(uid));
+        _redCandles.Clear();
+        _whiteCandles.Clear();
     }
 
     private void RemoveCandleItem(Item? candle)
@@ -554,8 +618,12 @@ public sealed class ChampionComponent
     {
         if (_restoring)
             return;
+        // LEVELMAX and SPAWNSMAX ride along at the end: a live change to either used
+        // to live only in memory, and InitFromDef put the definition's values back on
+        // the next load (Source-X writes both in r_Write, CCChampion.cpp:794/796).
+        // Appended, so a state line written before this still parses.
         _item.SetTag("CHAMPION_STATE",
-            $"{(Active ? 1 : 0)}|{Level}|{SpawnsCur}|{DeathCount}|{SpawnsNextWhite}|{SpawnsNextRed}|{CandlesNextLevel}|{LastActivationTime}|0{ChampionSummoned.Value:x8}");
+            $"{(Active ? 1 : 0)}|{Level}|{SpawnsCur}|{DeathCount}|{SpawnsNextWhite}|{SpawnsNextRed}|{CandlesNextLevel}|{LastActivationTime}|0{ChampionSummoned.Value:x8}|{LevelMax}|{SpawnsMax}");
         _item.SetTag("CHAMPION_REDCANDLES",
             string.Join(',', _redCandles.Select(c => $"0{c.Value:x8}")));
         _item.SetTag("CHAMPION_WHITECANDLES",
@@ -581,6 +649,12 @@ public sealed class ChampionComponent
                 if (int.TryParse(f[6], out int cn)) CandlesNextLevel = cn;
                 if (long.TryParse(f[7], out long la)) LastActivationTime = la;
                 ChampionSummoned = ParseSerial(f[8]);
+                if (f.Length >= 11)
+                {
+                    if (int.TryParse(f[9], out int lmax) && lmax > 0) LevelMax = lmax;
+                    if (int.TryParse(f[10], out int smax) && smax > 0) SpawnsMax = smax;
+                    InitializeLists();
+                }
             }
 
             RestoreCandleList("CHAMPION_REDCANDLES", _redCandles);
@@ -711,20 +785,24 @@ public sealed class ChampionComponent
             case "LEVEL":
                 if (int.TryParse(value, out int lv)) SetLevel(lv);
                 return true;
+            // Every live write is persisted on the spot. The state snapshot used to be
+            // taken only on a candle or a kill, so a staff change to the running event
+            // was lost unless something else happened to save afterwards.
             case "LEVELMAX":
-                if (int.TryParse(value, out int lm) && lm > 0) { LevelMax = lm; InitializeLists(); }
+                if (int.TryParse(value, out int lm) && lm > 0)
+                { LevelMax = lm; InitializeLists(); SaveStateToTags(); }
                 return true;
             case "SPAWNSMAX":
-                if (int.TryParse(value, out int sm) && sm > 0) SpawnsMax = sm;
+                if (int.TryParse(value, out int sm) && sm > 0) { SpawnsMax = sm; SaveStateToTags(); }
                 return true;
             case "DEATHCOUNT":
-                int.TryParse(value, out int dc); DeathCount = dc; return true;
+                int.TryParse(value, out int dc); DeathCount = dc; SaveStateToTags(); return true;
             case "KILLSNEXTWHITE":
-                int.TryParse(value, out int nw); SpawnsNextWhite = nw; return true;
+                int.TryParse(value, out int nw); SpawnsNextWhite = nw; SaveStateToTags(); return true;
             case "KILLSNEXTRED":
-                int.TryParse(value, out int nr); SpawnsNextRed = nr; return true;
+                int.TryParse(value, out int nr); SpawnsNextRed = nr; SaveStateToTags(); return true;
             case "CANDLESNEXTLEVEL":
-                int.TryParse(value, out int cn); CandlesNextLevel = cn; return true;
+                int.TryParse(value, out int cn); CandlesNextLevel = cn; SaveStateToTags(); return true;
             case "CHAMPIONID":
             {
                 var rid = _resources?.ResolveDefName(value.Trim()) ?? ResourceId.Invalid;

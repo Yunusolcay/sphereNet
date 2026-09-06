@@ -547,7 +547,7 @@ public static partial class Program
                     newRegion?.Name ?? "<null>",
                     mover.IsPlayer);
 
-                if (!mover.IsPlayer || newRegion == null) return;
+                if (!mover.IsPlayer) return;
 
                 // @EnvironChange — the perceived light level differs between surface
                 // and dungeon regions (mirrors WeatherEngine.GetLightLevel).
@@ -563,6 +563,13 @@ public static partial class Program
                     ? (byte)SeasonType.Desolation
                     : (byte)_weatherEngine.CurrentSeason, playSound: false));
                 gc.Send(new PacketWeather((byte)weatherType, weatherIntensity, weatherTemp));
+
+                // Walking off the edge of every defined region still has to publish the
+                // environment: upstream resolves weather from the SECTOR, which exists
+                // everywhere on the map (addWeather, CClientMsg.cpp:529). Bailing out on
+                // a null region left the last region's rain drawn over ground that has
+                // none. Everything BELOW this point is region-specific and is skipped.
+                if (newRegion == null) return;
 
                 // Source-X CCharAct: the region-name callout fires ONLY when the
                 // region sets REGION_FLAG_ANNOUNCE (TAG.ANNOUNCEMENT overrides
@@ -2218,20 +2225,25 @@ public static partial class Program
             _weatherEngine.OnWeatherChanged = (region, type, intensity, temp) =>
             {
                 var pkt = new PacketWeather((byte)type, intensity, temp);
-                foreach (var c in _clients.Values)
+                // EVERY character in the region learns about it, NPCs included: upstream
+                // runs @EnvironChange before it ever asks whether the character has a
+                // client, and gates only the packet on that (CSector.cpp:1310). Walking
+                // the client list alone meant an NPC whose script watches the weather
+                // was never told it started raining.
+                foreach (var ch in _world.CharactersInRegion(region))
                 {
-                    if (!c.IsPlaying || c.Character == null) continue;
-                    var r = _world.FindRegion(c.Character.Position);
-                    // Region IDENTITY, not its name: two same-named regions on two
-                    // facets used to receive each other's weather.
-                    if (r == region)
-                    {
-                        byte light = c.Character.IsDead ? (byte)0 : _world.GetLightLevel(c.Character.Position);
-                        c.Character.UpdateEnvironment(light, (byte)type,
-                            c.Character.IsDead ? (byte)SeasonType.Desolation : (byte)_weatherEngine.CurrentSeason);
-                        c.Send(pkt);
-                    }
+                    byte light = ch.IsDead ? (byte)0 : _world.GetLightLevel(ch.Position);
+                    ch.UpdateEnvironment(light, (byte)type,
+                        ch.IsDead ? (byte)SeasonType.Desolation : (byte)_weatherEngine.CurrentSeason);
+                    if (TryGetClientFor(ch, out var wc) && wc.IsPlaying)
+                        wc.Send(pkt);
                 }
+            };
+            // The login and resync paths ask the world, not the engine.
+            _world.ResolveWeather = pt =>
+            {
+                var w = _weatherEngine.GetWeatherForRegion(_world.FindRegion(pt));
+                return ((byte)w.Type, w.Intensity, w.Temperature);
             };
             VendorEngine.World = _world;
             _world.ObjectCreated += OnWorldObjectCreated;

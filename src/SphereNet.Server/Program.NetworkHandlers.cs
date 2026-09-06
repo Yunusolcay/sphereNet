@@ -83,6 +83,12 @@ public static partial class Program
             // deleted stone left a guild nobody could reach still answering membership
             // questions - and still at war.
             _guildManager?.OnStoneDeleted(obj.Uid);
+            // A champion altar takes its candles with it however it dies - .nuke, a
+            // script REMOVE, a stop - because upstream clears them from the component's
+            // destructor (CCChampion.cpp:92). Only the STOP path used to clean up, so
+            // deleting the altar left ownerless, immovable candles standing.
+            if (obj is Item deletedItem)
+                deletedItem.Champion?.OnAltarDeleted();
             MarkNearbyClientsRefresh(obj.Position);
         }
         else if (obj is Character ch && !ch.IsPlayer)

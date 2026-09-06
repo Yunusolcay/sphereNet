@@ -1567,6 +1567,9 @@ public sealed class WorldLoader
                 {
                     if (key.Equals("VERSION", StringComparison.OrdinalIgnoreCase))
                         _logger.LogInformation("Save file version: {Version}", val);
+                    else if (key.Equals("GAMETIME", StringComparison.OrdinalIgnoreCase) &&
+                             long.TryParse(val, out long gameMinutes))
+                        world.SetWorldClockMinutes(gameMinutes);
                 }
             }
             else

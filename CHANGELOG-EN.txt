@@ -4,6 +4,75 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - The world clock, the environment on arrival, and the champion event (12B-12D)
+----------------------------------------
+
+FIX - Logging in and resyncing sent the light and the season and nothing about the
+        weather, so a player who connected after the rain started stood under clear
+        skies until something else happened to correct it. Upstream sends the weather
+        alongside the light on resync (addReSync, CClientMsg.cpp:2107).
+
+FIX - Walking off the edge of every defined region published nothing at all, so the
+        last region's rain stayed drawn over ground that has none. Upstream resolves
+        weather from the sector, which exists everywhere on the map (:529); only the
+        region-specific announcements are skipped now.
+
+FIX - MAP.n.SECTOR.i resolved the linear index against a hardcoded 96 columns, which is
+        only right for a 6144-wide map. On any other size it addressed the wrong row,
+        and past the first row a sector that does not exist. It is resolved against that
+        map's own grid (CWorldMap.cpp:229).
+
+FIX - MAPLIST assumed map 0 was the only map and answered fixed 6144x4096 metadata, so
+        a shard on a second facet or a custom-sized map read a world that is not there.
+        It answers from the maps actually loaded and their real sizes and sector grids
+        (CServerConfig.cpp:1710).
+
+FIX - An ordinary weather change reached only characters with a client, so an NPC whose
+        script watches the weather was never told it started raining. Upstream runs
+        @EnvironChange for every active character and gates only the packet on having a
+        client (CSector.cpp:1310).
+
+FIX - Saving and loading reset the game clock to midnight, taking the day/night cycle
+        and both moon phases with it: the header's TIME field is the real-world date the
+        save was taken, and nothing carried the game clock. It is written and restored
+        under its own field, the way upstream keeps TIMEHIRES (CWorld.cpp:1510/1625). A
+        save without it still loads.
+
+FIX - A late tick moved the world clock on by exactly one minute and then snapped its
+        mark to now, throwing away every further whole minute and the leftover
+        milliseconds - so a long save or a stalled main loop left the world running
+        behind for good. It advances by the time that really passed and keeps the
+        remainder (CWorldClock.cpp:31).
+
+FIX - Starting a champion whose definition was not linked threw out of the monster-count
+        clamp and left the event half-armed: active, with nothing running. The empty list
+        is answered before the index is clamped, as upstream does (CCChampion.cpp:640).
+
+FIX - A red candle counted itself towards the level threshold, so the level, the wave
+        change and @Level all fired one candle early. The threshold is measured against
+        the candles already standing (:441).
+
+FIX - New candles could still be created after the boss was out, rebuilding progress
+        markers the reference closes off (:346/:443). Re-linking a candle read back from
+        a save is a separate path and still works at the final level.
+
+FIX - Champion candles were placed at the altar's own Z instead of four above it, and
+        never ran their own ITEMDEF @Create - upstream lifts each candle and calls
+        GenerateScript on it (:409/:411/:529/:532).
+
+FIX - A successful boss spawn skipped the counter update every other spawn gets, so
+        SPAWNSCUR and KILLSNEXTWHITE stayed one short for good once the boss appeared
+        (:337).
+
+FIX - Deleting a champion altar left its candles standing in the world, ownerless and
+        immovable: only the STOP path cleaned up. Upstream clears them from the
+        component's destructor, so it happens however the altar dies (:92).
+
+FIX - A live LEVELMAX or SPAWNSMAX change was kept only in memory and the definition's
+        values were read back over it on the next load, and the state snapshot was taken
+        only when a candle or a kill happened to trigger one. Both fields are persisted
+        and every live write saves on the spot (r_Write, :794).
+
 [2026-09-06] - Map facets, board bodies and the weather a sector actually has (11C-12A)
 ----------------------------------------
 

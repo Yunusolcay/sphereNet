@@ -3,6 +3,73 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Dunya saati, giristeki cevre ve Champion etkinligi (12B-12D)
+----------------------------------------
+
+FIX - Girise ve yeniden esitlemede isik ile mevsim gonderiliyor, havadan hic soz
+        edilmiyordu; yagmur basladiktan sonra baglanan oyuncu, baska bir sey duzeltene
+        kadar acik gokyuzu altinda kaliyordu. Referans resync'te havayi isikla birlikte
+        gonderir (addReSync, CClientMsg.cpp:2107).
+
+FIX - Tanimli her bolgenin disina cikmak hicbir sey yayinlamiyordu; onceki bolgenin
+        yagmuru, yagmuru olmayan zeminin uzerinde cizili kaliyordu. Referans havayi
+        haritanin her yerinde bulunan SEKTORDEN cozer (:529); artik yalnizca bolgeye
+        ozgu duyurular atlaniyor.
+
+FIX - MAP.n.SECTOR.i linear indeksi sabit 96 sutuna gore cozuyordu, ki bu yalnizca
+        6144 genisligindeki harita icin dogrudur. Baska bir olcude yanlis satiri, ilk
+        satirdan sonrasinda ise var olmayan bir sektoru adresliyordu. Artik o haritanin
+        kendi izgarasina gore cozuluyor (CWorldMap.cpp:229).
+
+FIX - MAPLIST tek harita olarak map 0'i varsayiyor ve sabit 6144x4096 metadata
+        donuyordu; ikinci facet'teki ya da ozel olculu haritadaki shard var olmayan bir
+        dunyayi okuyordu. Artik gercekten yuklenmis haritalardan, onlarin gercek
+        olculeri ve sektor izgaralariyla cevap veriyor (CServerConfig.cpp:1710).
+
+FIX - Normal hava degisimi yalnizca istemcisi olan karakterlere ulasiyordu; havayi
+        izleyen scripti olan NPC yagmurun basladigini hic ogrenmiyordu. Referans
+        @EnvironChange'i her aktif karakter icin calistirir, istemci kontrolunu yalnizca
+        pakete uygular (CSector.cpp:1310).
+
+FIX - Kaydetme ve yukleme oyun saatini gece yarisina sifirliyor, gun/gece dongusunu ve
+        iki ay evresini de beraberinde goturuyordu: basliktaki TIME alani kaydin
+        alindigi gercek dunya tarihidir ve oyun saatini hicbir sey tasimiyordu. Artik
+        kendi alaninda yaziliyor ve geri kuruluyor (referansta TIMEHIRES,
+        CWorld.cpp:1510/1625). Bu alani tasimayan kayit yine yukleniyor.
+
+FIX - Geciken tick dunya saatini tam olarak bir dakika ilerletip isaretini simdiye
+        cekiyor, sonraki her tam dakikayi ve artan milisaniyeleri atiyordu; uzun bir
+        save ya da takilan ana dongu dunyayi kalici olarak geride birakiyordu. Artik
+        gercekten gecen sure kadar ilerliyor ve kalani koruyor (CWorldClock.cpp:31).
+
+FIX - Tanimi baglanmamis bir Champion'i baslatmak canavar-sayisi kirpmasindan istisna
+        atiyor ve etkinligi yarim birakiyordu: aktif, ama hicbir seyi calismayan. Bos
+        liste, indeks kirpilmadan once yanitlaniyor (CCChampion.cpp:640).
+
+FIX - Kirmizi mum seviye esiginde kendini de sayiyordu; seviye, dalga degisimi ve @Level
+        bir mum erken calisiyordu. Esik, zaten duran mumlara gore olculuyor (:441).
+
+FIX - Boss ciktiktan sonra hala yeni mum olusturulabiliyor, referansin kapattigi
+        ilerleme gostergeleri yeniden kuruluyordu (:346/:443). Kayittan okunan mumun
+        yeniden baglanmasi ayri bir yoldur ve son seviyede de calisiyor.
+
+FIX - Champion mumlari altarin kendi Z'sine konuyor, dort yukarisina degil; ve kendi
+        ITEMDEF @Create'lerini hic calistirmiyordu - referans her mumu yukseltir ve
+        uzerinde GenerateScript cagirir (:409/:411/:529/:532).
+
+FIX - Basarili boss uretimi, diger her uretimin aldigi sayac guncellemesini atliyordu;
+        boss ciktiktan sonra SPAWNSCUR ve KILLSNEXTWHITE kalici olarak bir eksik
+        kaliyordu (:337).
+
+FIX - Champion altarini silmek mumlarini dunyada sahipsiz ve tasinamaz halde birakiyordu;
+        yalnizca STOP yolu temizlik yapiyordu. Referans bunu bilesenin yikicisinda yapar,
+        boylece altar nasil olurse olsun temizlik calisir (:92).
+
+FIX - Canli LEVELMAX veya SPAWNSMAX degisikligi yalnizca bellekte kaliyor, sonraki
+        yuklemede tanimin degerleri uzerine yaziliyordu; durum anlik goruntusu de ancak
+        bir mum ya da olum tetikledigi zaman aliniyordu. Iki alan da kalici hale
+        getirildi ve her canli yazma aninda kaydediliyor (r_Write, :794).
+
 [2026-09-06] - Harita facet'i, pano govdesi ve sektorun gercekten sahip oldugu hava (11C-12A)
 ----------------------------------------
 

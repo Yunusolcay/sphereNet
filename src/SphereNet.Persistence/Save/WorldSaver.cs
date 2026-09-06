@@ -1127,6 +1127,13 @@ public sealed class WorldSaver
             w.WriteProperty("VERSION", "1");
             w.WriteProperty("SAVECOUNT", _saveIndex.ToString());
             w.WriteProperty("TIME", DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString());
+            // The GAME clock, in game minutes. TIME above is the real-world date the
+            // save was taken and always has been; reading it back as game time would
+            // invent a new bug. Source-X keeps the game clock in its own header field
+            // (TIMEHIRES, CWorld.cpp:1510) and restores it on load (:1625) - without an
+            // equivalent, every restart put the world back at midnight and took the
+            // moon phases with it.
+            w.WriteProperty("GAMETIME", world.WorldClockMinutes.ToString());
 
             // GLOBALS
             var globals = world.GetAllGlobalVars().ToList();

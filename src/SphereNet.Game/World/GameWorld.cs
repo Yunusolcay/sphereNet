@@ -351,6 +351,15 @@ public sealed class GameWorld
     /// <summary>Current season. Updated by WeatherEngine.</summary>
     public byte CurrentSeason { get; set; } = 0; // default spring
 
+    /// <summary>The weather in force at a position: type, intensity and temperature.
+    /// Wired to the weather engine by the server so the login and resync paths can send
+    /// it without reaching for the engine themselves.</summary>
+    public Func<Core.Types.Point3D, (byte Type, byte Intensity, byte Temperature)>? ResolveWeather { get; set; }
+
+    /// <summary>The weather to announce at a position, dry when nothing answers.</summary>
+    public (byte Type, byte Intensity, byte Temperature) WeatherAt(Core.Types.Point3D pt) =>
+        ResolveWeather?.Invoke(pt) ?? ((byte)WeatherType.None, (byte)0, (byte)20);
+
     /// <summary>Compatibility light at the map origin. Position-aware callers
     /// should use <see cref="GetLightLevel"/>.</summary>
     public byte GlobalLight => GetLightLevel(new Point3D(0, 0, 0, 0));
@@ -447,6 +456,66 @@ public sealed class GameWorld
             mapId, width, height, sectorCols, sectorRows);
     }
 
+    /// <summary>Move the game clock on by however many game minutes have really
+    /// passed, keeping the remainder.
+    ///
+    /// Source-X adds the elapsed interval to the clock and divides it by the game
+    /// minute length (CWorldClock::Advance, CWorldGameTime.cpp:18). Bumping the clock
+    /// by exactly one and then snapping the mark to "now" threw away every whole
+    /// minute past the first AND the leftover milliseconds, so a long save, a
+    /// breakpoint or a stalled main loop left the world running behind the wall clock
+    /// for good.</summary>
+    private void AdvanceWorldClock(long currentTime)
+    {
+        if (GameMinuteLengthMs <= 0) return;
+        long elapsed = currentTime - _lastClockUpdate;
+        if (elapsed < GameMinuteLengthMs) return;
+        long minutes = elapsed / GameMinuteLengthMs;
+        _worldClock += minutes;
+        _lastClockUpdate += minutes * GameMinuteLengthMs;
+    }
+
+    /// <summary>Every map this world has actually initialized, ascending.</summary>
+    public IEnumerable<int> LoadedMaps => _mapDefs.Keys.OrderBy(m => m);
+
+    /// <summary>The declared size of a loaded map.</summary>
+    public bool TryGetMapSize(int mapId, out int width, out int height)
+    {
+        if (_mapDefs.TryGetValue(mapId, out var def))
+        {
+            (width, height) = def;
+            return true;
+        }
+        width = height = 0;
+        return false;
+    }
+
+    /// <summary>The sector grid of a loaded map: columns, rows and total.</summary>
+    public bool TryGetSectorGrid(int mapId, out int columns, out int rows)
+    {
+        if (_sectors.TryGetValue(mapId, out var grid))
+        {
+            columns = grid.GetLength(0);
+            rows = grid.GetLength(1);
+            return true;
+        }
+        columns = rows = 0;
+        return false;
+    }
+
+    /// <summary>A sector by its LINEAR index, the addressing scripts use.
+    /// Source-X resolves it against that map's own sector data
+    /// (CWorldMap::GetSectorByIndex, CWorldMap.cpp:229) - not against a fixed
+    /// column count.</summary>
+    public Sector? GetSectorByIndex(int mapId, int index)
+    {
+        if (index < 0 || !_sectors.TryGetValue(mapId, out var grid)) return null;
+        int columns = grid.GetLength(0);
+        int rows = grid.GetLength(1);
+        if (columns <= 0 || index >= columns * rows) return null;
+        return grid[index % columns, index / columns];
+    }
+
     public Sector? GetSector(Point3D pt)
     {
         // C# integer division truncates toward zero, so X in [-63,-1] would
@@ -479,7 +548,9 @@ public sealed class GameWorld
 
     public void LightFlash(Point3D position) => GetSector(position)?.LightFlash();
 
-    internal void SetWorldClockMinutes(long minutes) => _worldClock = Math.Max(0, minutes);
+    /// <summary>Set the game clock, in game minutes. Public because the save loader
+    /// restores it (Source-X InitTime from the TIMEHIRES header, CWorld.cpp:1625).</summary>
+    public void SetWorldClockMinutes(long minutes) => _worldClock = Math.Max(0, minutes);
 
     // --- Object creation ---
 
@@ -1151,6 +1222,33 @@ public sealed class GameWorld
         return (minSx, maxSx, minSy, maxSy);
     }
 
+    /// <summary>Every character standing inside a region, NPCs included. Walks only
+    /// the sectors the region's footprint touches, the way Source-X reaches the
+    /// characters of the sectors a change applies to.</summary>
+    public IEnumerable<Character> CharactersInRegion(Regions.Region? region)
+    {
+        if (region == null) yield break;
+        if (!_sectors.TryGetValue(region.MapIndex, out var grid)) yield break;
+
+        if (region.Rects.Count == 0) yield break;
+        int x1 = int.MaxValue, y1 = int.MaxValue, x2 = int.MinValue, y2 = int.MinValue;
+        foreach (var r in region.Rects)
+        {
+            x1 = Math.Min(x1, r.X1); y1 = Math.Min(y1, r.Y1);
+            x2 = Math.Max(x2, r.X2); y2 = Math.Max(y2, r.Y2);
+        }
+        int sx1 = Math.Max(0, x1 / Sector.SectorSize);
+        int sy1 = Math.Max(0, y1 / Sector.SectorSize);
+        int sx2 = Math.Min(grid.GetLength(0) - 1, Math.Max(0, x2) / Sector.SectorSize);
+        int sy2 = Math.Min(grid.GetLength(1) - 1, Math.Max(0, y2) / Sector.SectorSize);
+
+        for (int sx = sx1; sx <= sx2; sx++)
+            for (int sy = sy1; sy <= sy2; sy++)
+                foreach (var ch in grid[sx, sy].Characters.ToList())
+                    if (!ch.IsDeleted && FindRegion(ch.Position) == region)
+                        yield return ch;
+    }
+
     public IEnumerable<Character> GetCharsInRange(Point3D center, int range = 18)
     {
         foreach (var obj in GetObjectsInRange(center, range))
@@ -1232,12 +1330,7 @@ public sealed class GameWorld
         _tickCount++;
         long currentTime = Environment.TickCount64;
 
-        // Advance world clock
-        if (currentTime - _lastClockUpdate >= GameMinuteLengthMs)
-        {
-            _worldClock++;
-            _lastClockUpdate = currentTime;
-        }
+        AdvanceWorldClock(currentTime);
 
         // Sector sleep: only tick sectors within view-range of an online player.
         // Without this, a 130K-sector map with 1M+ NPCs spends ~150ms per tick
@@ -1505,11 +1598,7 @@ public sealed class GameWorld
         _tickCount++;
         long currentTime = Environment.TickCount64;
 
-        if (currentTime - _lastClockUpdate >= GameMinuteLengthMs)
-        {
-            _worldClock++;
-            _lastClockUpdate = currentTime;
-        }
+        AdvanceWorldClock(currentTime);
 
         RefreshActiveSectors();
         var sectors = _tickSectors;

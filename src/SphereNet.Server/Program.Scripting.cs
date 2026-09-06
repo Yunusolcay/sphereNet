@@ -2449,11 +2449,12 @@ public static partial class Program
             string sectorIdxStr = propDot >= 0 ? sectorPart[..propDot] : sectorPart;
             if (!int.TryParse(sectorIdxStr, out int sectorIdx)) return null;
 
-            // Convert linear index to x,y (assuming 96 cols for map 0)
-            int cols = 96;
-            int sx = sectorIdx % cols;
-            int sy = sectorIdx / cols;
-            var sector = _world?.GetSector(mapNum, sx, sy);
+            // The linear index is resolved against THAT map's own sector grid
+            // (CWorldMap::GetSectorByIndex, CWorldMap.cpp:229). A hardcoded 96 columns
+            // is only right for a 6144-wide map: on any other size the index landed in
+            // the wrong row, and past the first row it addressed a sector that does not
+            // exist.
+            var sector = _world?.GetSectorByIndex(mapNum, sectorIdx);
             if (sector == null) return "0";
 
             if (propDot < 0) return sector.GetName(); // just "MAP.0.SECTOR.n" — return name
@@ -2475,24 +2476,28 @@ public static partial class Program
         if (!int.TryParse(mapStr, out int mapNum))
             return null;
 
-        // Only map 0 (Felucca) supported currently
-        if (mapNum != 0)
+        // Answered from the maps this world actually loaded and their real sizes
+        // (IsMapSupported / GetMapSize / MapSectorsData, CServerConfig.cpp:1710). The
+        // old answers were map-0-only and hardcoded to 6144x4096, so a shard on a
+        // second facet or a custom-sized map read a world that is not there.
+        if (_world == null || !_world.TryGetMapSize(mapNum, out int width, out int height))
             return "0";
 
         if (dotIdx < 0)
             return "1"; // map exists
 
-        string sub = rest[(dotIdx + 1)..];
+        _world.TryGetSectorGrid(mapNum, out int cols, out int rows);
+        string sub = rest[(dotIdx + 1)..].ToUpperInvariant();
         return sub switch
         {
-            "BOUND.X" => "6144",
-            "BOUND.Y" => "4096",
-            "CENTER.X" => "3072",
-            "CENTER.Y" => "2048",
-            "SECTOR.SIZE" => "64",
-            "SECTOR.COLS" => "96",
-            "SECTOR.ROWS" => "64",
-            "SECTOR.QTY" => "6144",
+            "BOUND.X" => width.ToString(),
+            "BOUND.Y" => height.ToString(),
+            "CENTER.X" => (width / 2).ToString(),
+            "CENTER.Y" => (height / 2).ToString(),
+            "SECTOR.SIZE" => SphereNet.Game.World.Sectors.Sector.SectorSize.ToString(),
+            "SECTOR.COLS" => cols.ToString(),
+            "SECTOR.ROWS" => rows.ToString(),
+            "SECTOR.QTY" => (cols * rows).ToString(),
             _ => null
         };
     }

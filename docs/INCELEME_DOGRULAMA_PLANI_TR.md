@@ -2062,6 +2062,65 @@ override yalnizca bildirimde kullaniliyor); sektor iklimi icin Source-X'in enlem
 SetDefaultWeatherChance dagilimi; WEATHER_CLOUDY (3) uretilmiyor; 0xD4 yeni kitap
 basligi hala uretilmiyor.
 
+### 12B-12D - cevre gonderimi, dunya saati ve Champion: 15 bulgu (6 Eylul 2026)
+
+Kanit raporlari: [12B](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12B_CEVRE_GIRIS_HARITA_SORGU.md),
+[12C](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12C_DUNYA_SAATI_CHAMPION.md),
+[12D](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12D_CHAMPION_BOSS_KAYIT_TEMIZLIK.md).
+On bes bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+- [x] **12B-1 (P2)** - Giris/resync havayi gondermiyordu. (YAPILDI: `GameWorld.ResolveWeather`
+  hook'u ve ortak `SendCurrentWeather`; sunucu bunu hava motoruna bagliyor.)
+- [x] **12B-2 (P2)** - Bolgesiz alana cikis eski havayi temizlemiyordu. (YAPILDI: erken
+  cikis kaldirildi, cevre yayini her zaman yapiliyor, yalnizca bolgeye ozgu duyurular
+  atlaniyor. **Kapsam notu:** duzeltme `Program.EngineWiring`'de, test projesinden
+  erisilemiyor - regresyon testi yok.)
+- [x] **12B-3 (P2)** - Sektor indeksi 96 sutuna gore cozuluyordu. (YAPILDI:
+  `GameWorld.GetSectorByIndex` haritanin kendi izgarasini kullaniyor.)
+- [x] **12B-4 (P2)** - MAPLIST etkin haritalari yansitmiyordu. (YAPILDI: `LoadedMaps`,
+  `TryGetMapSize`, `TryGetSectorGrid`; resolver bunlardan cevap veriyor. **Kapsam notu:**
+  resolver `Program.Scripting`'de; testler onun kullandigi dunya API'sini sabitliyor.)
+- [x] **12B-5 (P2)** - Hava degisimi NPC EnvironChange'ine ulasmiyordu. (YAPILDI: yeni
+  `GameWorld.CharactersInRegion` bolgenin dokundugu sektorleri yuruyor; paket yine
+  yalnizca istemcisi olana gidiyor - referansin ayrimi.)
+- [x] **12C-1 (P2)** - Kayit/yukleme dunya saatini sifirliyordu. (YAPILDI: `GAMETIME`
+  alani. **Raporun uyarisina uyuldu:** mevcut `TIME` Unix tarihidir, oyun zamani
+  sayilmadi; alani tasimayan eski kayit yine yukleniyor.)
+- [x] **12C-2 (P2)** - Geciken tick dakikalari kaybediyordu. (YAPILDI: ortak
+  `AdvanceWorldClock`, tam dakikalar eklenip kalan korunuyor; iki tick girisi de ayni
+  yordami cagiriyor.)
+- [x] **12C-3 (P2)** - Tanimsiz Champion START istisna birakiyordu. (YAPILDI: bos liste
+  kirpmadan once yanitlaniyor.)
+- [x] **12C-4 (P2)** - Kirmizi mum esigi bir adim erken yukseltiyordu. (YAPILDI: esik
+  denetimi mum eklenmeden once. **Raporun uyarisi dikkate alindi:** bu bir "off-by-one"
+  varsayimi degil, referansin kod sirasi birebir alindi.)
+- [x] **12C-5 (P3)** - Mumlarin +4 Z yerlesimi yoktu. (YAPILDI.)
+- [x] **12D-1 (P2)** - Altar silininde mumlar kaliyordu. (YAPILDI: `OnAltarDeleted`,
+  dunyanin silme callback'ine bagli - .nuke/REMOVE dahil her yol.)
+- [x] **12D-2 (P2)** - Canli Champion ayarlari kayitta eskiye donuyordu. (YAPILDI:
+  LEVELMAX/SPAWNSMAX durum satirinin SONUNA eklendi - 9 alanli eski satir yine
+  parse ediliyor - ve her canli setter aninda kaydediyor.)
+- [x] **12D-3 (P3)** - Boss seviyesinde yeni mum olusturulabiliyordu. (YAPILDI: her iki
+  renkte son seviye denetimi; kayittan yeniden baglama dali ayri tutuldu.)
+- [x] **12D-4 (P2)** - Yeni mumlar itemdef Create hook'unu calistirmiyordu. (YAPILDI:
+  `FireCreateTrigger`, yerlestirme ve @AddCandle veto'sundan sonra.)
+- [x] **12D-5 (P3)** - Boss sonrasi spawn sayaclari tamamlanmiyordu. (YAPILDI: sayac
+  guncellemesi ortak dala tasindi.)
+
+**Tur ici tuzak (kendi hatam, testler yakaladi):** `Serial.IsValid` yalnizca sentinel
+`ClearValue` ile karsilastirir, dolayisiyla `default(Serial)` GECERLI raporlar. Yeniden
+duzenledigim `AddRedCandle`'in yeniden-baglama dali bunu "kayittan gelen uid" sanip erken
+donuyordu ve hicbir kirmizi mum olusmuyordu; iki mevcut Champion testi bunu yakaladi. Dal
+artik uid'in gercekten bir esyaya COZULMESINI sart kosuyor.
+
+**12B-12D kapanisi:** tam suite **2.930 basarili / 0 basarisiz** (+21). On uc duzeltme
+gecici olarak kapatilarak 16 testin eski davranisi yakaladigi kanitlandi (12B-2 ve
+MAPLIST resolver'inin kendisi test projesinden erisilemiyor).
+
+**Acik kalan:** sektor cevre bildiriminin NPC @EnvironChange varyantinin sunucu
+entegrasyonu; Champion mum decay'inin seviye dususu ile etkilesimi; dunya saatinin
+GameMinuteLengthMs canli degisiminde davranisi.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

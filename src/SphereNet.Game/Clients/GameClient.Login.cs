@@ -568,6 +568,20 @@ public sealed partial class GameClient
         ch.SetSkill(SphereNet.Core.Enums.SkillType.Healing, 1000);
     }
 
+    /// <summary>Send the weather in force where the player is standing.
+    ///
+    /// Source-X puts addWeather in addReSync alongside the light
+    /// (CClientMsg.cpp:2107), so a client that connects into a downpour, or resyncs out
+    /// of a broken view, is told about it. Login and resync used to send light and
+    /// season and nothing else, leaving a new arrival under clear skies until the next
+    /// weather change or region crossing happened to correct it.</summary>
+    private void SendCurrentWeather()
+    {
+        if (_character == null) return;
+        var (type, intensity, temp) = _world.WeatherAt(_character.Position);
+        _netState.Send(new PacketWeather(type, intensity, temp));
+    }
+
     private void EnterWorld()
     {
         if (_character == null) return;
@@ -736,6 +750,7 @@ public sealed partial class GameClient
         _netState.Send(new PacketSeason(_character.IsDead
             ? (byte)SeasonType.Desolation
             : (byte)_world.CurrentSeason));
+        SendCurrentWeather();
 
         // Send player's own character with equipment — client needs this to render worn items
         SendDrawObject(_character);
@@ -910,6 +925,7 @@ public sealed partial class GameClient
         _netState.Send(new PacketSeason(_character.IsDead
             ? (byte)SeasonType.Desolation
             : (byte)_world.CurrentSeason, playSound: false));
+        SendCurrentWeather();
 
         // 5. Reset walk sequence (0 = resync sentinel, client must send seq 0 next)
         _netState.WalkSequence = 0;
