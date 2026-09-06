@@ -759,9 +759,14 @@ public sealed class WorldSaver
         long timeout = item.Timeout;
         if (timeout > 0)
         {
-            long remainingMs = timeout - now;
-            if (remainingMs > 0)
-                w.WriteProperty("TIMERMS", remainingMs.ToString());
+            // A timer that is SET is written even when it has already come due, as
+            // zero. Upstream writes the timer whenever one exists and reports an
+            // elapsed one as 0 (r_Write, CObjBase.cpp:2081 -> GetTimerAdjusted,
+            // CTimedObject.cpp:123). Dropping the line made "expired but not yet
+            // ticked" indistinguishable from "no timer at all", so a save taken in
+            // that window silently cancelled the pending script work.
+            long remainingMs = Math.Max(0, timeout - now);
+            w.WriteProperty("TIMERMS", remainingMs.ToString());
         }
 
         if (item.DecayTime > 0)

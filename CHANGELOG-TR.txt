@@ -3,6 +3,51 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Esyanin tek saati, tek timer kapisi (12Q-12R)
+----------------------------------------
+
+FIX - Timer scriptinin, tick'in sonrasinda yaptigi hicbir seye soz hakki yoktu. Referans
+        @Timer'i ONCE calistirir ve RETURN 1 tick'i bilesenlerden, tur davranisindan ve
+        decay silmesinden once bitirir (CItem.cpp:6217); RETURN 0 ise esyayi yok eder
+        (:6412). Ari kovaninin dolmasi engellenemiyor, siradan bir esyanin gitmesi
+        istenemiyordu.
+
+FIX - Timer'i dolan esya, ATTR_DECAY olmadan ve script istemeden de yok ediliyordu.
+        Referans bu durumda esyayi tutar (:6412) - ve TIMER kendiliginden decay hakki
+        vermez (CObjBase.cpp:1978), yani duz tasinabilir bir nesneye script timer'i
+        vermek onu artik sessizce bozulur hale getirmiyor.
+
+FIX - TIMER=-1 script tarafini kapatiyor, decay saatini calisir birakiyordu; esya yine
+        de zamaninda curuyordu. Referansta iki degil tek timer vardir ve kapatma
+        dugmesi hepsini kapatir.
+
+FIX - Curuyen esyayi RETURN 1 ile tutan scriptin sectigi araligin uzerine yeni bir
+        varsayilan curume penceresi yaziliyordu. Referans yerine bir sey atamaz (:6222);
+        iki saat artik scriptin istedigi degerde birlesiyor.
+
+FIX - Ceset timer tetikleyicisine hic ulasmiyordu - once decay dali calisiyordu - bu
+        yuzden script bir gorev ya da etkinlik icin govdeyi tutamiyordu. Ortak kapi
+        ceset islemlerinden once gelir (:6247).
+
+FIX - Vadesi gelmis ama henuz islenmemis timer kayitta dusuyordu; "doldu ve bekliyor"
+        ile "timer yok" ayni kayda donusuyor ve bekleyen script isi yeniden acilista
+        sessizce iptal oluyordu. Kurulu timer sifir olsa da yazilir
+        (CObjBase.cpp:2081 -> CTimedObject.cpp:123).
+
+FIX - TIMERMS -1 ve 0 degerlerini kabul edip yok sayiyor, eski araligi yerinde
+        birakiyordu. Referans degeri dogruca tek timeout setter'ina verir; negatif
+        timer'i kapatir, sifir ise simdiye planlar (:2040 -> CTimedObject.cpp:57).
+
+FIX - TIMERD hic anlasilmiyordu; onda bir saniye yazan Source-X scripti hicbir sey
+        kurmuyordu (:2033).
+
+FIX - Yigin bolunmesinde kalan parca, orijinalin tasidigi script timer'ini
+        kaybediyordu; DupeCopy kalan timeout'u beraberinde goturur (CItem.cpp:4099).
+
+FIX - Esya yerdeyken kurulan timer, esya cantaya girdigi anda calismayi birakiyordu;
+        ayni timer tasimadan SONRA kurulunca calisiyordu - takip listesine yalnizca
+        timer kurulurken giriliyor. Kurulu timer artik esyayi izliyor.
+
 [2026-09-06] - Spawn'dan ayrilmak: evcillestirme, silme ve spawn'in tetikledikleri (12N-12P)
 ----------------------------------------
 

@@ -2284,6 +2284,53 @@ tetikler (:551/:568). Sira duzeltildi.
 govdesinin yerlestirmeden once calismasi; grup -> grup gecisi; yuklemede ileri UID
 referansi.
 
+### 12Q-12R - esya timer/decay cekirdegi: 10 bulgu (6 Eylul 2026)
+
+Kanit raporlari: [12Q](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12Q_ESYA_TIMER_DECAY.md),
+[12R](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_12R_TIMER_KAYIT_TASIMA.md).
+On bulgu da bagimsiz olarak dogrulandi ve tek turda uygulandi.
+
+**Kok neden ortak:** Source-X'te esyanin TEK bir saati ve TEK bir `@Timer` kapisi vardir;
+decay o saatin bir anlamidir, ayri calisan ikinci bir saat degil. SphereNet'te `DecayTime`
+ve `Timeout` ayri ilerliyor, tetikleyici de her iki dalda ayri ayri cagriliyordu. Bu turun
+ana isi iki dali tek kapiya indirmekti.
+
+- [x] **12Q-1 (P2)** - @Timer donusu tuketilmiyordu. (YAPILDI: tek kapi; True tick'i
+  bitiriyor, False siliyor.)
+- [x] **12Q-2 (P2)** - TIMER=-1 decay'i kapatmiyordu. (YAPILDI.)
+- [x] **12Q-3 (P2)** - Veto scriptin araligini 30 dakikayla eziyordu. (YAPILDI: veto
+  sonrasi yalnizca SIMDI silecek olan decay oteleniyor ve scriptin kendi timer'i varsa o
+  kullaniliyor.)
+- [x] **12Q-4 (P2)** - Ceset @Timer veto'sunu atliyordu. (YAPILDI: ortak kapi ceset
+  dalindan once.)
+- [x] **12Q-5 (P2)** - TIMER vermek esyayi silinebilir yapiyordu. (YAPILDI: decay
+  aynalanmasi yalnizca ZATEN ATTR_DECAY tasiyan esyada; timer'i dolan ama decay'i olmayan
+  esya artik korunuyor.)
+- [x] **12R-1 (P2)** - Vadesi gelmis timer kayitta kayboluyordu. (YAPILDI: kurulu timer
+  sifir olarak yaziliyor - 12R-2'nin "sifir = simdi" duzeltmesi olmadan tek basina ise
+  yaramazdi, ikisi birlikte anlamli.)
+- [x] **12R-2 (P2)** - TIMERMS 0/-1'i yok sayiyordu. (YAPILDI.)
+- [x] **12R-3 (P2)** - TIMERD hic desteklenmiyordu. (YAPILDI.)
+- [x] **12R-4 (P2)** - Yigin bolunmesi timer'i kopyalamiyordu. (YAPILDI.)
+- [x] **12R-5 (P2)** - Yerde kurulan timer cantaya tasininca izlenmiyordu. (YAPILDI:
+  `RefreshTimerTracking`, ContainedIn degisiminde.)
+
+**Bilincli karar - decay veto'su:** referans veto sonrasi hicbir sure atamaz, ama
+SphereNet'te decay ayri bir alan oldugu icin hicbir sey yapmamak esyayi her tick'te
+yeniden silinme sinirinda birakirdi. Cozum: yalnizca SIMDI vadesi dolmus decay oteleniyor
+ve scriptin kendi TIMER'i varsa o deger kullaniliyor - boylece iki saat ayrisip
+scriptin secimini ezmiyor. Iki saatin tumden birlestirilmesi acik kalan olarak durdu.
+
+**12Q-12R kapanisi:** tam suite **3.021 basarili / 0 basarisiz** (+19). On duzeltme
+gecici olarak kapatilarak 13 testin eski davranisi yakaladigi kanitlandi.
+
+**Tur ici duzeltilen kendi zayif testim:** "timer'i dolan decay'siz esya silinmiyor"
+testi kapatma altinda da geciyordu - eski kodda silme DecayTime uzerinden bir saniye
+sonra oluyordu. Teste ayirt edici asama (`DecayTime == 0`) eklendi.
+
+**Acik kalan:** DecayTime ile Timeout'un tek alana indirilmesi; saniye alti decay kaydi;
+pickup sirasinda decay iptali; tick callback'inin nesneyi tasimasi/silmesi.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

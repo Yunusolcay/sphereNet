@@ -4,6 +4,51 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - One item clock, one timer gate (12Q-12R)
+----------------------------------------
+
+FIX - The timer script had no say over anything the tick then did. Upstream runs @Timer
+        FIRST and a RETURN 1 ends the tick before the components, the type behaviour and
+        the decay deletion alike (CItem.cpp:6217); a RETURN 0 destroys the item (:6412).
+        A bee hive could not be stopped from refilling and an ordinary item could not be
+        asked to go.
+
+FIX - An item whose timer ran out was destroyed even without ATTR_DECAY and without the
+        script asking for it. Upstream keeps it in that case (:6412) - and TIMER grants
+        no decay right of its own (CObjBase.cpp:1978), so giving a plain movable object a
+        script timer no longer quietly makes it perishable.
+
+FIX - TIMER=-1 turned off the script side and left the decay clock running, so the item
+        rotted on schedule anyway. There is one timer upstream, not two, and the off
+        switch turns off all of it.
+
+FIX - A script that kept a decaying item with RETURN 1 had its own chosen interval
+        overwritten with a fresh default decay window. Upstream assigns no replacement
+        (:6222); the two clocks now agree on what the script asked for.
+
+FIX - A corpse never reached the timer trigger at all - its decay branch ran first - so a
+        script could not hold a body for a quest or an event. The common gate comes before
+        the corpse handling (:6247).
+
+FIX - A timer that had come due but had not yet been ticked was dropped by the save, so
+        "expired and pending" and "no timer" became the same record and the pending script
+        work was silently cancelled on restart. A set timer is written even at zero
+        (CObjBase.cpp:2081 -> CTimedObject.cpp:123).
+
+FIX - TIMERMS accepted -1 and 0 and then ignored them, leaving the old interval in place.
+        Upstream passes the value straight to the one timeout setter, where a negative
+        clears the timer and zero schedules it for now (:2040 -> CTimedObject.cpp:57).
+
+FIX - TIMERD was not understood at all, so a Source-X script writing tenths of a second
+        set nothing (:2033).
+
+FIX - Splitting a stack left the remaining piece without the script timer the original
+        carried; DupeCopy takes the remaining timeout with it (CItem.cpp:4099).
+
+FIX - A timer armed while an item lay on the ground stopped running the moment it went
+        into a bag, while the same timer set after the move worked - the tracking list is
+        only joined when the timer is set. An armed timer now follows the item.
+
 [2026-09-06] - Leaving a spawner: taming, deletion and the events a spawner fires (12N-12P)
 ----------------------------------------
 

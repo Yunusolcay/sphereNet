@@ -1088,8 +1088,18 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
                     return ApplySpeechListCommand(dspCh.DSpeech, value);
                 return true;
             case "TIMERMS":
-                if (long.TryParse(value, out long timerMs) && timerMs > 0)
-                    SetTimeout(Environment.TickCount64 + timerMs);
+                // Upstream hands the value to the one timeout setter, where a negative
+                // clears the timer and zero schedules it for right now
+                // (CObjBase.cpp:2040 -> CTimedObject.cpp:57). Requiring a positive made
+                // both of those accepted-and-ignored.
+                if (long.TryParse(value, out long timerMs))
+                    SetTimeout(timerMs < 0 ? 0 : Environment.TickCount64 + timerMs);
+                return true;
+            case "TIMERD":
+                // Tenths of a second (_SetTimeoutD, :2033). The key was missing
+                // entirely, so a Source-X script writing TIMERD set nothing at all.
+                if (long.TryParse(value, out long timerD))
+                    SetTimeout(timerD < 0 ? 0 : Environment.TickCount64 + timerD * 100);
                 return true;
         }
 
@@ -1146,6 +1156,19 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
         // sector tick list — register it with the world's off-ground timer
         // pump so its @Timer still fires (the flash-robe class of scripts).
         if (timeoutMs > 0 && this is Items.Item timedItem && !timedItem.IsOnGround)
+            ResolveWorld?.Invoke()?.TrackOffGroundTimer(timedItem);
+    }
+
+    /// <summary>Re-register an armed timer after the object has MOVED off the ground.
+    ///
+    /// Registration happens when the timer is set, so a timer armed while the item was
+    /// still lying on the floor was never picked up once it went into a bag - the same
+    /// script worked or did not depending purely on the order of the two operations.
+    /// Upstream keeps one ticking list that does not care where the object lives
+    /// (CTimedObject.cpp:57).</summary>
+    internal void RefreshTimerTracking()
+    {
+        if (_timeout > 0 && this is Items.Item timedItem && !timedItem.IsOnGround)
             ResolveWorld?.Invoke()?.TrackOffGroundTimer(timedItem);
     }
     public void GoSleep() => _isSleeping = true;

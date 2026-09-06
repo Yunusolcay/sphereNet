@@ -308,6 +308,10 @@ public class Item : ObjBase
             var oldVal = _containedIn;
             _containedIn = value;
             MarkDirty(DirtyFlag.Container);
+            // An armed timer follows the item off the ground. Registration happens when
+            // the timer is SET, so one armed while the item still lay on the floor was
+            // never picked up once it went into a bag.
+            RefreshTimerTracking();
 
             // Update container reverse index
             var world = ResolveWorld?.Invoke();
@@ -1030,6 +1034,11 @@ public class Item : ObjBase
         _type = src._type; // direct field — avoid the ItemType setter's spawn/def side effects
         Direction = src.Direction;
         DecayTime = src.DecayTime;
+        // The script timer goes with the split too, not just the decay clock:
+        // upstream's DupeCopy carries the remaining timeout onto the new object
+        // (CItem.cpp:4099). The piece left in the bag used to lose whatever the script
+        // had scheduled for it.
+        SetTimeout(src.Timeout);
 
         _more1 = src._more1;
         _more2 = src._more2;
@@ -1940,14 +1949,26 @@ public class Item : ObjBase
                 // ground items still rot on their saved schedule.
                 if (long.TryParse(value, out long timerSec))
                 {
-                    SetTimeout(timerSec < 0
-                        ? 0
-                        : Environment.TickCount64 + timerSec * 1000);
-                    if (timerSec > 0 &&
-                        (IsAttr(ObjAttributes.Decay) ||
-                         (IsOnGround && !IsAttr(ObjAttributes.Move_Never) &&
-                          !IsAttr(ObjAttributes.Static))))
-                        DecayTime = Environment.TickCount64 + timerSec * 1000;
+                    if (timerSec < 0)
+                    {
+                        // The off switch turns off the WHOLE clock. Decay is the same
+                        // timer upstream, not a second one running behind it
+                        // (CObjBase.cpp:1978), so clearing only the script side left
+                        // the item rotting on schedule anyway.
+                        SetTimeout(0);
+                        DecayTime = 0;
+                    }
+                    else
+                    {
+                        SetTimeout(Environment.TickCount64 + timerSec * 1000);
+                        // Mirror it onto the decay clock only for an item that ALREADY
+                        // decays. Extending that to any loose movable item meant giving
+                        // a plain object a script timer quietly made it perishable, and
+                        // it vanished when the timer ran out; upstream's TIMER sets a
+                        // timeout and grants no decay right (:1978, CItem.cpp:6412).
+                        if (timerSec > 0 && IsAttr(ObjAttributes.Decay))
+                            DecayTime = Environment.TickCount64 + timerSec * 1000;
+                    }
                 }
                 return true;
 
@@ -3223,13 +3244,45 @@ public class Item : ObjBase
         // item is a loose ground item in a NODECAY region (Source-X
         // REGION_FLAG_NODECAY: things on the ground don't decay here), in which
         // case re-arm the timer so it decays normally once it leaves the region.
-        if (DecayTime > 0 && Environment.TickCount64 >= DecayTime)
+        bool decayDue = DecayTime > 0 && Environment.TickCount64 >= DecayTime;
+        if (decayDue && IsInNoDecayRegion())
         {
-            if (IsInNoDecayRegion())
+            DecayTime = Environment.TickCount64 + World.GameWorld.DefaultDecayTimeMs;
+            decayDue = false;
+        }
+
+        long timeout = Timeout;
+        bool timerDue = timeout > 0 && Environment.TickCount64 >= timeout;
+        bool timerFired = false;
+
+        if (decayDue || timerDue)
+        {
+            // ONE gate, before anything else. Upstream fires @Timer first and a
+            // RETURN 1 stops the whole tick - components, the type switch, the corpse
+            // branch and the decay deletion alike (CItem.cpp:6217). Decay used to run
+            // its own copy of this ahead of the timer branch, which meant a corpse
+            // never got to veto its own rot, and a script that DID veto had a fresh
+            // 30-minute decay window written over whatever TIMER it had just chosen.
+            if (timerDue)
             {
-                DecayTime = Environment.TickCount64 + World.GameWorld.DefaultDecayTimeMs;
+                timerFired = true;
+                SetTimeout(0);
             }
-            else
+            var timerResult = OnTimerExpired?.Invoke(this) ?? TriggerResult.Default;
+            if (timerResult == TriggerResult.True)
+            {
+                // The script keeps the item. Whatever timer it set while doing so is
+                // its own choice; upstream assigns no replacement (:6222). Only a
+                // decay that would otherwise have deleted it right now is pushed out,
+                // and only when the script did not set one itself.
+                if (decayDue && DecayTime > 0 && Environment.TickCount64 >= DecayTime)
+                    DecayTime = Timeout > 0
+                        ? Timeout
+                        : Environment.TickCount64 + World.GameWorld.DefaultDecayTimeMs;
+                return true;
+            }
+
+            if (decayDue)
             {
                 if (_type == ItemType.Corpse)
                 {
@@ -3238,38 +3291,28 @@ public class Item : ObjBase
                     bool consumed = OnCorpseDecay?.Invoke(this) ?? true;
                     if (!consumed)
                         return true;
+                    _isDeleted = true;
+                    SpawnChar?.KillAll();
+                    return false;
                 }
-                else
-                {
-                    // Source-X CItem::_OnTick: decay IS the item timer, so @Timer
-                    // has the final say over destruction. RETURN 1 keeps the item
-                    // — re-arm a fresh decay window so a script can defer/cancel
-                    // the rot (e.g. a quest item that must not vanish). Items with
-                    // no @Timer handler return Default/null and decay as before.
-                    if (OnTimerExpired?.Invoke(this) == TriggerResult.True)
-                    {
-                        DecayTime = Environment.TickCount64 + World.GameWorld.DefaultDecayTimeMs;
-                        return true;
-                    }
-                }
+                _isDeleted = true;
+                SpawnChar?.KillAll();
+                return false;
+            }
+
+            // The timer ran out on an item with no decay of its own. Upstream deletes
+            // it only when it carries ATTR_DECAY or the script explicitly said so with
+            // RETURN 0; otherwise the item simply stays (:6412).
+            if (timerResult == TriggerResult.False)
+            {
                 _isDeleted = true;
                 SpawnChar?.KillAll();
                 return false;
             }
         }
 
-        // TIMER expiry — Source-X CItem::_OnTick parity:
-        // Fire @Timer trigger, then fall through to type-specific behavior.
-        // Source-X: RETURN 1 = script handled it; Default/0 = no handler,
-        // engine continues with OnTickComponent for the item type.
-        // Item deletion is driven by DecayTime above, not by @Timer return.
-        long timeout = Timeout;
-        bool timerFired = false;
-        if (timeout > 0 && Environment.TickCount64 >= timeout)
+        if (timerFired)
         {
-            timerFired = true;
-            SetTimeout(0);
-            OnTimerExpired?.Invoke(this);
 
             // Source-X CItem::_OnTick trap state machine: an armed trap relaxes
             // to inactive, an inactive one either re-arms (MOREZ periodic) or
