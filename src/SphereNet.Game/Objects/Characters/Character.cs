@@ -2063,6 +2063,38 @@ public partial class Character : ObjBase
         return list.Count > 0 ? list[0] : null;
     }
 
+    /// <summary>Re-base a loaded summon's expiry onto the clock this process is
+    /// running on. The save carries SUMMON_EXPIRE_REMAINING - milliseconds still to
+    /// go - because the live tag is an absolute TickCount64, which is uptime and
+    /// therefore meaningless in another session. Source-X does the same: it writes a
+    /// timer as remaining milliseconds (CObjBase.cpp:2081) and re-arms it from the
+    /// load time (:2037).
+    ///
+    /// A save written before that change carries only the absolute tick. Its value
+    /// cannot be interpreted against a new uptime base, and leaving it in place would
+    /// strand the summon behind a threshold days away, so the deadline is rebuilt
+    /// from the summon's own SUMMON_DURATION. That is generous by up to one full
+    /// duration, but it is bounded; a summon that outlives the server is not.</summary>
+    public void RestoreSummonExpiry()
+    {
+        if (TryGetTag("SUMMON_EXPIRE_REMAINING", out string? remainingRaw))
+        {
+            RemoveTag("SUMMON_EXPIRE_REMAINING");
+            long remaining = long.TryParse(remainingRaw, out long r) ? Math.Max(0, r) : 0;
+            SetTag("SUMMON_EXPIRE_TICK", (Environment.TickCount64 + remaining).ToString());
+            return;
+        }
+
+        if (!TryGetTag("SUMMON_EXPIRE_TICK", out _))
+            return;
+
+        // Legacy record: rebuild from the duration, or expire at the next tick when
+        // even that is missing rather than leave the summon unbounded.
+        long duration = TryGetTag("SUMMON_DURATION", out string? durRaw) &&
+            long.TryParse(durRaw, out long d) && d > 0 ? d * 100L : 0;
+        SetTag("SUMMON_EXPIRE_TICK", (Environment.TickCount64 + duration).ToString());
+    }
+
     public bool TickPetOwnershipTimers(long nowMs)
     {
         if (!OwnerSerial.IsValid && !IsSummoned)

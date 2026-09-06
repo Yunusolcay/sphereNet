@@ -810,6 +810,52 @@ tanimina yonlendirilmesi, field uzerinde `@SpellEffect` veto sozlesmesi,
 `FIELD_CASTER_UUID` uretilmesine ragmen temasin yalniz UID kullanmasi ve
 `OverrideFields` ayari da acik.
 
+### 04C — summon kapasitesi ve kayitli sure (6 Eylul 2026)
+
+[04C kanit raporu](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_04C_SUMMON.md).
+Iki bulgu da bagimsiz olarak dogrulandi ve uygulandi.
+
+- [x] **SX-04C-01 (P1)** — Menuden secilen summon'un gercek slot maliyeti kapasite
+  kontrolunden SONRA uygulaniyordu. (YAPILDI: Source-X summon'u once secilen
+  kimlikten kurar (`CreateBasic(m_atMagery.m_uiSummonID)`, CCharSpell.cpp:2640) ve
+  ancak sonra `GetFollowerSlots()` ile olcer (:2662). SphereNet yer tutucuyu
+  olcuyor, secimi sonradan uyguluyor ve kapasiteyi bir daha kontrol etmiyordu.
+  `SummonCreature` artik secilen tanimi `TryAssignOwnership`'ten ONCE uyguluyor.
+  **Ikinci yari - sira:** raporun "basari daline ve basari maliyetine ilerlememeli"
+  maddesi. Referans `Spell_Summon_Try`'i :3002'de cagirir, tuketime :3010'da ulasir
+  ve tuketim karsilanamazsa summon'u siler (:3012). Summon `PrepareSummon` ile
+  butun maliyetlerin onune tasindi; mana/reagent karsilanamazsa `DiscardSummon`
+  onu geri aliyor. Basarisizlik `FailCastAtCompletion` ile ABORT olarak
+  fiyatlaniyor — kosulsuz iade degil, 04A'daki ayni sozlesme.)
+- [x] **SX-04C-02 (P2)** — Summon bitis zamani save'e ham TickCount64 olarak gidiyordu.
+  (YAPILDI: mutlak TickCount64 calisma suresidir; yeniden baslatilmis bir makinede
+  anlamsizdir. Source-X timer'i KALAN milisaniye olarak yazar (CObjBase.cpp:2081) ve
+  yukleme zamanina gore yeniden kurar (:2037). `WorldSaver` artik
+  `SUMMON_EXPIRE_REMAINING` yaziyor, `Character.RestoreSummonExpiry` son tarihi
+  calisan saatte yeniden kuruyor. Ayni dosyada POISON kaydinin zaten kalan sureyi
+  saklamasi ic-emsal olarak izlendi.
+  **Eski kayit politikasi:** rapor "eski alani sessizce yok sayip summon'u suresiz
+  birakmak dogru degildir" diyordu. Eski mutlak deger yeni saat tabaninda
+  okunamadigi icin son tarih summon'un kendi `SUMMON_DURATION` degerinden yeniden
+  kuruluyor; suresi de yoksa bir sonraki tick'te bitiyor. En fazla bir sure kadar
+  comert, ama SINIRLI.)
+
+**04C kapanisi:** tam suite **2.453 basarili / 0 basarisiz** (+14). Iki duzeltme de
+gecici olarak kapatilarak 10 testin eski davranisi yakaladigi kanitlandi. Mevcut
+hicbir test sozlesme degisikligi nedeniyle guncellenmedi.
+
+**Test kurulumunda ortaya cikan iki tuzak** (uretim hatasi degil, not olarak):
+`DefinitionLoader.LoadAll()` spell registry'sini yeniden kurar — programatik
+`Register` ondan SONRA yapilmali. Ve `SpellDef.GetDuration` egrisi
+`DurationScale` verilmediginde yuksek skill'de NEGATIFE duser; testte iki uc da
+verilmeli.
+
+**Acik kalan (04D adaylari):** dispel/silme sonrasi follower cache, sahibin
+olumu/silinmesi, summon `@Create` sirasi, `SummonWalkCheck` ve genel summon sayisi
+siniri. Ayrica Source-X follower kapisini `!IsPriv(PRIV_GM)` ve `IsSetOF(OF_PetSlots)`
+altinda tutar; SphereNet'in `TryAssignOwnership` kapisinda ikisi de yok — ayri bir
+yetki/ayar karari oldugu icin bu tur degistirilmedi.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

@@ -433,13 +433,14 @@ public sealed class SpellEngine
     /// into SKTRIG_ABORT and prices through Spell_CastFail(fAbort = true) - so this
     /// is NOT an unconditional refund, it is the configured abort cost
     /// (MANALOSSABORT / REAGENTLOSSABORT, CCharSpell.cpp:3316).</summary>
-    private bool FailCastAtCompletion(Character caster, SpellDef def, CastSourceKind kind, string message)
+    private bool FailCastAtCompletion(Character caster, SpellDef def, CastSourceKind kind, string? message)
     {
         ApplyCastResourceLoss(caster, def, kind == CastSourceKind.Wand,
             kind == CastSourceKind.Scroll, fizzle: false, abort: true);
         ClearCastSourceTags(caster);
         ClearCastState(caster);
-        OnSysMessage?.Invoke(caster, message);
+        if (message != null)
+            OnSysMessage?.Invoke(caster, message);
         return false;
     }
 
@@ -833,6 +834,22 @@ public sealed class SpellEngine
             return false;
         }
 
+        // Source-X builds the summon and weighs it against the follower cap BEFORE
+        // the spell is paid for: Spell_Summon_Try (CCharSpell.cpp:3002) creates the
+        // chosen creature and refuses it on GetFollowerSlots (:2662), and only then
+        // does Spell_CanCast consume (:3010) - deleting the summon again if that
+        // consumption cannot be met (:3012). SphereNet summoned in the effect stage
+        // instead, long after the mana, reagents and scroll had been taken, so a
+        // refused summon was charged for in full. The refusal reports itself, hence
+        // no second message here.
+        Character? summoned = null;
+        if (def.IsFlag(SpellFlag.Summon))
+        {
+            summoned = PrepareSummon(caster, targetPos, def, spell, skillVal);
+            if (summoned == null)
+                return FailCastAtCompletion(caster, def, sourceKind, null);
+        }
+
         // Mana requirement and consumption share ONE discounted cost (wand
         // free, scroll half, Mind Rot via EffectiveManaCost). The old code
         // required only the BASE def.ManaCost here while consuming the
@@ -842,6 +859,7 @@ public sealed class SpellEngine
         else if (castFromScroll) manaCost /= 2;     // reference: scrolls cost half mana
         if (caster.Mana < manaCost)
         {
+            DiscardSummon(summoned);
             ClearCastSourceTags(caster);
             ClearCastState(caster);
             OnSysMessage?.Invoke(caster, "You lack the mana to cast that spell.");
@@ -860,6 +878,7 @@ public sealed class SpellEngine
             // The reagents were there when the cast began and are not there now:
             // the spell cannot be paid for, so it does not happen. Source-X fails the
             // whole cast the same way when its re-check at CastDone cannot pay.
+            DiscardSummon(summoned);
             ClearCastSourceTags(caster);
             ClearCastState(caster);
             OnSysMessage?.Invoke(caster, "You lack the reagents to cast that spell.");
@@ -1050,53 +1069,7 @@ public sealed class SpellEngine
         }
         else if (def.IsFlag(SpellFlag.Summon))
         {
-            // sm_summon menu pick stashed on the caster (Source-X
-            // m_atMagery.m_uiSummonID): the COMPLETED cast conveys the chosen
-            // creature — the menu no longer bypasses mana/reagents/cast time.
-            string? summonSel = null;
-            if (caster.TryGetTag("SUMMON_SELECT", out string? sel) &&
-                !string.IsNullOrWhiteSpace(sel))
-                summonSel = sel.Trim();
-            caster.RemoveTag("SUMMON_SELECT");
-
-            // Fixed summon spells carry their creature natively (Source-X
-            // Spell_CastStart m_atMagery.m_uiSummonID defaults) — previously
-            // everything but the familiar spawned a bodyless creature.
-            ushort summonBody = spell switch
-            {
-                SpellType.SummonFamiliar => 0x013D,
-                SpellType.BladeSpirit => 0x023E,     // CREID_BLADE_SPIRIT
-                SpellType.EnergyVortex => 0x00A4,    // CREID_ENERGY_VORTEX
-                SpellType.AirElemental => 0x000D,    // CREID_AIR_ELEM
-                SpellType.EarthElemental => 0x000E,
-                SpellType.FireElemental => 0x000F,
-                SpellType.WaterElemental => 0x0010,
-                SpellType.SummonDaemon => 0x0009,    // CREID_DEMON
-                SpellType.RisingColossus => 0x033D,  // CREID_RISING_COLOSSUS
-                SpellType.AnimatedWeapon => 0x02B4,  // CREID_ANIMATED_WEAPON
-                // Sphere custom Summon Undead: 1/15 lich, 4/15 skeleton,
-                // else zombie (Source-X CCharSpell.cpp:2591).
-                SpellType.SummonUndead => _rand.Next(15) switch
-                {
-                    1 => (ushort)0x0018,             // CREID_LICH
-                    3 or 5 or 7 or 9 => (ushort)0x0032, // CREID_SKELETON
-                    _ => (ushort)0x0003,             // CREID_ZOMBIE
-                },
-                _ => 0,
-            };
-            var summoned = SummonCreature(caster, targetPos, def, skillLevel, summonBody);
-            if (summoned != null && summonSel != null)
-            {
-                var res = Definitions.DefinitionLoader.StaticResources;
-                if (res != null &&
-                    Definitions.CharDefHelper.TryApplyDefName(summoned, summonSel, res, refresh: false))
-                {
-                    summoned.SetStatFlag(StatFlag.Conjured);
-                    summoned.Hits = summoned.MaxHits;
-                    summoned.Stam = summoned.MaxStam;
-                    summoned.Mana = summoned.MaxMana;
-                }
-            }
+            // Already created above, before the costs were taken - see PrepareSummon.
         }
         else
         {
@@ -1755,9 +1728,62 @@ public sealed class SpellEngine
         }
     }
 
+
+    /// <summary>Build the summon a completed cast calls for, before any of its cost
+    /// is taken. Returns null when it may not be summoned, having already said why.
+    ///
+    /// Source-X orders it this way deliberately: Spell_Summon_Try runs at
+    /// CCharSpell.cpp:3002 and the consumption only at :3010.</summary>
+    private Character? PrepareSummon(Character caster, Point3D targetPos, SpellDef def,
+        SpellType spell, int skillLevel)
+    {
+        // sm_summon menu pick stashed on the caster (Source-X
+        // m_atMagery.m_uiSummonID): the COMPLETED cast conveys the chosen
+        // creature — the menu no longer bypasses mana/reagents/cast time.
+        string? summonSel = null;
+        if (caster.TryGetTag("SUMMON_SELECT", out string? sel) &&
+            !string.IsNullOrWhiteSpace(sel))
+            summonSel = sel.Trim();
+        caster.RemoveTag("SUMMON_SELECT");
+
+        ushort summonBody = spell switch
+        {
+            SpellType.SummonFamiliar => 0x013D,
+            SpellType.BladeSpirit => 0x023E,     // CREID_BLADE_SPIRIT
+            SpellType.EnergyVortex => 0x00A4,    // CREID_ENERGY_VORTEX
+            SpellType.AirElemental => 0x000D,    // CREID_AIR_ELEM
+            SpellType.EarthElemental => 0x000E,
+            SpellType.FireElemental => 0x000F,
+            SpellType.WaterElemental => 0x0010,
+            SpellType.SummonDaemon => 0x0009,    // CREID_DEMON
+            SpellType.RisingColossus => 0x033D,  // CREID_RISING_COLOSSUS
+            SpellType.AnimatedWeapon => 0x02B4,  // CREID_ANIMATED_WEAPON
+            // Sphere custom Summon Undead: 1/15 lich, 4/15 skeleton,
+            // else zombie (Source-X CCharSpell.cpp:2591).
+            SpellType.SummonUndead => _rand.Next(15) switch
+            {
+                1 => (ushort)0x0018,             // CREID_LICH
+                3 or 5 or 7 or 9 => (ushort)0x0032, // CREID_SKELETON
+                _ => (ushort)0x0003,             // CREID_ZOMBIE
+            },
+            _ => 0,
+        };
+        return SummonCreature(caster, targetPos, def, skillLevel, summonBody, summonSel);
+    }
+
+    /// <summary>Take back a summon whose cast could not be paid for after all - the
+    /// reference deletes it on the same failure (CCharSpell.cpp:3012).</summary>
+    private void DiscardSummon(Character? summoned)
+    {
+        if (summoned == null) return;
+        summoned.ClearOwnership(clearFriends: true);
+        _world.DeleteObject(summoned);
+        summoned.Delete();
+    }
+
     /// <summary>Summon a creature at target location.</summary>
     private Character? SummonCreature(Character caster, Point3D pos, SpellDef def, int skillLevel,
-        ushort bodyId = 0)
+        ushort bodyId = 0, string? defName = null)
     {
         if (IsMagicFlag(MagicConfigFlags.LimitSummons))
         {
@@ -1802,9 +1828,29 @@ public sealed class SpellEngine
             }
         }
 
+        // A menu pick has to be applied BEFORE the follower cap is weighed. Source-X
+        // creates the summon from the chosen id - CreateBasic(m_atMagery.m_uiSummonID),
+        // CCharSpell.cpp:2640 - and only then measures it with GetFollowerSlots()
+        // (:2662). Applying the pick afterwards meant the cap saw the placeholder's
+        // single slot, so a five-slot creature walked through a one-slot allowance and
+        // left the owner permanently over their limit.
+        if (defName != null)
+        {
+            var res = Definitions.DefinitionLoader.StaticResources;
+            if (res != null &&
+                Definitions.CharDefHelper.TryApplyDefName(creature, defName, res, refresh: false))
+            {
+                creature.SetStatFlag(StatFlag.Conjured);
+                creature.Hits = creature.MaxHits;
+                creature.Stam = creature.MaxStam;
+                creature.Mana = creature.MaxMana;
+            }
+        }
+
         int duration = def.GetDuration(skillLevel);
         if (!creature.TryAssignOwnership(caster, caster, summoned: true, enforceFollowerCap: true))
         {
+            OnSysMessage?.Invoke(caster, ServerMessages.Get(Msg.PetslotsTrySummon));
             _world.DeleteObject(creature);
             creature.Delete();
             return null;

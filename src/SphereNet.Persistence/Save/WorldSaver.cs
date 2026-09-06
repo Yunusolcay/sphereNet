@@ -1058,6 +1058,21 @@ public sealed class WorldSaver
                 continue;
             if (upper.StartsWith("STATLOCK.", StringComparison.Ordinal))
                 continue;
+            if (upper == "SUMMON_EXPIRE_TICK")
+            {
+                // An absolute TickCount64 is UPTIME, not wall time: written to the
+                // save it means nothing once the machine has rebooted, and the
+                // summon then waits out a threshold that may be days away. Source-X
+                // stores a timer as the REMAINING milliseconds
+                // (_GetTimerAdjusted -> TIMERMS, CObjBase.cpp:2081) and rebuilds the
+                // deadline against the load time (:2037), which is also how the
+                // POISON record above already survives a restart.
+                long remaining = long.TryParse(val, out long expireTick)
+                    ? Math.Max(0, expireTick - Environment.TickCount64)
+                    : 0;
+                w.WriteProperty("TAG.SUMMON_EXPIRE_REMAINING", remaining.ToString());
+                continue;
+            }
             if (upper is "DSPEECH" or "EMOTECOLOR" or "VIRTUALGOLD"
                 or "LASTUSED" or "LASTDISCONNECTED" or "NEED" or "SPAWNITEM")
             {

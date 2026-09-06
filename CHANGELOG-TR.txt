@@ -3,6 +3,38 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Buyu: summon'un takipci maliyeti ve korudugu omur (04C)
+----------------------------------------
+
+FIX - Menuden secilen summon, follower kapasitesine kendi yaratik tanimi
+        UYGULANMADAN once tartiliyordu. Yer tutucu varsayilan tek slot sayiliyor,
+        secim sonradan uygulaniyor ve kapasite bir daha kontrol edilmiyordu - yani
+        bes slotluk bir yaratik tek slotluk izinden geciyor ve sahibini kalici olarak
+        limitin uzerinde birakiyordu. Source-X summon'u once secilen kimlikten kurar
+        (CreateBasic(m_atMagery.m_uiSummonID), CCharSpell.cpp:2640) ve ancak sonra
+        GetFollowerSlots() ile olcer (:2662). Secim artik kapasite tartilmadan once
+        uygulaniyor ve ret durumunda oyuncuya bildiriliyor.
+
+FIX - Reddedilen summon tam bedelle ucretlendiriliyordu. Yaratik efekt asamasinda,
+        yani mana, reagent ve parsomen alindiktan cok sonra olusturuluyordu; bu yuzden
+        hicbir sey cagiramayan bir buyu yine de basari bedelini oduyordu. Source-X
+        Spell_Summon_Try'i CCharSpell.cpp:3002'de cagirir ve tuketime ancak :3010'da
+        ulasir - tuketim karsilanamazsa summon'u yeniden siler (:3012). Summon artik
+        butun maliyetlerin onunde kuruluyor, karsilanamayan bir maliyet onu geri
+        aliyor. Basarisizlik iade degil, abort olarak fiyatlaniyor.
+
+FIX - Summon'un bitis zamani save'e mutlak TickCount64 olarak gidiyordu. Bu deger
+        CALISMA SURESIDIR, duvar saati degil: o gunden beri yeniden baslatilmis bir
+        makinede geri yuklendiginde summon gunlerce uzakta olabilecek bir esigi
+        bekliyordu. Source-X timer'i KALAN milisaniye olarak saklar
+        (CObjBase.cpp:2081) ve yukleme zamanina gore yeniden kurar (:2037). Save artik
+        SUMMON_EXPIRE_REMAINING tasiyor ve loader son tarihi calisan saat uzerinde
+        yeniden kuruyor - POISON kaydinin yeniden baslatmayi zaten bu sekilde atlatmasi
+        gibi. Bu degisiklikten once yazilmis bir save yalnizca eski mutlak degeri
+        tasir; onun son tarihi summon'un kendi suresinden yeniden kuruluyor. Bu, en
+        fazla bir sure kadar comert ama SINIRLI - sunucudan uzun yasayan bir summon
+        degil.
+
 [2026-09-06] - Buyu: alan buyusunun erisimi ve kac tanesinin isleyecegi (04B)
 ----------------------------------------
 

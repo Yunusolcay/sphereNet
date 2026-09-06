@@ -4,6 +4,37 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Magic: the follower cost of a summon, and the life it keeps (04C)
+----------------------------------------
+
+FIX - A summon picked from the menu was weighed against the follower cap BEFORE its
+        own creature definition was applied. The placeholder counted as the default
+        single slot, the pick was applied afterwards, and the cap was never re-checked
+        - so a five-slot creature walked through a one-slot allowance and left the
+        owner permanently over their limit. Source-X builds the summon from the chosen
+        id first (CreateBasic(m_atMagery.m_uiSummonID), CCharSpell.cpp:2640) and only
+        then measures it with GetFollowerSlots() (:2662). The pick is now applied
+        before the cap is weighed, and a refusal says so.
+
+FIX - A refused summon was charged for in full. The creature was made in the effect
+        stage, long after the mana, reagents and scroll had been taken, so a cast that
+        could not legally summon anything still paid the success price. Source-X calls
+        Spell_Summon_Try at CCharSpell.cpp:3002 and reaches the consumption only at
+        :3010 - and deletes the summon again if that consumption cannot be met
+        (:3012). The summon is now built ahead of every cost, and a cost that cannot
+        be met takes it back down. The failure is priced as an abort, not refunded.
+
+FIX - A summon's expiry went into the save as an absolute TickCount64. That is UPTIME,
+        not wall time: restored on a machine that had since rebooted, the summon waited
+        out a threshold that could be days away. Source-X stores a timer as the
+        REMAINING milliseconds (CObjBase.cpp:2081) and re-arms it against the load time
+        (:2037). The save now carries SUMMON_EXPIRE_REMAINING and the loader rebuilds
+        the deadline on the running clock, the same way the POISON record already
+        survives a restart. A save written before this change carries only the old
+        absolute tick; its deadline is rebuilt from the summon's own duration, which is
+        generous by up to one duration but bounded - a summon that outlives the server
+        is not.
+
 [2026-09-06] - Magic: what a spell field may reach, and how many may land (04B)
 ----------------------------------------
 

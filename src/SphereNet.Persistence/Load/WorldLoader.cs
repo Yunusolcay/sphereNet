@@ -1227,6 +1227,7 @@ public sealed class WorldLoader
                 continue;
 
             CharDefHelper.EnsureDisplayBody(ch, DefinitionLoader.StaticResources);
+            ch.RestoreSummonExpiry();
             ch.ClearTransientVisualState();
 
             if (!charHasUuid)
