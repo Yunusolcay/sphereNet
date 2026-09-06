@@ -3,6 +3,143 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-07] - Script cagri zinciri, nesne fabrikalari ve kopyalama (12Z/13A-13E)
+----------------------------------------
+
+FIX - CALL hicbir sey hazirlamiyordu. Yeni bir args nesnesi kurup cagiranin ARGN1/2/3
+        degerlerini kopyalarken arguman dizesini degistiriyordu; boylece
+        "CALL f_child 37" alt fonksiyona cagirandan gelen ARGN1=17 ile ARGS=37
+        veriyor, argumansiz "CALL f_child" ise ARGS'i tasimak yerine bosaltiyordu.
+        Referans Execute_Call (CScriptObj.cpp:1505) CAGIRANIN KENDI args nesnesini
+        kullanir: arguman varsa sayilari, nesneyi ve dizeyi saklar, yeni argumandan
+        Init eder ve donuste geri koyar; arguman yoksa nesneyi oldugu gibi gecirir.
+        Iki bicim de artik boyle. Normal fonksiyon satiri ise ARGN'i KENDI argumanindan
+        hazirliyor (CScriptTriggerArgs::Init, :112) - bunu da yapmiyordu.
+
+FIX - CALL cagiranin LOCAL havuzunu paylasmiyordu. Referansta havuz args nesnesinde
+        yasar (m_VarsLocal) ve Init onu temizlemez; ayni nesneyi gecirmek CALL'un
+        yerelleri iki yonlu paylasmasini saglayan seydir. Normal fonksiyon satiri ise
+        yeni bir args nesnesi kurar (CObjBase.cpp:2138) ve kendi havuzunu tutar. CALL
+        ile cagrilan yardimci, cagiranin az once kurdugu LOCAL'i goremiyor ve yazdigi
+        deger geri donmuyordu.
+
+FIX - CALL ilk kelimeyi fonksiyon adi sayiyordu; "CALL SRC.f_mark" ve
+        "CALL TOPOBJ.f_mark" bu adla fonksiyon ariyor, bulamiyor ve satir yok oluyordu.
+        Referans referansi r_GetRef ile, SRC'yi de pSrc->GetChar ile cozup kalan adi
+        cozulen nesnede cagirir (CScriptObj.cpp:1515). Referans-basi cozucusu artik
+        item verb zinciriyle ortak.
+
+FIX - TRY kendi eksik yurutucusune sahipti: bosluklu bicim yalniz native verb ve konsol
+        koprusunu deniyor ve orada duruyordu; "TRY TAG.FLAG 1" ve "TRY f_mark" hicbir
+        sey yapmiyor, ayni satirlar sarmalanmadan calisiyordu. Referans kalan satirdan
+        CScript kurup hedefin tam r_Verb yolunu cagirir ve yalnizca gecersiz-referans
+        hatasini bastirir (CObjBase.cpp:2899).
+
+FIX - ARGN atamasi ondalik-veya-0x int parser kullaniyordu; "ARGN1=010" onalti yerine
+        on yaziyor, "ARGN1=1+1" ise tamamen reddedilip onceki deger kaliyordu. Referans
+        atamayi GetArgVal, yani tam ifade parser'i uzerinden yapar
+        (CScriptTriggerArgs.cpp:313).
+
+FIX - TRYSRC kaynakla birlikte hedefi de degistiriyordu. Referans koprusune yalniz
+        kaynak UID'sini gonderiyordu; kopru tek basina gelen UID'yi UZERINDE islem
+        yapilacak nesne sayar. Boylece "TRYSRC <oyuncu> TAG.TEST 1" oyuncuyu
+        etiketliyor, satiri calistiran esyaya dokunmuyordu. Referans UID'den kaynak
+        konsolunu cozup komutu mevcut nesnede calistirir: r_Verb(script, pNewSrc)
+        (CObjBase.cpp:2917). Kopruye verilen konsol artik o karakter adina da
+        konusuyor, boylece cagiranini gerektiren verb onu buluyor.
+
+FIX - SERV.NEWITEM, TEMPLATE basligini kaynak-turu kontrolunde dogrudan reddediyordu;
+        odul cantasi veya cok parcali esya tarifi 0 dondurup hicbir sey uretmiyordu.
+        Referans CreateHeader'a gider; o da ITEMDEF ile TEMPLATE'i ayni sekilde kabul
+        edip ikincisini CreateTemplate'e verir (CItem.cpp:461/554): ilk giris cagirana
+        donen nesne olur ve CONTAINER ise sonraki satirlar onun icinde uretilir (:628).
+        Template genisletmesi artik spawner ile ortak tek uygulamaya sahip.
+
+FIX - NEWITEM'in karakter parent'i her zaman cantaya gidiyordu; dogrudan birinin uzerine
+        uretilen esya hicbir zaman giyilmiyordu. Referansin LoadSetContainer'i tanimin
+        belirttigi katmana giydirir ve yalnizca katman belirtilmemisse cantaya duser
+        (CItem.cpp:2516).
+
+FIX - NEWITEM argumanini uc alana boluyordu; gecerli dort alanli cagride equip bayragi
+        parent UID'sine yapisik kaliyor ("...,<uid>,1"), UID cozulemiyor ve esya
+        uretilip hicbir yere konmuyordu.
+
+FIX - SERV.NEWNPC yeni yaratigi 0 can ve 0 mana ile birakiyordu: tanim uygulamasi
+        MAKSIMUMLARI belirler, havuzlari dolduran bir sey yoktu. Referans NPC_LoadScript
+        uzerinden CreateNewCharCheck'e ulasir ve can, stamina ile manayi olusturma
+        aninda doldurur (CCharNPC.cpp:30/265, CChar.cpp:1042). GM NPC-ekleme yolu bunu
+        zaten yapiyordu.
+
+FIX - NEW ile NEW.<property> farkli alanlar uzerinden cozuluyordu - ilki son ESYAYI
+        tercih ediyor, ikincisi karaktere dusuyordu; ayni nesneyi gostermeyebiliyorlar
+        ve az once NPC yaratmis bir script onceki esyayi okuyordu. Dahasi bosluk testi
+        "!= 0" iken bos deger 0xFFFFFFFF'tir; NEW hicbir sey uretilmeden once bir UID
+        bildiriyordu. Iki bicim de artik tek referansi okuyor - g_World.m_uidNew portu
+        (CScriptObj.cpp:1381); SERV.LASTNEWITEM / LASTNEWCHAR kendi tur alanlarini
+        koruyor.
+
+FIX - Fabrikalar NEW'i nesne olusturmanin yan etkisi olarak yaziyordu; ikinci bir esya
+        ureten bir @Create hook'u NEW'i cagiranin istedigi esya yerine ona
+        yonlendiriyordu. NEWITEM artik referansi isinin SONUNDA yaziyor.
+
+FIX - Bir nesne uzerine yazilan cip lak NEWITEM o nesnenin ACT'ini guncellemiyordu;
+        hem o hem acik SERV.NEWITEM ayni sunucu-only kopruden geciyordu. Referans, komut
+        sunucuya yonelmemisse cagiranin ACT'ini urettigi seye yoneltir
+        (CScriptObj.cpp:1383).
+
+FIX - NEW'in yalnizca okuma yolu vardi: "NEW=<uid>" ve "NEW.<property>=<deger>" sessizce
+        yok sayiliyordu; script sakladigi referansi geri yukleyemiyor veya az once
+        urettigi nesneyi giydiremiyordu. Ikisi de baglandi ve hicbir seyi gostermeyen
+        atama referansi temizliyor (SSV_NEW, CScriptObj.cpp:1305).
+
+FIX - Kaynak UID'si hicbir seyi gostermeyen NEWDUPE onceki NEW'i oldugu gibi
+        birakiyordu; kopyanin calisip calismadigini NEW ile denetleyen script eski
+        nesneyi okuyup yeni kopya saniyordu. Referans m_uidNew'i temizler ve false
+        doner (:1311).
+
+FIX - NEWDUPE UID'sini kosulsuz onaltilik okuyordu; ondalik "10" bambaska - ve tamamen
+        gecerli - bir nesneyi adresliyor, bir esyanin ondalik UID'si ise tasip hicbir
+        sey kopyalamiyordu. Bu bir Sphere argumanidir: yalnizca bastaki sifir hex
+        demektir (GetArgVal -> CScript.cpp:154). DUPE'nin sayisinda ayna hata vardi;
+        ondalik int okundugu icin "1+1" sessizce bire dusuyor, "010" onalti yerine on
+        kopya uretiyordu. Ikisi de artik onceki dalgada eklenen gecikmeli-cagri
+        parser'ini da besleyen tek ortak Sphere sayi parser'ini kullaniyor.
+
+FIX - Kapsayici kopyasi bos cikiyordu. Kopyalama, bilerek yalnizca nesnenin kendi
+        durumunu tasiyan stack-bolme yardimcisini paylasiyordu; odul cantasi veya dolu
+        sandik bos bir kabuga donusuyordu. Referansin kapsayici ozel yolu her cocugu
+        kendi kopyasi olarak, alt kapsayicilar dahil yeniden uretir
+        (CItemContainer.cpp:830).
+
+FIX - Kopyalanan spawner TYPE'ini koruyup davranisini kaybediyordu: tur ham alan olarak
+        geldigi icin hicbir bilesen kurulmuyor ve kopya olu kaliyordu. Referans spawn
+        yapilandirmasini - kota, aralik, mesafe, spawn kimligi - tasir ve bilerek daha
+        once uretilmis cocuklari tasimaz (CCSpawn::Copy, CCSpawn.cpp:1272).
+
+FIX - Kopyalanan karakter ciplak ve cantasiz cikiyor; fame, karma, direncleri, durum
+        bayraklari (gizlilik dahil) ve EVENTS listesi kayboluyordu; yalnizca dar bir
+        alan listesi ve tag'ler kaliyordu. Referans DupeFrom durum bayraklarini, stat
+        blogunu, EVENTS'i ve entity ozelliklerini tasir, sonra giyili her katmani yeni
+        karaktere cogaltir (CChar.cpp:1092/1194). Canli baglantilar - hesap, istemci,
+        UID - bilincli olarak kopyalanmiyor.
+
+FIX - Kopya, kaynagin yanina konmak yerine kaynagin kapsayicisina itiliyordu. Referans
+        DUPE'yi MoveNearObj(this,1) ile bitirir; o da UST DUZEY nesneye cikip onun DUNYA
+        konumunu kullanir (CItem.cpp:3631, CObjBase.cpp:498). Kaynagin kendi Position'ini
+        okumak kapsayici-ici bir koordinat veriyor ve haritada yanlis bir noktaya
+        donusuyordu; dolu kapsayici ise kopyayi ya yutuyor ya da tamamen yok ediyordu.
+
+FIX - Kitabin AUTHOR alani yazilabiliyor ama okunamiyordu: ortak setter TAG.AUTHOR
+        yazip kitaba ozel setter calisamadan donuyor, getter ise TAG.BOOK_AUTHOR
+        okuyordu. Referans ikisi icin tek m_sAuthor tutar (CItemMessage.cpp:61/104).
+        Setter artik iki yazimi da yaziyor, getter ikisini de kabul ediyor; boylece ne
+        pano yolu ne de mevcut bir kayit verisini kaybediyor.
+
+NOT  - 12Z bulgusu - callback icinden eklenen isin ayni tura katilmasinin hedefin aktif
+        kumedeki yerine bagli olmasi - onceki dalganin vade-sirasi duzeltmesiyle zaten
+        karsilanmisti; o duzeltme tur uyeligini herhangi bir callback calismadan once
+        sabitliyor. Artik dort hedef durumunun tamami testle kilitli.
+
 [2026-09-06] - Gecikmeli is: vade sirasi, komut ayirma, verb sahipligi ve 64 bit argumanlar (12X/12Y)
 ----------------------------------------
 

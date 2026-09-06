@@ -20,6 +20,20 @@ public interface IScriptObj
     /// </summary>
     bool TryExecuteCommand(string key, string args, ITextConsole source);
 
+    /// <summary>Execute a verb, reporting through <paramref name="nameOwned"/> whether
+    /// the NAME belongs to this object's verb table at all. Source-X needs the
+    /// distinction: a name the table owns settles the line, and only an UNKNOWN name
+    /// falls through to a script [FUNCTION] and then to a property assignment
+    /// (CObjBase.cpp:2134, CScriptObj.cpp:1481). The default implementation reports a
+    /// failed verb as unowned, which is what callers assumed before the distinction
+    /// existed; the game objects override it with the real answer.</summary>
+    bool TryExecuteCommand(string key, string args, ITextConsole source, out bool nameOwned)
+    {
+        bool handled = TryExecuteCommand(key, args, source);
+        nameOwned = handled;
+        return handled;
+    }
+
     /// <summary>
     /// Load/set a script property value. Maps to r_LoadVal.
     /// </summary>

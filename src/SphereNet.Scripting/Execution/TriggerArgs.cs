@@ -35,6 +35,17 @@ public sealed class TriggerArgs : ITriggerArgs
     /// locals (Source-X function-call semantics).</summary>
     public Variables.VarMap? SharedLocals { get; set; }
 
+    /// <summary>CALL semantics: the callee runs on the CALLER'S LOCAL pool.
+    ///
+    /// In Source-X the LOCAL pool lives on the args object (m_VarsLocal), so which
+    /// functions share it follows entirely from which args object they get. CALL hands
+    /// over the caller's own args — untouched with no argument, and temporarily
+    /// re-Init'ed with one (Execute_Call, CScriptObj.cpp:1505), and Init does not clear
+    /// the locals — so the callee reads and writes the caller's LOCALs. An ordinary
+    /// function verb line builds a FRESH args object (CObjBase.cpp:2138) and therefore
+    /// a fresh pool, which is why only CALL sets this.</summary>
+    public bool ShareCallerLocals { get; set; }
+
     public TriggerArgs() { }
 
     public TriggerArgs(IScriptObj? source, long n1 = 0, long n2 = 0, string argStr = "")

@@ -267,6 +267,67 @@ public static class TemplateEngine
     public static ushort ResolveItemId(ResourceHolder resources, string defname)
         => ResolveDispId(resources, defname);
 
+
+    // ---- Building real items out of a [TEMPLATE] recipe -------------------
+    //
+    // A TEMPLATE is a recipe, not an itemdef. Source-X routes it through
+    // CItem::CreateHeader, which accepts ITEMDEF and TEMPLATE alike and hands the
+    // latter to CreateTemplate (CItem.cpp:461/554): the first entry becomes the
+    // object the caller gets back, and when that entry is a CONTAINER the rows
+    // after it are created inside it (CItem.cpp:628/642).
+
+    /// <summary>The itemdef index the template's first resolvable entry names -
+    /// the object a caller creating from this template receives. 0 when the recipe
+    /// resolves to nothing.</summary>
+    public static int ResolveTemplatePrimary(int templateIndex)
+    {
+        var tdef = DefinitionLoader.GetTemplateDef(templateIndex);
+        if (tdef == null) return 0;
+        foreach (var entry in tdef.ItemEntries)
+        {
+            int idx = ResolveTemplateEntryIndex(entry.DefName);
+            if (idx > 0) return idx;
+        }
+        return 0;
+    }
+
+    /// <summary>Resolve one template row to an itemdef storage index.</summary>
+    public static int ResolveTemplateEntryIndex(string defName)
+    {
+        var rid = DefinitionLoader.StaticResources?.ResolveDefName(defName);
+        if (rid is { IsValid: true, Type: ResType.ItemDef })
+            return rid.Value.Index;
+        return int.TryParse(defName, System.Globalization.NumberStyles.HexNumber,
+            null, out int raw) && raw > 0 ? raw : 0;
+    }
+
+    /// <summary>Create the template's remaining rows INSIDE <paramref name="container"/>,
+    /// which must be the object built from its first (CONTAINER) entry. A recipe whose
+    /// first row is not a container has no contents to place and is left alone.</summary>
+    public static void FillTemplateContents(
+        SphereNet.Game.World.GameWorld world, SphereNet.Game.Objects.Items.Item container,
+        int templateIndex)
+    {
+        var tdef = DefinitionLoader.GetTemplateDef(templateIndex);
+        if (tdef == null || tdef.ItemEntries.Count == 0) return;
+        if (!tdef.ItemEntries[0].IsContainer) return;   // no box, nothing to fill
+
+        for (int i = 1; i < tdef.ItemEntries.Count; i++)
+        {
+            int idx = ResolveTemplateEntryIndex(tdef.ItemEntries[i].DefName);
+            if (idx <= 0) continue;
+
+            var child = world.CreateItem();
+            if (!ItemDefHelper.ApplyInstanceMetadata(child, idx))
+            {
+                if (idx > ushort.MaxValue) { world.RemoveItem(child); continue; }
+                child.BaseId = (ushort)idx;
+            }
+            child.FireCreateTrigger();
+            container.AddItem(child);
+        }
+    }
+
     private static string PickByWeight(List<TemplateEntry> pool)
     {
         if (pool.Count == 0) return "";

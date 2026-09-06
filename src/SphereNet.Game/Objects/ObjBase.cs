@@ -402,56 +402,12 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
     /// <summary>Read a Sphere numeric literal or simple sum: a leading zero means hex
     /// (CExpression.cpp:666), and <c>1+1</c> is arithmetic rather than a parse failure
     /// that silently became zero.</summary>
-    private static bool TryParseSphereDelay(string text, out long value)
-    {
-        value = 0;
-        string s = text.Trim();
-        if (s.Length == 0) return false;
-
-        // Split on + / - so a simple sum reads as one.
-        long total = 0;
-        int i = 0;
-        int sign = 1;
-        bool any = false;
-        while (i < s.Length)
-        {
-            int start = i;
-            while (i < s.Length && s[i] != '+' && !(i > start && s[i] == '-')) i++;
-            string term = s[start..i].Trim();
-            if (term.Length == 0) return false;
-            if (!TryParseSphereNumber(term, out long termValue)) return false;
-            total += sign * termValue;
-            any = true;
-            if (i < s.Length)
-            {
-                sign = s[i] == '-' ? -1 : 1;
-                i++;
-            }
-        }
-        if (!any) return false;
-        value = total;
-        return true;
-    }
-
-    private static bool TryParseSphereNumber(string term, out long value)
-    {
-        value = 0;
-        string t = term.Trim();
-        if (t.Length == 0) return false;
-        bool negative = t[0] == '-';
-        if (negative) t = t[1..].Trim();
-        if (t.Length == 0) return false;
-
-        bool ok;
-        if (t.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-            ok = long.TryParse(t.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out value);
-        else if (t.Length > 1 && t[0] == '0')
-            ok = long.TryParse(t, System.Globalization.NumberStyles.HexNumber, null, out value);
-        else
-            ok = long.TryParse(t, out value);
-        if (negative) value = -value;
-        return ok;
-    }
+    /// <summary>Read a Sphere numeric literal or simple sum: a leading zero means hex
+    /// (CExpression.cpp:666), and <c>1+1</c> is arithmetic rather than a parse failure
+    /// that silently became zero. Shared with the other verbs that read a Sphere
+    /// number straight off a command line.</summary>
+    private static bool TryParseSphereDelay(string text, out long value) =>
+        Core.Types.ScriptNumber.TryParseArgument(text, out value);
 
     /// <summary>Cancel this object's delayed work. A null pattern clears everything
     /// (TIMERF CLEAR); otherwise only the jobs whose command starts with it are removed
@@ -784,6 +740,14 @@ public abstract class ObjBase : IScriptObj, ITimedObject, IEntity
         return $"{Math.Abs(iLat / 60)}o {Math.Abs(iLat % 60)}'{(iLat <= 0 ? "N" : "S")}, " +
                $"{Math.Abs(iLong / 60)}o {Math.Abs(iLong % 60)}'{(iLong >= 0 ? "E" : "W")}";
     }
+
+    /// <summary>Resolve a Source-X object reference HEAD on this object — the
+    /// r_GetRef step (CScriptObj.cpp:1217). TOPOBJ is common to every object; the
+    /// container and link heads belong to items and are added there. Null means this
+    /// object has no such reference, in which case the caller must treat the word as
+    /// an ordinary name rather than a redirect.</summary>
+    public virtual ObjBase? ResolveRefHead(string head) =>
+        head.Equals("TOPOBJ", StringComparison.OrdinalIgnoreCase) ? GetTopLevelObj() : null;
 
     /// <summary>The character a verb should act for, given the console that issued it —
     /// the port of <c>pSrc-&gt;GetChar()</c> (CItem.cpp:3574). A connected client is one

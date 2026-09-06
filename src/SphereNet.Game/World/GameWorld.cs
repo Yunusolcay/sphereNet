@@ -342,6 +342,15 @@ public sealed class GameWorld
     /// <summary>Last created item UID (for SERV.LASTNEWITEM).</summary>
     public Serial LastNewItem { get; set; } = Serial.Invalid;
 
+    /// <summary>What <c>NEW</c> refers to: the object the last completed factory
+    /// produced, whatever its type. This is Source-X's single <c>g_World.m_uidNew</c>
+    /// (CScriptObj.cpp:1381) - NEWITEM, NEWNPC and NEWDUPE all write this one field.
+    /// LastNewItem/LastNewChar stay as the per-type diagnostics behind
+    /// SERV.LASTNEWITEM / SERV.LASTNEWCHAR; reading NEW off them made an item outrank
+    /// a newer NPC, and made bare NEW and NEW.&lt;prop&gt; resolve to different
+    /// objects.</summary>
+    public Serial LastNewObject { get; set; } = Serial.Invalid;
+
     /// <summary>Current world hour (0-23).</summary>
     public int WorldHour => (int)((_worldClock / 60) % 24);
 
@@ -569,6 +578,7 @@ public sealed class GameWorld
         _uuidIndex[item.Uuid] = item;
         _totalItems++;
         LastNewItem = uid;
+        LastNewObject = uid;
         ObjectCreated?.Invoke(item);
         return item;
     }
@@ -584,6 +594,7 @@ public sealed class GameWorld
         _uuidIndex[ch.Uuid] = ch;
         _totalChars++;
         LastNewChar = uid;
+        LastNewObject = uid;
         ObjectCreated?.Invoke(ch);
         return ch;
     }

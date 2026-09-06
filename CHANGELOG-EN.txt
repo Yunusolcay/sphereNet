@@ -4,6 +4,145 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-07] - Script call chain, object factories and duplication (12Z/13A-13E)
+----------------------------------------
+
+FIX - CALL prepared nothing. It built a fresh args object that copied the caller's
+        ARGN1/2/3 while replacing the argument string, so "CALL f_child 37" handed the
+        child ARGN1=17 from its caller with ARGS=37, and an argument-less "CALL f_child"
+        blanked ARGS instead of passing it on. Upstream Execute_Call
+        (CScriptObj.cpp:1505) uses the CALLER'S OWN args object: with an argument it
+        saves the numbers, the object and the string, re-Inits from the new argument and
+        restores them on return; without one it passes the object through untouched.
+        Both forms are now that. A plain function verb line prepares ARGN from ITS OWN
+        argument instead (CScriptTriggerArgs::Init, :112), which it also did not do.
+
+FIX - CALL did not share the caller's LOCAL pool. In upstream the pool lives on the
+        args object (m_VarsLocal) and Init does not clear it, so passing the same object
+        is what makes CALL share locals both ways, while an ordinary function line -
+        which builds a fresh args object (CObjBase.cpp:2138) - keeps its own. A helper
+        called with CALL could not see the LOCAL its caller had just set, and what it
+        wrote never came back.
+
+FIX - CALL took its first word as a function name, so "CALL SRC.f_mark" and
+        "CALL TOPOBJ.f_mark" looked for functions of that literal name, found none, and
+        the line vanished. Upstream resolves the reference through r_GetRef, plus SRC
+        via pSrc->GetChar, and calls the remaining name on the resolved object
+        (CScriptObj.cpp:1515). The reference-head resolver is now shared with the item
+        verb chain that already had one.
+
+FIX - TRY had its own cut-down executor: the space form tried a native verb and the
+        console bridge and stopped there, so "TRY TAG.FLAG 1" and "TRY f_mark" both did
+        nothing while the same lines worked unwrapped. Upstream builds a CScript from
+        the rest of the line and calls the target's full r_Verb, suppressing only the
+        invalid-reference error (CObjBase.cpp:2899).
+
+FIX - An ARGN assignment used a decimal-or-0x int parser, so "ARGN1=010" set ten
+        instead of sixteen and "ARGN1=1+1" was rejected outright, leaving the previous
+        value in place. Upstream assigns through GetArgVal, the full expression parser
+        (CScriptTriggerArgs.cpp:313).
+
+FIX - TRYSRC changed the target as well as the source. It sent only the source uid over
+        the reference bridge, which treats a lone uid as the object to act ON, so
+        "TRYSRC <player> TAG.TEST 1" tagged the player and left the item that ran the
+        line untouched. Upstream resolves the uid to a source console and runs the verb
+        on the current object: r_Verb(script, pNewSrc) (CObjBase.cpp:2917). The bridged
+        console now also speaks for that character, so a verb needing its caller finds
+        one.
+
+FIX - SERV.NEWITEM refused a TEMPLATE header outright on a resource-type check, so a
+        reward-bundle or multi-part item recipe returned 0 and created nothing.
+        Upstream goes through CreateHeader, which accepts ITEMDEF and TEMPLATE alike
+        and hands the latter to CreateTemplate (CItem.cpp:461/554): the first entry
+        becomes the object the caller receives and, when it is a CONTAINER, the rows
+        after it are created inside it (:628). Template expansion now has one
+        implementation, shared with the spawner.
+
+FIX - NEWITEM's character parent always went to the backpack, so an item created
+        straight onto someone was never worn. Upstream's LoadSetContainer equips at the
+        layer the definition declares and falls back to the pack only when it names none
+        (CItem.cpp:2516).
+
+FIX - NEWITEM split its argument into three fields, so a valid four-field call left the
+        equip flag glued to the parent uid ("...,<uid>,1"), the uid failed to parse, and
+        the item was created and then placed nowhere.
+
+FIX - SERV.NEWNPC left the new creature at 0 hits and 0 mana: applying a definition
+        sets the MAXIMA, and nothing filled the pools. Upstream reaches
+        CreateNewCharCheck through NPC_LoadScript and fills hits, stamina and mana at
+        creation (CCharNPC.cpp:30/265, CChar.cpp:1042). The GM add-NPC path already did.
+
+FIX - NEW and NEW.<property> resolved through different fields - the first preferring
+        the last ITEM, the second falling through to the character - so they could name
+        different objects, and a script that had just created an NPC read back an
+        earlier item. Worse, the emptiness test was "!= 0" while the empty value is
+        0xFFFFFFFF, so NEW reported a uid before anything had been created. Both forms
+        now read one reference, the port of g_World.m_uidNew (CScriptObj.cpp:1381);
+        SERV.LASTNEWITEM / LASTNEWCHAR keep their per-type fields.
+
+FIX - A factory wrote NEW as a side effect of object creation, so an @Create hook that
+        made a second item left NEW pointing at that one instead of the item the caller
+        asked for. NEWITEM now writes the reference at the END of its work, as upstream
+        does.
+
+FIX - Bare NEWITEM written on an object did not update that object's ACT; both it and
+        the explicit SERV.NEWITEM went through the same server-only bridge. Upstream
+        points the caller's ACT at what it created when the command was not addressed to
+        the server (CScriptObj.cpp:1383).
+
+FIX - NEW had a read path only: "NEW=<uid>" and "NEW.<property>=<value>" were silently
+        ignored, so a script could not restore the reference it had saved or dress the
+        object it had just made. Both are now wired, and an assignment naming nothing
+        clears the reference (SSV_NEW, CScriptObj.cpp:1305).
+
+FIX - A NEWDUPE whose source uid names nothing left the previous NEW standing, so a
+        script checking NEW to see whether the copy worked read the old object and
+        treated it as the new copy. Upstream clears m_uidNew and returns false (:1311).
+
+FIX - NEWDUPE read its uid as hexadecimal unconditionally, so a decimal "10" addressed
+        a different - and perfectly valid - object, and an item's decimal uid overflowed
+        and copied nothing. It is a Sphere argument: only a leading zero means hex
+        (GetArgVal -> CScript.cpp:154). DUPE's count had the mirror-image bug, read as a
+        decimal int, so "1+1" silently fell back to one and "010" made ten copies
+        instead of sixteen. Both now use one shared Sphere number parser, which also
+        backs the delayed-call parser added in the previous wave.
+
+FIX - A container copy came out empty. Duplication shared the stack-split helper, which
+        deliberately copies only the object's own state, so a reward bag or stocked
+        crate duplicated into a bare shell. Upstream's container override recreates
+        every child as a copy of its own, sub-containers included
+        (CItemContainer.cpp:830).
+
+FIX - A duplicated spawner kept its TYPE and lost its behaviour: the type came across as
+        a raw field, so no component was ever built and the copy sat inert. Upstream
+        carries the spawn configuration - quota, interval, range, spawn id - and
+        deliberately not the children already produced (CCSpawn::Copy, CCSpawn.cpp:1272).
+
+FIX - A duplicated character came out naked and packless, and lost its fame, karma,
+        resistances, status flags (concealment included) and EVENTS list; only a narrow
+        field list and the tags survived. Upstream DupeFrom carries the status flags,
+        the stat block, EVENTS and the entity properties, then duplicates every equipped
+        layer onto the new character (CChar.cpp:1092/1194). The live wiring - account,
+        client, uid - is deliberately not copied.
+
+FIX - A duplicate was pushed into the source's container instead of being placed beside
+        it. Upstream finishes DUPE with MoveNearObj(this,1), which walks up to the
+        TOP-LEVEL object and uses its WORLD position (CItem.cpp:3631, CObjBase.cpp:498).
+        Reading the source's own Position gave a container-local coordinate that became
+        a wrong spot on the map, and a full container either swallowed the copy or made
+        it disappear entirely.
+
+FIX - A book's AUTHOR could be written but not read: the shared setter stored TAG.AUTHOR
+        and returned before the book-specific setter could run, while the getter read
+        TAG.BOOK_AUTHOR. Upstream keeps one m_sAuthor for both (CItemMessage.cpp:61/104).
+        The setter now writes both spellings and the getter accepts either, so neither
+        the bulletin-board path nor an existing save loses its data.
+
+NOTE - The 12Z finding - work added from inside a callback joining the same tick
+        depending on where its target sat in the active set - was already answered by
+        the previous wave's due-order fix, which fixes the pass membership before any
+        callback runs. It is now locked by tests across all four target states.
+
 [2026-09-06] - Delayed work: due order, command splitting, verb ownership and 64-bit args (12X/12Y)
 ----------------------------------------
 

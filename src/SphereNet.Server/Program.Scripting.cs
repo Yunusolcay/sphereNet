@@ -209,9 +209,14 @@ public static partial class Program
             "OBJ" => _world?.ObjReference.Value != 0 ? $"0{_world!.ObjReference.Value:X}" : "0",
             _ when upper.StartsWith("OBJ.") => ResolveObjProperty(property[4..]),
 
-            // --- NEW / NEW.property — last created object ---
-            "NEW" => _world?.LastNewItem.Value != 0 ? $"0{_world!.LastNewItem.Value:X}" :
-                      _world?.LastNewChar.Value != 0 ? $"0{_world!.LastNewChar.Value:X}" : "0",
+            // --- NEW / NEW.property — the object the last factory produced ---
+            // One reference for both forms (Source-X g_World.m_uidNew,
+            // CScriptObj.cpp:1381). Preferring the last ITEM here made a script that
+            // had just created an NPC read back the earlier item, and disagreed with
+            // NEW.<prop>, which fell through to the character. Serial.Invalid is
+            // 0xFFFFFFFF, so the old "!= 0" test also passed for "nothing created yet".
+            "NEW" => _world != null && _world.LastNewObject.IsValid
+                        ? $"0{_world.LastNewObject.Value:X}" : "0",
             _ when upper.StartsWith("NEW.") => ResolveNewProperty(property[4..]),
 
             // --- UID.0xHEX.property — direct object access ---
@@ -229,8 +234,11 @@ public static partial class Program
             _ when upper.StartsWith("_SET_VAR.") => HandleSetGlobalVar(property[9..]),
             _ when upper.StartsWith("_SET_OBJ=") => HandleSetObj(property[9..]),
             _ when upper.StartsWith("_SET_OBJ.") => HandleSetObjProperty(property[9..]),
+            _ when upper.StartsWith("_SET_NEW=") => HandleSetNew(property[9..]),
+            _ when upper.StartsWith("_SET_NEW.") => HandleSetNewProperty(property[9..]),
             _ when upper.StartsWith("_CLEARVARS=") => HandleClearVars(property[11..]),
             _ when upper.StartsWith("_NEWDUPE=") => HandleNewDupe(property[9..]),
+            _ when upper.StartsWith("_NEWITEM_ACT=") => HandleNewItemForCaller(property[13..]),
             _ when upper.StartsWith("_NEWITEM=") => HandleServNewItem(property[9..]),
             _ when upper.StartsWith("_NEWNPC=") => HandleServNewNpc(property[8..]),
             _ when upper.StartsWith("_DB_VERB=") => HandleScriptDbVerb(property[9..]),
@@ -843,10 +851,40 @@ public static partial class Program
     private static string? ResolveNewProperty(string subProp)
     {
         if (_world == null) return "0";
-        // Try last new item first, then last new char
-        var obj = _world.FindObject(_world.LastNewItem) ?? _world.FindObject(_world.LastNewChar);
+        // The same reference bare NEW reads, so the two can never name different
+        // objects (Source-X g_World.m_uidNew).
+        var obj = _world.FindObject(_world.LastNewObject);
         if (obj == null) return "0";
         return obj.TryGetProperty(subProp, out string val) ? val : "0";
+    }
+
+    /// <summary>NEW=&lt;uid&gt; - repoint the global new-object reference, clearing it
+    /// when the uid names nothing (Source-X SSV_NEW, CScriptObj.cpp:1305).</summary>
+    private static string? HandleSetNew(string raw)
+    {
+        if (_world == null) return "";
+        _world.LastNewObject = TryParseSerial(raw, out var uid) && _world.FindObject(uid) != null
+            ? uid
+            : SphereNet.Core.Types.Serial.Invalid;
+        return "";
+    }
+
+    /// <summary>NEW.&lt;prop&gt;=&lt;value&gt; - write through the new-object reference,
+    /// the way a resolved reference head reaches its target's own r_Verb
+    /// (CScriptObj.cpp:1217).</summary>
+    private static string? HandleSetNewProperty(string assignment)
+    {
+        if (_world == null) return "";
+        int eq = assignment.IndexOf('=');
+        if (eq <= 0) return "";
+        string prop = assignment[..eq].Trim();
+        string value = assignment[(eq + 1)..].Trim();
+        var obj = _world.FindObject(_world.LastNewObject);
+        if (obj == null || prop.Length == 0) return "";
+        if (obj.TrySetProperty(prop, value))
+            return "";
+        obj.TryExecuteCommand(prop, value, new RefExecConsole());
+        return "";
     }
 
     private static string? ResolveUidProperty(string uidAndProp)
@@ -1027,68 +1065,55 @@ public static partial class Program
     private static string? HandleNewDupe(string uidStr)
     {
         if (_world == null) return "";
-        string v = uidStr.Trim();
-        if (v.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-            v = v[2..];
-        else if (v.StartsWith("0", StringComparison.Ordinal) && v.Length > 1)
-            v = v[1..];
-        if (!uint.TryParse(v, System.Globalization.NumberStyles.HexNumber, null, out uint uid))
+        // The uid is a Sphere argument: upstream reads it with GetArgVal, so a bare
+        // "10" is DECIMAL ten and only a leading zero makes it hex (CScriptObj.cpp:1311
+        // -> CScript.cpp:154). Forcing hex made "10" address a completely different -
+        // and perfectly valid - object, and made an item's decimal uid overflow and
+        // copy nothing at all.
+        if (!SphereNet.Core.Types.ScriptNumber.TryParseToken(uidStr, out long parsedUid) ||
+            parsedUid is <= 0 or > uint.MaxValue)
+        {
+            _world.LastNewObject = SphereNet.Core.Types.Serial.Invalid;
             return "";
-        var original = _world.FindObject(new SphereNet.Core.Types.Serial(uid));
+        }
+
+        var original = _world.FindObject(new SphereNet.Core.Types.Serial((uint)parsedUid));
+        if (original == null)
+        {
+            // Source-X clears m_uidNew and returns false when the source is gone
+            // (CScriptObj.cpp:1311). Leaving the previous reference standing let a
+            // script that checks NEW to see whether the copy worked read the OLD
+            // object and treat it as the new copy.
+            _world.LastNewObject = SphereNet.Core.Types.Serial.Invalid;
+            return "";
+        }
+
         if (original is SphereNet.Game.Objects.Items.Item origItem)
         {
-            var clone = _world.CreateItem();
-            clone.CopyStackInstanceStateFrom(origItem);
-            clone.Amount = origItem.Amount;
-            var parentItem = origItem.ContainedIn.IsValid ? _world.FindItem(origItem.ContainedIn) : null;
-            if (parentItem != null)
-            {
-                if (!parentItem.TryAddItem(clone))
-                    _world.PlaceItemWithDecay(clone, origItem.Position);
-            }
-            else if (origItem.ContainedIn.IsValid && _world.FindChar(origItem.ContainedIn) is { } wearer)
-            {
-                if (wearer.Backpack?.TryAddItem(clone) != true)
-                    _world.PlaceItemWithDecay(clone, wearer.Position);
-            }
-            else if (!_world.PlaceItem(clone, origItem.Position))
+            var clone = origItem.CreateDupe(_world);
+            // Beside the source's top-level object, never inside its container
+            // (MoveNearObj, CObjBase.cpp:498).
+            if (!_world.PlaceItem(clone, origItem.GetDupeDropPosition()))
             {
                 _world.RemoveItem(clone);
+                _world.LastNewObject = SphereNet.Core.Types.Serial.Invalid;
+                return "";
             }
+            _world.LastNewItem = clone.Uid;
+            _world.LastNewObject = clone.Uid;
         }
         else if (original is SphereNet.Game.Objects.Characters.Character origChar)
         {
-            var clone = _world.CreateCharacter();
-            clone.BaseId = origChar.BaseId;
-            clone.BodyId = origChar.BodyId;
-            clone.Name = origChar.Name;
-            clone.Hue = origChar.Hue;
-            clone.Direction = origChar.Direction;
-            clone.Str = origChar.Str;
-            clone.Dex = origChar.Dex;
-            clone.Int = origChar.Int;
-            clone.MaxHits = origChar.MaxHits;
-            clone.Hits = origChar.Hits;
-            clone.MaxStam = origChar.MaxStam;
-            clone.Stam = origChar.Stam;
-            clone.MaxMana = origChar.MaxMana;
-            clone.Mana = origChar.Mana;
-            clone.NpcBrain = origChar.NpcBrain;
-            foreach (var kvp in origChar.Tags.GetAll())
-            {
-                if (!SphereNet.Game.Objects.EngineTags.IsEphemeral(kvp.Key))
-                    clone.Tags.Set(kvp.Key, kvp.Value);
-            }
-            foreach (SphereNet.Core.Enums.SkillType skill in Enum.GetValues<SphereNet.Core.Enums.SkillType>())
-            {
-                if (skill != SphereNet.Core.Enums.SkillType.None && skill < SphereNet.Core.Enums.SkillType.Qty)
-                    clone.SetSkill(skill, origChar.GetSkill(skill));
-            }
-            if (!_world.PlaceCharacter(clone, origChar.Position))
+            var clone = origChar.CreateDupe(_world);
+            if (!_world.PlaceCharacter(clone, origChar.GetTopLevelPosition()))
             {
                 _world.DeleteObject(clone);
                 clone.Delete();
+                _world.LastNewObject = SphereNet.Core.Types.Serial.Invalid;
+                return "";
             }
+            _world.LastNewChar = clone.Uid;
+            _world.LastNewObject = clone.Uid;
         }
         return "";
     }
@@ -1098,7 +1123,11 @@ public static partial class Program
         if (_world == null || _resources == null)
             return "0";
 
-        string[] parts = raw.Split(',', 3, StringSplitOptions.TrimEntries);
+        // Four fields, not three: <id>,<amount>,<parent uid>,<equip flag>
+        // (Source-X NEWITEM, CScriptObj.cpp:1340). Splitting into three left the
+        // fourth glued onto the parent - "…,<uid>,1" made the uid unparseable, so the
+        // item was created and then never placed anywhere.
+        string[] parts = raw.Split(',', 4, StringSplitOptions.TrimEntries);
         string token = parts.ElementAtOrDefault(0)?.Trim() ?? "";
         if (token.Length == 0)
             return "0";
@@ -1111,6 +1140,12 @@ public static partial class Program
             if (_resources.GetResource(rid) == null)
                 return "0";
         }
+        // TEMPLATE is a valid header for NEWITEM: upstream goes through
+        // CItem::CreateHeader, which accepts ITEMDEF and TEMPLATE alike and hands the
+        // latter to CreateTemplate (CItem.cpp:461/554). Refusing anything but ITEMDEF
+        // made a reward-bundle script's NEWITEM step return 0 and create nothing.
+        if (rid.Type == ResType.Template)
+            return HandleServNewFromTemplate(rid, parts);
         if (rid.Type != ResType.ItemDef)
             return "0";
 
@@ -1132,25 +1167,114 @@ public static partial class Program
             item.Amount = (ushort)Math.Clamp(ValueCurve.ParseSphereNumber(parts[1]), 1, ushort.MaxValue);
 
         if (parts.Length > 2 && TryParseScriptUid(parts[2], out Serial parentUid))
-        {
-            if (_world.FindItem(parentUid) is { } container)
-                container.TryAddItem(item);
-            else if (_world.FindChar(parentUid) is { } owner)
-            {
-                if (owner.Backpack == null)
-                {
-                    var pack = _world.CreateItem();
-                    pack.BaseId = 0x0E75;
-                    pack.ItemType = ItemType.Container;
-                    pack.Name = "Backpack";
-                    owner.Equip(pack, Layer.Pack);
-                    // CreateItem updates NEW; restore Source-X NEW to the requested item.
-                    _world.LastNewItem = item.Uid;
-                }
-                owner.Backpack?.TryAddItem(item);
-            }
-        }
+            PlaceNewItemUnderParent(item, parentUid, def);
+
+        // NEW names the object THIS call produced, written after everything else is
+        // done (Source-X sets m_uidNew at the end of NEWITEM, CScriptObj.cpp:1381).
+        // An @Create hook - or the auto-backpack below - creates its own objects and
+        // moves the world's reference; without this the caller's NEW pointed at the
+        // side item instead of the one it asked for.
+        _world.LastNewItem = item.Uid;
+        _world.LastNewObject = item.Uid;
         return $"0{item.Uid.Value:X}";
+    }
+
+    /// <summary>Bare <c>NEWITEM</c> written on an object, as opposed to the explicit
+    /// <c>SERV.NEWITEM</c>. Source-X does the same creation and then, when the command
+    /// was NOT addressed to the server, points the caller's ACT at what it made
+    /// (CScriptObj.cpp:1383, guarded by <c>this != &amp;g_Serv</c>). Routing both forms
+    /// through the server-only path left a character script working on its old ACT
+    /// after creating something. Format: "callerUid|&lt;newitem args&gt;".</summary>
+    private static string HandleNewItemForCaller(string data)
+    {
+        int pipe = data.IndexOf('|');
+        if (pipe < 0)
+            return HandleServNewItem(data);
+
+        string callerUid = data[..pipe];
+        string result = HandleServNewItem(data[(pipe + 1)..]);
+
+        if (_world != null && result != "0" && TryParseSerial(callerUid, out var uid) &&
+            _world.FindObject(uid) is { } caller && _world.LastNewObject.IsValid)
+        {
+            caller.TrySetProperty("ACT", $"0{_world.LastNewObject.Value:X}");
+        }
+        return result;
+    }
+
+    /// <summary>NEWITEM on a [TEMPLATE] header: build the recipe's first entry as the
+    /// object the caller receives and, when that entry is a CONTAINER, create the rows
+    /// after it inside it (Source-X CreateHeader -> CreateTemplate,
+    /// CItem.cpp:461/554/628). The amount and parent fields apply to the object handed
+    /// back, exactly as for an ITEMDEF header.</summary>
+    private static string HandleServNewFromTemplate(ResourceId rid, string[] parts)
+    {
+        if (_world == null)
+            return "0";
+
+        int primary = TemplateEngine.ResolveTemplatePrimary(rid.Index);
+        if (primary <= 0)
+            return "0";
+
+        var item = _world.CreateItem();
+        if (!ItemDefHelper.ApplyInstanceMetadata(item, primary))
+        {
+            if (primary is <= 0 or > ushort.MaxValue)
+            {
+                _world.RemoveItem(item);
+                return "0";
+            }
+            item.BaseId = (ushort)primary;
+        }
+        TemplateEngine.FillTemplateContents(_world, item, rid.Index);
+
+        if (parts.Length > 1 && parts[1].Length > 0)
+            item.Amount = (ushort)Math.Clamp(ValueCurve.ParseSphereNumber(parts[1]), 1, ushort.MaxValue);
+        if (parts.Length > 2 && TryParseScriptUid(parts[2], out Serial templateParent))
+            PlaceNewItemUnderParent(item, templateParent, DefinitionLoader.GetItemDef(primary));
+
+        // Filling the contents created objects of its own; NEW must name the one this
+        // call produced (CScriptObj.cpp:1381).
+        _world.LastNewItem = item.Uid;
+        _world.LastNewObject = item.Uid;
+        return $"0{item.Uid.Value:X}";
+    }
+
+    /// <summary>Put a freshly made item where the NEWITEM parent field asked for.
+    /// A CONTAINER parent takes it as content; a CHARACTER parent equips it at the
+    /// layer its definition declares and only falls back to the pack when the
+    /// definition names no layer (Source-X LoadSetContainer, CItem.cpp:2516). The
+    /// character branch used to drop everything in the backpack, so a script creating
+    /// a shirt straight onto someone left it unworn.</summary>
+    private static void PlaceNewItemUnderParent(Item item, Serial parentUid,
+        SphereNet.Scripting.Definitions.ItemDef? def)
+    {
+        if (_world == null)
+            return;
+        if (_world.FindItem(parentUid) is { } container)
+        {
+            container.TryAddItem(item);
+            return;
+        }
+        if (_world.FindChar(parentUid) is not { } owner)
+            return;
+
+        Layer layer = def?.Layer is { } l and > Layer.None and < Layer.Qty ? l : Layer.None;
+        if (layer != Layer.None && layer != Layer.Pack)
+        {
+            owner.Equip(item, layer);
+            return;
+        }
+
+        if (owner.Backpack == null)
+        {
+            var pack = _world.CreateItem();
+            pack.BaseId = 0x0E75;
+            pack.ItemType = ItemType.Container;
+            pack.Name = "Backpack";
+            owner.Equip(pack, Layer.Pack);
+        }
+        owner.Backpack?.TryAddItem(item);
     }
 
     private static string HandleServNewNpc(string raw)
@@ -1177,6 +1301,19 @@ public static partial class Program
             _world.DeleteObject(npc);
             return "0";
         }
+
+        // A new NPC starts with FULL pools. Source-X reaches CreateNewCharCheck
+        // through NPC_LoadScript (CCharNPC.cpp:30/265) and fills hits, stamina and
+        // mana to their maxima there (CChar.cpp:1042); a script lowering them
+        // afterwards is a separate, later act. Applying the definition only sets the
+        // MAXIMA, so an NPC made this way stood at 0/100 hits and 0/80 mana and could
+        // not cast. The GM add-NPC path already fills the same three pools.
+        npc.Hits = npc.MaxHits;
+        npc.Stam = npc.MaxStam;
+        npc.Mana = npc.MaxMana;
+
+        _world.LastNewChar = npc.Uid;
+        _world.LastNewObject = npc.Uid;
         return $"0{npc.Uid.Value:X}";
     }
 
@@ -1311,9 +1448,10 @@ public static partial class Program
         if (cmd.Length == 0)
             return "";
 
+        var asConsole = new RefExecConsole(srcChar);
         if (target.TrySetProperty(cmd, cmdArgs))
             return "";
-        if (target.TryExecuteCommand(cmd, cmdArgs, new RefExecConsole()))
+        if (target.TryExecuteCommand(cmd, cmdArgs, asConsole))
             return "";
 
         var sourceClient = FindGameClient(srcChar);
@@ -2558,11 +2696,17 @@ public static partial class Program
 
 
     /// <summary>Minimal ITextConsole for REF command execution.</summary>
-    private sealed class RefExecConsole : ITextConsole
+    /// <summary>The console a bridged verb runs under. With no character it is the
+    /// server (Source-X g_Serv); given one it SPEAKS FOR that character, so a verb
+    /// that needs its caller - the pSrc-&gt;GetChar() step, CItem.cpp:3574 - finds it.
+    /// TRYSRC relies on this: it changes who is asking without changing the target,
+    /// and a source-less console made every such verb refuse.</summary>
+    private sealed class RefExecConsole(Character? sourceChar = null) : ITextConsole
     {
-        public PrivLevel GetPrivLevel() => PrivLevel.Admin;
-        public string GetName() => "SERVER";
+        public PrivLevel GetPrivLevel() => sourceChar?.PrivLevel ?? PrivLevel.Admin;
+        public string GetName() => sourceChar?.Name ?? "SERVER";
         public void SysMessage(string text) { }
+        public IScriptObj? GetSourceChar() => sourceChar;
     }
 
     private sealed class ServerHookContext : IScriptObj

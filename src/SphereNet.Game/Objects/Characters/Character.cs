@@ -2433,6 +2433,80 @@ public partial class Character : ObjBase
             _skillLocks[index] = Math.Min(lockState, (byte)2);
     }
 
+    /// <summary>A full, INDEPENDENT copy of this character — the port of Source-X
+    /// CChar::DupeFrom (CChar.cpp:1092), which CHV_DUPE calls (CChar.cpp:4541).
+    ///
+    /// Upstream carries the status flags, the stat block, the EVENTS list and the
+    /// entity properties, then duplicates every equipped layer onto the new character
+    /// with new item objects (CChar.cpp:1194). Copying a hand-picked handful of fields
+    /// instead produced a naked, packless copy whose fame, karma, resistances,
+    /// concealment and event scripts had all reset to nothing.
+    ///
+    /// What deliberately does NOT come across is the live wiring: uid, account, client
+    /// and world position belong to the new object and its own session.</summary>
+    public Character CreateDupe(World.GameWorld world)
+    {
+        var copy = world.CreateCharacter();
+
+        copy.BaseId = BaseId;
+        copy.BodyId = BodyId;
+        copy.Name = Name;
+        copy.Hue = Hue;
+        copy.Direction = Direction;
+        copy.IsPlayer = false;          // a duplicate is never someone's account char
+        copy.NpcBrain = NpcBrain;
+        copy.Attributes = Attributes;
+
+        // Stats, and the pools with them: a copy that kept the maxima but started at
+        // zero hits would be a different creature.
+        copy.Str = Str; copy.Dex = Dex; copy.Int = Int;
+        copy.MaxHits = MaxHits; copy.Hits = Hits;
+        copy.MaxStam = MaxStam; copy.Stam = Stam;
+        copy.MaxMana = MaxMana; copy.Mana = Mana;
+
+        // Standing in the world: reputation, resistances and the status flags that
+        // carry things like concealment.
+        copy.Fame = Fame;
+        copy.Karma = Karma;
+        copy.StatFlags = StatFlags;
+        copy.ResPhysical = ResPhysical; copy.ResPhysicalMax = ResPhysicalMax;
+        copy.ResFire = ResFire;         copy.ResFireMax = ResFireMax;
+        copy.ResCold = ResCold;         copy.ResColdMax = ResColdMax;
+        copy.ResPoison = ResPoison;     copy.ResPoisonMax = ResPoisonMax;
+        copy.ResEnergy = ResEnergy;     copy.ResEnergyMax = ResEnergyMax;
+
+        foreach (SkillType skill in Enum.GetValues<SkillType>())
+        {
+            if (skill != SkillType.None && skill < SkillType.Qty)
+                copy.SetSkill(skill, GetSkill(skill));
+        }
+
+        foreach (var kvp in Tags.GetAll())
+        {
+            if (!Objects.EngineTags.IsEphemeral(kvp.Key))
+                copy.Tags.Set(kvp.Key, kvp.Value);
+        }
+
+        // EVENTS is behaviour, not decoration: a copy without them stops reacting.
+        copy.Events.Clear();
+        copy.Events.AddRange(Events);
+
+        // Every worn layer becomes a copy of its own, contents and all, so the two
+        // characters never share an item.
+        for (int layer = 0; layer < (int)Layer.Qty; layer++)
+        {
+            var worn = GetEquippedItem((Layer)layer);
+            if (worn == null || worn.IsDeleted) continue;
+            var wornCopy = worn.CreateDupe(world);
+            if (!copy.Equip(wornCopy, (Layer)layer))
+                world.RemoveItem(wornCopy);
+            else if ((Layer)layer == Layer.Pack)
+                copy.Backpack = wornCopy;
+        }
+
+        return copy;
+    }
+
     // --- Equipment ---
     public Item? GetEquippedItem(Layer layer)
     {

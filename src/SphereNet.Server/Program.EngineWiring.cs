@@ -196,6 +196,17 @@ public static partial class Program
                 _triggerRunner.TryEvaluateFunction(name, argString, target, source, args, scope, out var value)
                     ? value
                     : null;
+            // Does a script [FUNCTION] answer to this name? Lets a verb line tell
+            // "the function ran and returned nothing" apart from "there is no such
+            // function", so only the latter falls through to a property assignment.
+            scriptInterpreter.FunctionLookup = _triggerRunner.HasFunction;
+            // r_GetRef: the object layer owns TOPOBJ/CONT/LINK, so a reference head on
+            // a CALL resolves through it (CScriptObj.cpp:1217).
+            scriptInterpreter.ResolveObjectRef = (obj, head) => obj switch
+            {
+                ObjBase o => o.ResolveRefHead(head),
+                _ => null,
+            };
             scriptInterpreter.ServerPropertyResolver = ResolveServerProperty;
             _triggerDispatcher.Runner = _triggerRunner;
             ConfigureGlobalScriptHooks(_triggerDispatcher, _config);

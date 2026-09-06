@@ -1099,53 +1099,14 @@ public sealed class ItemSpawnComponent
 
     /// <summary>The itemdef a TEMPLATE resolves to. SphereNet already expands template
     /// bodies for loot and vendor stock; a spawner needs the same first entry.</summary>
-    private static int ExpandTemplate(int templateIndex)
-    {
-        var tdef = DefinitionLoader.GetTemplateDef(templateIndex);
-        if (tdef == null) return 0;
-        foreach (var entry in tdef.ItemEntries)
-        {
-            int idx = ResolveTemplateEntry(entry.DefName);
-            if (idx > 0) return idx;
-        }
-        return 0;
-    }
+    // Template expansion lives in TemplateEngine so the spawner and SERV.NEWITEM
+    // build a recipe the same way (CreateHeader -> CreateTemplate, CItem.cpp:461/554).
+    private static int ExpandTemplate(int templateIndex) =>
+        TemplateEngine.ResolveTemplatePrimary(templateIndex);
 
-    private static int ResolveTemplateEntry(string defName)
-    {
-        var rid = DefinitionLoader.StaticResources?.ResolveDefName(defName);
-        if (rid is { IsValid: true, Type: ResType.ItemDef })
-            return rid.Value.Index;
-        return int.TryParse(defName, System.Globalization.NumberStyles.HexNumber,
-            null, out int raw) && raw > 0 ? raw : 0;
-    }
-
-    /// <summary>Put the template's contents inside the container it declared.
-    ///
-    /// A CONTAINER line opens a box and the ITEM lines that follow go INTO it
-    /// (CreateTemplate, CItem.cpp:628/642). Taking only the first resolvable entry
-    /// produced the box and dropped everything the recipe meant to put in it.</summary>
-    private void FillTemplateContents(Item container, int templateIndex)
-    {
-        var tdef = DefinitionLoader.GetTemplateDef(templateIndex);
-        if (tdef == null || tdef.ItemEntries.Count == 0) return;
-        if (!tdef.ItemEntries[0].IsContainer) return;   // no box, nothing to fill
-
-        for (int i = 1; i < tdef.ItemEntries.Count; i++)
-        {
-            int idx = ResolveTemplateEntry(tdef.ItemEntries[i].DefName);
-            if (idx <= 0) continue;
-
-            var child = _world.CreateItem();
-            if (!ItemDefHelper.ApplyInstanceMetadata(child, idx))
-            {
-                if (idx > ushort.MaxValue) { _world.RemoveItem(child); continue; }
-                child.BaseId = (ushort)idx;
-            }
-            child.FireCreateTrigger();
-            container.AddItem(child);
-        }
-    }
+    /// <summary>Put the template's contents inside the container it declared.</summary>
+    private void FillTemplateContents(Item container, int templateIndex) =>
+        TemplateEngine.FillTemplateContents(_world, container, templateIndex);
 
     public void ForceSpawn() => _nextSpawnTick = 0;
 

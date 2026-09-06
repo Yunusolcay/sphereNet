@@ -1071,6 +1071,75 @@ public class Item : ObjBase
         _events.AddRange(src._events);
     }
 
+    /// <summary>An item adds the container and link heads to the shared set
+    /// (r_GetRef, CScriptObj.cpp:1217).</summary>
+    public override ObjBase? ResolveRefHead(string head)
+    {
+        var world = ResolveWorld?.Invoke();
+        if (head.Equals("CONT", StringComparison.OrdinalIgnoreCase))
+            return _containedIn.IsValid ? world?.FindObject(_containedIn) : null;
+        if (head.Equals("LINK", StringComparison.OrdinalIgnoreCase))
+            return _link.IsValid ? world?.FindObject(_link) : null;
+        if (head.Equals("TOPOBJ", StringComparison.OrdinalIgnoreCase))
+            return ResolveTopObject();
+        return base.ResolveRefHead(head);
+    }
+
+    /// <summary>How deep a container tree a duplication follows. A recipe nested
+    /// deeper than this is pathological; stopping is better than recursing forever.</summary>
+    private const int MaxDupeDepth = 16;
+
+    /// <summary>A full, INDEPENDENT copy of this item — the port of Source-X
+    /// CItem::DupeCopy (CItem.cpp:4099).
+    ///
+    /// Three things separate it from the stack-split helper it used to share:
+    /// a container copy carries its CONTENTS, each as a copy of its own with a new uid
+    /// (CItemContainer::DupeCopy, CItemContainer.cpp:830); the copy gets its type's
+    /// live COMPONENT, so a duplicated spawner actually spawns (CCSpawn::Copy,
+    /// CCSpawn.cpp:1272 — configuration only, never the children it has already
+    /// produced); and nothing is moved off the source. Placement is the caller's
+    /// business, exactly as upstream leaves it to CIV_DUPE.</summary>
+    public Item CreateDupe(World.GameWorld world, int depth = 0)
+    {
+        var copy = world.CreateItem();
+        copy.CopyStackInstanceStateFrom(this);
+        copy.Amount = Amount;
+
+        // The type came across as a raw field, which leaves a SpawnChar/SpawnItem copy
+        // looking right and doing nothing. Build the component the type calls for from
+        // the (already copied) MORE/AMOUNT/TAG configuration. The children the source
+        // has already produced are deliberately NOT shared (CCSpawn::Copy,
+        // CCSpawn.cpp:1272, carries configuration only).
+        if (copy.ItemType is ItemType.SpawnChar or ItemType.SpawnItem or ItemType.SpawnChampion)
+        {
+            // A def table is only needed to resolve a named spawn group; without one
+            // the component is still built and still ticks.
+            copy.InitializeSpawnComponent(world, Definitions.DefinitionLoader.StaticResources);
+        }
+
+        if (depth < MaxDupeDepth)
+        {
+            // ToArray: the source list must not be walked while the copies are being
+            // attached to the copy.
+            foreach (var child in _contents.ToArray())
+            {
+                if (child.IsDeleted) continue;
+                // AddItem, not TryAddItem: upstream's ContentAdd places the duplicate
+                // unconditionally, so a full container's copy still gets its contents.
+                copy.AddItem(child.CreateDupe(world, depth + 1));
+            }
+        }
+        return copy;
+    }
+
+    /// <summary>Where a duplicate of this item belongs: beside whatever this item is
+    /// ultimately standing in the world as. Source-X CIV_DUPE finishes with
+    /// MoveNearObj(this, 1), and MoveNearObj walks up to the TOP-LEVEL object and uses
+    /// its world position (CItem.cpp:3631, CObjBase.cpp:498) — a copy is never pushed
+    /// into the source's container. Reading the source's own Position instead handed
+    /// back a container-local coordinate, which became a wrong spot on the map.</summary>
+    public Point3D GetDupeDropPosition() => GetTopLevelPosition();
+
     public Item AddItemWithStack(Item item)
         => TryAddItemWithStack(item) ?? item;
 
@@ -1394,7 +1463,13 @@ public class Item : ObjBase
         // Faz 3: Book/Message properties
         if (_type is ItemType.Book or ItemType.Message)
         {
-            if (upper == "AUTHOR") { value = Tags.Get("BOOK_AUTHOR") ?? ""; return true; }
+            // Either spelling answers: a save written before the setter kept both in
+            // step may carry only one of them.
+            if (upper == "AUTHOR")
+            {
+                value = Tags.Get("BOOK_AUTHOR") ?? Tags.Get("AUTHOR") ?? "";
+                return true;
+            }
             if (upper == "TITLE") { value = Tags.Get("BOOK_TITLE") ?? Name; return true; }
             if (upper == "PAGES")
             {
@@ -1986,8 +2061,17 @@ public class Item : ObjBase
                 }
                 return true;
 
-            case "AUTHOR": // books / bulletin messages read the AUTHOR tag
+            case "AUTHOR":
+                // One author, two historical spellings. Source-X keeps a single
+                // m_sAuthor that the book window writes and reads
+                // (CItemMessage.cpp:61/104); here the bulletin-board path stores
+                // TAG.AUTHOR while the book getter reads TAG.BOOK_AUTHOR, and this
+                // early case returned before the book-specific setter could run - so
+                // "AUTHOR=Writer" on a book wrote one tag and the AUTHOR property read
+                // the other and came back empty. Write both, so neither consumer loses
+                // its data and neither spelling in an existing save is orphaned.
                 SetTag("AUTHOR", value);
+                SetTag("BOOK_AUTHOR", value);
                 return true;
 
             case "TIMERF": // restore a persisted TIMERF/TIMERFMS timer (world load)
@@ -2132,7 +2216,9 @@ public class Item : ObjBase
         // Faz 3: Book/Message set
         if (_type is ItemType.Book or ItemType.Message)
         {
-            if (upper == "AUTHOR") { Tags.Set("BOOK_AUTHOR", value); return true; }
+            // AUTHOR is handled by the shared setter above, which writes both tags;
+            // this branch is unreachable for it and is left to the TITLE/BODY keys.
+
             if (upper == "TITLE")
             {
                 // A book's TITLE *is* its name upstream: the setter calls SetName and
@@ -2332,14 +2418,7 @@ public class Item : ObjBase
             int headDot = key.IndexOf('.');
             string head = upper[..headDot];
             string chainTail = key[(headDot + 1)..];
-            var chainWorld = ResolveWorld?.Invoke();
-            ObjBase? refObj = head switch
-            {
-                "TOPOBJ" => ResolveTopObject(),
-                "CONT" => _containedIn.IsValid ? chainWorld?.FindObject(_containedIn) : null,
-                "LINK" => _link.IsValid ? chainWorld?.FindObject(_link) : null,
-                _ => null,
-            };
+            ObjBase? refObj = ResolveRefHead(head);
             if (refObj == null)
                 return true;
             // The remainder is a whole verb line on the resolved object, so it gets
@@ -2382,25 +2461,26 @@ public class Item : ObjBase
             {
                 var dupeWorld = ResolveWorld?.Invoke();
                 if (dupeWorld == null) return true;
+                // The count is a Sphere argument, not a decimal int: upstream reads it
+                // with GetArgUVal (CItem.cpp:3631 -> CScript.cpp:161), so "1+1" is two
+                // and "010" is sixteen. int.TryParse made the first silently fall back
+                // to one and read the second as ten.
                 int dupeCount = 1;
-                if (!string.IsNullOrWhiteSpace(args) && int.TryParse(args.Trim(), out int dc) && dc > 0)
-                    dupeCount = Math.Min(dc, 1000);
-                var parent = _containedIn.IsValid ? dupeWorld.FindObject(_containedIn) : null;
+                if (!string.IsNullOrWhiteSpace(args) &&
+                    Core.Types.ScriptNumber.TryParseArgument(args, out long parsedCount) &&
+                    parsedCount > 0)
+                {
+                    dupeCount = (int)Math.Min(parsedCount, 1000);
+                }
+                // Beside the source's top-level object, never inside its container
+                // (MoveNearObj, CObjBase.cpp:498). Pushing copies into the container
+                // filled it up, and on a full one the copy was either dropped at a
+                // container-local coordinate or deleted outright.
+                Point3D dropAt = GetDupeDropPosition();
                 for (int n = 0; n < dupeCount; n++)
                 {
-                    var copy = dupeWorld.CreateItem();
-                    copy.CopyStackInstanceStateFrom(this);
-                    copy.Amount = Amount;
-                    bool placed = parent switch
-                    {
-                        Item contItem => contItem.TryAddItem(copy),
-                        Character wearer when wearer.Backpack != null &&
-                            (wearer.PrivLevel >= PrivLevel.GM || wearer.CanCarry(copy))
-                            => wearer.Backpack.TryAddItem(copy),
-                        Character wearer => dupeWorld.PlaceItemWithDecay(copy, wearer.Position),
-                        _ => dupeWorld.PlaceItem(copy, Position)
-                    };
-                    if (!placed)
+                    var copy = CreateDupe(dupeWorld);
+                    if (!dupeWorld.PlaceItem(copy, dropAt))
                         dupeWorld.RemoveItem(copy);
                 }
                 return true;
@@ -3765,7 +3845,11 @@ public class Item : ObjBase
             Tags.Remove($"CHAMPION_LOAD.{k}");
     }
 
-    public void InitializeSpawnComponent(World.GameWorld world, ResourceHolder resources, long preservedTimeoutMs = 0)
+    /// <summary>Build the spawn component this item's TYPE calls for. The def table is
+    /// only needed to resolve a NAMED spawn group or champion def; without one the
+    /// component is still created and still ticks, which is what a duplicated spawner
+    /// needs in a world that has no definitions loaded.</summary>
+    public void InitializeSpawnComponent(World.GameWorld world, ResourceHolder? resources, long preservedTimeoutMs = 0)
     {
         // Gate on the VIRTUALIZED type: Sphere saves omit TYPE when it equals
         // the base itemdef, so a worldgem's raw _type is Normal and only the
@@ -3793,23 +3877,25 @@ public class Item : ObjBase
                     !string.IsNullOrWhiteSpace(champTag)
                     ? champTag.Trim()
                     : "";
-                if (champDef.Length == 0 && _more1 != 0)
+                if (champDef.Length == 0 && _more1 != 0 && resources != null)
                 {
                     var champLink = resources.GetResource(Core.Enums.ResType.Champion, (int)_more1);
                     champDef = champLink?.DefName ?? "";
                 }
-                if (champDef.Length > 0)
+                if (champDef.Length > 0 && resources != null)
                     Champion.InitFromDef(resources, champDef);
             }
             else
             {
-                SpawnChar.SetFromMore1(_more1, resources);
+                if (resources != null)
+                    SpawnChar.SetFromMore1(_more1, resources);
                 // Legacy saves write MORE1 as a raw defname (MORE1=c_spider_giant).
                 // The numeric setter can't always resolve it (chardef hashes are
                 // 24-bit; the ItemDef-gated resolver returns 0) and parks it in
                 // the MORE1_DEFNAME tag — consume that here, or every imported
                 // NPC spawner comes up empty and never spawns.
-                if (_more1 == 0 && TryGetTag("MORE1_DEFNAME", out string? spawnDef) &&
+                if (_more1 == 0 && resources != null &&
+                    TryGetTag("MORE1_DEFNAME", out string? spawnDef) &&
                     !string.IsNullOrWhiteSpace(spawnDef))
                     SpawnChar.SetFromDefName(spawnDef, resources);
             }
@@ -3841,7 +3927,7 @@ public class Item : ObjBase
             string? itemTarget = Tags.Get("SPAWNID");
             if (string.IsNullOrWhiteSpace(itemTarget))
                 itemTarget = Tags.Get("MORE1_DEFNAME");
-            if (!string.IsNullOrWhiteSpace(itemTarget))
+            if (!string.IsNullOrWhiteSpace(itemTarget) && resources != null)
                 SpawnItem.SetFromDefName(itemTarget.Trim(), resources);
             else if (_more1 != 0)
                 SpawnItem.ItemDefId = (int)_more1; // full index — named itemdefs hash above 0xFFFF

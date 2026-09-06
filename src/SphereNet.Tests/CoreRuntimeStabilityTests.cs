@@ -182,8 +182,47 @@ public class CoreRuntimeStabilityTests
     [Fact]
     public void ScriptFunction_LocalScope_DoesNotLeakToCaller()
     {
+        // A plain function LINE builds a fresh CScriptTriggerArgs (CObjBase.cpp:2138),
+        // and the LOCAL pool lives on that object - so the callee gets its own and the
+        // caller keeps its value. (CALL is the other case: see the test below.)
         using var temp = new TempScriptFile(
             "[FUNCTION child]\n" +
+            "LOCAL.X=child\n" +
+            "RETURN 1\n\n" +
+            "[FUNCTION parent]\n" +
+            "LOCAL.X=parent\n" +
+            "child\n" +
+            "TAG.RESULT=<LOCAL.X>\n" +
+            "RETURN 1\n");
+
+        var loggerFactory = LoggerFactory.Create(_ => { });
+        var resources = new ResourceHolder(loggerFactory.CreateLogger<ResourceHolder>());
+        resources.LoadResourceFile(temp.Path);
+        var interpreter = new ScriptInterpreter(new ExpressionParser(), loggerFactory.CreateLogger<ScriptInterpreter>());
+        var runner = new TriggerRunner(interpreter, resources, loggerFactory.CreateLogger<TriggerRunner>());
+        interpreter.CallFunctionWithScope = (name, target, source, args, scope) =>
+            runner.TryRunFunction(name, target, source, args, scope, out var callResult)
+                ? callResult
+                : TriggerResult.Default;
+
+        var target = new Character();
+        Assert.True(runner.TryRunFunction("parent", target, null, new ExecTriggerArgs(), out _));
+        Assert.True(target.TryGetProperty("TAG.RESULT", out string value));
+        Assert.Equal("parent", value);
+    }
+
+    [Fact]
+    public void ScriptFunction_CallSharesTheCallersLocalPool()
+    {
+        // CALL hands the callee the CALLER'S OWN args object (Execute_Call,
+        // CScriptObj.cpp:1505) and the LOCAL pool lives on that object
+        // (m_VarsLocal) - Init does not clear it - so the two share one pool: the
+        // child reads what the parent set, and what the child writes is visible on
+        // return. This test used to assert the opposite, which is the isolation the
+        // plain function line above provides, not the one CALL has.
+        using var temp = new TempScriptFile(
+            "[FUNCTION child]\n" +
+            "TAG.SEEN=<LOCAL.X>\n" +
             "LOCAL.X=child\n" +
             "RETURN 1\n\n" +
             "[FUNCTION parent]\n" +
@@ -204,8 +243,11 @@ public class CoreRuntimeStabilityTests
 
         var target = new Character();
         Assert.True(runner.TryRunFunction("parent", target, null, new ExecTriggerArgs(), out _));
-        Assert.True(target.TryGetProperty("TAG.RESULT", out string value));
-        Assert.Equal("parent", value);
+
+        Assert.True(target.TryGetProperty("TAG.SEEN", out string seen));
+        Assert.Equal("parent", seen);                    // the child reads the caller's
+        Assert.True(target.TryGetProperty("TAG.RESULT", out string result));
+        Assert.Equal("child", result);                   // ...and the caller sees its write
     }
 
     [Fact]

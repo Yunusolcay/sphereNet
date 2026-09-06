@@ -155,22 +155,68 @@ public sealed class ScriptInterpreter
 
                 case "CALL":
                 {
+                    // Source-X Execute_Call (CScriptObj.cpp:1505):
+                    //  * a reference head (SRC., TOPOBJ., CONT., LINK., ...) redirects
+                    //    the call to that object before the name is looked up;
+                    //  * WITH an argument the CALLER'S OWN args object is temporarily
+                    //    re-Init'ed from it and restored afterwards, so the callee sees
+                    //    ARGN/ARGS built from the new argument and the caller gets its
+                    //    own back;
+                    //  * WITHOUT one the caller's args go through untouched, so the
+                    //    callee sees the caller's ARGN1 and ARGS;
+                    //  * either way it is the SAME args object, so the LOCAL pool is
+                    //    shared both ways.
+                    // Building a fresh args object copied the caller's NUMBERS while
+                    // replacing its STRING: "CALL f_child 37" gave the child ARGN1=17
+                    // with ARGS=37, and "CALL f_child" wiped ARGS instead of passing it.
                     string call = ResolveArgs(key.Arg, target, source, args, scope).Trim();
-                    int split = call.IndexOfAny([' ', '\t']);
-                    string funcName = split < 0 ? call : call[..split].Trim();
+                    int split = call.IndexOfAny([' ', '	']);
+                    string callHead = split < 0 ? call : call[..split].Trim();
                     string funcArgString = split < 0 ? "" : call[(split + 1)..].Trim();
-                    if (!string.IsNullOrEmpty(funcName))
+
+                    var callTarget = ResolveCallReference(ref callHead, target, source, args);
+                    if (callTarget != null && !string.IsNullOrEmpty(callHead))
                     {
-                        var funcArgs = new TriggerArgs(args?.Source,
-                            args?.Number1 ?? 0, args?.Number2 ?? 0, funcArgString)
+                        if (args is not TriggerArgs callerArgs)
                         {
-                            Number3 = args?.Number3 ?? 0,
-                            Object1 = args?.Object1,
-                            Object2 = args?.Object2
-                        };
-                        var callResult = InvokeFunction(funcName, target, source, funcArgs, scope);
-                        if (callResult == TriggerResult.True)
-                            result = TriggerResult.True;
+                            var fresh = new TriggerArgs { Source = args?.Source };
+                            fresh.InitFromRaw(funcArgString);
+                            fresh.ShareCallerLocals = true;
+                            if (InvokeFunction(callHead, callTarget, source, fresh, scope) == TriggerResult.True)
+                                result = TriggerResult.True;
+                        }
+                        else
+                        {
+                            bool hasArg = funcArgString.Length > 0;
+                            long n1 = callerArgs.Number1, n2 = callerArgs.Number2, n3 = callerArgs.Number3;
+                            var o1 = callerArgs.Object1;
+                            string savedArgs = callerArgs.ArgString;
+                            bool savedShare = callerArgs.ShareCallerLocals;
+
+                            if (hasArg)
+                                callerArgs.InitFromRaw(funcArgString);
+                            callerArgs.ShareCallerLocals = true;
+                            try
+                            {
+                                if (InvokeFunction(callHead, callTarget, source, callerArgs, scope) == TriggerResult.True)
+                                    result = TriggerResult.True;
+                            }
+                            finally
+                            {
+                                callerArgs.ShareCallerLocals = savedShare;
+                                if (hasArg)
+                                {
+                                    // The LOCAL pool is deliberately NOT restored: it is
+                                    // shared, and what the callee wrote is meant to be
+                                    // visible to the caller.
+                                    callerArgs.Number1 = n1;
+                                    callerArgs.Number2 = n2;
+                                    callerArgs.Number3 = n3;
+                                    callerArgs.Object1 = o1;
+                                    callerArgs.ArgString = savedArgs;
+                                }
+                            }
+                        }
                     }
                     i++;
                     break;
@@ -182,7 +228,13 @@ public sealed class ScriptInterpreter
                     string tryLine = ResolveArgs(key.Arg, target, source, args, scope);
                     if (!string.IsNullOrWhiteSpace(tryLine))
                     {
-                        // Parse "property=value" or "command args" from the resolved line
+                        // TRY runs the REST OF THE LINE through the target's ordinary
+                        // verb path and only suppresses the invalid-reference error
+                        // (CObjBase.cpp:2899 builds a CScript and calls r_Verb). It had
+                        // its own cut-down executor instead: the space form tried a
+                        // native verb and the console bridge and stopped, so
+                        // "TRY TAG.FLAG 1" and "TRY f_mark" both did nothing while the
+                        // same lines worked unwrapped.
                         int eqIdx = tryLine.IndexOf('=');
                         if (eqIdx > 0)
                         {
@@ -196,8 +248,7 @@ public sealed class ScriptInterpreter
                             int spIdx = tryLine.IndexOf(' ');
                             string verb = spIdx > 0 ? tryLine[..spIdx].Trim() : tryLine.Trim();
                             string verbArgs = spIdx > 0 ? tryLine[(spIdx + 1)..].Trim() : "";
-                            if (!target.TryExecuteCommand(verb, verbArgs, source ?? NullConsole.Instance))
-                                (source ?? NullConsole.Instance).TryExecuteScriptCommand(target, verb, verbArgs, args);
+                            ExecuteVerbLine(verb, verbArgs, target, source, args, scope);
                         }
                     }
                     i++;
@@ -255,7 +306,17 @@ public sealed class ScriptInterpreter
                             string trysrcArgs = cmdSpace > 0 ? rest[(cmdSpace + 1)..].Trim() : "";
                             if (!string.IsNullOrWhiteSpace(trysrcVerb))
                             {
-                                ServerPropertyResolver?.Invoke($"_REF_EXEC={srcRef}|{trysrcVerb}|{trysrcArgs}");
+                                // TRYSRC changes WHO is asking, not WHAT is asked of.
+                                // Source-X resolves the uid to a source console and
+                                // runs the verb on `this`: r_Verb(script, pNewSrc)
+                                // (CObjBase.cpp:2917). Sending only the source uid made
+                                // the bridge treat it as the TARGET, so
+                                // "TRYSRC <player> TAG.TEST 1" tagged the player and
+                                // left the item that ran the line untouched.
+                                string trysrcTarget = target.TryGetProperty("UID", out string ttuid)
+                                    ? ttuid : "0";
+                                ServerPropertyResolver?.Invoke(
+                                    $"_REF_EXEC_AS={srcRef}|{trysrcTarget}|{trysrcVerb}|{trysrcArgs}");
                                 i++;
                                 break;
                             }
@@ -434,16 +495,17 @@ public sealed class ScriptInterpreter
                 if (CallFunctionWithScope != null || CallFunction != null)
                 {
                     // Pass resolvedArg as the new <ARGS> for the called function
+                    // ARGN1/2/3 come from the argument THIS line passes, prepared the
+                    // normal way (CScriptTriggerArgs::Init, :112). Copying the
+                    // caller's numbers while replacing its string handed the callee a
+                    // number from one call and a string from another.
                     var funcArgs = new TriggerArgs
                     {
                         Source = args?.Source,
                         Object1 = args?.Object1,
                         Object2 = args?.Object2,
-                        Number1 = args?.Number1 ?? 0,
-                        Number2 = args?.Number2 ?? 0,
-                        Number3 = args?.Number3 ?? 0,
-                        ArgString = resolvedArg
                     };
+                    funcArgs.InitFromRaw(resolvedArg);
                     InvokeFunction(subCmd, srcObj, source, funcArgs, scope);
                     return;
                 }
@@ -518,6 +580,23 @@ public sealed class ScriptInterpreter
             return;
         }
 
+        // NEW=uid — repoint the global new-object reference (Source-X SSV_NEW,
+        // CScriptObj.cpp:1305). NEW had a read path only, so a script restoring the
+        // reference it had saved, or dressing the object it had just made through
+        // NEW.<prop>, was silently ignored.
+        if (cmd.Equals("NEW", StringComparison.OrdinalIgnoreCase) && key.HasArg)
+        {
+            ServerPropertyResolver?.Invoke($"_SET_NEW={resolvedArg}");
+            return;
+        }
+
+        // NEW.property=value — write through that reference.
+        if (cmd.StartsWith("NEW.", StringComparison.OrdinalIgnoreCase) && key.HasArg)
+        {
+            ServerPropertyResolver?.Invoke($"_SET_{cmd}={resolvedArg}");
+            return;
+        }
+
         // CLEARVARS — clear global variables
         if (cmd.Equals("CLEARVARS", StringComparison.OrdinalIgnoreCase) ||
             cmd.Equals("SERV.CLEARVARS", StringComparison.OrdinalIgnoreCase))
@@ -548,10 +627,18 @@ public sealed class ScriptInterpreter
         // Source-X global factories are server verbs, not client verbs. Keeping
         // them here makes SERV.NEWITEM / SERV.NEWNPC work from startup hooks,
         // timers, item triggers and functions that have no connected client.
-        if (cmd.Equals("SERV.NEWITEM", StringComparison.OrdinalIgnoreCase) ||
-            cmd.Equals("NEWITEM", StringComparison.OrdinalIgnoreCase))
+        if (cmd.Equals("SERV.NEWITEM", StringComparison.OrdinalIgnoreCase))
         {
             ServerPropertyResolver?.Invoke($"_NEWITEM={resolvedArg}");
+            return;
+        }
+        // The BARE form additionally sets the caller's ACT to what it created
+        // (Source-X CScriptObj.cpp:1383, only when the command is not addressed to the
+        // server). Both forms used the same server-only bridge, so that half was lost.
+        if (cmd.Equals("NEWITEM", StringComparison.OrdinalIgnoreCase))
+        {
+            string actUid = target.TryGetProperty("UID", out string tuid) ? tuid : "0";
+            ServerPropertyResolver?.Invoke($"_NEWITEM_ACT={actUid}|{resolvedArg}");
             return;
         }
         if (cmd.Equals("SERV.NEWNPC", StringComparison.OrdinalIgnoreCase) ||
@@ -828,17 +915,16 @@ public sealed class ScriptInterpreter
         // Source-X: any unrecognized command is treated as a function call
         if (CallFunctionWithScope != null || CallFunction != null)
         {
-            // Pass resolvedArg as the new <ARGS> for the called function
+            // The argument this line passes becomes the callee's ARGS *and* its
+            // ARGN1/2/3, prepared the normal way (CScriptTriggerArgs::Init, :112);
+            // the caller's own numbers do not carry over.
             var funcArgs = new TriggerArgs
             {
                 Source = args?.Source,
                 Object1 = args?.Object1,
                 Object2 = args?.Object2,
-                Number1 = args?.Number1 ?? 0,
-                Number2 = args?.Number2 ?? 0,
-                Number3 = args?.Number3 ?? 0,
-                ArgString = resolvedArg
             };
+            funcArgs.InitFromRaw(resolvedArg);
             InvokeFunction(cmd, target, source, funcArgs, scope);
             if (_expr.DebugUnresolved)
                 _logger.LogDebug("[script_exec] delegated to function '{Cmd}'", cmd);
@@ -889,7 +975,11 @@ public sealed class ScriptInterpreter
             cmd is "ARGN" or "ARGN1" or "ARGN2" or "ARGN3")
         {
             string rawVal = ResolveArgs(key.Arg, target, source, args, scope).Trim();
-            if (TryParseArgN(rawVal, out int argnVal))
+            // The value is a Sphere expression, not a decimal-or-0x int: upstream
+            // assigns through GetArgVal (CScriptTriggerArgs.cpp:313), which is the
+            // full expression parser. The narrow parser read "010" as ten instead of
+            // sixteen and rejected "1+1" outright, leaving the previous ARGN standing.
+            if (TryEvaluateWithResolver(rawVal, target, source, args, scope, out long argnVal))
             {
                 if (cmd == "ARGN2") argnTarget.Number2 = argnVal;
                 else if (cmd == "ARGN3") argnTarget.Number3 = argnVal;
@@ -1448,14 +1538,89 @@ public sealed class ScriptInterpreter
         return CallFunction?.Invoke(funcName, target, source, args) ?? TriggerResult.Default;
     }
 
-    /// <summary>Parse an ARGN assignment value: decimal, or hex with a 0x prefix.</summary>
-    private static bool TryParseArgN(string s, out int value)
+    /// <summary>Host bridge for a Source-X object reference head — TOPOBJ, CONT, LINK
+    /// and the rest of r_GetRef (CScriptObj.cpp:1217). The object layer owns those
+    /// relationships, so the host wires this; SRC is resolved here, since the args
+    /// already carry it. Null means the head names no reachable object.</summary>
+    public Func<IScriptObj, string, IScriptObj?>? ResolveObjectRef { get; set; }
+
+    /// <summary>Strip a reference head off a CALL and return the object the call
+    /// belongs to, leaving <paramref name="head"/> holding just the function name.
+    ///
+    /// Source-X resolves the reference BEFORE looking the function up: Execute_Call
+    /// runs r_GetRef over the argument and handles "SRC." itself through
+    /// pSrc-&gt;GetChar (CScriptObj.cpp:1515). Taking the first word as a function name
+    /// meant "CALL SRC.f_mark" looked for a function literally called "SRC.f_mark",
+    /// found none, and the line vanished.</summary>
+    private IScriptObj? ResolveCallReference(ref string head, IScriptObj target,
+        ITextConsole? source, ITriggerArgs? args)
     {
-        s = s.Trim();
-        if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-            return int.TryParse(s.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out value);
-        return int.TryParse(s, out value);
+        int dot = head.IndexOf('.');
+        if (dot <= 0)
+            return target;
+
+        string refHead = head[..dot];
+        string rest = head[(dot + 1)..];
+        if (rest.Length == 0)
+            return target;
+
+        if (refHead.Equals("SRC", StringComparison.OrdinalIgnoreCase))
+        {
+            var srcObj = args?.Source ?? source?.GetSourceChar();
+            head = rest;
+            return srcObj;
+        }
+
+        var resolved = ResolveObjectRef?.Invoke(target, refHead);
+        if (resolved == null)
+            return target;   // not a reference head after all: leave the name alone
+
+        head = rest;
+        return resolved;
     }
+
+    /// <summary>Run one verb LINE on <paramref name="target"/> in Source-X's r_Verb
+    /// order: the verb table owns its names outright, an UNKNOWN name reaches the
+    /// script [FUNCTION] (CObjBase.cpp:2134), and what neither claims becomes a
+    /// property assignment through the default r_LoadVal branch (CScriptObj.cpp:1481).
+    /// The console bridge sits between the verb and the function so host-side verbs
+    /// (dialogs, targeting, SERV.*) keep their place.</summary>
+    private void ExecuteVerbLine(string verb, string verbArgs, IScriptObj target,
+        ITextConsole? source, ITriggerArgs? args, ScriptScope scope)
+    {
+        var console = source ?? NullConsole.Instance;
+        if (target.TryExecuteCommand(verb, verbArgs, console, out bool nameOwned))
+            return;
+        if (nameOwned)
+            return;   // the verb owns the name and declined; upstream stops here
+        if (console.TryExecuteScriptCommand(target, verb, verbArgs, args))
+            return;
+
+        if (CallFunctionWithScope != null || CallFunction != null)
+        {
+            var funcArgs = new TriggerArgs
+            {
+                Source = args?.Source,
+                Object1 = args?.Object1,
+                Object2 = args?.Object2,
+            };
+            funcArgs.InitFromRaw(verbArgs);
+            if (InvokeFunction(verb, target, source, funcArgs, scope) != TriggerResult.Default)
+                return;
+            if (FunctionExists(verb))
+                return;
+        }
+
+        if (verbArgs.Length > 0)
+            target.TrySetProperty(verb, verbArgs);
+    }
+
+    /// <summary>Whether a script [FUNCTION] answers to this name. Lets the verb line
+    /// tell "the function ran and returned nothing" apart from "there is no such
+    /// function", so only the latter falls through to a property assignment.</summary>
+    public Func<string, bool>? FunctionLookup { get; set; }
+
+    private bool FunctionExists(string name) => FunctionLookup?.Invoke(name) ?? false;
 
     private string? ResolveVarForTarget(string varName, IScriptObj target, ITextConsole? source, ITriggerArgs? args, ScriptScope? scope = null)
     {

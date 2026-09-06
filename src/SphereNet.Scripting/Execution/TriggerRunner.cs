@@ -365,12 +365,25 @@ public sealed class TriggerRunner
             functionLines = sections[0].Keys;
         }
 
-        var scope = new ScriptScope
-        {
-            TriggerName = funcName,
-            CallDepth = callDepth,
-            MaxCallDepth = maxCallDepth
-        };
+        // A CALL runs on the caller's LOCAL pool; every other function call gets its
+        // own (see TriggerArgs.ShareCallerLocals).
+        var callerLocals = args is TriggerArgs { ShareCallerLocals: true } && callerScope != null
+            ? callerScope.LocalVars
+            : null;
+        var scope = callerLocals != null
+            ? new ScriptScope
+            {
+                TriggerName = funcName,
+                CallDepth = callDepth,
+                MaxCallDepth = maxCallDepth,
+                LocalVars = callerLocals
+            }
+            : new ScriptScope
+            {
+                TriggerName = funcName,
+                CallDepth = callDepth,
+                MaxCallDepth = maxCallDepth
+            };
         result = _interpreter.Execute(functionLines, target, source, args, scope);
         returnValue = scope.ReturnValue;
         return true;
