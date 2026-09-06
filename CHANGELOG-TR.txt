@@ -3,6 +3,32 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Uretim: tarif kimligi ve asinan alet (05A)
+----------------------------------------
+
+FIX - Ayni goruntu grafigini paylasan iki ITEMDEF ayni tarif sayiliyordu. Kayit
+        sozlugu grafik kimligiyle anahtarlandigi icin ikinci tanim birincisini sessizce
+        eziyordu: birinci tarif kendi skill'inin uretim listesinden kayboluyor ve
+        defname'i diger esyayi uretiyordu. Source-X ITEMDEF kaynak kimligini
+        Skill_MakeItem boyunca tasir ve tanimi dogrudan onunla bulur
+        (CCharSkill.cpp:870/679) - kimlik hicbir zaman grafige indirgenmez. Tarifler
+        artik o kaynak kimligiyle anahtarlaniyor ve MAKEITEM display kimligine
+        indirmek yerine onu geciriyor.
+
+FIX - Yalnizca goruntu grafigi bilen bir sorgu artik sessiz bir tahmin almiyor. O
+        grafigi tek bir tarif tasidigi surece yanit veriliyor - numeric ITEMDEF'ler ve
+        siradan paketlerin tamami boyle; birden fazlasi paylastiginda verilecek bir
+        yanit yok ve uydurulmuyor.
+
+FIX - Uretime IZIN VEREN alet ile ASINAN alet farkli esyalar olabiliyordu. Izin
+        kontrolu aranamaz bir kaba inmeyi reddederken asinma aramasi yine de iniyordu;
+        boylece cantada kilitli duran yedek, ustacinin elindeki aletin borcunu oduyor
+        ve hic kullanilamayan kilitli bir alet yipranabiliyordu. Source-X ContentFind
+        aranamaz kabi atlar (CContainer.cpp:236). Iki yari artik TEK arama
+        calistiriyor, boylece bir daha ayrisamazlar. Bu, cephane ve kaynak toplama
+        icin zaten duzeltilmis olan hatanin aynisidir; geride kalan tek yurume alet
+        aramasiydi.
+
 [2026-09-06] - Takipciler: kaldirilan yaratik slotunu hemen birakiyor (04D)
 ----------------------------------------
 

@@ -4,6 +4,32 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Crafting: recipe identity and the tool that wears (05A)
+----------------------------------------
+
+FIX - Two ITEMDEFs sharing a display graphic were the same recipe. The registry was
+        keyed by the art id, so the second definition silently replaced the first: it
+        disappeared from its own skill's craft list, and its defname built the other
+        item. Source-X carries the ITEMDEF resource id through Skill_MakeItem and
+        looks the definition up with it directly (CCharSkill.cpp:870/679) - the
+        identity is never reduced to the graphic. Recipes are now keyed by that
+        resource id, and MAKEITEM passes it instead of collapsing to the display id.
+
+FIX - A lookup that only has a display graphic no longer gets a silent guess. It is
+        still answered while exactly one recipe wears that art, which covers numeric
+        ITEMDEFs and every ordinary pack; when several share it, there is no answer to
+        give and none is invented.
+
+FIX - The tool that PERMITTED a craft and the tool that WORE from it could be
+        different items. The permission check refused to descend into a container it
+        may not search while the wear lookup descended anyway, so a spare locked away
+        in the pack took the damage owed by the tool in the crafter's hand - and a
+        locked-away tool could be worn down without ever being usable. Source-X
+        ContentFind skips an unsearchable container (CContainer.cpp:236). Both halves
+        now run one search, so they cannot drift apart again. This is the same defect
+        already fixed for ammunition and resource gathering; the tool lookup was the
+        one walk left behind.
+
 [2026-09-06] - Followers: a removed creature frees its slot at once (04D)
 ----------------------------------------
 

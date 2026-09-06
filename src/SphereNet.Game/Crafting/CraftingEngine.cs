@@ -55,7 +55,13 @@ public sealed class CraftRecipe
 public sealed class CraftingEngine
 {
     private readonly GameWorld _world;
-    private readonly Dictionary<ushort, CraftRecipe> _recipes = [];
+    /// <summary>Keyed by the ITEMDEF RESOURCE id, not the display graphic. Source-X
+    /// carries that id through Skill_MakeItem and looks the definition up with it
+    /// directly (CCharSkill.cpp:870/679); keying on the graphic made two definitions
+    /// that merely share an art id the same recipe, and the second silently replaced
+    /// the first - it vanished from its skill's list and its defname built the other
+    /// item.</summary>
+    private readonly Dictionary<int, CraftRecipe> _recipes = [];
 
     public CraftingEngine(GameWorld world)
     {
@@ -63,12 +69,18 @@ public sealed class CraftingEngine
     }
 
     public void RegisterRecipe(CraftRecipe recipe) =>
-        _recipes[recipe.ResultItemId] = recipe;
+        _recipes[RecipeKey(recipe)] = recipe;
 
-    public CraftRecipe? GetRecipe(ushort itemId) =>
-        _recipes.GetValueOrDefault(itemId);
+    /// <summary>A named ITEMDEF gets a synthetic resource index, a numeric one is its
+    /// own id; either way that is the recipe's identity. ResultItemId is the fallback
+    /// only for a recipe built without a definition behind it.</summary>
+    private static int RecipeKey(CraftRecipe recipe) =>
+        recipe.ResultDefId != 0 ? recipe.ResultDefId : recipe.ResultItemId;
 
-    public IReadOnlyDictionary<ushort, CraftRecipe> AllRecipes => _recipes;
+    public CraftRecipe? GetRecipe(int defId) =>
+        _recipes.GetValueOrDefault(defId);
+
+    public IReadOnlyDictionary<int, CraftRecipe> AllRecipes => _recipes;
 
     /// <summary>Get all recipes for a given primary skill.</summary>
     public List<CraftRecipe> GetRecipesBySkill(SkillType skill) =>
@@ -79,8 +91,27 @@ public sealed class CraftingEngine
     /// Maps to SkillResourceTest in Source-X.
     /// </summary>
     /// <summary>Recipe lookup by result display id (SKILLMENU MAKEITEM).</summary>
-    public CraftRecipe? TryGetRecipe(ushort resultDispId) =>
-        _recipes.GetValueOrDefault(resultDispId);
+    /// <summary>Find the recipe a request names. The id is the ITEMDEF resource id
+    /// first; a bare display graphic is still accepted for callers that only have
+    /// one, but ONLY while it is unambiguous. When several definitions share a
+    /// graphic there is no answer to give, and silently handing back whichever
+    /// registered last is what this replaces.</summary>
+    public CraftRecipe? TryGetRecipe(int resultId)
+    {
+        if (_recipes.TryGetValue(resultId, out var byDef))
+            return byDef;
+
+        CraftRecipe? single = null;
+        foreach (var recipe in _recipes.Values)
+        {
+            if (recipe.ResultItemId != resultId)
+                continue;
+            if (single != null)
+                return null;        // ambiguous graphic - refuse rather than guess
+            single = recipe;
+        }
+        return single;
+    }
 
     public bool CanCraft(Character crafter, CraftRecipe recipe, ushort? primaryResourceHue = null)
     {
@@ -330,18 +361,13 @@ public sealed class CraftingEngine
         return ch.Backpack != null && HasItemOfTypeIn(ch.Backpack, type, depth: 3);
     }
 
-    private static bool HasItemOfTypeIn(Item container, ItemType type, int depth)
-    {
-        foreach (var item in container.Contents)
-        {
-            if (item.IsDeleted) continue;
-            if (item.ItemType == type) return true;
-            if (depth > 0 && item.ContentCount > 0 && item.IsSearchableContainer &&
-                HasItemOfTypeIn(item, type, depth - 1))
-                return true;
-        }
-        return false;
-    }
+    /// <summary>Answered by the same search that picks the tool, so the tool that
+    /// PERMITS the craft and the tool that WEARS from it can never be different
+    /// items. They were: this check refused to descend into an unsearchable
+    /// container while the wear lookup below happily did, so a spare tool locked
+    /// away took the damage owed by the one in the crafter's hand.</summary>
+    private static bool HasItemOfTypeIn(Item container, ItemType type, int depth) =>
+        FindItemOfTypeIn(container, type, depth) != null;
 
     private static Item? FindItemOfType(Character ch, ItemType type)
     {
@@ -358,7 +384,10 @@ public sealed class CraftingEngine
         {
             if (item.IsDeleted) continue;
             if (item.ItemType == type) return item;
-            if (depth > 0 && item.ContentCount > 0)
+            // Source-X ContentFind skips a container it may not search
+            // (CContainer.cpp:236) - a locked chest in the pack is not stock the
+            // crafter can draw a tool from.
+            if (depth > 0 && item.ContentCount > 0 && item.IsSearchableContainer)
             {
                 var found = FindItemOfTypeIn(item, type, depth - 1);
                 if (found != null) return found;

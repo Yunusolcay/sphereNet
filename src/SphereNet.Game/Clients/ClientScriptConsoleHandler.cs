@@ -2063,11 +2063,12 @@ public sealed class ClientScriptConsoleHandler
         var irid = resources.ResolveDefName(defname.Trim());
         if (!irid.IsValid)
             return;
-        var idef = DefinitionLoader.GetItemDef(irid.Index);
-        ushort dispId = idef?.DispIndex ?? (ushort)irid.Index;
-
+        // The recipe's identity is the ITEMDEF resource id, the same id Source-X
+        // carries through Skill_MakeItem (CCharSkill.cpp:870). Reducing it to the
+        // display graphic first meant a defname could build a DIFFERENT item that
+        // merely shared the art.
         var craftE = _client.CraftE;
-        var recipe = craftE?.TryGetRecipe(dispId);
+        var recipe = craftE?.TryGetRecipe(irid.Index);
         if (craftE == null || recipe == null)
         {
             SysMessage("You don't know how to make that.");

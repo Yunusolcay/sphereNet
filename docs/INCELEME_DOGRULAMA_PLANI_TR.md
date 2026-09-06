@@ -885,6 +885,40 @@ yalniz dogrudan silme dali calistirildi), silme scriptlerinin veto/yeniden giris
 sozlesmesi, sahibin olumu/hesabinin silinmesi/baglanti kopmasi ve summon etkisinin
 bagimsiz suresi.
 
+### 05A — tarif kimligi ve uretim aleti (6 Eylul 2026)
+
+[05A kanit raporu](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_05A_URETIM.md).
+Iki bulgu da bagimsiz olarak dogrulandi ve uygulandi.
+
+- [x] **SX-05A-01 (P1)** — Ayni display ID'yi kullanan tarifler birbirini eziyordu.
+  (YAPILDI: `_recipes` sozlugu artik ITEMDEF KAYNAK kimligiyle anahtarlaniyor —
+  Source-X bu kimligi `Skill_MakeItem` boyunca tasir ve tanimi dogrudan onunla bulur
+  (CCharSkill.cpp:870/679). `MAKEITEM` de display kimligine indirmek yerine
+  `irid.Index` geciriyor.
+  **Uyumluluk kurali acikca yazildi:** raporun istedigi gibi eski display-ID lookup'i
+  sessizce sonuncuyu secmiyor. `TryGetRecipe` once kaynak kimligine bakiyor; grafik
+  uzerinden yalnizca o grafigi TEK bir tarif tasidiginda yanit veriyor, birden
+  fazlasi paylastiginda `null` donuyor. Numeric ITEMDEF'ler ve siradan paketler
+  birinci veya ikinci daldan cozuluyor.)
+- [x] **SX-05A-02 (P2)** — Erisilebilir alet izin verirken kilitli kaptaki alet
+  asiniyordu. (YAPILDI: `FindItemOfTypeIn` alt kaba inerken `IsSearchableContainer`
+  istemiyordu, `HasItemOfTypeIn` ise istiyordu — izin veren alet ile asinan alet
+  farkli olabiliyordu. Source-X `ContentFind` aranamaz kabi atlar
+  (CContainer.cpp:236).
+  **Raporun onerdigi yapisal cozum uygulandi:** iki helper'i ayri ayri duzeltmek
+  yerine `HasItemOfTypeIn` artik `FindItemOfTypeIn` uzerinden cevapliyor; tek arama,
+  bir daha ayrisamazlar.
+  **Not:** bu, 03A'da cephane ve kaynak yurumeleri icin kapatilan hatanin ikizi —
+  o turda gozden kacan tek yurume buydu.)
+
+**05A kapanisi:** tam suite **2.475 basarili / 0 basarisiz** (+13). Iki duzeltme de
+gecici olarak kapatilarak 7 testin eski davranisi yakaladigi kanitlandi. Mevcut
+hicbir test guncellenmedi (`AllRecipes` anahtari `ushort`'tan `int`'e gecti, ama
+disaridaki tek kullanim `GetRecipesBySkill`).
+
+**Acik kalan:** kaynak toplama turu (dugum miktari, basarisizlik tuketimi, uretim
+teslim/yerlestirme kosullari) raporun kendi devam kuyrugunda.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.
