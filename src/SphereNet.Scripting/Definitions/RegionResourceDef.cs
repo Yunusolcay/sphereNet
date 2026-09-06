@@ -27,8 +27,21 @@ public sealed class RegionResourceDef : ResourceLink
     private readonly List<int> _reapAmountCurve = [];
     public IReadOnlyList<int> ReapAmountCurve => _reapAmountCurve;
 
-    /// <summary>Regeneration time in seconds.</summary>
+    private readonly List<int> _regenCurve = [];
+    public IReadOnlyList<int> RegenCurve => _regenCurve;
+
+    /// <summary>Regeneration time in TENTHS of a second - the first point of the
+    /// REGEN curve. Source-X loads REGEN as a value curve whose own comment reads
+    /// "Tenths of second once found how long to regen this type"
+    /// (CRegionResourceDef.cpp:73), and turns a sample into a marker timeout with
+    /// GetRandom() * MSECS_PER_TENTH (CWorldMap.cpp:148). Reading it as whole
+    /// seconds made every vein last ten times as long as its script asked for.
+    /// The reference pack's own REGEN=60*60*10 reads as an hour in tenths.</summary>
     public int Regen { get; set; }
+
+    /// <summary>Last point of the REGEN curve; equals <see cref="Regen"/> for the
+    /// single-valued form.</summary>
+    public int RegenMax { get; set; }
 
     /// <summary>Skill difficulty range (in tenths: 0-1000).</summary>
     public int SkillMin { get; set; }
@@ -60,7 +73,9 @@ public sealed class RegionResourceDef : ResourceLink
                 ReapAmountMax = _reapAmountCurve.Count > 0 ? _reapAmountCurve[^1] : ReapAmountMin;
                 break;
             case "REGEN":
-                Regen = EvalSimpleExpression(arg);
+                ParseExpressionCurve(arg, _regenCurve);
+                Regen = _regenCurve.Count > 0 ? _regenCurve[0] : 0;
+                RegenMax = _regenCurve.Count > 0 ? _regenCurve[^1] : Regen;
                 break;
             case "SKILL":
                 ParseFloatCurve(arg, _skillCurve);
@@ -149,6 +164,28 @@ public sealed class RegionResourceDef : ResourceLink
         long high = points[lowIndex + 1];
         long value = low + (high - low) * segmentSample / segmentSize;
         return (int)Math.Clamp(value, 0L, int.MaxValue);
+    }
+
+    /// <summary>Source-X m_vcRegenerateTime.GetRandom() - a random sample across
+    /// the whole REGEN curve, in tenths of a second. A comma-separated REGEN used to
+    /// parse as a single expression and collapse to zero, which then fell through to
+    /// an invented default.</summary>
+    public int GetRandomRegen(Random random)
+    {
+        IReadOnlyList<int> points = _regenCurve.Count > 0
+            ? _regenCurve
+            : Regen == RegenMax ? [Regen] : [Regen, RegenMax];
+        return EvaluateCurve(points, random.Next(1000));
+    }
+
+    /// <summary>A value curve whose points may each be a simple expression - REGEN
+    /// is written as 60*60*10 in the reference pack, which the plain integer parser
+    /// cannot read.</summary>
+    private static void ParseExpressionCurve(string val, List<int> destination)
+    {
+        destination.Clear();
+        foreach (string raw in val.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+            destination.Add(EvalSimpleExpression(raw));
     }
 
     private static void ParseIntegerCurve(string val, List<int> destination)

@@ -959,6 +959,50 @@ gerekce. Ayrica named ITEMDEF/resource kimligi ushort'a indirgeniyor (raporun
 "degerlendirilmelidir" notu) ve havuz rejenerasyonu/marker save-load bir sonraki
 kesitte.
 
+### 05C - kaynak dugumu yenilenmesi (6 Eylul 2026)
+
+[05C kanit raporu](D:/Projeler/Yunus/sphereNet/docs/reviews/SOURCE_X_BOLUM_05C_KAYNAK_YENILENME.md).
+Iki bulgu da bagimsiz olarak dogrulandi ve uygulandi. **Bu tur canli davranisi
+degistiriyor** - ayrintisi changelog'da.
+
+- [x] **SX-05C-01 (P1)** - REGEN zaman birimi ve deger egrisi korunmuyordu.
+  (YAPILDI: referans REGEN'i deger egrisi olarak yukler ve yorumunda ONDA SANIYE
+  yazar (CRegionResourceDef.cpp:73); zaman asimini
+  `GetRandom() * MSECS_PER_TENTH` ile kurar (CWorldMap.cpp:148). SphereNet tek int
+  + saniye okuyordu, yani her damar on kat uzun yasiyordu. `ParseExpressionCurve` +
+  `GetRandomRegen` eklendi; noktalar ifade olabildigi icin duz `ParseIntegerCurve`
+  kullanilamadi (`60*60*10`).
+  **Uydurma fallback kaldirildi:** rapor "eski keyfi fallback yeni sozlesmeye
+  otomatik tasinmamali" diyordu. Atanmamis REGEN artik sifir orneklenir; referansta
+  `MoveToDecay(pt, 0)` neredeyse ani cozulmedir (`CItem.cpp:5879` yorumu).
+  **Paket dogrulamasi:** `sphere_region.scp` REGEN=60*60*10 yaziyor ve yanindaki
+  "seconds" yorumu ifadeyle celisiyor - `60*60*10` onda saniye olarak tam bir saat.
+  Referans C++ carpani esas alindi.)
+- [x] **SX-05C-02 (P2)** - Mevcut dugum kademeli doluyor ve omru uzatiliyordu.
+  (YAPILDI: referans buldugu bit'i oldugu gibi dondurur (CWorldMap.cpp:71),
+  `MoveToDecay`'i yalniz olusturmada cagirir (:148), tuketimde timer'a dokunmaz
+  (CCharSkill.cpp:1046) ve sifir miktari tukenmis sayar (:1456). `RegenMarker` ve
+  her temastaki deadline itmesi kaldirildi; `RES_MAX`/`RES_LAST` kayitlari da
+  gereksiz kaldi.
+  **Tasarim karari nasil verildi:** rapor bunu "tasarim karari gerektiren uyumluluk
+  farki" olarak isaretlemisti. Kaynagi arastirdim - 55385e9 / changelog
+  2026-06-30 girdisi bu davranisi **"Source-X kademeli vein regrow"** paritesi
+  olarak kaydetmis. Yani kayitli bilincli bir sapma degil, HATALI bir parite
+  iddiasi; bu yuzden parite kazandi ve davranis kaldirildi.
+  **Emekli edilen test:** `CraftGatherRemainingTests.RegenMarker_PartiallyRefills...`
+  eski sozlesmeyi kodluyordu; kaldirildi ve dosyanin bas yorumu duzeltildi.)
+
+**05C kapanisi:** tam suite **2.499 basarili / 0 basarisiz** (+11 yeni, -1 emekli).
+Duzeltmeler gecici olarak kapatilarak 5 testin eski davranisi yakaladigi kanitlandi.
+Iki deadline testi once kapatilmis kodda da GECIYORDU - iki toplama ayni
+milisaniyede olunca "now + lifetime" iki kez yazmak degismemis gibi okunuyor; testler
+sentinel deger kullanacak sekilde saatten bagimsiz hale getirildi.
+
+**Acik kalan:** raporun `RES_LAST` gozlemi kendiliginden cozuldu (alan artik hic
+yazilmiyor). Marker `DecayTime`'i `WorldSaver` tarafindan kalan saniye olarak
+yazildigi icin 04C sinifindan bir saat-tasima riski kalmadi; yine de gercek yeniden
+baslatma + temizleme dongusu canli olarak calistirilmadi.
+
 ### SX-01B — Envanter ilk tarama (6 Eylül 2026)
 
 SphereNet `7a11130da128af76417574a8003d7915ee6d737f`, Source-X `92ced0ba`.

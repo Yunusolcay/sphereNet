@@ -38,11 +38,6 @@ public sealed class GatheringEngine
     // Resource the node fixed on first strike — keeps a vein yielding the same
     // thing on every swing instead of re-rolling iron→gold each time.
     private const string TagResourceId = "RES_ID";
-    // Original (full) pool size and the timestamp of the last pool change —
-    // together these drive partial regen (Source-X: a vein slowly refills over
-    // time instead of only resetting once fully depleted).
-    private const string TagPoolMax = "RES_MAX";
-    private const string TagLast = "RES_LAST";
 
     internal static int GetPool(Item marker) =>
         marker.TryGetTag(TagPool, out string? p) && int.TryParse(p, out int v) ? v : 0;
@@ -50,42 +45,12 @@ public sealed class GatheringEngine
     private static void SetPool(Item marker, int value) =>
         marker.SetTag(TagPool, Math.Max(0, value).ToString());
 
-    private static int GetPoolMax(Item marker) =>
-        marker.TryGetTag(TagPoolMax, out string? p) && int.TryParse(p, out int v) ? v : GetPool(marker);
-
-    private static long GetLast(Item marker) =>
-        marker.TryGetTag(TagLast, out string? p) && long.TryParse(p, out long v) ? v : 0;
-
-    private static void SetLast(Item marker, long ms) =>
-        marker.SetTag(TagLast, ms.ToString());
-
-    /// <summary>Partially regenerate a vein's pool by the time elapsed since its last
-    /// change (Source-X gradual regen): one resource per (Regen / max) seconds, capped
-    /// at the original pool. A recovering node clears its decay timer so it isn't
-    /// deleted mid-regrow.</summary>
-    internal static void RegenMarker(Item marker, RegionResourceDef resDef, long now)
-    {
-        int pool = GetPool(marker);
-        int max = GetPoolMax(marker);
-        if (pool >= max) return;
-
-        long last = GetLast(marker);
-        if (last <= 0) { SetLast(marker, now); return; }
-
-        long fullRegenMs = resDef.Regen > 0 ? resDef.Regen * 1000L : 36_000_000L;
-        long perUnitMs = Math.Max(1, fullRegenMs / Math.Max(1, max));
-        long ticks = (now - last) / perUnitMs;
-        if (ticks <= 0) return;
-
-        int newPool = (int)Math.Min(max, pool + ticks);
-        SetPool(marker, newPool);
-        SetLast(marker, last + ticks * perUnitMs);
-        // Push the decay one regen period out instead of clearing it: a marker
-        // untouched for a full regen window is fully refilled and identical to
-        // no marker at all, so letting it expire then is lossless (Source-X
-        // MoveToDecay lifecycle) — clearing it made every vein immortal.
-        marker.DecayTime = now + fullRegenMs;
-    }
+    /// <summary>Marker lifetime for a freshly found node, in milliseconds:
+    /// Source-X samples the REGEN curve and converts tenths to milliseconds, once,
+    /// at creation (CWorldMap.cpp:148). A resource with no REGEN samples zero and
+    /// its node decays almost at once, so each search rolls a fresh one.</summary>
+    private long RollNodeLifetimeMs(RegionResourceDef resDef) =>
+        Math.Max(0, resDef.GetRandomRegen(Rng)) * 100L;
 
     /// <summary>Sphere worldgem-bit graphic. Resource markers use it so staff
     /// can see and inspect veins with AllShow (the old 0x1 "nodraw" graphic
@@ -182,11 +147,11 @@ public sealed class GatheringEngine
             marker = CreateMarker(target, skillTag, poolAmount, resDef);
         }
 
-        // Top the vein up by the time elapsed since the last gather (partial regen)
-        // before deciding whether it is depleted.
-        if (marker != null)
-            RegenMarker(marker, resDef, Environment.TickCount64);
-
+        // A node that already exists is handed back exactly as it stands: Source-X
+        // returns the resource bit it found without topping it up or re-arming its
+        // timer (CWorldMap.cpp:71), and a node whose amount has reached zero counts
+        // as spent (CCharSkill.cpp:1456). It is the decay timeout set at creation
+        // that ends the node's life, after which the next search rolls a new one.
         if (marker != null && GetPool(marker) <= 0)
             return new GatherResult { Handled = true, Depleted = true };
 
@@ -264,14 +229,11 @@ public sealed class GatheringEngine
             if (reapAmount <= 0)
                 return new GatherResult { Handled = true, Success = false };
 
+            // Consuming from the pool does not touch the timer: the reference
+            // decrements the amount at CCharSkill.cpp:1046 and leaves the decay set
+            // at creation alone, so working a vein cannot keep it alive.
             int remaining = pool - reapAmount;
             SetPool(activeMarker, remaining);
-            SetLast(activeMarker, Environment.TickCount64); // reset the regen clock on each gather
-            // Every touch re-arms the decay one regen period out — by then the
-            // vein has fully refilled and the marker is redundant (Source-X
-            // MoveToDecay). No marker may outlive its usefulness with TIMER=-1.
-            long regenMs = resDef.Regen > 0 ? resDef.Regen * 1000L : 36_000_000L;
-            activeMarker.DecayTime = Environment.TickCount64 + regenMs;
 
             var item = _world.CreateItem();
             item.BaseId = reapItemId;
@@ -359,20 +321,17 @@ public sealed class GatheringEngine
         marker.BaseId = MarkerBaseId;
         marker.Name = "worldgem bit";
         SetPool(marker, amount); // remaining pool — tag, not Amount (see TagPool)
-        marker.SetTag(TagPoolMax, amount.ToString()); // full size, for partial regen
-        SetLast(marker, Environment.TickCount64);
         marker.SetAttr(ObjAttributes.Invis | ObjAttributes.Move_Never);
         marker.SetTag(TagResourceMarker, "1");
         marker.SetTag(TagSkillType, skillTag);
         marker.SetTag(TagResourceId, resDef.Id.Index.ToString());
 
-        // Source-X CheckNaturalResource: the bit MoveToDecay()s one regen
-        // period after creation. Each gather/regen touch re-arms this, so an
-        // actively worked vein survives — but no marker is ever immortal
-        // (TIMER=-1), which used to leave one invisible worldgem per fished
-        // tile in the world forever.
-        long createRegenMs = resDef.Regen > 0 ? resDef.Regen * 1000L : 36_000_000L;
-        marker.DecayTime = Environment.TickCount64 + createRegenMs;
+        // Source-X MoveToDecay()s the bit ONCE here, for a sampled regen period
+        // (CWorldMap.cpp:148). Nothing re-arms it afterwards: the node lives out
+        // that one window and is then deleted, and the next search rolls a fresh
+        // node with a fresh pool. No marker is ever immortal (TIMER=-1), which used
+        // to leave one invisible worldgem per fished tile in the world forever.
+        marker.DecayTime = Environment.TickCount64 + RollNodeLifetimeMs(resDef);
 
         _world.PlaceItem(marker, tile);
         return marker;

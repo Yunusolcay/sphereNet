@@ -4,6 +4,41 @@
  Turkish: CHANGELOG-TR.txt  |  Archive (pre 2026-05-29, bilingual): CHANGELOG_OLD.txt
 ================================================================================
 
+[2026-09-06] - Resources: REGEN is tenths on a curve, and a node lives one window (05C)
+----------------------------------------
+
+CHANGED - REGEN is read as TENTHS of a second, not whole seconds. The reference says
+        so in its own loader ("Tenths of second once found how long to regen this
+        type", CRegionResourceDef.cpp:73) and builds the node's timeout with
+        GetRandom() * MSECS_PER_TENTH (CWorldMap.cpp:148). Every vein therefore used
+        to last TEN TIMES as long as its script asked for. The reference pack's own
+        REGEN=60*60*10 now means an hour, as the expression reads, instead of ten.
+        Shards that tuned REGEN against the old reading will see nodes recycle ten
+        times sooner and should divide those values by ten to keep the same economy.
+
+FIX - REGEN is a value curve, like AMOUNT and REAPAMOUNT. A comma-separated setting
+        parsed as one expression, collapsed to zero, and fell through to an invented
+        ten-hour default, so the curve form silently did nothing. Each point is parsed
+        on its own - the points may be expressions, which is why the plain integer
+        curve parser could not be reused - and a sample now spans the whole curve.
+        The ten-hour default is gone: an unset REGEN samples zero, which is what the
+        reference does with an empty curve.
+
+CHANGED - A resource node lives out the single window set when it was found, and is
+        handed back exactly as it stands until then. Source-X returns the resource
+        bit it finds without touching it (CWorldMap.cpp:71), calls MoveToDecay once at
+        creation (:148), decrements the amount on use without re-arming the timer
+        (CCharSkill.cpp:1046), and treats a node at zero as spent (:1456). SphereNet
+        topped the pool up by elapsed time and pushed the deadline a full regen period
+        out on every touch, so a player working one vein could keep it alive and
+        drawing indefinitely. Both are removed, along with the RES_MAX / RES_LAST
+        bookkeeping they needed. A spent node now yields nothing until its window
+        closes, after which the next search rolls a fresh node with a fresh pool.
+
+        This undoes the partial-node regen added on 2026-06-30, which was landed as a
+        Source-X parity claim ("gradual vein regrow") that the reference does not
+        support. It was not a recorded deliberate deviation, so parity wins.
+
 [2026-09-06] - Gathering: the ResourceGather contract and the ore's own Create (05B)
 ----------------------------------------
 

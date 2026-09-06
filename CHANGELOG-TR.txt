@@ -3,6 +3,42 @@
  Tum onemli degisiklikler bu dosyada belgelenir.
  Ingilizce: CHANGELOG-EN.txt  |  Arsiv (2026-05-29 oncesi, iki dilli): CHANGELOG_OLD.txt
 
+[2026-09-06] - Kaynaklar: REGEN egri ve onda saniye, dugum tek pencere yasar (05C)
+----------------------------------------
+
+DEGISTI - REGEN tam saniye degil, ONDA SANIYE olarak okunuyor. Referans bunu kendi
+        yukleyicisinde yaziyor ("Tenths of second once found how long to regen this
+        type", CRegionResourceDef.cpp:73) ve dugumun zaman asimini
+        GetRandom() * MSECS_PER_TENTH ile kuruyor (CWorldMap.cpp:148). Yani her damar
+        scriptinin istediginin ON KATI kadar yasiyordu. Referans paketin kendi
+        REGEN=60*60*10 degeri artik ifadenin okundugu gibi bir saat anlamina geliyor,
+        on saat degil. REGEN'i eski okumaya gore ayarlamis shard'larda dugumler on kat
+        daha erken yenilenir; ayni ekonomiyi korumak icin o degerler ona bolunmeli.
+
+FIX - REGEN, AMOUNT ve REAPAMOUNT gibi bir deger egrisidir. Virgullu bir ayar tek
+        ifade olarak ayristiriliyor, sifira dusuyor ve uydurma on saatlik varsayilana
+        kaciyordu; yani egri bicimi sessizce hicbir sey yapmiyordu. Her nokta ayri
+        ayristiriliyor - noktalar ifade olabildigi icin duz tamsayi egri ayristiricisi
+        kullanilamadi - ve ornekleme artik butun egriyi tariyor. On saatlik varsayilan
+        kaldirildi: atanmamis REGEN sifir orneklenir, referansin bos egride yaptigi
+        gibi.
+
+DEGISTI - Kaynak dugumu, bulundugunda kurulan TEK pencereyi yasar ve o ana kadar
+        oldugu gibi geri verilir. Source-X buldugu resource bit'i hic dokunmadan
+        dondurur (CWorldMap.cpp:71), MoveToDecay'i olusturmada bir kez cagirir (:148),
+        kullanimda miktari azaltir ama timer'i yeniden kurmaz (CCharSkill.cpp:1046) ve
+        miktari sifir dugumu tukenmis sayar (:1456). SphereNet havuzu gecen sureye gore
+        dolduruyor ve her temasta son tarihi bir tam regen periyodu ileri atiyordu;
+        boylece tek bir damarda calisan oyuncu onu suresiz canli ve verimli
+        tutabiliyordu. Ikisi de kaldirildi, ihtiyac duyduklari RES_MAX / RES_LAST
+        kayitlariyla birlikte. Tukenmis dugum penceresi kapanana kadar hicbir sey
+        vermiyor; kapandiktan sonra sonraki arama taze havuzlu yeni dugum uretiyor.
+
+        Bu, 2026-06-30'da eklenen kismi dugum yenilenmesini geri aliyor. O degisiklik
+        bir Source-X paritesi iddiasiyla ("gradual vein regrow") girmisti; referans
+        boyle bir davranis icermiyor. Kayitli bilincli bir sapma olmadigi icin parite
+        kazandi.
+
 [2026-09-06] - Toplama: ResourceGather sozlesmesi ve madenin kendi Create'i (05B)
 ----------------------------------------
 

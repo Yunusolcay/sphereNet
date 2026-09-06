@@ -9,11 +9,14 @@ using Xunit;
 
 namespace SphereNet.Tests;
 
-// Crafting/gathering parity (wiki/11.txt remainder):
-//  - weight-based CanCarry so a gathered/crafted item bounces to the ground when
-//    it would overload the actor;
-//  - partial resource-node regen (a vein slowly refills over time, not only after
-//    full depletion).
+// Crafting/gathering parity (wiki/11.txt remainder): weight-based CanCarry, so a
+// gathered/crafted item bounces to the ground when it would overload the actor.
+//
+// This file used to pin a partial resource-node regen - a vein slowly refilling
+// over time - as Source-X behaviour. It is not: the reference hands back the node
+// it finds untouched (CWorldMap.cpp:71) and lets the one timeout set at creation
+// (:148) delete it, after which the next search rolls a fresh node. The node
+// lifecycle is now pinned by GatherParity05CTests.
 public class CraftGatherRemainingTests
 {
     private static GameWorld CreateWorld()
@@ -41,38 +44,5 @@ public class CraftGatherRemainingTests
         var heavy = world.CreateItem();
         heavy.Amount = 800; // 80 stones — over the cap
         Assert.False(ch.CanCarry(heavy));
-    }
-
-    [Fact]
-    public void RegenMarker_PartiallyRefillsPoolOverTime_CappedAtMax()
-    {
-        var world = CreateWorld();
-        var resDef = new RegionResourceDef(default) { Regen = 10 }; // 10s to fully refill
-
-        long now = Environment.TickCount64;
-
-        // max 5, regen 10s -> 2s per unit. Depleted to 1, last gather 4s ago -> +2.
-        var marker = world.CreateItem();
-        marker.SetTag("RES_POOL", "1");
-        marker.SetTag("RES_MAX", "5");
-        marker.SetTag("RES_LAST", (now - 4000).ToString());
-        GatheringEngine.RegenMarker(marker, resDef, now);
-        Assert.Equal(3, GatheringEngine.GetPool(marker)); // 1 + 2
-
-        // 12s elapsed -> +6 units, but capped at the original 5.
-        var marker2 = world.CreateItem();
-        marker2.SetTag("RES_POOL", "1");
-        marker2.SetTag("RES_MAX", "5");
-        marker2.SetTag("RES_LAST", (now - 12000).ToString());
-        GatheringEngine.RegenMarker(marker2, resDef, now);
-        Assert.Equal(5, GatheringEngine.GetPool(marker2)); // capped
-
-        // A full node never over-fills.
-        var full = world.CreateItem();
-        full.SetTag("RES_POOL", "5");
-        full.SetTag("RES_MAX", "5");
-        full.SetTag("RES_LAST", (now - 60000).ToString());
-        GatheringEngine.RegenMarker(full, resDef, now);
-        Assert.Equal(5, GatheringEngine.GetPool(full));
     }
 }
